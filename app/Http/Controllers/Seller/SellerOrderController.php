@@ -13,7 +13,7 @@ class SellerOrderController extends Controller
      * Hardcoded seller_id = 1 for development.
      * Replace with auth()->id() when auth middleware is wired up.
      */
-    private int $sellerId = 1;
+    private function sellerId(): int { return (int) auth()->id(); }
 
     /**
      * Status transitions the seller is allowed to make.
@@ -27,7 +27,7 @@ class SellerOrderController extends Controller
         // Resolve all order IDs that contain this seller's products (no N+1)
         $sellerOrderIds = DB::table('order_items as oi')
             ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->where('p.seller_id', $this->sellerId)
+            ->where('p.seller_id', $this->sellerId())
             ->distinct()
             ->pluck('oi.order_id');
 
@@ -73,7 +73,7 @@ class SellerOrderController extends Controller
     {
         $sellerOrderIds = DB::table('order_items as oi')
             ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->where('p.seller_id', $this->sellerId)
+            ->where('p.seller_id', $this->sellerId())
             ->distinct()
             ->pluck('oi.order_id');
 
@@ -100,7 +100,7 @@ class SellerOrderController extends Controller
         // Security check — seller can only view orders containing their products
         $hasSellerProduct = DB::table('order_items as oi')
             ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->where('p.seller_id', $this->sellerId)
+            ->where('p.seller_id', $this->sellerId())
             ->where('oi.order_id', $id)
             ->exists();
 
@@ -116,7 +116,7 @@ class SellerOrderController extends Controller
         // Return ONLY the order_items belonging to this seller
         $sellerItems = DB::table('order_items as oi')
             ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->where('p.seller_id', $this->sellerId)
+            ->where('p.seller_id', $this->sellerId())
             ->where('oi.order_id', $id)
             ->select(
                 'oi.id',
@@ -138,7 +138,7 @@ class SellerOrderController extends Controller
                     'status'         => $order->status,
                     'payment_status' => $order->payment_status,
                     'total_amount'   => $order->total_amount,
-                    'wilaya'         => $order->wilaya ?? $order->user?->state,
+                    'walaya' => $order->user ? $order->user->state : null,                    
                     'created_at'     => $order->created_at,
                     'customer'       => $order->user,
                 ],
@@ -157,7 +157,7 @@ class SellerOrderController extends Controller
 
         $hasSellerProduct = DB::table('order_items as oi')
             ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->where('p.seller_id', $this->sellerId)
+            ->where('p.seller_id', $this->sellerId())
             ->where('oi.order_id', $id)
             ->exists();
 

@@ -14,7 +14,7 @@ class SellerDashboardController extends Controller
      * Hardcoded seller_id = 1 for development.
      * Replace with auth()->id() when auth middleware is wired up.
      */
-    private int $sellerId = 1;
+    private function sellerId(): int { return (int) auth()->id(); }
 
     public function index()
     {
@@ -23,23 +23,23 @@ class SellerDashboardController extends Controller
         // ── KPIs ──────────────────────────────────────────────────────────────
 
         $totalProducts = Product::withoutGlobalScopes()
-            ->where('seller_id', $this->sellerId)
+            ->where('seller_id', $this->sellerId())
             ->count();
 
         $activeProducts = Product::withoutGlobalScopes()
-            ->where('seller_id', $this->sellerId)
+            ->where('seller_id', $this->sellerId())
             ->where('is_active', true)
             ->count();
 
         $pendingProductApprovals = Product::withoutGlobalScopes()
-            ->where('seller_id', $this->sellerId)
+            ->where('seller_id', $this->sellerId())
             ->where('is_approved', false)
             ->count();
 
         // Distinct orders that contain at least one of this seller's products
         $sellerOrderIds = DB::table('order_items as oi')
             ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->where('p.seller_id', $this->sellerId)
+            ->where('p.seller_id', $this->sellerId())
             ->distinct()
             ->pluck('oi.order_id');
 
@@ -53,7 +53,7 @@ class SellerDashboardController extends Controller
         $totalRevenue = DB::table('order_items as oi')
             ->join('products as p',  'p.id', '=', 'oi.product_id')
             ->join('orders as o',    'o.id', '=', 'oi.order_id')
-            ->where('p.seller_id', $this->sellerId)
+            ->where('p.seller_id', $this->sellerId())
             ->whereIn('o.status', ['completed', 'delivered'])
             ->where('o.payment_status', 'paid')
             ->sum('oi.total');
@@ -62,7 +62,7 @@ class SellerDashboardController extends Controller
         $revenueThisMonth = DB::table('order_items as oi')
             ->join('products as p', 'p.id', '=', 'oi.product_id')
             ->join('orders as o',   'o.id', '=', 'oi.order_id')
-            ->where('p.seller_id', $this->sellerId)
+            ->where('p.seller_id', $this->sellerId())
             ->whereIn('o.status', ['completed', 'delivered'])
             ->where('o.payment_status', 'paid')
             ->whereBetween('o.created_at', [
@@ -74,7 +74,7 @@ class SellerDashboardController extends Controller
         $revenueLastMonth = DB::table('order_items as oi')
             ->join('products as p', 'p.id', '=', 'oi.product_id')
             ->join('orders as o',   'o.id', '=', 'oi.order_id')
-            ->where('p.seller_id', $this->sellerId)
+            ->where('p.seller_id', $this->sellerId())
             ->whereIn('o.status', ['completed', 'delivered'])
             ->where('o.payment_status', 'paid')
             ->whereBetween('o.created_at', [
@@ -105,7 +105,7 @@ class SellerDashboardController extends Controller
             $rawMonthly = DB::table('order_items as oi')
                 ->join('products as p', 'p.id', '=', 'oi.product_id')
                 ->join('orders as o',   'o.id', '=', 'oi.order_id')
-                ->where('p.seller_id', $this->sellerId)
+                ->where('p.seller_id', $this->sellerId())
                 ->whereIn('o.status', ['completed', 'delivered'])
                 ->where('o.payment_status', 'paid')
                 ->where('o.created_at', '>=', $now->copy()->subMonths(11)->startOfMonth())
@@ -141,7 +141,7 @@ class SellerDashboardController extends Controller
                 ->join('products as p', 'p.id', '=', 'oi.product_id')
                 ->join('orders as o',   'o.id', '=', 'oi.order_id')
                 ->join('users as u',    'u.id', '=', 'o.user_id')
-                ->where('p.seller_id', $this->sellerId)
+                ->where('p.seller_id', $this->sellerId())
                 ->whereIn('o.status', ['completed', 'delivered'])
                 ->where('o.payment_status', 'paid')
                 ->select(
@@ -175,7 +175,7 @@ class SellerDashboardController extends Controller
                 ->join('products as p', 'p.id', '=', 'oi.product_id')
                 ->join('orders as o',   'o.id', '=', 'oi.order_id')
                 ->join('users as u',    'u.id', '=', 'o.user_id')
-                ->where('p.seller_id', $this->sellerId)
+                ->where('p.seller_id', $this->sellerId())
                 ->whereIn('o.status', ['completed', 'delivered'])
                 ->where('o.payment_status', 'paid')
                 ->select(

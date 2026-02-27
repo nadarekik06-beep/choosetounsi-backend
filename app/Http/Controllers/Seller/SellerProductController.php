@@ -12,14 +12,14 @@ class SellerProductController extends Controller
      * Hardcoded seller_id = 1 for development.
      * Replace with auth()->id() when auth middleware is wired up.
      */
-    private int $sellerId = 1;
+    private function sellerId(): int { return (int) auth()->id(); }
 
     // ── GET /api/seller/products ───────────────────────────────────────────────
     public function index(Request $request)
     {
         $query = Product::withoutGlobalScopes()
             ->with(['category:id,name'])
-            ->where('seller_id', $this->sellerId)
+            ->where('seller_id', $this->sellerId())
             ->select([
                 'id', 'seller_id', 'category_id', 'name',
                 'description', 'price', 'stock',
@@ -56,7 +56,7 @@ class SellerProductController extends Controller
     public function stats()
     {
         $stats = Product::withoutGlobalScopes()
-            ->where('seller_id', $this->sellerId)
+            ->where('seller_id', $this->sellerId())
             ->selectRaw('
                 COUNT(*) as total,
                 SUM(CASE WHEN is_active   = 1 THEN 1 ELSE 0 END) as active,
@@ -79,7 +79,7 @@ class SellerProductController extends Controller
     {
         $product = Product::withoutGlobalScopes()
             ->with(['category:id,name'])
-            ->where('seller_id', $this->sellerId)
+            ->where('seller_id', $this->sellerId())
             ->findOrFail($id);
 
         return response()->json([
@@ -101,7 +101,7 @@ class SellerProductController extends Controller
 
         $product = Product::create([
             ...$validated,
-            'seller_id'   => $this->sellerId,
+            'seller_id'   => $this->sellerId(),
             'is_active'   => true,
             'is_approved' => false, // Admin must approve new products
         ]);
@@ -117,7 +117,7 @@ class SellerProductController extends Controller
     public function update(Request $request, int $id)
     {
         $product = Product::withoutGlobalScopes()
-            ->where('seller_id', $this->sellerId)
+            ->where('seller_id', $this->sellerId())
             ->findOrFail($id);
 
         $validated = $request->validate([
@@ -142,7 +142,7 @@ class SellerProductController extends Controller
     public function destroy(int $id)
     {
         $product = Product::withoutGlobalScopes()
-            ->where('seller_id', $this->sellerId)
+            ->where('seller_id', $this->sellerId())
             ->findOrFail($id);
 
         $product->delete(); // Soft delete via SoftDeletes trait on Product model
