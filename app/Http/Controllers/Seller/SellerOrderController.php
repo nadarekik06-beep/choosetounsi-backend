@@ -138,7 +138,7 @@ class SellerOrderController extends Controller
                     'status'         => $order->status,
                     'payment_status' => $order->payment_status,
                     'total_amount'   => $order->total_amount,
-                    'walaya' => $order->user ? $order->user->state : null,                    
+                    'wilaya' => $order->user ? $order->user->state : null, 
                     'created_at'     => $order->created_at,
                     'customer'       => $order->user,
                 ],

@@ -10,122 +10,102 @@ use App\Http\Controllers\Api\Seller\OrderApiController as SellerOrderApi;
 use App\Http\Controllers\Api\Client\ClientOrderApiController;
 use App\Http\Controllers\Api\Client\ProfileApiController;
 
+// ── NEW: Seller Dashboard controllers (added for the seller dashboard UI)
+use App\Http\Controllers\Seller\SellerDashboardController;
+use App\Http\Controllers\Seller\SellerProductController;
+use App\Http\Controllers\Seller\SellerOrderController;
+
 /*
 |--------------------------------------------------------------------------
 | API Routes - Token Based Authentication (No CSRF)
 |--------------------------------------------------------------------------
-| All routes use Laravel Sanctum for authentication via Bearer tokens
-| Public routes are accessible without authentication
-| Protected routes require: Authorization: Bearer {token}
-|--------------------------------------------------------------------------
 */
 
 // ═══════════════════════════════════════════════════════════════════════
-// PUBLIC ROUTES - No authentication required
+// PUBLIC ROUTES
 // ═══════════════════════════════════════════════════════════════════════
 
-// ────────────────────────────────────────────
-// Authentication
-// ────────────────────────────────────────────
 Route::post('/auth/login',    [AuthController::class, 'login']);
 Route::post('/auth/register', [AuthController::class, 'register']);
 
-// ────────────────────────────────────────────
-// Public Products (For Homepage & Browse)
-// ────────────────────────────────────────────
-Route::get('/products',           [ProductController::class, 'index']);      // All approved products
-Route::get('/products/featured',  [ProductController::class, 'featured']);   // Featured products
-Route::get('/products/{slug}',    [ProductController::class, 'show']);       // Single product by slug
+Route::get('/products',           [ProductController::class, 'index']);
+Route::get('/products/featured',  [ProductController::class, 'featured']);
+Route::get('/products/{slug}',    [ProductController::class, 'show']);
 
-// ────────────────────────────────────────────
-// Categories
-// ────────────────────────────────────────────
-Route::get('/categories',                    [CategoryController::class, 'index']);    // All categories
-Route::get('/categories/{slug}',             [CategoryController::class, 'show']);     // Single category
-Route::get('/categories/{slug}/products',    [CategoryController::class, 'products']); // Products in category
+Route::get('/categories',                    [CategoryController::class, 'index']);
+Route::get('/categories/{slug}',             [CategoryController::class, 'show']);
+Route::get('/categories/{slug}/products',    [CategoryController::class, 'products']);
 
 // ═══════════════════════════════════════════════════════════════════════
-// PROTECTED ROUTES - Authentication Required (Bearer Token)
+// PROTECTED ROUTES
 // ═══════════════════════════════════════════════════════════════════════
 
 Route::middleware('auth:sanctum')->group(function () {
 
-    // ────────────────────────────────────────────
-    // Authentication
-    // ────────────────────────────────────────────
+    // ── Auth ──────────────────────────────────────────────────────────
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/auth/user',    [AuthController::class, 'user']);
 
-    // ────────────────────────────────────────────
-    // Profile Management (All Authenticated Users)
-    // ────────────────────────────────────────────
+    // ── Profile ───────────────────────────────────────────────────────
     Route::get('/profile',                 [ProfileApiController::class, 'show']);
     Route::put('/profile',                 [ProfileApiController::class, 'update']);
     Route::put('/profile/password',        [ProfileApiController::class, 'updatePassword']);
     Route::post('/profile/request-seller', [ProfileApiController::class, 'requestSellerRole']);
 
-    // ────────────────────────────────────────────
-    // Seller Applications (Clients Can Apply)
-    // ────────────────────────────────────────────
-    Route::post('/seller-applications',        [SellerApplicationController::class, 'store']);   // Submit application
-    Route::get('/seller-applications/status',  [SellerApplicationController::class, 'status']);  // Check application status
+    // ── Seller Applications ───────────────────────────────────────────
+    Route::post('/seller-applications',       [SellerApplicationController::class, 'store']);
+    Route::get('/seller-applications/status', [SellerApplicationController::class, 'status']);
 
-    // ────────────────────────────────────────────
-    // Seller Routes (Approved Sellers Only)
-    // ────────────────────────────────────────────
+    // ── Seller Routes ─────────────────────────────────────────────────
     Route::prefix('seller')->group(function () {
-        
-        // Dashboard Statistics
-        Route::get('/statistics', [SellerProductApi::class, 'statistics']);
-        // routes/api.php
-        Route::get('/sellers/featured', [SellerController::class, 'featured']);
 
-        // Product Management (with multiple images)
-        Route::get('/products',              [SellerProductApi::class, 'index']);      // List seller's products
-        Route::post('/products',             [SellerProductApi::class, 'store']);      // Create product with images
-        Route::get('/products/{product}',    [SellerProductApi::class, 'show']);       // View single product
-        Route::put('/products/{product}',    [SellerProductApi::class, 'update']);     // Update product
-        Route::delete('/products/{product}', [SellerProductApi::class, 'destroy']);    // Delete product
-        
-        // Product Images
-        Route::post('/products/{product}/images',           [SellerProductApi::class, 'uploadImages']);  // Add more images
-        Route::delete('/products/{product}/images/{image}', [SellerProductApi::class, 'deleteImage']);   // Delete image
-        
-        // Orders (Read-only)
-        Route::get('/orders',         [SellerOrderApi::class, 'index']);          // List orders
-        Route::get('/orders/{order}', [SellerOrderApi::class, 'show']);           // View single order
-        Route::get('/orders/statistics', [SellerOrderApi::class, 'statistics']);  // Order statistics
+        // ── Dashboard (NEW — for the seller dashboard UI) ─────────────
+        Route::get('/dashboard',          [SellerDashboardController::class, 'index']);
+
+        // ── Products Management (NEW) ─────────────────────────────────
+        // /stats MUST be before /{id} to avoid Laravel treating "stats" as an ID
+        Route::get('/products/stats',     [SellerProductController::class, 'stats']);
+        Route::get('/products',           [SellerProductController::class, 'index']);
+        Route::post('/products',          [SellerProductController::class, 'store']);
+        Route::get('/products/{id}',      [SellerProductController::class, 'show']);
+        Route::put('/products/{id}',      [SellerProductController::class, 'update']);
+        Route::delete('/products/{id}',   [SellerProductController::class, 'destroy']);
+
+        // ── Orders Management (NEW) ───────────────────────────────────
+        // /stats MUST be before /{id}
+        Route::get('/orders/stats',           [SellerOrderController::class, 'stats']);
+        Route::get('/orders',                 [SellerOrderController::class, 'index']);
+        Route::get('/orders/{id}',            [SellerOrderController::class, 'show']);
+        Route::patch('/orders/{id}/status',   [SellerOrderController::class, 'updateStatus']);
+
+        // ── Existing seller routes (keep as-is) ───────────────────────
+        Route::get('/statistics',            [SellerProductApi::class, 'statistics']);
+
+        Route::post('/products/{product}/images',           [SellerProductApi::class, 'uploadImages']);
+        Route::delete('/products/{product}/images/{image}', [SellerProductApi::class, 'deleteImage']);
+
+        Route::get('/orders/{order}',        [SellerOrderApi::class, 'show']);
+        Route::get('/orders/statistics',     [SellerOrderApi::class, 'statistics']);
     });
 
-    // ────────────────────────────────────────────
-    // Client Routes (Clients Only)
-    // ────────────────────────────────────────────
+    // ── Client Routes ─────────────────────────────────────────────────
     Route::prefix('client')->group(function () {
-        
-        // Dashboard Statistics
-        Route::get('/statistics', [ClientOrderApiController::class, 'statistics']);
-        
-        // Order Management
-        Route::get('/orders',         [ClientOrderApiController::class, 'index']);  // List client's orders
-        Route::get('/orders/{order}', [ClientOrderApiController::class, 'show']);   // View single order
+        Route::get('/statistics',     [ClientOrderApiController::class, 'statistics']);
+        Route::get('/orders',         [ClientOrderApiController::class, 'index']);
+        Route::get('/orders/{order}', [ClientOrderApiController::class, 'show']);
     });
 
-    // ────────────────────────────────────────────
-    // Admin Routes (Admin Only)
-    // ────────────────────────────────────────────
+    // ── Admin Routes ──────────────────────────────────────────────────
     Route::prefix('admin')->middleware('role:admin')->group(function () {
-        
-        // Seller Applications Management
-        Route::get('/seller-applications',                     [SellerApplicationController::class, 'index']);    // List all applications
-        Route::get('/seller-applications/{application}',       [SellerApplicationController::class, 'show']);     // View application
-        Route::post('/seller-applications/{application}/approve', [SellerApplicationController::class, 'approve']); // Approve
-        Route::post('/seller-applications/{application}/reject',  [SellerApplicationController::class, 'reject']);  // Reject
-        
-        // Category Management
-        Route::get('/categories',              [CategoryController::class, 'adminIndex']);  // List all
-        Route::post('/categories',             [CategoryController::class, 'store']);       // Create
-        Route::put('/categories/{category}',   [CategoryController::class, 'update']);      // Update
-        Route::delete('/categories/{category}',[CategoryController::class, 'destroy']);     // Delete
+        Route::get('/seller-applications',                        [SellerApplicationController::class, 'index']);
+        Route::get('/seller-applications/{application}',          [SellerApplicationController::class, 'show']);
+        Route::post('/seller-applications/{application}/approve', [SellerApplicationController::class, 'approve']);
+        Route::post('/seller-applications/{application}/reject',  [SellerApplicationController::class, 'reject']);
+
+        Route::get('/categories',               [CategoryController::class, 'adminIndex']);
+        Route::post('/categories',              [CategoryController::class, 'store']);
+        Route::put('/categories/{category}',    [CategoryController::class, 'update']);
+        Route::delete('/categories/{category}', [CategoryController::class, 'destroy']);
     });
 
 });
