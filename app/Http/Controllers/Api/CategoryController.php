@@ -5,189 +5,131 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Category;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
 
 class CategoryController extends Controller
 {
-    // ═══════════════════════════════════════════════════════════════════
-    // PUBLIC METHODS - No authentication required
-    // ═══════════════════════════════════════════════════════════════════
-
     /**
-     * Get all active categories (for homepage)
+     * GET /api/categories
+     * Public — returns all active categories for browsing.
      */
     public function index()
     {
         $categories = Category::active()
             ->ordered()
-            ->withCount(['activeProducts as product_count'])
+            ->select(['id', 'name', 'name_ar', 'slug', 'icon', 'image'])
             ->get();
 
         return response()->json([
-            'categories' => $categories,
+            'success' => true,
+            'data'    => $categories,
         ]);
     }
 
     /**
-     * Get single category by slug
+     * GET /api/categories/{slug}
+     * Public — returns a single category.
      */
     public function show($slug)
     {
         $category = Category::where('slug', $slug)
             ->active()
-            ->withCount(['activeProducts as product_count'])
             ->firstOrFail();
 
         return response()->json([
-            'category' => $category,
+            'success' => true,
+            'data'    => $category,
         ]);
     }
 
     /**
-     * Get products in a category
+     * GET /api/categories/{slug}/products
+     * Public — returns paginated products within a category.
      */
     public function products(Request $request, $slug)
     {
         $category = Category::where('slug', $slug)->active()->firstOrFail();
 
-        $query = $category->activeProducts()->with(['seller', 'primaryImage']);
-
-        // Filters
-        if ($request->has('min_price')) {
-            $query->where('price', '>=', $request->min_price);
-        }
-
-        if ($request->has('max_price')) {
-            $query->where('price', '<=', $request->max_price);
-        }
-
-        // Sort
-        $sortBy = $request->get('sort', 'created_at');
-        $sortOrder = $request->get('order', 'desc');
-
-        if (in_array($sortBy, ['price', 'created_at', 'name', 'views'])) {
-            $query->orderBy($sortBy, $sortOrder);
-        }
-
-        $products = $query->paginate(20);
+        $products = $category->products()
+            ->with(['seller:id,name', 'primaryImage'])
+            ->where('is_approved', true)
+            ->where('is_active', true)
+            ->where('stock', '>', 0)
+            ->orderByDesc('created_at')
+            ->paginate(20);
 
         return response()->json([
+            'success'  => true,
             'category' => $category,
-            'products' => $products,
+            'data'     => $products,
         ]);
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // ADMIN METHODS - Require admin role
-    // ═══════════════════════════════════════════════════════════════════
+    // ── Admin-only endpoints ───────────────────────────────────────────────────
 
-    /**
-     * Admin: List all categories (including inactive)
-     */
     public function adminIndex()
     {
         $categories = Category::withCount('products')
-            ->orderBy('order')
+            ->ordered()
             ->get();
 
         return response()->json([
-            'categories' => $categories,
+            'success' => true,
+            'data'    => $categories,
         ]);
     }
 
-    /**
-     * Admin: Create category
-     */
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'name' => 'required|string|max:255',
-            'name_ar' => 'required|string|max:255',
+            'name'        => 'required|string|max:255|unique:categories,name',
+            'name_ar'     => 'nullable|string|max:255',
             'description' => 'nullable|string',
-            'icon' => 'nullable|string|max:10',
-            'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
-            'is_active' => 'boolean',
-            'order' => 'integer',
+            'icon'        => 'nullable|string|max:100',
+            'image'       => 'nullable|string|max:500',
+            'is_active'   => 'sometimes|boolean',
+            'order'       => 'sometimes|integer',
         ]);
 
-        // Upload image if provided
-        $imagePath = null;
-        if ($request->hasFile('image')) {
-            $imagePath = $request->file('image')->store('categories', 'public');
-        }
-
-        $category = Category::create([
-            'name' => $validated['name'],
-            'name_ar' => $validated['name_ar'],
-            'slug' => Str::slug($validated['name']),
-            'description' => $validated['description'] ?? null,
-            'icon' => $validated['icon'] ?? null,
-            'image' => $imagePath,
-            'is_active' => $validated['is_active'] ?? true,
-            'order' => $validated['order'] ?? 0,
-        ]);
+        $category = Category::create($validated);
 
         return response()->json([
-            'message' => 'Category created successfully.',
-            'category' => $category,
+            'success' => true,
+            'message' => 'Category created.',
+            'data'    => $category,
         ], 201);
     }
 
-    /**
-     * Admin: Update category
-     */
-    public function update(Request $request, Category $category)
+    public function update(Request $request, $category)
     {
+        $category = Category::findOrFail($category);
+
         $validated = $request->validate([
-            'name' => 'required|string|max:255',
-            'name_ar' => 'required|string|max:255',
+            'name'        => 'sometimes|string|max:255|unique:categories,name,' . $category->id,
+            'name_ar'     => 'nullable|string|max:255',
             'description' => 'nullable|string',
-            'icon' => 'nullable|string|max:10',
-            'image' => 'nullable|image|mimes:jpeg,png,jpg|max:2048',
-            'is_active' => 'boolean',
-            'order' => 'integer',
+            'icon'        => 'nullable|string|max:100',
+            'image'       => 'nullable|string|max:500',
+            'is_active'   => 'sometimes|boolean',
+            'order'       => 'sometimes|integer',
         ]);
-
-        // Upload new image if provided
-        if ($request->hasFile('image')) {
-            // Delete old image
-            if ($category->image) {
-                \Storage::disk('public')->delete($category->image);
-            }
-            $validated['image'] = $request->file('image')->store('categories', 'public');
-        }
-
-        $validated['slug'] = Str::slug($validated['name']);
 
         $category->update($validated);
 
         return response()->json([
-            'message' => 'Category updated successfully.',
-            'category' => $category,
+            'success' => true,
+            'message' => 'Category updated.',
+            'data'    => $category,
         ]);
     }
 
-    /**
-     * Admin: Delete category
-     */
-    public function destroy(Category $category)
+    public function destroy($category)
     {
-        // Check if category has products
-        if ($category->products()->count() > 0) {
-            return response()->json([
-                'message' => 'Cannot delete category with products. Please reassign products first.',
-            ], 400);
-        }
-
-        // Delete image
-        if ($category->image) {
-            \Storage::disk('public')->delete($category->image);
-        }
-
+        $category = Category::findOrFail($category);
         $category->delete();
 
         return response()->json([
-            'message' => 'Category deleted successfully.',
+            'success' => true,
+            'message' => 'Category deleted.',
         ]);
     }
 }
