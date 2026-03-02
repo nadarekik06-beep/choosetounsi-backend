@@ -9,6 +9,8 @@ class SellerApplication extends Model
 {
     use HasFactory;
 
+    protected $table = 'seller_applications';
+
     protected $fillable = [
         'user_id',
         'full_name',
@@ -31,12 +33,10 @@ class SellerApplication extends Model
 
     protected $casts = [
         'sample_images' => 'array',
-        'reviewed_at' => 'datetime',
+        'reviewed_at'   => 'datetime',
     ];
 
-    // ═══════════════════════════════════════════════
-    // RELATIONSHIPS
-    // ═══════════════════════════════════════════════
+    // ── Relationships ──────────────────────────────────────────────────
 
     public function user()
     {
@@ -48,9 +48,7 @@ class SellerApplication extends Model
         return $this->belongsTo(User::class, 'reviewed_by');
     }
 
-    // ═══════════════════════════════════════════════
-    // SCOPES
-    // ═══════════════════════════════════════════════
+    // ── Scopes ────────────────────────────────────────────────────────
 
     public function scopePending($query)
     {
@@ -65,50 +63,5 @@ class SellerApplication extends Model
     public function scopeRejected($query)
     {
         return $query->where('status', 'rejected');
-    }
-
-    // ═══════════════════════════════════════════════
-    // HELPER METHODS
-    // ═══════════════════════════════════════════════
-
-    public function isPending()
-    {
-        return $this->status === 'pending';
-    }
-
-    public function isApproved()
-    {
-        return $this->status === 'approved';
-    }
-
-    public function isRejected()
-    {
-        return $this->status === 'rejected';
-    }
-
-    public function approve($adminId)
-    {
-        $this->update([
-            'status' => 'approved',
-            'reviewed_at' => now(),
-            'reviewed_by' => $adminId,
-            'rejection_reason' => null,
-        ]);
-
-        // Update user role to seller
-        $this->user->update([
-            'role' => 'seller',
-            'is_approved' => true,
-        ]);
-    }
-
-    public function reject($adminId, $reason)
-    {
-        $this->update([
-            'status' => 'rejected',
-            'reviewed_at' => now(),
-            'reviewed_by' => $adminId,
-            'rejection_reason' => $reason,
-        ]);
     }
 }

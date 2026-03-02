@@ -100,5 +100,13 @@ class User extends Authenticatable
     {
         return $query->where('role', 'admin');
     }
-    
+     public function sellerApplication()
+    {
+       return $this->hasOne(SellerApplication::class)->latest();
+    }
+
+    public function sellerApplications()
+    {
+       return $this->hasMany(SellerApplication::class);
+    }
 }
