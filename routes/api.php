@@ -5,15 +5,12 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\SellerApplicationController;
-use App\Http\Controllers\Api\Seller\ProductApiController as SellerProductApi;
-use App\Http\Controllers\Api\Seller\OrderApiController as SellerOrderApi;
 use App\Http\Controllers\Api\Client\ClientOrderApiController;
 use App\Http\Controllers\Api\Client\ProfileApiController;
 
-use App\Http\Controllers\Seller\SellerDashboardController;
-use App\Http\Controllers\Seller\SellerProductController;
-use App\Http\Controllers\Seller\SellerOrderController;
-
+use App\Http\Controllers\Api\Seller\SellerDashboardController;
+use App\Http\Controllers\Api\Seller\SellerProductController;
+use App\Http\Controllers\Api\Seller\SellerOrderController;
 /*
 |--------------------------------------------------------------------------
 | API Routes
@@ -62,45 +59,26 @@ Route::middleware('auth:sanctum')->group(function () {
 
         Route::get('/dashboard', [SellerDashboardController::class, 'index']);
 
-        // Products — /stats and /categories MUST come before /{id} to avoid
-        // Laravel treating literal words as route parameters.
-        Route::get('/products/stats',      [SellerProductController::class, 'stats']);
-        Route::get('/products',            [SellerProductController::class, 'index']);
+        // IMPORTANT: /stats must come before /{id} to avoid route param conflict
+        Route::get('/products/stats', [SellerProductController::class, 'stats']);
+        Route::get('/products',       [SellerProductController::class, 'index']);
+        Route::post('/products',      [SellerProductController::class, 'store']);
 
-        // multipart/form-data store — POST
-        Route::post('/products',           [SellerProductController::class, 'store']);
+        // Image management must come before /{id} routes
+        Route::delete('/products/{id}/images/{imageId}',        [SellerProductController::class, 'destroyImage']);
+        Route::patch('/products/{id}/images/{imageId}/primary', [SellerProductController::class, 'setPrimaryImage']);
 
         // Single product CRUD
-        Route::get('/products/{id}',       [SellerProductController::class, 'show']);
+        Route::get('/products/{id}',    [SellerProductController::class, 'show']);
+        Route::post('/products/{id}',   [SellerProductController::class, 'update']);
+        Route::put('/products/{id}',    [SellerProductController::class, 'update']);
+        Route::delete('/products/{id}', [SellerProductController::class, 'destroy']);
 
-        // Update — use POST + _method=PUT override for multipart support
-        Route::post('/products/{id}',      [SellerProductController::class, 'update']);
-        Route::put('/products/{id}',       [SellerProductController::class, 'update']);
-
-        Route::delete('/products/{id}',    [SellerProductController::class, 'destroy']);
-
-        // Image management per product
-        Route::delete(
-            '/products/{id}/images/{imageId}',
-            [SellerProductController::class, 'destroyImage']
-        );
-        Route::patch(
-            '/products/{id}/images/{imageId}/primary',
-            [SellerProductController::class, 'setPrimaryImage']
-        );
-
-        // Orders
-        Route::get('/orders/stats',          [SellerOrderController::class, 'stats']);
-        Route::get('/orders',                [SellerOrderController::class, 'index']);
-        Route::get('/orders/{id}',           [SellerOrderController::class, 'show']);
-        Route::patch('/orders/{id}/status',  [SellerOrderController::class, 'updateStatus']);
-
-        // Legacy routes (keep for backward compat)
-        Route::get('/statistics',            [SellerProductApi::class, 'statistics']);
-        Route::post('/products/{product}/images',           [SellerProductApi::class, 'uploadImages']);
-        Route::delete('/products/{product}/images/{image}', [SellerProductApi::class, 'deleteImage']);
-        Route::get('/orders/{order}',        [SellerOrderApi::class, 'show']);
-        Route::get('/orders/statistics',     [SellerOrderApi::class, 'statistics']);
+        // Orders — /stats must come before /{id}
+        Route::get('/orders/stats',         [SellerOrderController::class, 'stats']);
+        Route::get('/orders',               [SellerOrderController::class, 'index']);
+        Route::get('/orders/{id}',          [SellerOrderController::class, 'show']);
+        Route::patch('/orders/{id}/status', [SellerOrderController::class, 'updateStatus']);
     });
 
     // ── Client Routes ─────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Http\Controllers\Seller;
+namespace App\Http\Controllers\Api\Seller;
 
 use App\Http\Controllers\Controller;
 use App\Models\Product;
@@ -51,7 +51,6 @@ class SellerProductController extends Controller
         $perPage = (int) $request->get('per_page', 12);
         $products = $query->orderByDesc('created_at')->paginate($perPage);
 
-        // Append primary_image_url to each product
         $products->getCollection()->transform(function ($product) {
             $product->primary_image_url = $product->primaryImage
                 ? Storage::url($product->primaryImage->image_path)
@@ -95,7 +94,6 @@ class SellerProductController extends Controller
             ->where('seller_id', $this->sellerId())
             ->findOrFail($id);
 
-        // Append image URLs
         $product->images->each(function ($image) {
             $image->url = Storage::url($image->image_path);
         });
@@ -120,11 +118,13 @@ class SellerProductController extends Controller
             'sku'               => 'nullable|string|max:100|unique:products,sku',
             'is_active'         => 'sometimes|boolean',
             'images'            => 'nullable|array|max:8',
-            'images.*'          => 'image|mimes:jpeg,png,jpg,webp|max:5120', // 5MB per image
+            'images.*'          => 'image|mimes:jpeg,png,jpg,webp|max:5120',
         ]);
 
         // Auto-generate slug
-        $slug = $this->generateUniqueSlug($validated['slug'] ?? $validated['name']);
+        $slug = $this->generateUniqueSlug(
+            !empty($validated['slug']) ? $validated['slug'] : $validated['name']
+        );
 
         // Auto-generate SKU if not provided
         $sku = !empty($validated['sku'])
@@ -133,27 +133,28 @@ class SellerProductController extends Controller
 
         DB::beginTransaction();
         try {
+            // PHP 7.4 compatible - no spread operator
             $product = Product::create([
                 'seller_id'         => $this->sellerId(),
                 'category_id'       => $validated['category_id'],
                 'name'              => $validated['name'],
                 'slug'              => $slug,
-                'description'       => $validated['description'] ?? null,
-                'short_description' => $validated['short_description'] ?? null,
+                'description'       => isset($validated['description']) ? $validated['description'] : null,
+                'short_description' => isset($validated['short_description']) ? $validated['short_description'] : null,
                 'price'             => $validated['price'],
                 'stock'             => $validated['stock'],
                 'sku'               => $sku,
-                'is_active'         => $validated['is_active'] ?? true,
-                'is_approved'       => false, // Always pending — admin must approve
+                'is_active'         => isset($validated['is_active']) ? $validated['is_active'] : true,
+                'is_approved'       => false,
                 'featured'          => false,
             ]);
 
-            // Handle image uploads
             if ($request->hasFile('images')) {
                 $this->uploadImages($product, $request->file('images'));
             }
 
             DB::commit();
+
         } catch (\Exception $e) {
             DB::rollBack();
             return response()->json([
@@ -178,22 +179,21 @@ class SellerProductController extends Controller
             ->findOrFail($id);
 
         $validated = $request->validate([
-            'category_id'       => 'sometimes|integer|exists:categories,id',
-            'name'              => 'sometimes|string|max:255',
-            'slug'              => 'nullable|string|max:255|unique:products,slug,' . $id,
-            'description'       => 'nullable|string',
-            'short_description' => 'nullable|string|max:500',
-            'price'             => 'sometimes|numeric|min:0',
-            'stock'             => 'sometimes|integer|min:0',
-            'sku'               => 'nullable|string|max:100|unique:products,sku,' . $id,
-            'is_active'         => 'sometimes|boolean',
-            'images'            => 'nullable|array|max:8',
-            'images.*'          => 'image|mimes:jpeg,png,jpg,webp|max:5120',
-            'delete_image_ids'  => 'nullable|array',
-            'delete_image_ids.*'=> 'integer|exists:product_images,id',
+            'category_id'        => 'sometimes|integer|exists:categories,id',
+            'name'               => 'sometimes|string|max:255',
+            'slug'               => 'nullable|string|max:255|unique:products,slug,' . $id,
+            'description'        => 'nullable|string',
+            'short_description'  => 'nullable|string|max:500',
+            'price'              => 'sometimes|numeric|min:0',
+            'stock'              => 'sometimes|integer|min:0',
+            'sku'                => 'nullable|string|max:100|unique:products,sku,' . $id,
+            'is_active'          => 'sometimes|boolean',
+            'images'             => 'nullable|array|max:8',
+            'images.*'           => 'image|mimes:jpeg,png,jpg,webp|max:5120',
+            'delete_image_ids'   => 'nullable|array',
+            'delete_image_ids.*' => 'integer',
         ]);
 
-        // Re-generate slug only if name changed and slug not explicitly provided
         if (isset($validated['name']) && !isset($validated['slug'])) {
             $validated['slug'] = $this->generateUniqueSlug($validated['name'], $id);
         }
@@ -202,17 +202,16 @@ class SellerProductController extends Controller
         try {
             $product->update($validated);
 
-            // Delete specific images if requested
             if (!empty($validated['delete_image_ids'])) {
                 $this->deleteImages($product, $validated['delete_image_ids']);
             }
 
-            // Upload new images
             if ($request->hasFile('images')) {
                 $this->uploadImages($product, $request->file('images'));
             }
 
             DB::commit();
+
         } catch (\Exception $e) {
             DB::rollBack();
             return response()->json([
@@ -241,7 +240,6 @@ class SellerProductController extends Controller
             ->where('seller_id', $this->sellerId())
             ->findOrFail($id);
 
-        // Delete image files from storage
         foreach ($product->images as $image) {
             Storage::disk('public')->delete($image->image_path);
         }
@@ -261,13 +259,13 @@ class SellerProductController extends Controller
             ->where('seller_id', $this->sellerId())
             ->findOrFail($id);
 
-        $image = $product->images()->findOrFail($imageId);
+        $image      = $product->images()->findOrFail($imageId);
+        $wasPrimary = $image->is_primary;
 
         Storage::disk('public')->delete($image->image_path);
         $image->delete();
 
-        // If we deleted the primary image, promote the next one
-        if ($image->is_primary) {
+        if ($wasPrimary) {
             $next = $product->images()->orderBy('order')->first();
             if ($next) {
                 $next->update(['is_primary' => true]);
@@ -289,7 +287,6 @@ class SellerProductController extends Controller
 
         $image = $product->images()->findOrFail($imageId);
 
-        // Remove primary from all images of this product
         $product->images()->update(['is_primary' => false]);
         $image->update(['is_primary' => true]);
 
@@ -301,23 +298,16 @@ class SellerProductController extends Controller
 
     // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
 
-    /**
-     * Upload images and store in product_images table.
-     */
     private function uploadImages(Product $product, array $files): void
     {
         $currentMax = $product->images()->max('order') ?? -1;
         $hasPrimary = $product->images()->where('is_primary', true)->exists();
 
         foreach ($files as $index => $file) {
-            $order = $currentMax + $index + 1;
+            $order     = $currentMax + $index + 1;
             $isPrimary = !$hasPrimary && $index === 0;
 
-            // Store in storage/app/public/products/{seller_id}/
-            $path = $file->store(
-                'products/' . $product->seller_id,
-                'public'
-            );
+            $path = $file->store('products/' . $product->seller_id, 'public');
 
             ProductImage::create([
                 'product_id' => $product->id,
@@ -332,12 +322,9 @@ class SellerProductController extends Controller
         }
     }
 
-    /**
-     * Delete specific images by ID (only if they belong to this product).
-     */
     private function deleteImages(Product $product, array $imageIds): void
     {
-        $images = $product->images()->whereIn('id', $imageIds)->get();
+        $images     = $product->images()->whereIn('id', $imageIds)->get();
         $hadPrimary = false;
 
         foreach ($images as $image) {
@@ -348,7 +335,6 @@ class SellerProductController extends Controller
             $image->delete();
         }
 
-        // Promote next image to primary if we deleted the primary
         if ($hadPrimary) {
             $next = $product->images()->orderBy('order')->first();
             if ($next) {
@@ -357,13 +343,10 @@ class SellerProductController extends Controller
         }
     }
 
-    /**
-     * Generate a unique slug, appending a counter if needed.
-     */
     private function generateUniqueSlug(string $name, ?int $excludeId = null): string
     {
-        $base = Str::slug($name);
-        $slug = $base;
+        $base    = Str::slug($name);
+        $slug    = $base;
         $counter = 1;
 
         while (true) {
@@ -380,14 +363,11 @@ class SellerProductController extends Controller
         return $slug;
     }
 
-    /**
-     * Generate a unique SKU: CT-{CATEGORY}{TIMESTAMP}{RANDOM}
-     */
     private function generateSku(string $productName): string
     {
         do {
             $prefix = 'CT-' . strtoupper(substr(preg_replace('/[^A-Za-z]/', '', $productName), 0, 3));
-            $sku = $prefix . strtoupper(Str::random(6));
+            $sku    = $prefix . strtoupper(Str::random(6));
         } while (Product::withoutGlobalScopes()->where('sku', $sku)->exists());
 
         return $sku;
