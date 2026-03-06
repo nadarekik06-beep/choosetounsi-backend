@@ -6,19 +6,17 @@ use App\Http\Controllers\Controller;
 use App\Models\SellerApplication;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Storage;
 
 class SellerApplicationController extends Controller
 {
     /**
      * POST /api/seller-applications
-     * Submit a new seller application.
+     * Submit a new seller application (called by logged-in frontend user).
      */
     public function store(Request $request)
     {
         $user = Auth::user();
 
-        // Prevent duplicate pending applications
         $existing = SellerApplication::where('user_id', $user->id)
             ->where('status', 'pending')
             ->first();
@@ -46,14 +44,12 @@ class SellerApplicationController extends Controller
             'website_url'          => 'nullable|url|max:500',
         ]);
 
-        // Handle profile picture
         $profilePicturePath = null;
         if ($request->hasFile('profile_picture')) {
             $profilePicturePath = $request->file('profile_picture')
                 ->store('seller-applications/profiles', 'public');
         }
 
-        // Handle sample images
         $sampleImagePaths = [];
         if ($request->hasFile('sample_images')) {
             foreach ($request->file('sample_images') as $image) {
@@ -87,7 +83,6 @@ class SellerApplicationController extends Controller
 
     /**
      * GET /api/seller-applications/status
-     * Get the current user's application status.
      */
     public function status()
     {
@@ -96,13 +91,6 @@ class SellerApplicationController extends Controller
         $application = SellerApplication::where('user_id', $user->id)
             ->latest()
             ->first();
-
-        if (!$application) {
-            return response()->json([
-                'success' => true,
-                'data'    => null,
-            ]);
-        }
 
         return response()->json([
             'success' => true,
@@ -117,8 +105,7 @@ class SellerApplicationController extends Controller
      */
     public function index(Request $request)
     {
-        $query = SellerApplication::with('user')
-            ->orderByDesc('created_at');
+        $query = SellerApplication::with('user')->orderByDesc('created_at');
 
         if ($status = $request->query('status')) {
             $query->where('status', $status);
@@ -128,7 +115,9 @@ class SellerApplicationController extends Controller
             $query->where(function ($q) use ($search) {
                 $q->where('full_name', 'like', "%{$search}%")
                   ->orWhere('business_name', 'like', "%{$search}%")
-                  ->orWhereHas('user', fn($u) => $u->where('email', 'like', "%{$search}%"));
+                  ->orWhereHas('user', fn($u) =>
+                      $u->where('email', 'like', "%{$search}%")
+                  );
             });
         }
 
@@ -158,15 +147,11 @@ class SellerApplicationController extends Controller
      */
     public function approve(Request $request, SellerApplication $application)
     {
-        $admin = Auth::user();
-
         $application->update([
             'status'      => 'approved',
             'reviewed_at' => now(),
-            'reviewed_by' => $admin->id,
         ]);
 
-        // Promote user to seller
         $application->user->update([
             'role'        => 'seller',
             'is_approved' => true,
@@ -188,13 +173,10 @@ class SellerApplicationController extends Controller
             'rejection_reason' => 'nullable|string|max:1000',
         ]);
 
-        $admin = Auth::user();
-
         $application->update([
             'status'           => 'rejected',
             'rejection_reason' => $request->rejection_reason,
             'reviewed_at'      => now(),
-            'reviewed_by'      => $admin->id,
         ]);
 
         return response()->json([
