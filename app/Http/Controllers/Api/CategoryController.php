@@ -10,13 +10,59 @@ class CategoryController extends Controller
 {
     /**
      * GET /api/categories
-     * Public — returns all active categories for browsing.
+     * Public — returns all active categories for browsing (no products).
      */
     public function index()
     {
         $categories = Category::active()
             ->ordered()
             ->select(['id', 'name', 'name_ar', 'slug', 'icon', 'image'])
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data'    => $categories,
+        ]);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // NEW ENDPOINT — used by the homepage CategoryShowcase section
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * GET /api/categories/with-products
+     *
+     * Returns active categories, each with up to 4 approved+active products.
+     * Used by the homepage to render the category showcase grid.
+     *
+     * Only categories that have at least 1 approved product are returned.
+     * Products are sorted by newest first.
+     */
+    public function withProducts()
+    {
+        $categories = Category::active()
+            ->ordered()
+            ->select(['id', 'name', 'name_ar', 'slug', 'icon', 'image'])
+            // Only return categories that have at least 1 approved, active product
+            ->whereHas('activeProducts')
+            // Eager-load up to 4 approved+active products per category
+            ->with([
+                'activeProducts' => function ($query) {
+                    $query
+                        ->where('stock', '>', 0)        // must be in stock
+                        ->with(['primaryImage'])         // load primary image
+                        ->select([
+                            'id',
+                            'category_id',
+                            'name',
+                            'slug',
+                            'price',
+                            'stock',
+                        ])
+                        ->orderByDesc('created_at')
+                        ->limit(4);                      // max 4 per category on homepage
+                },
+            ])
             ->get();
 
         return response()->json([
@@ -64,7 +110,7 @@ class CategoryController extends Controller
         ]);
     }
 
-    // ── Admin-only endpoints ───────────────────────────────────────────────────
+    // ── Admin-only endpoints ───────────────────────────────────────────
 
     public function adminIndex()
     {

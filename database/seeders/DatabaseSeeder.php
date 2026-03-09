@@ -15,7 +15,8 @@ class DatabaseSeeder extends Seeder
     {
         // ✅ Delegate admin creation to AdminSeeder — no duplication
         $this->call(AdminSeeder::class);
-
+        $this->call([
+        CategorySeeder::class,]);
         // ── Sellers ───────────────────────────────────────────────
         $approvedSeller = User::updateOrCreate(
             ['email' => 'seller1@example.com'],

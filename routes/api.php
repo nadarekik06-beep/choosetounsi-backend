@@ -11,7 +11,6 @@ use App\Http\Controllers\Api\Seller\SellerDashboardController;
 use App\Http\Controllers\Api\Seller\SellerProductController;
 use App\Http\Controllers\Api\Seller\SellerOrderController;
 use App\Http\Controllers\Admin\SellerController;
-
 // ═══════════════════════════════════════════════════════════════════════
 // PUBLIC ROUTES
 // ═══════════════════════════════════════════════════════════════════════
@@ -23,12 +22,14 @@ Route::get('/products',          [ProductController::class, 'index']);
 Route::get('/products/featured', [ProductController::class, 'featured']);
 Route::get('/products/{slug}',   [ProductController::class, 'show']);
 
-Route::get('/categories',                 [CategoryController::class, 'index']);
-Route::get('/categories/{slug}',          [CategoryController::class, 'show']);
-Route::get('/categories/{slug}/products', [CategoryController::class, 'products']);
+Route::get('/categories',                [CategoryController::class, 'index']);
+Route::get('/categories/with-products',  [CategoryController::class, 'withProducts']); // ← NEW
+Route::get('/categories/{slug}',         [CategoryController::class, 'show']);
+Route::get('/categories/{slug}/products',[CategoryController::class, 'products']);
 
 Route::get('/auth/google/redirect',  [AuthController::class, 'googleRedirect']);
 Route::get('/auth/google/callback',  [AuthController::class, 'googleCallback']);
+
 // ═══════════════════════════════════════════════════════════════════════
 // FRONTEND USER ROUTES (auth:sanctum — regular users)
 // ═══════════════════════════════════════════════════════════════════════
