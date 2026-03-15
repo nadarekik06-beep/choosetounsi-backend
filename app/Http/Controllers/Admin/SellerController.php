@@ -15,13 +15,9 @@ class SellerController extends Controller
         $query = User::sellers()->withCount('products');
 
         if ($status = $request->query('status')) {
-            if ($status === 'approved') {
-                $query->where('is_approved', true)->where('is_active', true);
-            } elseif ($status === 'pending') {
-                $query->where('is_approved', false)->where('is_active', true);
-            } elseif ($status === 'suspended') {
-                $query->where('is_active', false);
-            }
+            if ($status === 'approved')  $query->where('is_approved', true)->where('is_active', true);
+            elseif ($status === 'pending')   $query->where('is_approved', false)->where('is_active', true);
+            elseif ($status === 'suspended') $query->where('is_active', false);
         }
 
         if ($search = $request->query('search')) {
@@ -50,16 +46,38 @@ class SellerController extends Controller
     }
 
     /**
+     * PUT /api/admin/sellers/{id}
+     * Update seller information
+     */
+    public function update(Request $request, $id)
+    {
+        $seller = User::where('role', 'seller')->findOrFail($id);
+
+        $validated = $request->validate([
+            'name'       => 'sometimes|required|string|max:255',
+            'email'      => 'sometimes|required|email|unique:users,email,' . $id,
+            'phone'      => 'nullable|string|max:30',
+            'store_name' => 'nullable|string|max:255',
+            'address'    => 'nullable|string|max:500',
+            'is_active'  => 'sometimes|boolean',
+        ]);
+
+        $seller->update($validated);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Seller updated successfully.',
+            'data'    => $seller->fresh()->loadCount('products'),
+        ]);
+    }
+
+    /**
      * PATCH /api/admin/sellers/{id}/approve
      */
     public function approve($id)
     {
         $seller = User::where('role', 'seller')->findOrFail($id);
-        $seller->update([
-            'is_approved' => true,
-            'is_active'   => true,
-        ]);
-
+        $seller->update(['is_approved' => true, 'is_active' => true]);
         return response()->json(['success' => true, 'message' => 'Seller approved successfully.']);
     }
 
@@ -69,13 +87,8 @@ class SellerController extends Controller
     public function reject(Request $request, $id)
     {
         $request->validate(['reason' => 'nullable|string|max:500']);
-
         $seller = User::where('role', 'seller')->findOrFail($id);
-        $seller->update([
-            'is_approved' => false,
-            'is_active'   => false,
-        ]);
-
+        $seller->update(['is_approved' => false, 'is_active' => false]);
         return response()->json(['success' => true, 'message' => 'Seller rejected.']);
     }
 
@@ -86,7 +99,6 @@ class SellerController extends Controller
     {
         $seller = User::where('role', 'seller')->findOrFail($id);
         $seller->update(['is_active' => false]);
-
         return response()->json(['success' => true, 'message' => 'Seller suspended.']);
     }
 }

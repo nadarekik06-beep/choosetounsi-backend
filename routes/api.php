@@ -105,7 +105,9 @@ Route::middleware('auth:sanctum')->group(function () {
 // ═══════════════════════════════════════════════════════════════════════
 
 Route::prefix('admin')->middleware(['auth:sanctum'])->group(function () {
-
+    Route::put('/sellers/{id}',  [SellerController::class, 'update']);
+    Route::put('/users/{id}',    [UserController::class,   'update']);
+    Route::put('/products/{id}', [ProductController::class,'update']);
     // ── Sellers (approved/suspended seller accounts) ──────────────────
     Route::get('/sellers',                  [SellerController::class, 'index']);
     Route::get('/sellers/{id}',             [SellerController::class, 'show']);
