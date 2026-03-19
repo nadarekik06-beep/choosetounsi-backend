@@ -108,13 +108,17 @@ Route::prefix('admin')->middleware(['auth:sanctum'])->group(function () {
     Route::put('/sellers/{id}',  [SellerController::class, 'update']);
     Route::put('/users/{id}',    [UserController::class,   'update']);
     Route::put('/products/{id}', [ProductController::class,'update']);
+    Route::delete('/sellers/{id}',     [SellerController::class, 'destroy']);    // DELETE seller
+    Route::patch('/sellers/{id}/role', [SellerController::class, 'changeRole']); // change role
+ 
     // ── Sellers (approved/suspended seller accounts) ──────────────────
     Route::get('/sellers',                  [SellerController::class, 'index']);
     Route::get('/sellers/{id}',             [SellerController::class, 'show']);
     Route::patch('/sellers/{id}/approve',   [SellerController::class, 'approve']);
     Route::patch('/sellers/{id}/reject',    [SellerController::class, 'reject']);
     Route::patch('/sellers/{id}/suspend',   [SellerController::class, 'suspend']);
-
+    Route::delete('/sellers/{id}',       [SellerController::class, 'destroy']);     // ← NEW: delete seller
+Route::patch('/sellers/{id}/role',   [SellerController::class, 'changeRole']);  // ← NEW: change role
     // ── Seller Applications (pending/approved/rejected applications) ───
     Route::get('/seller-applications',
         [SellerApplicationController::class, 'index']);
