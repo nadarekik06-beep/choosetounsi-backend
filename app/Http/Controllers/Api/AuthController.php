@@ -12,8 +12,24 @@ use Laravel\Socialite\Facades\Socialite;
 class AuthController extends Controller
 {
     /**
-     * Login
+     * Shared user response shape — always includes avatar.
      */
+    private function userResponse(User $user): array
+    {
+        return [
+            'id'          => $user->id,
+            'name'        => $user->name,
+            'email'       => $user->email,
+            'role'        => $user->role,
+            'is_approved' => (bool) $user->is_approved,
+            'is_active'   => (bool) $user->is_active,
+            'avatar'      => $user->avatar ?? null,   // Google photo URL or null
+        ];
+    }
+
+    /* ──────────────────────────────────────────────────────── */
+    /*  Email / password login                                  */
+    /* ──────────────────────────────────────────────────────── */
     public function login(Request $request)
     {
         $request->validate([
@@ -37,37 +53,30 @@ class AuthController extends Controller
         return response()->json([
             'message' => 'Login successful',
             'token'   => $token,
-            'user'    => [
-                'id'          => $user->id,
-                'name'        => $user->name,
-                'email'       => $user->email,
-                'role'        => $user->role,
-                'is_approved' => $user->is_approved,
-                'is_active'   => $user->is_active,
-            ],
+            'user'    => $this->userResponse($user),
         ]);
     }
 
-    /**
-     * Get current user
-     */
+    /* ──────────────────────────────────────────────────────── */
+    /*  Get current authenticated user                          */
+    /* ──────────────────────────────────────────────────────── */
     public function user(Request $request)
     {
-        return response()->json(['user' => $request->user()]);
+        return response()->json(['user' => $this->userResponse($request->user())]);
     }
 
-    /**
-     * Logout
-     */
+    /* ──────────────────────────────────────────────────────── */
+    /*  Logout                                                  */
+    /* ──────────────────────────────────────────────────────── */
     public function logout(Request $request)
     {
         $request->user()->tokens()->delete();
         return response()->json(['message' => 'Logged out successfully']);
     }
 
-    /**
-     * Register
-     */
+    /* ──────────────────────────────────────────────────────── */
+    /*  Register                                                */
+    /* ──────────────────────────────────────────────────────── */
     public function register(Request $request)
     {
         $validated = $request->validate([
@@ -93,25 +102,13 @@ class AuthController extends Controller
         return response()->json([
             'message' => 'Registered successfully',
             'token'   => $token,
-            'user'    => [
-                'id'          => $user->id,
-                'name'        => $user->name,
-                'email'       => $user->email,
-                'role'        => $user->role,
-                'is_approved' => $user->is_approved,
-                'is_active'   => $user->is_active,
-            ],
+            'user'    => $this->userResponse($user),
         ], 201);
     }
 
-    // =========================================================================
-    // GOOGLE OAUTH
-    // =========================================================================
-
-    /**
-     * Step 1 — Return the Google OAuth URL to the frontend.
-     * GET /api/auth/google/redirect
-     */
+    /* ──────────────────────────────────────────────────────── */
+    /*  Google OAuth – Step 1: return redirect URL              */
+    /* ──────────────────────────────────────────────────────── */
     public function googleRedirect()
     {
         $url = Socialite::driver('google')
@@ -122,11 +119,9 @@ class AuthController extends Controller
         return response()->json(['url' => $url]);
     }
 
-    /**
-     * Step 2 — Google redirects back here with a code.
-     * GET /api/auth/google/callback
-     * Creates/finds the user, issues a token, redirects to frontend.
-     */
+    /* ──────────────────────────────────────────────────────── */
+    /*  Google OAuth – Step 2: handle callback                  */
+    /* ──────────────────────────────────────────────────────── */
     public function googleCallback(Request $request)
     {
         try {
@@ -135,25 +130,28 @@ class AuthController extends Controller
             return redirect(env('FRONTEND_URL', 'http://localhost:3000') . '/auth/login?error=google_failed');
         }
 
-        // Find by google_id first, then by email (user may have registered with email before)
+        // Find by google_id first, then by email
         $user = User::where('google_id', $googleUser->getId())
             ->orWhere('email', $googleUser->getEmail())
             ->first();
 
         if ($user) {
-            // Link google_id if missing
-            if (!$user->google_id) {
-                $user->update(['google_id' => $googleUser->getId()]);
-            }
+            // Update google_id and avatar every login so photo stays fresh
+            $user->update([
+                'google_id' => $googleUser->getId(),
+                'avatar'    => $googleUser->getAvatar(),   // always refresh
+            ]);
+
             if (!$user->is_active) {
                 return redirect(env('FRONTEND_URL', 'http://localhost:3000') . '/auth/login?error=account_deactivated');
             }
         } else {
-            // Brand new user via Google
+            // Brand-new user via Google
             $user = User::create([
                 'name'        => $googleUser->getName(),
                 'email'       => $googleUser->getEmail(),
                 'google_id'   => $googleUser->getId(),
+                'avatar'      => $googleUser->getAvatar(),  // save Google photo
                 'password'    => Hash::make(Str::random(32)),
                 'role'        => 'client',
                 'is_active'   => true,
@@ -165,16 +163,9 @@ class AuthController extends Controller
         $token = $user->createToken('api-token')->plainTextToken;
 
         // Pass token + user to frontend via query params (base64 encoded)
-        $userData = base64_encode(json_encode([
-            'id'          => $user->id,
-            'name'        => $user->name,
-            'email'       => $user->email,
-            'role'        => $user->role,
-            'is_approved' => $user->is_approved,
-            'is_active'   => $user->is_active,
-        ]));
-
+        $userData    = base64_encode(json_encode($this->userResponse($user)));
         $frontendUrl = env('FRONTEND_URL', 'http://localhost:3000');
+
         return redirect("{$frontendUrl}/auth/google/callback?token={$token}&user={$userData}");
     }
 }
