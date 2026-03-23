@@ -11,6 +11,9 @@ use App\Http\Controllers\Api\Seller\SellerDashboardController;
 use App\Http\Controllers\Api\Seller\SellerProductController;
 use App\Http\Controllers\Api\Seller\SellerOrderController;
 use App\Http\Controllers\Admin\SellerController;
+use App\Http\Controllers\Api\NotificationController;
+use App\Http\Controllers\Admin\NotificationController as AdminNotificationController;
+
 // ═══════════════════════════════════════════════════════════════════════
 // PUBLIC ROUTES
 // ═══════════════════════════════════════════════════════════════════════
@@ -131,4 +134,33 @@ Route::patch('/sellers/{id}/role',   [SellerController::class, 'changeRole']);  
 
     Route::post('/seller-applications/{application}/reject',
         [SellerApplicationController::class, 'reject']);
+});
+// ═══════════════════════════════════════════════════════════════════
+// SELLER NOTIFICATIONS  (Sanctum guard — same as your existing seller routes)
+// ═══════════════════════════════════════════════════════════════════
+Route::middleware('auth:sanctum')->group(function () {
+ 
+    Route::prefix('notifications')->group(function () {
+        Route::get('/',             [NotificationController::class, 'index']);
+        Route::get('/unread-count', [NotificationController::class, 'unreadCount']);
+        Route::patch('/read-all',   [NotificationController::class, 'markAllRead']);
+        Route::patch('/{id}/read',  [NotificationController::class, 'markRead']);
+    });
+ 
+});
+// ADMIN NOTIFICATIONS  (admin guard — same as your existing admin routes)
+// ═══════════════════════════════════════════════════════════════════
+Route::middleware('auth:admin')->prefix('admin')->group(function () {
+ 
+    Route::prefix('notifications')->group(function () {
+        Route::get('/',             [AdminNotificationController::class, 'index']);
+        Route::get('/unread-count', [AdminNotificationController::class, 'unreadCount']);
+        Route::patch('/read-all',   [AdminNotificationController::class, 'markAllRead']);
+        Route::patch('/{id}/read',  [AdminNotificationController::class, 'markRead']);
+    });
+ 
+    // ── Product approve / reject (add to your existing admin product routes)
+    Route::patch('products/{id}/approve', [\App\Http\Controllers\Admin\SellerController::class, 'approveProduct']);
+    Route::patch('products/{id}/reject',  [\App\Http\Controllers\Admin\SellerController::class, 'rejectProduct']);
+ 
 });

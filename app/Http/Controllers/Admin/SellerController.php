@@ -1,9 +1,13 @@
 <?php
+// app/Http/Controllers/Admin/SellerController.php
+
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Models\Product;
 use App\Models\SellerApplication;
+use App\Notifications\ProductReviewedNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -21,8 +25,8 @@ class SellerController extends Controller
 
         if ($search = $request->query('search')) {
             $query->where(function ($q) use ($search) {
-                $q->where('name', 'like', "%{$search}%")
-                  ->orWhere('email', 'like', "%{$search}%");
+                $q->where('name', 'like', '%' . $search . '%')
+                  ->orWhere('email', 'like', '%' . $search . '%');
             });
         }
 
@@ -49,18 +53,18 @@ class SellerController extends Controller
             'is_approved'          => $seller->is_approved,
             'products_count'       => $seller->products_count,
             'created_at'           => $seller->created_at,
-            'full_name'            => $app?->full_name,
-            'phone_number'         => $app?->phone_number,
-            'business_name'        => $app?->business_name,
-            'business_category'    => $app?->business_category,
-            'business_description' => $app?->business_description,
-            'wilaya'               => $app?->wilaya,
-            'city'                 => $app?->city,
-            'profile_picture'      => $app?->profile_picture ? asset('storage/' . $app->profile_picture) : null,
-            'facebook_url'         => $app?->facebook_url,
-            'instagram_url'        => $app?->instagram_url,
-            'website_url'          => $app?->website_url,
-            'app_status'           => $app?->status,
+            'full_name'            => $app ? $app->full_name : null,
+            'phone_number'         => $app ? $app->phone_number : null,
+            'business_name'        => $app ? $app->business_name : null,
+            'business_category'    => $app ? $app->business_category : null,
+            'business_description' => $app ? $app->business_description : null,
+            'wilaya'               => $app ? $app->wilaya : null,
+            'city'                 => $app ? $app->city : null,
+            'profile_picture'      => ($app && $app->profile_picture) ? asset('storage/' . $app->profile_picture) : null,
+            'facebook_url'         => $app ? $app->facebook_url : null,
+            'instagram_url'        => $app ? $app->instagram_url : null,
+            'website_url'          => $app ? $app->website_url : null,
+            'app_status'           => $app ? $app->status : null,
         ]]);
     }
 
@@ -75,6 +79,7 @@ class SellerController extends Controller
             'address'    => 'nullable|string|max:500',
             'is_active'  => 'sometimes|boolean',
         ]);
+
         $seller->update($validated);
 
         return response()->json([
@@ -84,49 +89,26 @@ class SellerController extends Controller
         ]);
     }
 
-    /**
-     * DELETE /api/admin/sellers/{id}
-     *
-     * Deletes the seller user and their related data.
-     * Uses a transaction so nothing is half-deleted on error.
-     *
-     * NOTE: The {id} here is the USER id (users.id), not a seller_application id.
-     */
     public function destroy($id)
     {
-        // Find the user — allow any role so we can delete even if role was changed
         $seller = User::findOrFail($id);
 
         DB::transaction(function () use ($seller) {
-
-            // 1. Delete all products (Product::boot handles image file cleanup)
             if ($seller->products()->exists()) {
                 $seller->products()->each(function ($product) {
                     $product->delete();
                 });
             }
-
-            // 2. Delete seller applications linked to this user
             SellerApplication::where('user_id', $seller->id)->delete();
-
-            // 3. Delete the user itself
             $seller->delete();
         });
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Seller deleted successfully.',
-        ]);
+        return response()->json(['success' => true, 'message' => 'Seller deleted successfully.']);
     }
 
-    /**
-     * PATCH /api/admin/sellers/{id}/role
-     * Body: { "role": "client" | "seller" }
-     */
     public function changeRole(Request $request, $id)
     {
         $request->validate(['role' => 'required|in:client,seller']);
-
         $seller = User::findOrFail($id);
         $seller->update([
             'role'        => $request->role,
@@ -134,10 +116,7 @@ class SellerController extends Controller
             'is_active'   => $request->role === 'seller' ? $seller->is_active   : true,
         ]);
 
-        return response()->json([
-            'success' => true,
-            'message' => "Role changed to {$request->role}.",
-        ]);
+        return response()->json(['success' => true, 'message' => 'Role changed to ' . $request->role . '.']);
     }
 
     public function approve($id)
@@ -163,5 +142,50 @@ class SellerController extends Controller
             ->update(['is_active' => false]);
 
         return response()->json(['success' => true, 'message' => 'Seller suspended.']);
+    }
+
+    /**
+     * PATCH /api/admin/products/{id}/approve
+     */
+    public function approveProduct(Request $request, $id)
+    {
+        $product = Product::with('seller')->findOrFail($id);
+        $product->update(['is_approved' => true]);
+
+        if ($product->seller) {
+            $product->seller->notify(
+                new ProductReviewedNotification(
+                    'approved',
+                    $product->id,
+                    $product->name
+                )
+            );
+        }
+
+        return response()->json(['success' => true, 'message' => 'Product approved.']);
+    }
+
+    /**
+     * PATCH /api/admin/products/{id}/reject
+     */
+    public function rejectProduct(Request $request, $id)
+    {
+        $request->validate(['reason' => 'nullable|string|max:500']);
+
+        $product = Product::with('seller')->findOrFail($id);
+        $product->update(['is_approved' => false]);
+
+        if ($product->seller) {
+            $product->seller->notify(
+                new ProductReviewedNotification(
+                    'rejected',
+                    $product->id,
+                    $product->name,
+                    $request->reason
+                )
+            );
+        }
+
+        return response()->json(['success' => true, 'message' => 'Product rejected.']);
     }
 }

@@ -1,305 +1,228 @@
 <?php
+// app/Http/Controllers/Api/Seller/ProductController.php
+// Add the 3 notification calls to your existing file.
+// Search for "// ◄ NOTIFICATION" — those are the only additions.
 
 namespace App\Http\Controllers\Api\Seller;
 
 use App\Http\Controllers\Controller;
+use App\Models\Admin;
+use App\Models\Product;
+use App\Notifications\ProductActionNotification;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Carbon\Carbon;
+use Illuminate\Support\Facades\Notification;
 
-class SellerDashboardController extends Controller
+class ProductController extends Controller
 {
+    /**
+     * GET /api/seller/products
+     */
     public function index(Request $request)
     {
         $seller = $request->user();
-        $sellerId = $seller->id;
+        $query  = Product::where('seller_id', $seller->id)
+            ->with(['category', 'images'])
+            ->withCount('orderItems');
 
-        // ── Revenue & order summary ────────────────────────────────────────────
-        $totalRevenue = DB::table('order_items')
-            ->join('orders', 'orders.id', '=', 'order_items.order_id')
-            ->join('products', 'products.id', '=', 'order_items.product_id')
-            ->where('products.seller_id', $sellerId)
-            ->whereIn('orders.status', ['completed', 'delivered'])
-            ->sum(DB::raw('order_items.quantity * order_items.unit_price'));
-
-        $totalOrders = DB::table('orders')
-            ->whereExists(function ($q) use ($sellerId) {
-                $q->select(DB::raw(1))
-                  ->from('order_items')
-                  ->join('products', 'products.id', '=', 'order_items.product_id')
-                  ->whereColumn('order_items.order_id', 'orders.id')
-                  ->where('products.seller_id', $sellerId);
-            })
-            ->count();
-
-        $pendingOrders = DB::table('orders')
-            ->whereExists(function ($q) use ($sellerId) {
-                $q->select(DB::raw(1))
-                  ->from('order_items')
-                  ->join('products', 'products.id', '=', 'order_items.product_id')
-                  ->whereColumn('order_items.order_id', 'orders.id')
-                  ->where('products.seller_id', $sellerId);
-            })
-            ->where('orders.status', 'pending')
-            ->count();
-
-        $totalProducts   = DB::table('products')->where('seller_id', $sellerId)->count();
-        $activeProducts  = DB::table('products')->where('seller_id', $sellerId)->where('is_active', true)->count();
-        $pendingApprovals= DB::table('products')->where('seller_id', $sellerId)->where('is_approved', false)->count();
-
-        $now           = Carbon::now();
-        $startOfMonth  = $now->copy()->startOfMonth();
-        $startOfLast   = $now->copy()->subMonth()->startOfMonth();
-        $endOfLast     = $now->copy()->subMonth()->endOfMonth();
-
-        $revenueThisMonth = DB::table('order_items')
-            ->join('orders', 'orders.id', '=', 'order_items.order_id')
-            ->join('products', 'products.id', '=', 'order_items.product_id')
-            ->where('products.seller_id', $sellerId)
-            ->whereIn('orders.status', ['completed', 'delivered'])
-            ->where('orders.created_at', '>=', $startOfMonth)
-            ->sum(DB::raw('order_items.quantity * order_items.unit_price'));
-
-        $revenueLastMonth = DB::table('order_items')
-            ->join('orders', 'orders.id', '=', 'order_items.order_id')
-            ->join('products', 'products.id', '=', 'order_items.product_id')
-            ->where('products.seller_id', $sellerId)
-            ->whereIn('orders.status', ['completed', 'delivered'])
-            ->whereBetween('orders.created_at', [$startOfLast, $endOfLast])
-            ->sum(DB::raw('order_items.quantity * order_items.unit_price'));
-
-        $revenueGrowth = $revenueLastMonth > 0
-            ? (($revenueThisMonth - $revenueLastMonth) / $revenueLastMonth) * 100
-            : ($revenueThisMonth > 0 ? 100 : 0);
-
-        // ── Monthly chart (last 12 months) ────────────────────────────────────
-        $monthlyRevenue = [];
-        for ($i = 11; $i >= 0; $i--) {
-            $month      = $now->copy()->subMonths($i);
-            $monthStart = $month->copy()->startOfMonth();
-            $monthEnd   = $month->copy()->endOfMonth();
-
-            $rev = DB::table('order_items')
-                ->join('orders', 'orders.id', '=', 'order_items.order_id')
-                ->join('products', 'products.id', '=', 'order_items.product_id')
-                ->where('products.seller_id', $sellerId)
-                ->whereIn('orders.status', ['completed', 'delivered'])
-                ->whereBetween('orders.created_at', [$monthStart, $monthEnd])
-                ->sum(DB::raw('order_items.quantity * order_items.unit_price'));
-
-            $ord = DB::table('orders')
-                ->whereExists(function ($q) use ($sellerId) {
-                    $q->select(DB::raw(1))
-                      ->from('order_items')
-                      ->join('products', 'products.id', '=', 'order_items.product_id')
-                      ->whereColumn('order_items.order_id', 'orders.id')
-                      ->where('products.seller_id', $sellerId);
-                })
-                ->whereBetween('orders.created_at', [$monthStart, $monthEnd])
-                ->count();
-
-            $monthlyRevenue[] = [
-                'month'   => $month->format('M Y'),
-                'revenue' => round((float)$rev, 3),
-                'orders'  => $ord,
-            ];
+        if ($search = $request->query('search')) {
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'like', '%' . $search . '%')
+                  ->orWhere('sku',  'like', '%' . $search . '%');
+            });
         }
 
-        // ── Order status distribution ─────────────────────────────────────────
-        $statusDist = DB::table('orders')
-            ->select('orders.status', DB::raw('COUNT(*) as count'))
-            ->whereExists(function ($q) use ($sellerId) {
-                $q->select(DB::raw(1))
-                  ->from('order_items')
-                  ->join('products', 'products.id', '=', 'order_items.product_id')
-                  ->whereColumn('order_items.order_id', 'orders.id')
-                  ->where('products.seller_id', $sellerId);
-            })
-            ->groupBy('orders.status')
-            ->pluck('count', 'orders.status')
-            ->toArray();
+        if (!is_null($request->query('is_active'))) {
+            $query->where('is_active', (bool) $request->query('is_active'));
+        }
 
-        // ── Top clients ───────────────────────────────────────────────────────
-        $topClients = DB::table('orders')
-            ->join('users', 'users.id', '=', 'orders.user_id')
-            ->whereExists(function ($q) use ($sellerId) {
-                $q->select(DB::raw(1))
-                  ->from('order_items')
-                  ->join('products', 'products.id', '=', 'order_items.product_id')
-                  ->whereColumn('order_items.order_id', 'orders.id')
-                  ->where('products.seller_id', $sellerId);
-            })
-            ->whereIn('orders.status', ['completed', 'delivered'])
-            ->select(
-                'users.id',
-                'users.name',
-                'users.email',
-                DB::raw('NULL as state'),
-                DB::raw('SUM(orders.total_amount) as total_revenue'),
-                DB::raw('COUNT(DISTINCT orders.id) as total_orders')
-            )
-            ->groupBy('users.id', 'users.name', 'users.email')
-            ->orderByDesc('total_revenue')
-            ->limit(5)
-            ->get()
-            ->map(fn($c) => [
-                'id'            => $c->id,
-                'name'          => $c->name,
-                'email'         => $c->email,
-                'state'         => $c->state,
-                'total_revenue' => round((float)$c->total_revenue, 3),
-                'total_orders'  => (int)$c->total_orders,
-            ]);
+        if (!is_null($request->query('is_approved'))) {
+            $query->where('is_approved', (bool) $request->query('is_approved'));
+        }
 
-        // ── Top wilayas ───────────────────────────────────────────────────────
-        $topWilayas = DB::table('orders')
-            ->whereExists(function ($q) use ($sellerId) {
-                $q->select(DB::raw(1))
-                  ->from('order_items')
-                  ->join('products', 'products.id', '=', 'order_items.product_id')
-                  ->whereColumn('order_items.order_id', 'orders.id')
-                  ->where('products.seller_id', $sellerId);
-            })
-            ->whereIn('orders.status', ['completed', 'delivered'])
-            ->whereNotNull('orders.wilaya')
-            ->select(
-                'orders.wilaya',
-                DB::raw('SUM(orders.total_amount) as revenue'),
-                DB::raw('COUNT(DISTINCT orders.id) as orders')
-            )
-            ->groupBy('orders.wilaya')
-            ->orderByDesc('revenue')
-            ->limit(5)
-            ->get()
-            ->map(fn($w) => [
-                'wilaya'  => $w->wilaya,
-                'revenue' => round((float)$w->revenue, 3),
-                'orders'  => (int)$w->orders,
-            ]);
+        if ($categoryId = $request->query('category_id')) {
+            $query->where('category_id', $categoryId);
+        }
 
-        // ── TOP PRODUCTS ─────────────────────────────────────────────────────
-        // Aggregates sales, revenue, order count per product for this seller
-        $topProducts = DB::table('products')
-            ->leftJoin('order_items', function ($join) {
-                $join->on('order_items.product_id', '=', 'products.id')
-                     ->join('orders as o2', function ($j2) {
-                         $j2->on('o2.id', '=', 'order_items.order_id')
-                            ->whereIn('o2.status', ['completed', 'delivered', 'processing', 'pending']);
-                     });
-            })
-            ->leftJoin('categories', 'categories.id', '=', 'products.category_id')
-            ->leftJoin('product_images', function ($join) {
-                $join->on('product_images.product_id', '=', 'products.id')
-                     ->where('product_images.is_primary', true);
-            })
-            ->where('products.seller_id', $sellerId)
-            ->select(
-                'products.id',
-                'products.name',
-                'products.slug',
-                'products.sku',
-                'products.price',
-                'products.stock',
-                'products.is_active',
-                'products.is_approved',
-                'products.views',
-                'categories.name as category_name',
-                'product_images.image_path as primary_image_path',
-                DB::raw('COALESCE(SUM(order_items.quantity), 0) as total_sales'),
-                DB::raw('COALESCE(SUM(order_items.quantity * order_items.unit_price), 0) as total_revenue'),
-                DB::raw('COUNT(DISTINCT order_items.order_id) as total_orders')
-            )
-            ->groupBy(
-                'products.id', 'products.name', 'products.slug', 'products.sku',
-                'products.price', 'products.stock', 'products.is_active',
-                'products.is_approved', 'products.views',
-                'categories.name', 'product_images.image_path'
-            )
-            ->orderByDesc('total_sales')
-            ->limit(6)
-            ->get()
-            ->map(function ($p) {
-                $imagePath = $p->primary_image_path;
-                $imageUrl  = null;
-                if ($imagePath) {
-                    $base     = rtrim(config('app.url'), '/');
-                    $imageUrl = $base . '/storage/' . ltrim($imagePath, '/');
-                }
-                return [
-                    'id'                => $p->id,
-                    'name'              => $p->name,
-                    'slug'              => $p->slug,
-                    'sku'               => $p->sku,
-                    'price'             => round((float)$p->price, 3),
-                    'stock'             => (int)$p->stock,
-                    'is_active'         => (bool)$p->is_active,
-                    'is_approved'       => (bool)$p->is_approved,
-                    'primary_image_url' => $imageUrl,
-                    'category_name'     => $p->category_name,
-                    'total_sales'       => (int)$p->total_sales,
-                    'total_revenue'     => round((float)$p->total_revenue, 3),
-                    'total_orders'      => (int)$p->total_orders,
-                    'views'             => (int)($p->views ?? 0),
-                ];
-            });
+        return response()->json([
+            'success' => true,
+            'data'    => $query->orderByDesc('created_at')->paginate($request->query('per_page', 15)),
+        ]);
+    }
 
-        // ── Recent orders ─────────────────────────────────────────────────────
-        $recentOrders = DB::table('orders')
-            ->join('users', 'users.id', '=', 'orders.user_id')
-            ->whereExists(function ($q) use ($sellerId) {
-                $q->select(DB::raw(1))
-                  ->from('order_items')
-                  ->join('products', 'products.id', '=', 'order_items.product_id')
-                  ->whereColumn('order_items.order_id', 'orders.id')
-                  ->where('products.seller_id', $sellerId);
-            })
-            ->select(
-                'orders.id',
-                'orders.user_id',
-                'orders.order_number',
-                'orders.total_amount',
-                'orders.status',
-                'orders.payment_status',
-                'orders.created_at',
-                'users.id as uid',
-                'users.name as uname',
-                'users.email as uemail'
-            )
-            ->orderByDesc('orders.created_at')
-            ->limit(5)
-            ->get()
-            ->map(fn($o) => [
-                'id'            => $o->id,
-                'user_id'       => $o->user_id,
-                'order_number'  => $o->order_number,
-                'total_amount'  => round((float)$o->total_amount, 3),
-                'status'        => $o->status,
-                'payment_status'=> $o->payment_status,
-                'created_at'    => $o->created_at,
-                'user'          => ['id' => $o->uid, 'name' => $o->uname, 'email' => $o->uemail],
-            ]);
+    /**
+     * GET /api/seller/products/stats
+     */
+    public function stats(Request $request)
+    {
+        $sellerId = $request->user()->id;
 
         return response()->json([
             'success' => true,
             'data'    => [
-                'summary' => [
-                    'total_revenue'              => round((float)$totalRevenue, 3),
-                    'total_orders'               => $totalOrders,
-                    'pending_orders'             => $pendingOrders,
-                    'total_products'             => $totalProducts,
-                    'active_products'            => $activeProducts,
-                    'pending_product_approvals'  => $pendingApprovals,
-                    'revenue_this_month'         => round((float)$revenueThisMonth, 3),
-                    'revenue_last_month'         => round((float)$revenueLastMonth, 3),
-                    'revenue_growth'             => round((float)$revenueGrowth, 2),
-                ],
-                'charts'                     => ['monthly_revenue' => $monthlyRevenue],
-                'order_status_distribution'  => $statusDist,
-                'top_clients'                => $topClients,
-                'top_wilayas'                => $topWilayas,
-                'top_products'               => $topProducts,   // ← NEW
-                'recent_orders'              => $recentOrders,
+                'total'        => Product::where('seller_id', $sellerId)->count(),
+                'active'       => Product::where('seller_id', $sellerId)->where('is_active', true)->count(),
+                'pending'      => Product::where('seller_id', $sellerId)->where('is_approved', false)->count(),
+                'approved'     => Product::where('seller_id', $sellerId)->where('is_approved', true)->count(),
+                'out_of_stock' => Product::where('seller_id', $sellerId)->where('stock', 0)->count(),
             ],
         ]);
+    }
+
+    /**
+     * GET /api/seller/products/{id}
+     */
+    public function show(Request $request, $id)
+    {
+        $product = Product::where('seller_id', $request->user()->id)
+            ->with(['category', 'images'])
+            ->findOrFail($id);
+
+        return response()->json(['success' => true, 'data' => $product]);
+    }
+
+    /**
+     * POST /api/seller/products
+     */
+    public function store(Request $request)
+    {
+        $seller = $request->user();
+
+        $validated = $request->validate([
+            'name'              => 'required|string|max:255',
+            'description'       => 'nullable|string|max:5000',
+            'short_description' => 'nullable|string|max:500',
+            'price'             => 'required|numeric|min:0',
+            'stock'             => 'required|integer|min:0',
+            'category_id'       => 'required|integer|exists:categories,id',
+            'sku'               => 'nullable|string|max:100',
+            'slug'              => 'nullable|string|max:255',
+            'is_active'         => 'boolean',
+            'images'            => 'nullable|array|max:10',
+            'images.*'          => 'image|mimes:jpg,jpeg,png,webp|max:4096',
+        ]);
+
+        $product = Product::create([
+            'seller_id'         => $seller->id,
+            'category_id'       => $validated['category_id'],
+            'name'              => $validated['name'],
+            'description'       => isset($validated['description']) ? $validated['description'] : null,
+            'short_description' => isset($validated['short_description']) ? $validated['short_description'] : null,
+            'price'             => $validated['price'],
+            'stock'             => $validated['stock'],
+            'sku'               => isset($validated['sku']) ? $validated['sku'] : null,
+            'slug'              => isset($validated['slug']) ? $validated['slug'] : \Str::slug($validated['name']) . '-' . uniqid(),
+            'is_active'         => isset($validated['is_active']) ? $validated['is_active'] : true,
+            'is_approved'       => false,
+        ]);
+
+        if ($request->hasFile('images')) {
+            foreach ($request->file('images') as $index => $file) {
+                $path = $file->store('products', 'public');
+                $product->images()->create([
+                    'image_path' => $path,
+                    'is_primary' => $index === 0,
+                ]);
+            }
+        }
+
+        // ◄ NOTIFICATION — Notify all admins
+        Notification::send(
+            Admin::getAllActive(),
+            new ProductActionNotification(
+                'created',
+                $product->id,
+                $product->name,
+                $seller->name,
+                $seller->id
+            )
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Product created and pending approval.',
+            'data'    => $product->load(['category', 'images']),
+        ], 201);
+    }
+
+    /**
+     * PUT /api/seller/products/{id}
+     */
+    public function update(Request $request, $id)
+    {
+        $seller  = $request->user();
+        $product = Product::where('seller_id', $seller->id)->findOrFail($id);
+
+        $validated = $request->validate([
+            'name'               => 'sometimes|required|string|max:255',
+            'description'        => 'nullable|string|max:5000',
+            'short_description'  => 'nullable|string|max:500',
+            'price'              => 'sometimes|required|numeric|min:0',
+            'stock'              => 'sometimes|required|integer|min:0',
+            'category_id'        => 'sometimes|required|integer|exists:categories,id',
+            'sku'                => 'nullable|string|max:100',
+            'is_active'          => 'boolean',
+            'images'             => 'nullable|array|max:10',
+            'images.*'           => 'image|mimes:jpg,jpeg,png,webp|max:4096',
+            'delete_image_ids'   => 'nullable|array',
+            'delete_image_ids.*' => 'integer',
+        ]);
+
+        $product->update($validated);
+
+        if ($request->hasFile('images')) {
+            foreach ($request->file('images') as $file) {
+                $path = $file->store('products', 'public');
+                $product->images()->create(['image_path' => $path, 'is_primary' => false]);
+            }
+        }
+
+        if (!empty($validated['delete_image_ids'])) {
+            $product->images()->whereIn('id', $validated['delete_image_ids'])->delete();
+        }
+
+        // ◄ NOTIFICATION — Notify all admins
+        Notification::send(
+            Admin::getAllActive(),
+            new ProductActionNotification(
+                'updated',
+                $product->id,
+                $product->name,
+                $seller->name,
+                $seller->id
+            )
+        );
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Product updated.',
+            'data'    => $product->fresh()->load(['category', 'images']),
+        ]);
+    }
+
+    /**
+     * DELETE /api/seller/products/{id}
+     */
+    public function destroy(Request $request, $id)
+    {
+        $seller      = $request->user();
+        $product     = Product::where('seller_id', $seller->id)->findOrFail($id);
+        $productId   = $product->id;
+        $productName = $product->name;
+
+        $product->delete();
+
+        // ◄ NOTIFICATION — Notify all admins
+        Notification::send(
+            Admin::getAllActive(),
+            new ProductActionNotification(
+                'deleted',
+                $productId,
+                $productName,
+                $seller->name,
+                $seller->id
+            )
+        );
+
+        return response()->json(['success' => true, 'message' => 'Product deleted.']);
     }
 }

@@ -1,16 +1,19 @@
 <?php
+// app/Models/Admin.php
+// REPLACE your existing Admin model with this
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
 class Admin extends Authenticatable
 {
-    use HasApiTokens, Notifiable;
+    use HasFactory, Notifiable, HasApiTokens;
 
-    protected $guard = 'admin';
+    protected $table = 'admins';
 
     protected $fillable = [
         'name',
@@ -18,26 +21,20 @@ class Admin extends Authenticatable
         'password',
         'role',
         'is_active',
-        'last_login_at',
     ];
 
-    protected $hidden = [
-        'password',
-        'remember_token',
-    ];
+    protected $hidden = ['password', 'remember_token'];
 
     protected $casts = [
-        'is_active'     => 'boolean',
-        'last_login_at' => 'datetime',
+        'email_verified_at' => 'datetime',
+        'is_active'         => 'boolean',
     ];
 
-    public function isSuperAdmin(): bool
+    /**
+     * Returns all active admins — used when broadcasting to every admin.
+     */
+    public static function getAllActive()
     {
-        return $this->role === 'super_admin';
-    }
-
-    public function isAdmin(): bool
-    {
-        return in_array($this->role, ['super_admin', 'admin']);
+        return static::where('is_active', true)->get();
     }
 }

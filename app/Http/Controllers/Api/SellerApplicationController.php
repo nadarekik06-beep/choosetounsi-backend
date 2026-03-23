@@ -1,17 +1,21 @@
 <?php
+// app/Http/Controllers/Api/SellerApplicationController.php
 
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Admin;
 use App\Models\SellerApplication;
+use App\Notifications\NewSellerApplicationNotification;
+use App\Notifications\SellerApplicationReviewedNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Notification;
 
 class SellerApplicationController extends Controller
 {
     /**
      * POST /api/seller-applications
-     * Submit a new seller application (called by logged-in frontend user).
      */
     public function store(Request $request)
     {
@@ -68,11 +72,22 @@ class SellerApplicationController extends Controller
             'city'                 => $validated['city'],
             'profile_picture'      => $profilePicturePath,
             'sample_images'        => $sampleImagePaths ?: null,
-            'facebook_url'         => $validated['facebook_url'] ?? null,
-            'instagram_url'        => $validated['instagram_url'] ?? null,
-            'website_url'          => $validated['website_url'] ?? null,
+            'facebook_url'         => isset($validated['facebook_url']) ? $validated['facebook_url'] : null,
+            'instagram_url'        => isset($validated['instagram_url']) ? $validated['instagram_url'] : null,
+            'website_url'          => isset($validated['website_url']) ? $validated['website_url'] : null,
             'status'               => 'pending',
         ]);
+
+        // Notify all admins
+        Notification::send(
+            Admin::getAllActive(),
+            new NewSellerApplicationNotification(
+                $application->id,
+                $validated['full_name'],
+                $validated['business_name'],
+                $user->id
+            )
+        );
 
         return response()->json([
             'success' => true,
@@ -86,19 +101,13 @@ class SellerApplicationController extends Controller
      */
     public function status()
     {
-        $user = Auth::user();
+        $user        = Auth::user();
+        $application = SellerApplication::where('user_id', $user->id)->latest()->first();
 
-        $application = SellerApplication::where('user_id', $user->id)
-            ->latest()
-            ->first();
-
-        return response()->json([
-            'success' => true,
-            'data'    => $application,
-        ]);
+        return response()->json(['success' => true, 'data' => $application]);
     }
 
-    // ── Admin methods ─────────────────────────────────────────────────
+    // ── Admin methods ──────────────────────────────────────────────
 
     /**
      * GET /api/admin/seller-applications
@@ -113,19 +122,17 @@ class SellerApplicationController extends Controller
 
         if ($search = $request->query('search')) {
             $query->where(function ($q) use ($search) {
-                $q->where('full_name', 'like', "%{$search}%")
-                  ->orWhere('business_name', 'like', "%{$search}%")
-                  ->orWhereHas('user', fn($u) =>
-                      $u->where('email', 'like', "%{$search}%")
-                  );
+                $q->where('full_name', 'like', '%' . $search . '%')
+                  ->orWhere('business_name', 'like', '%' . $search . '%')
+                  ->orWhereHas('user', function ($u) use ($search) {
+                      $u->where('email', 'like', '%' . $search . '%');
+                  });
             });
         }
 
-        $applications = $query->paginate($request->query('per_page', 15));
-
         return response()->json([
             'success' => true,
-            'data'    => $applications,
+            'data'    => $query->paginate($request->query('per_page', 15)),
         ]);
     }
 
@@ -136,10 +143,7 @@ class SellerApplicationController extends Controller
     {
         $application->load('user');
 
-        return response()->json([
-            'success' => true,
-            'data'    => $application,
-        ]);
+        return response()->json(['success' => true, 'data' => $application]);
     }
 
     /**
@@ -158,6 +162,14 @@ class SellerApplicationController extends Controller
             'is_active'   => true,
         ]);
 
+        // Notify the applicant
+        $application->user->notify(
+            new SellerApplicationReviewedNotification(
+                'approved',
+                $application->business_name
+            )
+        );
+
         return response()->json([
             'success' => true,
             'message' => 'Application approved. User is now a seller.',
@@ -169,9 +181,7 @@ class SellerApplicationController extends Controller
      */
     public function reject(Request $request, SellerApplication $application)
     {
-        $request->validate([
-            'rejection_reason' => 'nullable|string|max:1000',
-        ]);
+        $request->validate(['rejection_reason' => 'nullable|string|max:1000']);
 
         $application->update([
             'status'           => 'rejected',
@@ -179,9 +189,15 @@ class SellerApplicationController extends Controller
             'reviewed_at'      => now(),
         ]);
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Application rejected.',
-        ]);
+        // Notify the applicant
+        $application->user->notify(
+            new SellerApplicationReviewedNotification(
+                'rejected',
+                $application->business_name,
+                $request->rejection_reason
+            )
+        );
+
+        return response()->json(['success' => true, 'message' => 'Application rejected.']);
     }
 }
