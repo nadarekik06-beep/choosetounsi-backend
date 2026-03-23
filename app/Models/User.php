@@ -18,8 +18,8 @@ class User extends Authenticatable
         'role',
         'is_active',
         'is_approved',
-        'google_id',   // Google OAuth ID
-        'avatar',      // Google profile photo URL
+        'google_id',
+        'avatar',
     ];
 
     protected $hidden = [
@@ -34,13 +34,27 @@ class User extends Authenticatable
     ];
 
     /* ── Relationships ── */
-    public function sellerProfile()   { return $this->hasOne(SellerProfile::class); }
-    public function products()        { return $this->hasMany(Product::class, 'seller_id'); }
-    public function orders()          { return $this->hasMany(Order::class); }
-    public function sellerApplication()  { return $this->hasOne(SellerApplication::class)->latest(); }
-    public function sellerApplications() { return $this->hasMany(SellerApplication::class); }
+
+    public function sellerProfile()       { return $this->hasOne(SellerProfile::class); }
+    public function products()            { return $this->hasMany(Product::class, 'seller_id'); }
+    public function orders()              { return $this->hasMany(Order::class); }
+    public function sellerApplication()   { return $this->hasOne(SellerApplication::class)->latest(); }
+    public function sellerApplications()  { return $this->hasMany(SellerApplication::class); }
+
+    /** Cart items for this user */
+    public function cartItems()
+    {
+        return $this->hasMany(Cart::class);
+    }
+
+    /** Favorited products for this user */
+    public function favorites()
+    {
+        return $this->hasMany(Favorite::class);
+    }
 
     /* ── Role helpers ── */
+
     public function isAdmin()          { return $this->role === 'admin'; }
     public function isSeller()         { return $this->role === 'seller'; }
     public function isClient()         { return $this->role === 'client'; }
@@ -48,6 +62,7 @@ class User extends Authenticatable
     public function isActiveUser()     { return $this->is_active; }
 
     /* ── Scopes ── */
+
     public function scopeActive($q)          { return $q->where('is_active', true); }
     public function scopeSellers($q)         { return $q->where('role', 'seller'); }
     public function scopeApprovedSellers($q) { return $q->where('role', 'seller')->where('is_approved', true); }

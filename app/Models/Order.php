@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Str;
 
 class Order extends Model
 {
@@ -16,51 +17,64 @@ class Order extends Model
         'status',
         'payment_status',
         'payment_method',
+        'wilaya',
+        'address',
+        'phone',
+        'notes',
         'woocommerce_order_id',
     ];
 
     protected $casts = [
-        'total_amount' => 'decimal:2',
+        'total_amount' => 'decimal:3',
     ];
 
-    // Relationships
+    /* ── Boot: auto-generate order_number ── */
+
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::creating(function ($order) {
+            if (empty($order->order_number)) {
+                $order->order_number = 'CT-' . strtoupper(Str::random(8));
+            }
+        });
+    }
+
+    /* ── Relationships ── */
+
     public function user()
     {
         return $this->belongsTo(User::class);
     }
 
-    // Scopes
-    public function scopeCompleted($query)
+    /** Alias kept for backward-compat with SellerDashboardController */
+    public function customer()
     {
-        return $query->where('status', 'completed');
+        return $this->belongsTo(User::class, 'user_id');
     }
 
-    public function scopePending($query)
+    public function items()
     {
-        return $query->where('status', 'pending');
+        return $this->hasMany(OrderItem::class);
     }
 
-    public function scopePaid($query)
+    public function orderItems()
     {
-        return $query->where('payment_status', 'paid');
+        return $this->hasMany(OrderItem::class);
     }
+
+    /* ── Scopes ── */
+
+    public function scopeCompleted($query)  { return $query->where('status', 'completed'); }
+    public function scopePending($query)    { return $query->where('status', 'pending'); }
+    public function scopeDelivered($query)  { return $query->where('status', 'delivered'); }
+    public function scopePaid($query)       { return $query->where('payment_status', 'paid'); }
 
     public function scopeFromPeriod($query, $startDate, $endDate = null)
     {
         $query->whereDate('created_at', '>=', $startDate);
-        if ($endDate) {
-            $query->whereDate('created_at', '<=', $endDate);
-        }
+        if ($endDate) $query->whereDate('created_at', '<=', $endDate);
         return $query;
     }
-    public function items() { return $this->hasMany(OrderItem::class); }
-    public function customer()
-{
-    return $this->belongsTo(User::class, 'user_id');
-}
-
-public function orderItems()
-{
-    return $this->hasMany(OrderItem::class);
-}
 }
