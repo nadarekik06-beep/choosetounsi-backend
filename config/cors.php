@@ -2,8 +2,13 @@
 
 return [
 
-    'paths' => ['api/*', 'sanctum/csrf-cookie', 'auth/*'],
-
+    'paths' => [
+        'api/*',
+        'sanctum/csrf-cookie',
+        'auth/*',
+        'admin/*',        // ← Add this if routes are /admin/*
+        'storage/*',      // ← Add this for image access
+    ],
 
     'allowed_methods' => ['*'],
 

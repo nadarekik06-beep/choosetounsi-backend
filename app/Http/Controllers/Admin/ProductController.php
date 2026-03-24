@@ -5,6 +5,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Models\Category;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 
 class ProductController extends Controller
 {
@@ -35,6 +36,12 @@ class ProductController extends Controller
 
         $products->getCollection()->transform(function ($product) {
             $product->status = $this->deriveStatus($product);
+
+            // ✅ FIX: Generate accessible public URL for the primary image
+            $product->primary_image_url = $product->primaryImage
+                ? Storage::disk('public')->url($product->primaryImage->image_path)
+                : null;
+
             return $product;
         });
 
@@ -47,9 +54,20 @@ class ProductController extends Controller
             'seller:id,name,email',
             'category:id,name',
             'images',
+            'primaryImage',
         ])->findOrFail($id);
 
         $product->status = $this->deriveStatus($product);
+
+        // ✅ FIX: Generate accessible public URL for the primary image
+        $product->primary_image_url = $product->primaryImage
+            ? Storage::disk('public')->url($product->primaryImage->image_path)
+            : null;
+
+        // ✅ FIX: Add a full URL to every image in the images array
+        $product->images->each(function ($image) {
+            $image->url = Storage::disk('public')->url($image->image_path);
+        });
 
         return response()->json(['success' => true, 'data' => $product]);
     }
@@ -75,8 +93,17 @@ class ProductController extends Controller
         ]);
 
         $product->update($validated);
-        $product->load(['seller:id,name,email', 'category:id,name', 'images']);
+        $product->load(['seller:id,name,email', 'category:id,name', 'images', 'primaryImage']);
         $product->status = $this->deriveStatus($product);
+
+        // ✅ FIX: Return image URLs after update too
+        $product->primary_image_url = $product->primaryImage
+            ? Storage::disk('public')->url($product->primaryImage->image_path)
+            : null;
+
+        $product->images->each(function ($image) {
+            $image->url = Storage::disk('public')->url($image->image_path);
+        });
 
         return response()->json([
             'success' => true,
