@@ -47,6 +47,13 @@ class User extends Authenticatable
         return $this->hasMany(Cart::class);
     }
 
+    public static function getAllAdmins()
+{
+    return static::where('role', 'admin')
+                 ->where('is_active', true)
+                 ->get();
+}
+
     /** Favorited products for this user */
     public function favorites()
     {

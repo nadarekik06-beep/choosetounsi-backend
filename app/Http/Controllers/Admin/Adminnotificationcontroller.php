@@ -1,6 +1,5 @@
 <?php
 // app/Http/Controllers/Admin/NotificationController.php
-// Used by the ADMIN panel  (guard: admin)
 
 namespace App\Http\Controllers\Admin;
 
@@ -14,20 +13,23 @@ class NotificationController extends Controller
      */
     public function index(Request $request)
     {
-        $admin         = $request->user();
+        $admin = $request->user();
+
         $notifications = $admin->notifications()
             ->orderByDesc('created_at')
             ->paginate((int) $request->query('per_page', 20));
 
         return response()->json([
             'success' => true,
-            'data'    => $notifications->map(fn ($n) => [
-                'id'         => $n->id,
-                'data'       => $n->data,
-                'is_read'    => ! is_null($n->read_at),
-                'read_at'    => $n->read_at,
-                'created_at' => $n->created_at,
-            ]),
+            'data'    => $notifications->map(function ($n) {
+                return [
+                    'id'         => $n->id,
+                    'data'       => $n->data,
+                    'is_read'    => !is_null($n->read_at),
+                    'read_at'    => $n->read_at,
+                    'created_at' => $n->created_at,
+                ];
+            }),
             'meta' => [
                 'current_page' => $notifications->currentPage(),
                 'last_page'    => $notifications->lastPage(),
@@ -50,7 +52,7 @@ class NotificationController extends Controller
     /**
      * PATCH /api/admin/notifications/{id}/read
      */
-    public function markRead(Request $request, string $id)
+    public function markRead(Request $request, $id)
     {
         $notification = $request->user()->notifications()->findOrFail($id);
         $notification->markAsRead();
