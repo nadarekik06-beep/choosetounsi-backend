@@ -11,58 +11,65 @@ use App\Http\Controllers\Api\Client\CartController;
 use App\Http\Controllers\Api\Client\FavoriteController;
 use App\Http\Controllers\Api\Client\CheckoutController;
 use App\Http\Controllers\Api\Seller\SellerDashboardController;
-use App\Http\Controllers\Api\Seller\SellerProductController;
+use App\Http\Controllers\Api\Seller\ProductController as SellerProductController;
 use App\Http\Controllers\Api\Seller\SellerOrderController;
 use App\Http\Controllers\Admin\SellerController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Admin\NotificationController as AdminNotificationController;
 
-// ═══════════════════════════════════════════════════════════════════════
-// PUBLIC ROUTES
-// ═══════════════════════════════════════════════════════════════════════
+/*
+|--------------------------------------------------------------------------
+| PUBLIC ROUTES
+|--------------------------------------------------------------------------
+*/
 
 Route::post('/auth/login',    [AuthController::class, 'login']);
 Route::post('/auth/register', [AuthController::class, 'register']);
 
+// PRODUCTS (PUBLIC)
 Route::get('/products',          [ProductController::class, 'index']);
 Route::get('/products/featured', [ProductController::class, 'featured']);
 Route::get('/products/{slug}',   [ProductController::class, 'show']);
 
-Route::get('/categories',                [CategoryController::class, 'index']);
-Route::get('/categories/with-products',  [CategoryController::class, 'withProducts']);
-Route::get('/categories/{slug}',         [CategoryController::class, 'show']);
-Route::get('/categories/{slug}/products',[CategoryController::class, 'products']);
+// CATEGORIES
+Route::get('/categories',                 [CategoryController::class, 'index']);
+Route::get('/categories/with-products',   [CategoryController::class, 'withProducts']);
+Route::get('/categories/{slug}',          [CategoryController::class, 'show']);
+Route::get('/categories/{slug}/products', [CategoryController::class, 'products']);
 
+// GOOGLE AUTH
 Route::get('/auth/google/redirect', [AuthController::class, 'googleRedirect']);
 Route::get('/auth/google/callback', [AuthController::class, 'googleCallback']);
 
-// ═══════════════════════════════════════════════════════════════════════
-// AUTHENTICATED USER ROUTES
-// ═══════════════════════════════════════════════════════════════════════
+/*
+|--------------------------------------------------------------------------
+| AUTHENTICATED USER ROUTES
+|--------------------------------------------------------------------------
+*/
 
 Route::middleware('auth:sanctum')->group(function () {
 
-    // Auth
+    // AUTH
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/auth/user',    [AuthController::class, 'user']);
 
-    // Profile
+    // PROFILE
     Route::get('/profile',                 [ProfileApiController::class, 'show']);
     Route::put('/profile',                 [ProfileApiController::class, 'update']);
     Route::put('/profile/password',        [ProfileApiController::class, 'updatePassword']);
     Route::post('/profile/request-seller', [ProfileApiController::class, 'requestSellerRole']);
 
-    // Seller Applications
+    // SELLER APPLICATIONS
     Route::post('/seller-applications',       [SellerApplicationController::class, 'store']);
     Route::get('/seller-applications/status', [SellerApplicationController::class, 'status']);
 
     // CART
     Route::prefix('cart')->group(function () {
-        Route::get('/',       [CartController::class, 'index']);
-        Route::post('/',      [CartController::class, 'store']);
-        Route::put('/{id}',   [CartController::class, 'update']);
-        Route::delete('/',    [CartController::class, 'clear']);
-        Route::delete('/{id}',[CartController::class, 'destroy']);
+        Route::get('/',        [CartController::class, 'index']);
+        Route::post('/',       [CartController::class, 'store']);
+        Route::put('/{id}',    [CartController::class, 'update']);
+        Route::delete('/',     [CartController::class, 'clear']);
+        Route::delete('/{id}', [CartController::class, 'destroy']);
     });
 
     // FAVORITES
@@ -76,7 +83,11 @@ Route::middleware('auth:sanctum')->group(function () {
     // CHECKOUT
     Route::post('/checkout', [CheckoutController::class, 'store']);
 
-    // SELLER
+    /*
+    |--------------------------------------------------------------------------
+    | SELLER ROUTES
+    |--------------------------------------------------------------------------
+    */
     Route::prefix('seller')->group(function () {
 
         Route::get('/dashboard', [SellerDashboardController::class, 'index']);
@@ -85,13 +96,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/products',       [SellerProductController::class, 'index']);
         Route::post('/products',      [SellerProductController::class, 'store']);
 
-        Route::delete('/products/{id}/images/{imageId}',        [SellerProductController::class, 'destroyImage']);
-        Route::patch('/products/{id}/images/{imageId}/primary', [SellerProductController::class, 'setPrimaryImage']);
-
         Route::get('/products/{id}',    [SellerProductController::class, 'show']);
-        Route::post('/products/{id}',   [SellerProductController::class, 'update']);
         Route::put('/products/{id}',    [SellerProductController::class, 'update']);
         Route::delete('/products/{id}', [SellerProductController::class, 'destroy']);
+
+        Route::delete('/products/{id}/images/{imageId}',        [SellerProductController::class, 'destroyImage']);
+        Route::patch('/products/{id}/images/{imageId}/primary', [SellerProductController::class, 'setPrimaryImage']);
 
         Route::get('/orders/stats',         [SellerOrderController::class, 'stats']);
         Route::get('/orders',               [SellerOrderController::class, 'index']);
@@ -99,14 +109,22 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/orders/{id}/status', [SellerOrderController::class, 'updateStatus']);
     });
 
-    // CLIENT
+    /*
+    |--------------------------------------------------------------------------
+    | CLIENT ROUTES
+    |--------------------------------------------------------------------------
+    */
     Route::prefix('client')->group(function () {
         Route::get('/statistics',     [ClientOrderApiController::class, 'statistics']);
         Route::get('/orders',         [ClientOrderApiController::class, 'index']);
         Route::get('/orders/{order}', [ClientOrderApiController::class, 'show']);
     });
 
-    // ADMIN (categories)
+    /*
+    |--------------------------------------------------------------------------
+    | ADMIN (CATEGORIES)
+    |--------------------------------------------------------------------------
+    */
     Route::prefix('admin')->middleware('role:admin')->group(function () {
         Route::get('/categories',               [CategoryController::class, 'adminIndex']);
         Route::post('/categories',              [CategoryController::class, 'store']);
@@ -123,27 +141,29 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 });
 
-// ═══════════════════════════════════════════════════════════════════════
-// ADMIN PANEL
-// ═══════════════════════════════════════════════════════════════════════
+/*
+|--------------------------------------------------------------------------
+| ADMIN PANEL
+|--------------------------------------------------------------------------
+*/
 
 Route::prefix('admin')->middleware(['auth:sanctum'])->group(function () {
 
-    Route::put('/sellers/{id}',  [SellerController::class, 'update']);
     Route::put('/products/{id}', [ProductController::class, 'update']);
-    Route::delete('/sellers/{id}',     [SellerController::class, 'destroy']);
-    Route::patch('/sellers/{id}/role', [SellerController::class, 'changeRole']);
 
     Route::get('/sellers',                [SellerController::class, 'index']);
     Route::get('/sellers/{id}',           [SellerController::class, 'show']);
+    Route::put('/sellers/{id}',           [SellerController::class, 'update']);
+    Route::delete('/sellers/{id}',        [SellerController::class, 'destroy']);
+    Route::patch('/sellers/{id}/role',    [SellerController::class, 'changeRole']);
     Route::patch('/sellers/{id}/approve', [SellerController::class, 'approve']);
     Route::patch('/sellers/{id}/reject',  [SellerController::class, 'reject']);
     Route::patch('/sellers/{id}/suspend', [SellerController::class, 'suspend']);
 
-    Route::get('/seller-applications',        [SellerApplicationController::class, 'index']);
-    Route::get('/seller-applications/{id}',   [SellerApplicationController::class, 'show']);
-    Route::post('/seller-applications/{id}/approve', [SellerApplicationController::class, 'approve']);
-    Route::post('/seller-applications/{id}/reject',  [SellerApplicationController::class, 'reject']);
+    Route::get('/seller-applications',              [SellerApplicationController::class, 'index']);
+    Route::get('/seller-applications/{id}',         [SellerApplicationController::class, 'show']);
+    Route::post('/seller-applications/{id}/approve',[SellerApplicationController::class, 'approve']);
+    Route::post('/seller-applications/{id}/reject', [SellerApplicationController::class, 'reject']);
 });
 
 // ADMIN NOTIFICATIONS
