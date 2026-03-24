@@ -1,10 +1,5 @@
 <?php
 // app/Http/Controllers/Admin/ProductController.php
-// FULL REPLACEMENT
-// approve()  → notifies seller ✓
-// reject()   → notifies seller ✓
-// update()   → notifies seller ✓  (NEW)
-// destroy()  → notifies seller ✓  (NEW)
 
 namespace App\Http\Controllers\Admin;
 
@@ -13,6 +8,7 @@ use App\Models\Product;
 use App\Notifications\ProductReviewedNotification;
 use App\Notifications\ProductActionNotification;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 
 class ProductController extends Controller
 {
@@ -43,6 +39,11 @@ class ProductController extends Controller
 
         $products->getCollection()->transform(function ($product) {
             $product->status = $this->deriveStatus($product);
+
+            $product->primary_image_url = $product->primaryImage
+                ? Storage::disk('public')->url($product->primaryImage->image_path)
+                : null;
+
             return $product;
         });
 
@@ -55,17 +56,22 @@ class ProductController extends Controller
             'seller:id,name,email',
             'category:id,name',
             'images',
+            'primaryImage',
         ])->findOrFail($id);
 
         $product->status = $this->deriveStatus($product);
 
+        $product->primary_image_url = $product->primaryImage
+            ? Storage::disk('public')->url($product->primaryImage->image_path)
+            : null;
+
+        $product->images->each(function ($image) {
+            $image->url = Storage::disk('public')->url($image->image_path);
+        });
+
         return response()->json(['success' => true, 'data' => $product]);
     }
 
-    /**
-     * PUT /api/admin/products/{id}
-     * Admin edits product details — notifies the seller
-     */
     public function update(Request $request, $id)
     {
         $product = Product::with('seller')->findOrFail($id);
@@ -84,7 +90,7 @@ class ProductController extends Controller
 
         $product->update($validated);
 
-        // Notify the seller that admin edited their product
+        // ✅ Notify the seller that admin edited their product
         if ($product->seller) {
             $product->seller->notify(
                 new ProductActionNotification(
@@ -97,8 +103,18 @@ class ProductController extends Controller
             );
         }
 
-        $product->load(['seller:id,name,email', 'category:id,name', 'images']);
+        // ✅ Load relations including primary image
+        $product->load(['seller:id,name,email', 'category:id,name', 'images', 'primaryImage']);
+
         $product->status = $this->deriveStatus($product);
+
+        $product->primary_image_url = $product->primaryImage
+            ? Storage::disk('public')->url($product->primaryImage->image_path)
+            : null;
+
+        $product->images->each(function ($image) {
+            $image->url = Storage::disk('public')->url($image->image_path);
+        });
 
         return response()->json([
             'success' => true,
@@ -107,10 +123,6 @@ class ProductController extends Controller
         ]);
     }
 
-    /**
-     * PATCH /api/admin/products/{id}/approve
-     * Notifies the seller
-     */
     public function approve($id)
     {
         $product = Product::with('seller')->findOrFail($id);
@@ -129,10 +141,6 @@ class ProductController extends Controller
         return response()->json(['success' => true, 'message' => 'Product approved.']);
     }
 
-    /**
-     * PATCH /api/admin/products/{id}/reject
-     * Notifies the seller
-     */
     public function reject(Request $request, $id)
     {
         $request->validate(['reason' => 'nullable|string|max:500']);
@@ -154,20 +162,14 @@ class ProductController extends Controller
         return response()->json(['success' => true, 'message' => 'Product rejected.']);
     }
 
-    /**
-     * PATCH /api/admin/products/{id}/disable
-     */
     public function disable($id)
     {
         $product = Product::findOrFail($id);
         $product->update(['is_active' => false]);
+
         return response()->json(['success' => true, 'message' => 'Product disabled.']);
     }
 
-    /**
-     * DELETE /api/admin/products/{id}
-     * Notifies the seller
-     */
     public function destroy($id)
     {
         $product = Product::with('seller')->findOrFail($id);
