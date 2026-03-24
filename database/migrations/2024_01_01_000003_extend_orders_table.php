@@ -15,7 +15,7 @@ return new class extends Migration
         Schema::table('orders', function (Blueprint $table) {
             // Delivery address fields
             if (!Schema::hasColumn('orders', 'address')) {
-                $table->text('address')->nullable()->after('wilaya');
+                $table->text('address')->nullable()->after('id');
             }
             if (!Schema::hasColumn('orders', 'phone')) {
                 $table->string('phone', 20)->nullable()->after('address');
