@@ -2,7 +2,6 @@
 
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\AuthController;
-use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\SellerApplicationController;
 use App\Http\Controllers\Api\Client\ClientOrderApiController;
@@ -11,11 +10,13 @@ use App\Http\Controllers\Api\Client\CartController;
 use App\Http\Controllers\Api\Client\FavoriteController;
 use App\Http\Controllers\Api\Client\CheckoutController;
 use App\Http\Controllers\Api\Seller\SellerDashboardController;
-use App\Http\Controllers\Api\Seller\ProductController as SellerProductController;
+use App\Http\Controllers\Api\Seller\SellerProductController;
 use App\Http\Controllers\Api\Seller\SellerOrderController;
 use App\Http\Controllers\Admin\SellerController;
+use App\Http\Controllers\Admin\ProductController as AdminProductController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Admin\NotificationController as AdminNotificationController;
+use App\Http\Controllers\Admin\UserController as AdminUserController;
 
 /*
 |--------------------------------------------------------------------------
@@ -26,24 +27,22 @@ use App\Http\Controllers\Admin\NotificationController as AdminNotificationContro
 Route::post('/auth/login',    [AuthController::class, 'login']);
 Route::post('/auth/register', [AuthController::class, 'register']);
 
-// PRODUCTS (PUBLIC)
-Route::get('/products',          [ProductController::class, 'index']);
-Route::get('/products/featured', [ProductController::class, 'featured']);
-Route::get('/products/{slug}',   [ProductController::class, 'show']);
+// Public product routes — uses the public Api\ProductController
+Route::get('/products',          [\App\Http\Controllers\Api\ProductController::class, 'index']);
+Route::get('/products/featured', [\App\Http\Controllers\Api\ProductController::class, 'featured']);
+Route::get('/products/{slug}',   [\App\Http\Controllers\Api\ProductController::class, 'show']);
 
-// CATEGORIES
 Route::get('/categories',                 [CategoryController::class, 'index']);
 Route::get('/categories/with-products',   [CategoryController::class, 'withProducts']);
 Route::get('/categories/{slug}',          [CategoryController::class, 'show']);
 Route::get('/categories/{slug}/products', [CategoryController::class, 'products']);
 
-// GOOGLE AUTH
 Route::get('/auth/google/redirect', [AuthController::class, 'googleRedirect']);
 Route::get('/auth/google/callback', [AuthController::class, 'googleCallback']);
 
 /*
 |--------------------------------------------------------------------------
-| AUTHENTICATED USER ROUTES
+| AUTHENTICATED ROUTES (any logged-in user)
 |--------------------------------------------------------------------------
 */
 
@@ -59,7 +58,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/profile/password',        [ProfileApiController::class, 'updatePassword']);
     Route::post('/profile/request-seller', [ProfileApiController::class, 'requestSellerRole']);
 
-    // SELLER APPLICATIONS
+    // SELLER APPLICATIONS (submit + check status)
     Route::post('/seller-applications',       [SellerApplicationController::class, 'store']);
     Route::get('/seller-applications/status', [SellerApplicationController::class, 'status']);
 
@@ -83,6 +82,14 @@ Route::middleware('auth:sanctum')->group(function () {
     // CHECKOUT
     Route::post('/checkout', [CheckoutController::class, 'store']);
 
+    // ── SELLER NOTIFICATIONS (bell in seller dashboard) ───────────
+    Route::prefix('notifications')->group(function () {
+        Route::get('/',             [NotificationController::class, 'index']);
+        Route::get('/unread-count', [NotificationController::class, 'unreadCount']);
+        Route::patch('/read-all',   [NotificationController::class, 'markAllRead']);
+        Route::patch('/{id}/read',  [NotificationController::class, 'markRead']);
+    });
+
     /*
     |--------------------------------------------------------------------------
     | SELLER ROUTES
@@ -95,9 +102,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/products/stats', [SellerProductController::class, 'stats']);
         Route::get('/products',       [SellerProductController::class, 'index']);
         Route::post('/products',      [SellerProductController::class, 'store']);
-
-        Route::get('/products/{id}',    [SellerProductController::class, 'show']);
-        Route::put('/products/{id}',    [SellerProductController::class, 'update']);
+        Route::get('/products/{id}',  [SellerProductController::class, 'show']);
+        Route::put('/products/{id}',  [SellerProductController::class, 'update']);
         Route::delete('/products/{id}', [SellerProductController::class, 'destroy']);
 
         Route::delete('/products/{id}/images/{imageId}',        [SellerProductController::class, 'destroyImage']);
@@ -122,60 +128,57 @@ Route::middleware('auth:sanctum')->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | ADMIN (CATEGORIES)
+    | ADMIN ROUTES
+    | admin is in users table with role='admin', protected by role:admin middleware
     |--------------------------------------------------------------------------
     */
     Route::prefix('admin')->middleware('role:admin')->group(function () {
+
+        // Categories
         Route::get('/categories',               [CategoryController::class, 'adminIndex']);
         Route::post('/categories',              [CategoryController::class, 'store']);
         Route::put('/categories/{category}',    [CategoryController::class, 'update']);
         Route::delete('/categories/{category}', [CategoryController::class, 'destroy']);
+
+        // Users
+        Route::get('/users',              [\App\Http\Controllers\Admin\UserController::class, 'index']);
+        Route::get('/users/{id}',         [\App\Http\Controllers\Admin\UserController::class, 'show']);
+        Route::put('/users/{id}',         [\App\Http\Controllers\Admin\UserController::class, 'update']);
+        Route::patch('/users/{id}/ban',   [\App\Http\Controllers\Admin\UserController::class, 'ban']);
+        Route::patch('/users/{id}/unban', [\App\Http\Controllers\Admin\UserController::class, 'unban']);
+        Route::delete('/users/{id}',      [\App\Http\Controllers\Admin\UserController::class, 'destroy']);
+
+        // Sellers
+        Route::get('/sellers',                [SellerController::class, 'index']);
+        Route::get('/sellers/{id}',           [SellerController::class, 'show']);
+        Route::put('/sellers/{id}',           [SellerController::class, 'update']);
+        Route::delete('/sellers/{id}',        [SellerController::class, 'destroy']);
+        Route::patch('/sellers/{id}/role',    [SellerController::class, 'changeRole']);
+        Route::patch('/sellers/{id}/approve', [SellerController::class, 'approve']);
+        Route::patch('/sellers/{id}/reject',  [SellerController::class, 'reject']);
+        Route::patch('/sellers/{id}/suspend', [SellerController::class, 'suspend']);
+
+        // Seller applications
+        Route::get('/seller-applications',                        [SellerApplicationController::class, 'index']);
+        Route::get('/seller-applications/{id}',                   [SellerApplicationController::class, 'show']);
+        Route::post('/seller-applications/{application}/approve', [SellerApplicationController::class, 'approve']);
+        Route::post('/seller-applications/{application}/reject',  [SellerApplicationController::class, 'reject']);
+
+        // Products — ALL handled by Admin\ProductController
+        Route::get('/products',               [AdminProductController::class, 'index']);
+        Route::get('/products/{id}',          [AdminProductController::class, 'show']);
+        Route::put('/products/{id}',          [AdminProductController::class, 'update']);
+        Route::patch('/products/{id}/approve',[AdminProductController::class, 'approve']);  // ← notifies seller
+        Route::patch('/products/{id}/reject', [AdminProductController::class, 'reject']);   // ← notifies seller
+        Route::patch('/products/{id}/disable',[AdminProductController::class, 'disable']);
+        Route::delete('/products/{id}',       [AdminProductController::class, 'destroy']);
+
+        // ── ADMIN NOTIFICATIONS (bell in admin panel) ─────────────
+        Route::prefix('notifications')->group(function () {
+            Route::get('/',             [AdminNotificationController::class, 'index']);
+            Route::get('/unread-count', [AdminNotificationController::class, 'unreadCount']);
+            Route::patch('/read-all',   [AdminNotificationController::class, 'markAllRead']);
+            Route::patch('/{id}/read',  [AdminNotificationController::class, 'markRead']);
+        });
     });
-
-    // USER NOTIFICATIONS
-    Route::prefix('notifications')->group(function () {
-        Route::get('/',             [NotificationController::class, 'index']);
-        Route::get('/unread-count', [NotificationController::class, 'unreadCount']);
-        Route::patch('/read-all',   [NotificationController::class, 'markAllRead']);
-        Route::patch('/{id}/read',  [NotificationController::class, 'markRead']);
-    });
-});
-
-/*
-|--------------------------------------------------------------------------
-| ADMIN PANEL
-|--------------------------------------------------------------------------
-*/
-
-Route::prefix('admin')->middleware(['auth:sanctum'])->group(function () {
-
-    Route::put('/products/{id}', [ProductController::class, 'update']);
-
-    Route::get('/sellers',                [SellerController::class, 'index']);
-    Route::get('/sellers/{id}',           [SellerController::class, 'show']);
-    Route::put('/sellers/{id}',           [SellerController::class, 'update']);
-    Route::delete('/sellers/{id}',        [SellerController::class, 'destroy']);
-    Route::patch('/sellers/{id}/role',    [SellerController::class, 'changeRole']);
-    Route::patch('/sellers/{id}/approve', [SellerController::class, 'approve']);
-    Route::patch('/sellers/{id}/reject',  [SellerController::class, 'reject']);
-    Route::patch('/sellers/{id}/suspend', [SellerController::class, 'suspend']);
-
-    Route::get('/seller-applications',              [SellerApplicationController::class, 'index']);
-    Route::get('/seller-applications/{id}',         [SellerApplicationController::class, 'show']);
-    Route::post('/seller-applications/{id}/approve',[SellerApplicationController::class, 'approve']);
-    Route::post('/seller-applications/{id}/reject', [SellerApplicationController::class, 'reject']);
-});
-
-// ADMIN NOTIFICATIONS
-Route::middleware('auth:admin')->prefix('admin')->group(function () {
-
-    Route::prefix('notifications')->group(function () {
-        Route::get('/',             [AdminNotificationController::class, 'index']);
-        Route::get('/unread-count', [AdminNotificationController::class, 'unreadCount']);
-        Route::patch('/read-all',   [AdminNotificationController::class, 'markAllRead']);
-        Route::patch('/{id}/read',  [AdminNotificationController::class, 'markRead']);
-    });
-
-    Route::patch('products/{id}/approve', [\App\Http\Controllers\Admin\SellerController::class, 'approveProduct']);
-    Route::patch('products/{id}/reject',  [\App\Http\Controllers\Admin\SellerController::class, 'rejectProduct']);
 });

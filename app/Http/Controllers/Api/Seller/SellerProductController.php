@@ -1,23 +1,28 @@
 <?php
+// app/Http/Controllers/Api/Seller/SellerProductController.php
+// FULL REPLACEMENT — notifications added to store(), update(), destroy()
 
 namespace App\Http\Controllers\Api\Seller;
 
 use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Models\ProductImage;
+use App\Models\User;
+use App\Notifications\ProductActionNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class SellerProductController extends Controller
 {
-    private function sellerId(): int
+    private function sellerId()
     {
         return (int) auth()->id();
     }
 
-    // ── GET /api/seller/products ──────────────────────────────────────────────
+    // ── GET /api/seller/products ──────────────────────────────────
     public function index(Request $request)
     {
         $query = Product::withoutGlobalScopes()
@@ -48,8 +53,8 @@ class SellerProductController extends Controller
             $query->where('category_id', (int) $request->category_id);
         }
 
-        $perPage = (int) $request->get('per_page', 12);
-        $products = $query->orderByDesc('created_at')->paginate($perPage);
+        $perPage   = (int) $request->get('per_page', 12);
+        $products  = $query->orderByDesc('created_at')->paginate($perPage);
 
         $products->getCollection()->transform(function ($product) {
             $product->primary_image_url = $product->primaryImage
@@ -58,13 +63,10 @@ class SellerProductController extends Controller
             return $product;
         });
 
-        return response()->json([
-            'success' => true,
-            'data'    => $products,
-        ]);
+        return response()->json(['success' => true, 'data' => $products]);
     }
 
-    // ── GET /api/seller/products/stats ────────────────────────────────────────
+    // ── GET /api/seller/products/stats ────────────────────────────
     public function stats()
     {
         $stats = Product::withoutGlobalScopes()
@@ -80,14 +82,11 @@ class SellerProductController extends Controller
             ')
             ->first();
 
-        return response()->json([
-            'success' => true,
-            'data'    => $stats,
-        ]);
+        return response()->json(['success' => true, 'data' => $stats]);
     }
 
-    // ── GET /api/seller/products/{id} ─────────────────────────────────────────
-    public function show(int $id)
+    // ── GET /api/seller/products/{id} ─────────────────────────────
+    public function show($id)
     {
         $product = Product::withoutGlobalScopes()
             ->with(['category:id,name', 'images'])
@@ -98,13 +97,10 @@ class SellerProductController extends Controller
             $image->url = Storage::url($image->image_path);
         });
 
-        return response()->json([
-            'success' => true,
-            'data'    => $product,
-        ]);
+        return response()->json(['success' => true, 'data' => $product]);
     }
 
-    // ── POST /api/seller/products ─────────────────────────────────────────────
+    // ── POST /api/seller/products ─────────────────────────────────
     public function store(Request $request)
     {
         $validated = $request->validate([
@@ -121,19 +117,16 @@ class SellerProductController extends Controller
             'images.*'          => 'image|mimes:jpeg,png,jpg,webp|max:5120',
         ]);
 
-        // Auto-generate slug
         $slug = $this->generateUniqueSlug(
             !empty($validated['slug']) ? $validated['slug'] : $validated['name']
         );
 
-        // Auto-generate SKU if not provided
         $sku = !empty($validated['sku'])
             ? $validated['sku']
             : $this->generateSku($validated['name']);
 
         DB::beginTransaction();
         try {
-            // PHP 7.4 compatible - no spread operator
             $product = Product::create([
                 'seller_id'         => $this->sellerId(),
                 'category_id'       => $validated['category_id'],
@@ -164,6 +157,19 @@ class SellerProductController extends Controller
             ], 500);
         }
 
+        // ◄ NOTIFICATION — notify all admins
+        $seller = $request->user();
+        Notification::send(
+            User::getAllAdmins(),
+            new ProductActionNotification(
+                'created',
+                $product->id,
+                $product->name,
+                $seller->name,
+                $seller->id
+            )
+        );
+
         return response()->json([
             'success' => true,
             'message' => 'Product submitted successfully. It will be visible after admin approval.',
@@ -171,8 +177,8 @@ class SellerProductController extends Controller
         ], 201);
     }
 
-    // ── PUT /api/seller/products/{id} ─────────────────────────────────────────
-    public function update(Request $request, int $id)
+    // ── PUT /api/seller/products/{id} ─────────────────────────────
+    public function update(Request $request, $id)
     {
         $product = Product::withoutGlobalScopes()
             ->where('seller_id', $this->sellerId())
@@ -221,6 +227,19 @@ class SellerProductController extends Controller
             ], 500);
         }
 
+        // ◄ NOTIFICATION — notify all admins
+        $seller = $request->user();
+        Notification::send(
+            User::getAllAdmins(),
+            new ProductActionNotification(
+                'updated',
+                $product->id,
+                $product->name,
+                $seller->name,
+                $seller->id
+            )
+        );
+
         $product->load(['category:id,name', 'images']);
         $product->images->each(function ($image) {
             $image->url = Storage::url($image->image_path);
@@ -233,12 +252,16 @@ class SellerProductController extends Controller
         ]);
     }
 
-    // ── DELETE /api/seller/products/{id} ──────────────────────────────────────
-    public function destroy(int $id)
+    // ── DELETE /api/seller/products/{id} ──────────────────────────
+    public function destroy($id)
     {
+        $seller  = auth()->user();
         $product = Product::withoutGlobalScopes()
             ->where('seller_id', $this->sellerId())
             ->findOrFail($id);
+
+        $productId   = $product->id;
+        $productName = $product->name;
 
         foreach ($product->images as $image) {
             Storage::disk('public')->delete($image->image_path);
@@ -246,14 +269,23 @@ class SellerProductController extends Controller
 
         $product->delete();
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Product deleted successfully.',
-        ]);
+        // ◄ NOTIFICATION — notify all admins
+        Notification::send(
+            User::getAllAdmins(),
+            new ProductActionNotification(
+                'deleted',
+                $productId,
+                $productName,
+                $seller->name,
+                $seller->id
+            )
+        );
+
+        return response()->json(['success' => true, 'message' => 'Product deleted successfully.']);
     }
 
-    // ── DELETE /api/seller/products/{id}/images/{imageId} ────────────────────
-    public function destroyImage(int $id, int $imageId)
+    // ── DELETE /api/seller/products/{id}/images/{imageId} ─────────
+    public function destroyImage($id, $imageId)
     {
         $product = Product::withoutGlobalScopes()
             ->where('seller_id', $this->sellerId())
@@ -272,33 +304,26 @@ class SellerProductController extends Controller
             }
         }
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Image deleted.',
-        ]);
+        return response()->json(['success' => true, 'message' => 'Image deleted.']);
     }
 
-    // ── PATCH /api/seller/products/{id}/images/{imageId}/primary ─────────────
-    public function setPrimaryImage(int $id, int $imageId)
+    // ── PATCH /api/seller/products/{id}/images/{imageId}/primary ──
+    public function setPrimaryImage($id, $imageId)
     {
         $product = Product::withoutGlobalScopes()
             ->where('seller_id', $this->sellerId())
             ->findOrFail($id);
 
         $image = $product->images()->findOrFail($imageId);
-
         $product->images()->update(['is_primary' => false]);
         $image->update(['is_primary' => true]);
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Primary image updated.',
-        ]);
+        return response()->json(['success' => true, 'message' => 'Primary image updated.']);
     }
 
-    // ── PRIVATE HELPERS ───────────────────────────────────────────────────────
+    // ── PRIVATE HELPERS ───────────────────────────────────────────
 
-    private function uploadImages(Product $product, array $files): void
+    private function uploadImages(Product $product, array $files)
     {
         $currentMax = $product->images()->max('order') ?? -1;
         $hasPrimary = $product->images()->where('is_primary', true)->exists();
@@ -322,7 +347,7 @@ class SellerProductController extends Controller
         }
     }
 
-    private function deleteImages(Product $product, array $imageIds): void
+    private function deleteImages(Product $product, array $imageIds)
     {
         $images     = $product->images()->whereIn('id', $imageIds)->get();
         $hadPrimary = false;
@@ -343,7 +368,7 @@ class SellerProductController extends Controller
         }
     }
 
-    private function generateUniqueSlug(string $name, ?int $excludeId = null): string
+    private function generateUniqueSlug($name, $excludeId = null)
     {
         $base    = Str::slug($name);
         $slug    = $base;
@@ -363,7 +388,7 @@ class SellerProductController extends Controller
         return $slug;
     }
 
-    private function generateSku(string $productName): string
+    private function generateSku($productName)
     {
         do {
             $prefix = 'CT-' . strtoupper(substr(preg_replace('/[^A-Za-z]/', '', $productName), 0, 3));

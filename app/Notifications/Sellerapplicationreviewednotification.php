@@ -3,20 +3,22 @@
 
 namespace App\Notifications;
 
-use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Notification;
 
 class SellerApplicationReviewedNotification extends Notification
 {
-    use Queueable;
-
-    private $decision;
+    private $action;
     private $businessName;
     private $reason;
 
-    public function __construct($decision, $businessName, $reason = null)
+    /**
+     * @param string      $action       'approved' | 'rejected'
+     * @param string      $businessName
+     * @param string|null $reason       rejection reason (optional)
+     */
+    public function __construct($action, $businessName, $reason = null)
     {
-        $this->decision     = $decision;
+        $this->action       = $action;
         $this->businessName = $businessName;
         $this->reason       = $reason;
     }
@@ -26,33 +28,34 @@ class SellerApplicationReviewedNotification extends Notification
         return ['database'];
     }
 
-    public function toArray($notifiable)
-    {
-        return $this->payload();
-    }
-
     public function toDatabase($notifiable)
     {
-        return $this->payload();
-    }
+        if ($this->action === 'approved') {
+            return [
+                'type'          => 'seller_application_reviewed',
+                'action'        => 'approved',
+                'title'         => 'Application approved!',
+                'body'          => 'Congratulations! Your seller application for "' . $this->businessName . '" has been approved. You can now list products.',
+                'icon'          => 'check-circle',
+                'link'          => '/seller/dashboard',
+                'business_name' => $this->businessName,
+            ];
+        }
 
-    private function payload()
-    {
-        $approved = $this->decision === 'approved';
-
-        $body = $approved
-            ? 'Your seller application for "' . $this->businessName . '" was approved! You can now sell.'
-            : 'Your seller application for "' . $this->businessName . '" was not approved.' . ($this->reason ? ' Reason: ' . $this->reason : '');
+        $body = 'Your seller application for "' . $this->businessName . '" was not approved.';
+        if ($this->reason) {
+            $body .= ' Reason: ' . $this->reason;
+        }
 
         return [
-            'type'          => 'application_reviewed',
-            'action'        => $this->decision,
-            'title'         => $approved ? 'Application Approved' : 'Application Rejected',
+            'type'          => 'seller_application_reviewed',
+            'action'        => 'rejected',
+            'title'         => 'Application not approved',
             'body'          => $body,
-            'icon'          => $approved ? 'check-circle' : 'x-circle',
+            'icon'          => 'x-circle',
+            'link'          => '/apply-seller',
             'business_name' => $this->businessName,
             'reason'        => $this->reason,
-            'link'          => '/seller',
         ];
     }
 }

@@ -1,9 +1,17 @@
 <?php
+// app/Http/Controllers/Admin/ProductController.php
+// FULL REPLACEMENT
+// approve()  → notifies seller ✓
+// reject()   → notifies seller ✓
+// update()   → notifies seller ✓  (NEW)
+// destroy()  → notifies seller ✓  (NEW)
+
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Product;
-use App\Models\Category;
+use App\Notifications\ProductReviewedNotification;
+use App\Notifications\ProductActionNotification;
 use Illuminate\Http\Request;
 
 class ProductController extends Controller
@@ -17,12 +25,12 @@ class ProductController extends Controller
         ]);
 
         $status = $request->query('status', 'pending');
-        if ($status === 'pending')       $query->where('is_approved', false);
-        elseif ($status === 'approved')  $query->where('is_approved', true)->where('is_active', true);
-        elseif ($status === 'disabled')  $query->where('is_approved', true)->where('is_active', false);
+        if ($status === 'pending')      $query->where('is_approved', false);
+        elseif ($status === 'approved') $query->where('is_approved', true)->where('is_active', true);
+        elseif ($status === 'disabled') $query->where('is_approved', true)->where('is_active', false);
 
         if ($search = $request->query('search'))
-            $query->where('name', 'like', "%{$search}%");
+            $query->where('name', 'like', '%' . $search . '%');
 
         if ($categoryId = $request->query('category_id'))
             $query->where('category_id', $categoryId);
@@ -56,11 +64,11 @@ class ProductController extends Controller
 
     /**
      * PUT /api/admin/products/{id}
-     * Admin updates a product's details
+     * Admin edits product details — notifies the seller
      */
     public function update(Request $request, $id)
     {
-        $product = Product::findOrFail($id);
+        $product = Product::with('seller')->findOrFail($id);
 
         $validated = $request->validate([
             'name'              => 'sometimes|required|string|max:255',
@@ -75,6 +83,20 @@ class ProductController extends Controller
         ]);
 
         $product->update($validated);
+
+        // Notify the seller that admin edited their product
+        if ($product->seller) {
+            $product->seller->notify(
+                new ProductActionNotification(
+                    'updated',
+                    $product->id,
+                    $product->name,
+                    'Admin',
+                    0
+                )
+            );
+        }
+
         $product->load(['seller:id,name,email', 'category:id,name', 'images']);
         $product->status = $this->deriveStatus($product);
 
@@ -85,13 +107,56 @@ class ProductController extends Controller
         ]);
     }
 
+    /**
+     * PATCH /api/admin/products/{id}/approve
+     * Notifies the seller
+     */
     public function approve($id)
     {
-        $product = Product::findOrFail($id);
+        $product = Product::with('seller')->findOrFail($id);
         $product->update(['is_approved' => true, 'is_active' => true]);
+
+        if ($product->seller) {
+            $product->seller->notify(
+                new ProductReviewedNotification(
+                    'approved',
+                    $product->id,
+                    $product->name
+                )
+            );
+        }
+
         return response()->json(['success' => true, 'message' => 'Product approved.']);
     }
 
+    /**
+     * PATCH /api/admin/products/{id}/reject
+     * Notifies the seller
+     */
+    public function reject(Request $request, $id)
+    {
+        $request->validate(['reason' => 'nullable|string|max:500']);
+
+        $product = Product::with('seller')->findOrFail($id);
+        $product->update(['is_approved' => false, 'is_active' => false]);
+
+        if ($product->seller) {
+            $product->seller->notify(
+                new ProductReviewedNotification(
+                    'rejected',
+                    $product->id,
+                    $product->name,
+                    $request->reason
+                )
+            );
+        }
+
+        return response()->json(['success' => true, 'message' => 'Product rejected.']);
+    }
+
+    /**
+     * PATCH /api/admin/products/{id}/disable
+     */
     public function disable($id)
     {
         $product = Product::findOrFail($id);
@@ -99,14 +164,36 @@ class ProductController extends Controller
         return response()->json(['success' => true, 'message' => 'Product disabled.']);
     }
 
+    /**
+     * DELETE /api/admin/products/{id}
+     * Notifies the seller
+     */
     public function destroy($id)
     {
-        $product = Product::findOrFail($id);
+        $product = Product::with('seller')->findOrFail($id);
+
+        $productName = $product->name;
+        $productId   = $product->id;
+        $seller      = $product->seller;
+
         $product->delete();
+
+        if ($seller) {
+            $seller->notify(
+                new ProductActionNotification(
+                    'deleted',
+                    $productId,
+                    $productName,
+                    'Admin',
+                    0
+                )
+            );
+        }
+
         return response()->json(['success' => true, 'message' => 'Product deleted.']);
     }
 
-    private function deriveStatus(Product $product): string
+    private function deriveStatus(Product $product)
     {
         if (!$product->is_approved) return 'pending';
         if (!$product->is_active)   return 'disabled';

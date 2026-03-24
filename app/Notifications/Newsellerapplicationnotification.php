@@ -3,18 +3,21 @@
 
 namespace App\Notifications;
 
-use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Notification;
 
 class NewSellerApplicationNotification extends Notification
 {
-    use Queueable;
-
     private $applicationId;
     private $applicantName;
     private $businessName;
     private $userId;
 
+    /**
+     * @param int    $applicationId
+     * @param string $applicantName  full_name from the application form
+     * @param string $businessName
+     * @param int    $userId         the applicant's user id
+     */
     public function __construct($applicationId, $applicantName, $businessName, $userId)
     {
         $this->applicationId = $applicationId;
@@ -28,29 +31,19 @@ class NewSellerApplicationNotification extends Notification
         return ['database'];
     }
 
-    public function toArray($notifiable)
-    {
-        return $this->payload();
-    }
-
     public function toDatabase($notifiable)
-    {
-        return $this->payload();
-    }
-
-    private function payload()
     {
         return [
             'type'           => 'seller_application',
             'action'         => 'submitted',
-            'title'          => 'New Seller Application',
-            'body'           => $this->applicantName . ' wants to become a seller (' . $this->businessName . ').',
+            'title'          => 'New seller application',
+            'body'           => $this->applicantName . ' applied to become a seller (' . $this->businessName . ').',
             'icon'           => 'store',
+            'link'           => '/seller-applications/' . $this->applicationId,
             'application_id' => $this->applicationId,
+            'user_id'        => $this->userId,
             'applicant_name' => $this->applicantName,
             'business_name'  => $this->businessName,
-            'user_id'        => $this->userId,
-            'link'           => '/seller-applications',
         ];
     }
 }

@@ -4,7 +4,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\Admin;
+use App\Models\User;
 use App\Models\SellerApplication;
 use App\Notifications\NewSellerApplicationNotification;
 use App\Notifications\SellerApplicationReviewedNotification;
@@ -78,9 +78,9 @@ class SellerApplicationController extends Controller
             'status'               => 'pending',
         ]);
 
-        // Notify all admins
+        // Notify all admins — admin is in users table with role='admin'
         Notification::send(
-            Admin::getAllActive(),
+            User::getAllAdmins(),
             new NewSellerApplicationNotification(
                 $application->id,
                 $validated['full_name'],
@@ -142,7 +142,6 @@ class SellerApplicationController extends Controller
     public function show(SellerApplication $application)
     {
         $application->load('user');
-
         return response()->json(['success' => true, 'data' => $application]);
     }
 
@@ -162,7 +161,6 @@ class SellerApplicationController extends Controller
             'is_active'   => true,
         ]);
 
-        // Notify the applicant
         $application->user->notify(
             new SellerApplicationReviewedNotification(
                 'approved',
@@ -189,7 +187,6 @@ class SellerApplicationController extends Controller
             'reviewed_at'      => now(),
         ]);
 
-        // Notify the applicant
         $application->user->notify(
             new SellerApplicationReviewedNotification(
                 'rejected',
