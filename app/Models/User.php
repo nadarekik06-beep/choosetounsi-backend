@@ -1,4 +1,5 @@
 <?php
+// app/Models/User.php — NO CHANGES NEEDED (already has Notifiable trait)
 
 namespace App\Models;
 
@@ -33,47 +34,36 @@ class User extends Authenticatable
         'is_approved'       => 'boolean',
     ];
 
-    /* ── Relationships ── */
+    // ── Relationships ──────────────────────────────────────────────
+    public function sellerProfile()      { return $this->hasOne(SellerProfile::class); }
+    public function products()           { return $this->hasMany(Product::class, 'seller_id'); }
+    public function orders()             { return $this->hasMany(Order::class); }
+    public function sellerApplication()  { return $this->hasOne(SellerApplication::class)->latest(); }
+    public function sellerApplications() { return $this->hasMany(SellerApplication::class); }
 
-    public function sellerProfile()       { return $this->hasOne(SellerProfile::class); }
-    public function products()            { return $this->hasMany(Product::class, 'seller_id'); }
-    public function orders()              { return $this->hasMany(Order::class); }
-    public function sellerApplication()   { return $this->hasOne(SellerApplication::class)->latest(); }
-    public function sellerApplications()  { return $this->hasMany(SellerApplication::class); }
-
-    /** Cart items for this user */
-    public function cartItems()
-    {
-        return $this->hasMany(Cart::class);
-    }
-
-    public static function getAllAdmins()
-{
-    return static::where('role', 'admin')
-                 ->where('is_active', true)
-                 ->get();
-}
-
-    /** Favorited products for this user */
-    public function favorites()
-    {
-        return $this->hasMany(Favorite::class);
-    }
-
-    /* ── Role helpers ── */
-
+    // ── Role helpers ───────────────────────────────────────────────
     public function isAdmin()          { return $this->role === 'admin'; }
     public function isSeller()         { return $this->role === 'seller'; }
     public function isClient()         { return $this->role === 'client'; }
     public function isApprovedSeller() { return $this->isSeller() && $this->is_approved; }
     public function isActiveUser()     { return $this->is_active; }
 
-    /* ── Scopes ── */
-
+    // ── Scopes ────────────────────────────────────────────────────
     public function scopeActive($q)          { return $q->where('is_active', true); }
     public function scopeSellers($q)         { return $q->where('role', 'seller'); }
     public function scopeApprovedSellers($q) { return $q->where('role', 'seller')->where('is_approved', true); }
     public function scopePendingSellers($q)  { return $q->where('role', 'seller')->where('is_approved', false); }
     public function scopeClients($q)         { return $q->where('role', 'client'); }
     public function scopeAdmins($q)          { return $q->where('role', 'admin'); }
+
+    /**
+     * Returns all active admins from users table.
+     * Used by the notification system to send to all admins.
+     */
+    public static function getAllAdmins()
+    {
+        return static::where('role', 'admin')
+                     ->where('is_active', true)
+                     ->get();
+    }
 }

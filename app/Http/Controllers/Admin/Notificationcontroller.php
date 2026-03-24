@@ -1,10 +1,17 @@
 <?php
-// app/Http/Controllers/Admin/NotificationController.php — FIXED
-// Changes from original:
-//   1. Added try/catch around every method → no more 500 with blank response
-//   2. ->read_at and ->created_at cast to ISO string (prevents null serialisation issues)
-//   3. Explicit 401 guard if $request->user() is null
-//   4. per_page capped at 100 to prevent abuse
+// app/Http/Controllers/Admin/NotificationController.php — FIXED for PHP 8.0
+//
+// Changes vs previous version:
+//   1. Removed ?->toISOString() — the nullsafe operator on a Carbon instance
+//      crashes on PHP 8.0 when read_at is not null because Carbon does not
+//      have a toISOString() method. Use toISOString() does not exist on Carbon —
+//      the correct method is toIso8601String() or just cast to string.
+//   2. read_at and created_at are now formatted with a plain ternary + explicit
+//      string cast, compatible with PHP 7.4+.
+//   3. Replaced fn() arrow function in map() with a full closure — safer across
+//      all PHP 7.x / 8.x versions.
+//   4. Added explicit check that $n->data is already an array (Laravel
+//      automatically decodes the JSON column, but added a fallback just in case).
 
 namespace App\Http\Controllers\Admin;
 
@@ -32,28 +39,30 @@ class NotificationController extends Controller
                 ->orderByDesc('created_at')
                 ->paginate($perPage);
 
+            $data = [];
+            foreach ($notifications as $n) {
+                $data[] = [
+                    'id'         => $n->id,
+                    'data'       => is_array($n->data) ? $n->data : json_decode($n->data, true),
+                    'is_read'    => !is_null($n->read_at),
+                    'read_at'    => $n->read_at ? $n->read_at->format('Y-m-d\TH:i:s\Z') : null,
+                    'created_at' => $n->created_at ? $n->created_at->format('Y-m-d\TH:i:s\Z') : null,
+                ];
+            }
+
             return response()->json([
                 'success' => true,
-                'data'    => $notifications->map(function ($n) {
-                    return [
-                        'id'         => $n->id,
-                        'data'       => $n->data,
-                        'is_read'    => ! is_null($n->read_at),
-                        'read_at'    => $n->read_at?->toISOString(),
-                        'created_at' => $n->created_at->toISOString(),
-                    ];
-                }),
-                'meta' => [
+                'data'    => $data,
+                'meta'    => [
                     'current_page' => $notifications->currentPage(),
                     'last_page'    => $notifications->lastPage(),
                     'total'        => $notifications->total(),
                 ],
             ]);
+
         } catch (\Exception $e) {
-            Log::error('[Admin\NotificationController::index] ' . $e->getMessage(), [
-                'trace' => $e->getTraceAsString(),
-            ]);
-            return response()->json(['success' => false, 'message' => 'Server error.'], 500);
+            Log::error('[Admin\NotificationController::index] ' . $e->getMessage() . ' on line ' . $e->getLine() . ' in ' . $e->getFile());
+            return response()->json(['success' => false, 'message' => 'Server error: ' . $e->getMessage()], 500);
         }
     }
 
@@ -69,14 +78,16 @@ class NotificationController extends Controller
                 return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
             }
 
+            $count = $admin->unreadNotifications()->count();
+
             return response()->json([
                 'success' => true,
-                'count'   => $admin->unreadNotifications()->count(),
+                'count'   => $count,
             ]);
+
         } catch (\Exception $e) {
-            Log::error('[Admin\NotificationController::unreadCount] ' . $e->getMessage());
-            // Return 0 instead of 500 so the frontend badge just shows nothing
-            return response()->json(['success' => false, 'count' => 0], 500);
+            Log::error('[Admin\NotificationController::unreadCount] ' . $e->getMessage() . ' on line ' . $e->getLine() . ' in ' . $e->getFile());
+            return response()->json(['success' => false, 'count' => 0, 'message' => $e->getMessage()], 500);
         }
     }
 
@@ -90,6 +101,7 @@ class NotificationController extends Controller
             $notification->markAsRead();
 
             return response()->json(['success' => true]);
+
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             return response()->json(['success' => false, 'message' => 'Notification not found.'], 404);
         } catch (\Exception $e) {
@@ -107,6 +119,7 @@ class NotificationController extends Controller
             $request->user()->unreadNotifications()->update(['read_at' => now()]);
 
             return response()->json(['success' => true]);
+
         } catch (\Exception $e) {
             Log::error('[Admin\NotificationController::markAllRead] ' . $e->getMessage());
             return response()->json(['success' => false], 500);

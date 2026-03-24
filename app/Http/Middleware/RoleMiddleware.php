@@ -1,53 +1,67 @@
 <?php
+// app/Http/Middleware/RoleMiddleware.php
+// FULL REPLACEMENT — returns JSON for API routes instead of redirecting
 
 namespace App\Http\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;
 
-/**
- * Generic Role Middleware
- * Protects routes based on user role
- * Usage: ->middleware('role:admin,seller')
- */
 class RoleMiddleware
 {
-    /**
-     * Handle an incoming request.
-     *
-     * @param  \Illuminate\Http\Request  $request
-     * @param  \Closure  $next
-     * @param  string  ...$roles
-     * @return mixed
-     */
     public function handle(Request $request, Closure $next, ...$roles)
     {
-        // Check if user is authenticated
-        if (!auth()->check()) {
+        // For API routes: check sanctum guard explicitly
+        $user = auth('sanctum')->user();
+
+        // If no user from sanctum, try the default guard
+        if (!$user) {
+            $user = auth()->user();
+        }
+
+        if (!$user) {
+            // API request → return JSON
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthenticated.',
+                ], 401);
+            }
             return redirect()->route('login')
                 ->with('error', 'Please login to access this page.');
         }
 
-        $user = auth()->user();
-
-        // Check if user account is active
-        if (!$user->isActiveUser()) {
+        // Check if account is active
+        if (!$user->is_active) {
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Your account has been deactivated.',
+                ], 403);
+            }
             auth()->logout();
             return redirect()->route('login')
                 ->with('error', 'Your account has been deactivated.');
         }
 
-        // Check if user has one of the allowed roles
+        // Check role
         if (!in_array($user->role, $roles)) {
-            abort(403, 'Unauthorized access. You do not have permission to view this page.');
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized. Insufficient permissions.',
+                ], 403);
+            }
+            abort(403, 'Unauthorized access.');
         }
 
-        // Additional check for sellers: must be approved
+        // Seller pending check (web only, skip for API)
         if ($user->role === 'seller' && !$user->is_approved) {
-            // Allow access to pending page only
-            if (!$request->is('seller/pending')) {
-                return redirect()->route('seller.pending')
-                    ->with('info', 'Your seller account is pending approval.');
+            if (!$request->expectsJson() && !$request->is('api/*')) {
+                if (!$request->is('seller/pending')) {
+                    return redirect()->route('seller.pending')
+                        ->with('info', 'Your seller account is pending approval.');
+                }
             }
         }
 

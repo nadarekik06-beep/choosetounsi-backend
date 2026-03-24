@@ -3,21 +3,24 @@
 
 namespace App\Notifications;
 
-use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Notification;
 
 class ProductReviewedNotification extends Notification
 {
-    use Queueable;
-
-    private $decision;
+    private $action;
     private $productId;
     private $productName;
     private $reason;
 
-    public function __construct($decision, $productId, $productName, $reason = null)
+    /**
+     * @param string      $action      'approved' | 'rejected'
+     * @param int         $productId
+     * @param string      $productName
+     * @param string|null $reason      rejection reason (optional)
+     */
+    public function __construct($action, $productId, $productName, $reason = null)
     {
-        $this->decision    = $decision;
+        $this->action      = $action;
         $this->productId   = $productId;
         $this->productName = $productName;
         $this->reason      = $reason;
@@ -28,34 +31,34 @@ class ProductReviewedNotification extends Notification
         return ['database'];
     }
 
-    public function toArray($notifiable)
-    {
-        return $this->payload();
-    }
-
     public function toDatabase($notifiable)
     {
-        return $this->payload();
-    }
+        if ($this->action === 'approved') {
+            return [
+                'type'       => 'product_reviewed',
+                'action'     => 'approved',
+                'title'      => 'Product approved!',
+                'body'       => 'Your product "' . $this->productName . '" has been approved and is now live.',
+                'icon'       => 'check-circle',
+                'link'       => '/seller/products/' . $this->productId,
+                'product_id' => $this->productId,
+            ];
+        }
 
-    private function payload()
-    {
-        $approved = $this->decision === 'approved';
-
-        $body = $approved
-            ? 'Your product "' . $this->productName . '" is now live.'
-            : 'Your product "' . $this->productName . '" was rejected.' . ($this->reason ? ' Reason: ' . $this->reason : '');
+        $body = 'Your product "' . $this->productName . '" was rejected.';
+        if ($this->reason) {
+            $body .= ' Reason: ' . $this->reason;
+        }
 
         return [
-            'type'         => 'product_reviewed',
-            'action'       => $this->decision,
-            'title'        => $approved ? 'Product Approved' : 'Product Rejected',
-            'body'         => $body,
-            'icon'         => $approved ? 'check-circle' : 'x-circle',
-            'product_id'   => $this->productId,
-            'product_name' => $this->productName,
-            'reason'       => $this->reason,
-            'link'         => '/seller/products',
+            'type'       => 'product_reviewed',
+            'action'     => 'rejected',
+            'title'      => 'Product rejected',
+            'body'       => $body,
+            'icon'       => 'x-circle',
+            'link'       => '/seller/products/' . $this->productId,
+            'product_id' => $this->productId,
+            'reason'     => $this->reason,
         ];
     }
 }

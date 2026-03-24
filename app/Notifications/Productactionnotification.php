@@ -3,26 +3,30 @@
 
 namespace App\Notifications;
 
-use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Notification;
 
 class ProductActionNotification extends Notification
 {
-    use Queueable;
-
     private $action;
     private $productId;
     private $productName;
-    private $sellerName;
-    private $sellerId;
+    private $actorName;
+    private $actorId;
 
-    public function __construct($action, $productId, $productName, $sellerName, $sellerId)
+    /**
+     * @param string $action      'created' | 'updated' | 'deleted'
+     * @param int    $productId
+     * @param string $productName
+     * @param string $actorName   seller's name (or 'Admin')
+     * @param int    $actorId     seller's user id (or 0 for admin)
+     */
+    public function __construct($action, $productId, $productName, $actorName, $actorId)
     {
         $this->action      = $action;
         $this->productId   = $productId;
         $this->productName = $productName;
-        $this->sellerName  = $sellerName;
-        $this->sellerId    = $sellerId;
+        $this->actorName   = $actorName;
+        $this->actorId     = $actorId;
     }
 
     public function via($notifiable)
@@ -30,41 +34,41 @@ class ProductActionNotification extends Notification
         return ['database'];
     }
 
-    public function toArray($notifiable)
-    {
-        return $this->payload();
-    }
-
     public function toDatabase($notifiable)
     {
-        return $this->payload();
-    }
-
-    private function payload()
-    {
-        $titles = [
-            'created' => 'New product by ' . $this->sellerName,
-            'updated' => 'Product updated by ' . $this->sellerName,
-            'deleted' => 'Product deleted by ' . $this->sellerName,
+        $map = [
+            'created' => [
+                'title' => 'New product submitted',
+                'body'  => $this->actorName . ' submitted "' . $this->productName . '" for review.',
+                'icon'  => 'package-plus',
+                'link'  => '/products?highlight=' . $this->productId,
+            ],
+            'updated' => [
+                'title' => 'Product updated',
+                'body'  => $this->actorName . ' updated "' . $this->productName . '".',
+                'icon'  => 'package-check',
+                'link'  => '/products/' . $this->productId,
+            ],
+            'deleted' => [
+                'title' => 'Product deleted',
+                'body'  => $this->actorName . ' deleted "' . $this->productName . '".',
+                'icon'  => 'package-x',
+                'link'  => '/products',
+            ],
         ];
 
-        $icons = [
-            'created' => 'package-plus',
-            'updated' => 'package-check',
-            'deleted' => 'package-x',
-        ];
+        $entry = isset($map[$this->action]) ? $map[$this->action] : $map['updated'];
 
         return [
-            'type'         => 'product_action',
-            'action'       => $this->action,
-            'title'        => isset($titles[$this->action]) ? $titles[$this->action] : 'Product ' . $this->action,
-            'body'         => '"' . $this->productName . '" was ' . $this->action . '.',
-            'icon'         => isset($icons[$this->action]) ? $icons[$this->action] : 'package',
-            'product_id'   => $this->productId,
-            'product_name' => $this->productName,
-            'seller_id'    => $this->sellerId,
-            'seller_name'  => $this->sellerName,
-            'link'         => '/products',
+            'type'       => 'product_action',
+            'action'     => $this->action,
+            'title'      => $entry['title'],
+            'body'       => $entry['body'],
+            'icon'       => $entry['icon'],
+            'link'       => $entry['link'],
+            'product_id' => $this->productId,
+            'actor_id'   => $this->actorId,
+            'actor_name' => $this->actorName,
         ];
     }
 }
