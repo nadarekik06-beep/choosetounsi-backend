@@ -10,11 +10,13 @@ class OrderController extends Controller
 {
     /**
      * GET /api/admin/orders
-     * Supports: ?status=  &search=  &date_from=  &date_to=  &wilaya=  &page=
      */
     public function index(Request $request)
     {
-        $query = Order::with(['user:id,name,email', 'items']);
+        $query = Order::with([
+            'user:id,name,email',
+            'items',              // ← load items only; no nested product here to avoid crash
+        ]);
 
         if ($status = $request->query('status')) {
             $query->where('status', $status);
@@ -50,14 +52,23 @@ class OrderController extends Controller
 
     /**
      * GET /api/admin/orders/{id}
-     * Returns order with user, items (incl. product name), address, notes.
      */
     public function show($id)
     {
         $order = Order::with([
             'user:id,name,email',
-            'items.product:id,name,primary_image_url',
+            'items',              // load items; product data available via product_name snapshot
         ])->findOrFail($id);
+
+        // Safely attempt to load product if the relation exists and product isn't deleted
+        $order->items->each(function ($item) {
+            try {
+                $item->load('product');
+            } catch (\Throwable $e) {
+                // product relationship unavailable — product_name snapshot is still present
+                $item->product = null;
+            }
+        });
 
         return response()->json(['success' => true, 'data' => $order]);
     }
@@ -78,6 +89,24 @@ class OrderController extends Controller
             'success' => true,
             'message' => 'Order status updated.',
             'data'    => $order,
+        ]);
+    }
+
+    /**
+     * GET /api/admin/orders/stats
+     */
+    public function stats()
+    {
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'total'     => Order::count(),
+                'pending'   => Order::pending()->count(),
+                'completed' => Order::completed()->count(),
+                'delivered' => Order::delivered()->count(),
+                'cancelled' => Order::where('status', 'cancelled')->count(),
+                'revenue'   => Order::completed()->sum('total_amount'),
+            ],
         ]);
     }
 }

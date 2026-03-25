@@ -9,13 +9,15 @@ class OrderItem extends Model
 {
     use HasFactory;
 
+    protected $table = 'order_items'; // explicit — avoids any table name guessing
+
     protected $fillable = [
         'order_id',
         'product_id',
         'product_name',
         'quantity',
         'unit_price',
-        'price',   // kept for legacy compat
+        'price',
         'total',
     ];
 
@@ -23,31 +25,35 @@ class OrderItem extends Model
         'unit_price' => 'decimal:3',
         'price'      => 'decimal:3',
         'total'      => 'decimal:3',
+        'quantity'   => 'integer',
     ];
 
     /* ── Accessors ── */
 
-    /** Whichever column holds the per-unit price */
     public function getUnitPriceAttribute($value): float
     {
-        return (float) ($value ?: $this->attributes['price'] ?? 0);
+        return (float) ($value ?: ($this->attributes['price'] ?? 0));
     }
 
-    /** Line total */
     public function getTotalAttribute($value): float
     {
-        return (float) ($value ?: $this->unit_price * $this->quantity);
+        return (float) ($value ?: ($this->getUnitPriceAttribute($this->attributes['unit_price'] ?? 0) * ($this->attributes['quantity'] ?? 1)));
     }
 
     /* ── Relationships ── */
 
-    public function order()
+    public function order(): \Illuminate\Database\Eloquent\Relations\BelongsTo
     {
         return $this->belongsTo(Order::class);
     }
 
-    public function product()
+    /**
+     * The product this item refers to.
+     * Uses withTrashed() so soft-deleted products still resolve
+     * (the product name is also stored in product_name as a snapshot).
+     */
+    public function product(): \Illuminate\Database\Eloquent\Relations\BelongsTo
     {
-        return $this->belongsTo(Product::class)->withTrashed();
+        return $this->belongsTo(Product::class, 'product_id')->withTrashed();
     }
 }

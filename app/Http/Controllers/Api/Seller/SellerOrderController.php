@@ -5,62 +5,42 @@ namespace App\Http\Controllers\Api\Seller;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
+/**
+ * Seller Order API Controller
+ * Shows orders that contain at least one product belonging to this seller.
+ */
 class SellerOrderController extends Controller
 {
     /**
-     * Hardcoded seller_id = 1 for development.
-     * Replace with auth()->id() when auth middleware is wired up.
+     * GET /api/seller/orders
      */
-    private function sellerId(): int { return (int) auth()->id(); }
-
-    /**
-     * Status transitions the seller is allowed to make.
-     * Seller cannot touch payment_status — that's admin territory.
-     */
-    private array $allowedStatuses = ['pending', 'processing', 'completed', 'cancelled'];
-
-    // ── GET /api/seller/orders ────────────────────────────────────────────────
     public function index(Request $request)
     {
-        // Resolve all order IDs that contain this seller's products (no N+1)
-        $sellerOrderIds = DB::table('order_items as oi')
-            ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->where('p.seller_id', $this->sellerId())
-            ->distinct()
-            ->pluck('oi.order_id');
+        $seller = auth()->user();
 
-        $query = Order::with(['user:id,name,email,state'])
-            ->whereIn('id', $sellerOrderIds)
-            ->select([
-                'id', 'user_id', 'order_number', 'total_amount',
-                'status', 'payment_status', 'wilaya', 'created_at',
-            ]);
+        $query = Order::with([
+            'user:id,name,email',   // ← FIXED: removed 'state' which doesn't exist
+            'items',
+        ])
+        // Only orders that contain this seller's products
+        ->whereHas('items.product', function ($q) use ($seller) {
+            $q->where('user_id', $seller->id);
+        });
 
-        // Filters
         if ($request->filled('status')) {
             $query->where('status', $request->status);
         }
 
-        if ($request->filled('payment_status')) {
-            $query->where('payment_status', $request->payment_status);
+        if ($request->filled('from_date')) {
+            $query->whereDate('created_at', '>=', $request->from_date);
         }
 
-        if ($request->filled('search')) {
-            $query->where('order_number', 'like', '%' . $request->search . '%');
+        if ($request->filled('to_date')) {
+            $query->whereDate('created_at', '<=', $request->to_date);
         }
 
-        if ($request->filled('date_from')) {
-            $query->whereDate('created_at', '>=', $request->date_from);
-        }
-
-        if ($request->filled('date_to')) {
-            $query->whereDate('created_at', '<=', $request->date_to);
-        }
-
-        $perPage = (int) $request->get('per_page', 12);
-        $orders  = $query->orderByDesc('created_at')->paginate($perPage);
+        $orders = $query->latest()->paginate((int) $request->query('per_page', 12));
 
         return response()->json([
             'success' => true,
@@ -68,113 +48,76 @@ class SellerOrderController extends Controller
         ]);
     }
 
-    // ── GET /api/seller/orders/stats ──────────────────────────────────────────
-    public function stats()
+    /**
+     * GET /api/seller/orders/{id}
+     */
+    public function show(Request $request, $id)
     {
-        $sellerOrderIds = DB::table('order_items as oi')
-            ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->where('p.seller_id', $this->sellerId())
-            ->distinct()
-            ->pluck('oi.order_id');
+        $seller = auth()->user();
 
-        $stats = Order::whereIn('id', $sellerOrderIds)
-            ->selectRaw('
-                COUNT(*) as total,
-                SUM(CASE WHEN status = "pending"    THEN 1 ELSE 0 END) as pending,
-                SUM(CASE WHEN status = "processing" THEN 1 ELSE 0 END) as processing,
-                SUM(CASE WHEN status = "completed"  THEN 1 ELSE 0 END) as completed,
-                SUM(CASE WHEN status = "cancelled"  THEN 1 ELSE 0 END) as cancelled,
-                SUM(CASE WHEN status = "delivered"  THEN 1 ELSE 0 END) as delivered
-            ')
-            ->first();
+        $order = Order::with([
+            'user:id,name,email',
+            'items',
+        ])
+        ->whereHas('items.product', function ($q) use ($seller) {
+            $q->where('user_id', $seller->id);
+        })
+        ->findOrFail($id);
 
         return response()->json([
             'success' => true,
-            'data'    => $stats,
+            'data'    => $order,
         ]);
     }
 
-    // ── GET /api/seller/orders/{id} ───────────────────────────────────────────
-    public function show(int $id)
+    /**
+     * GET /api/seller/orders/stats
+     */
+    public function stats(Request $request)
     {
-        // Security check — seller can only view orders containing their products
-        $hasSellerProduct = DB::table('order_items as oi')
-            ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->where('p.seller_id', $this->sellerId())
-            ->where('oi.order_id', $id)
-            ->exists();
+        $seller = auth()->user();
 
-        if (! $hasSellerProduct) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Order not found.',
-            ], 404);
-        }
-
-        $order = Order::with(['user:id,name,email,state'])->findOrFail($id);
-
-        // Return ONLY the order_items belonging to this seller
-        $sellerItems = DB::table('order_items as oi')
-            ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->where('p.seller_id', $this->sellerId())
-            ->where('oi.order_id', $id)
-            ->select(
-                'oi.id',
-                'oi.product_id',
-                'p.name as product_name',
-                'p.price as unit_price',
-                'oi.quantity',
-                'oi.price',
-                'oi.total'
-            )
-            ->get();
+        // Base: orders containing this seller's products
+        $base = Order::whereHas('items.product', function ($q) use ($seller) {
+            $q->where('user_id', $seller->id);
+        });
 
         return response()->json([
             'success' => true,
             'data'    => [
-                'order' => [
-                    'id'             => $order->id,
-                    'order_number'   => $order->order_number,
-                    'status'         => $order->status,
-                    'payment_status' => $order->payment_status,
-                    'total_amount'   => $order->total_amount,
-                    'wilaya' => $order->user ? $order->user->state : null, 
-                    'created_at'     => $order->created_at,
-                    'customer'       => $order->user,
-                ],
-                'items'           => $sellerItems,
-                'seller_subtotal' => round((float) $sellerItems->sum('total'), 3),
+                'total'     => (clone $base)->count(),
+                'pending'   => (clone $base)->where('status', 'pending')->count(),
+                'completed' => (clone $base)->where('status', 'completed')->count(),
+                'delivered' => (clone $base)->where('status', 'delivered')->count(),
+                'cancelled' => (clone $base)->where('status', 'cancelled')->count(),
+                'revenue'   => (clone $base)->whereIn('status', ['completed', 'delivered'])
+                                            ->sum('total_amount'),
             ],
         ]);
     }
 
-    // ── PATCH /api/seller/orders/{id}/status ──────────────────────────────────
-    public function updateStatus(Request $request, int $id)
+    /**
+     * PATCH /api/seller/orders/{id}/status
+     * Sellers can only mark as processing or cancelled.
+     */
+    public function updateStatus(Request $request, $id)
     {
         $request->validate([
-            'status' => ['required', 'in:' . implode(',', $this->allowedStatuses)],
+            'status' => 'required|in:processing,cancelled',
         ]);
 
-        $hasSellerProduct = DB::table('order_items as oi')
-            ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->where('p.seller_id', $this->sellerId())
-            ->where('oi.order_id', $id)
-            ->exists();
+        $seller = auth()->user();
 
-        if (! $hasSellerProduct) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Order not found.',
-            ], 404);
-        }
+        $order = Order::whereHas('items.product', function ($q) use ($seller) {
+            $q->where('user_id', $seller->id);
+        })->findOrFail($id);
 
-        $order = Order::findOrFail($id);
         $order->update(['status' => $request->status]);
 
         return response()->json([
             'success' => true,
-            'message' => 'Order status updated successfully.',
-            'data'    => $order->only(['id', 'order_number', 'status', 'payment_status']),
+            'message' => 'Order status updated.',
+            'data'    => $order,
         ]);
     }
 }

@@ -6,50 +6,78 @@ use App\Http\Controllers\Controller;
 use App\Models\Order;
 use Illuminate\Http\Request;
 
+/**
+ * Client Order API Controller
+ * Returns JSON — used by the Next.js frontend at /api/client/orders
+ */
 class ClientOrderApiController extends Controller
 {
-    /* ── GET /api/client/orders ── */
+    /**
+     * GET /api/client/orders
+     */
     public function index(Request $request)
     {
-        $client = $request->user();
+        $client = auth()->user();
 
-        $query = $client->orders()->with(['items.product.primaryImage']);
+        $query = Order::with(['items'])   // ← removed items.product to avoid crash
+                      ->where('user_id', $client->id);
 
-        if ($request->status) {
+        if ($request->filled('status')) {
             $query->where('status', $request->status);
         }
 
-        $orders = $query->latest()->paginate(15);
-
-        return response()->json(['success' => true, 'data' => $orders]);
-    }
-
-    /* ── GET /api/client/orders/{order} ── */
-    public function show(Request $request, Order $order)
-    {
-        if ($order->user_id !== $request->user()->id) {
-            return response()->json(['success' => false, 'message' => 'Forbidden.'], 403);
+        if ($request->filled('from_date')) {
+            $query->whereDate('created_at', '>=', $request->from_date);
         }
 
-        $order->load(['items.product.primaryImage']);
+        if ($request->filled('to_date')) {
+            $query->whereDate('created_at', '<=', $request->to_date);
+        }
 
-        return response()->json(['success' => true, 'data' => $order]);
-    }
-
-    /* ── GET /api/client/statistics ── */
-    public function statistics(Request $request)
-    {
-        $client = $request->user();
+        $orders = $query->latest()->paginate((int) $request->query('per_page', 15));
 
         return response()->json([
             'success' => true,
-            'data' => [
-                'total_orders'     => $client->orders()->count(),
-                'pending_orders'   => $client->orders()->pending()->count(),
-                'completed_orders' => $client->orders()->completed()->count(),
-                'total_spent'      => round((float) $client->orders()
-                    ->whereIn('status', ['completed', 'delivered'])
-                    ->sum('total_amount'), 3),
+            'data'    => $orders,
+        ]);
+    }
+
+    /**
+     * GET /api/client/orders/{orderId}
+     */
+    public function show(Request $request, $orderId)
+    {
+        $client = auth()->user();
+
+        $order = Order::with(['items'])
+                      ->where('user_id', $client->id)
+                      ->findOrFail($orderId);
+
+        return response()->json([
+            'success' => true,
+            'data'    => $order,
+        ]);
+    }
+
+    /**
+     * GET /api/client/statistics
+     */
+    public function statistics(Request $request)
+    {
+        $client = auth()->user();
+
+        $base = Order::where('user_id', $client->id);
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'total'     => (clone $base)->count(),
+                'pending'   => (clone $base)->where('status', 'pending')->count(),
+                'completed' => (clone $base)->where('status', 'completed')->count(),
+                'delivered' => (clone $base)->where('status', 'delivered')->count(),
+                'cancelled' => (clone $base)->where('status', 'cancelled')->count(),
+                'spent'     => (clone $base)->whereIn('status', ['completed', 'delivered'])
+                                            ->sum('total_amount'),
             ],
         ]);
     }
