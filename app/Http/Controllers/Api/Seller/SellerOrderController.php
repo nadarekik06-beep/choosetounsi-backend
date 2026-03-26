@@ -11,9 +11,7 @@ class SellerOrderController extends Controller
 {
     private function sellerOrderIds(int $sellerId): array
     {
-        $columns  = DB::select("SHOW COLUMNS FROM products");
-        $colNames = array_map(fn($c) => $c->Field, $columns);
-        $sellerCol = in_array('seller_id', $colNames) ? 'seller_id' : 'user_id';
+        $sellerCol = $this->getSellerCol();
 
         return DB::table('order_items')
             ->join('products', 'order_items.product_id', '=', 'products.id')
@@ -27,14 +25,15 @@ class SellerOrderController extends Controller
 
     private function getSellerCol(): string
     {
+        static $col = null;
+        if ($col) return $col;
         $columns  = DB::select("SHOW COLUMNS FROM products");
         $colNames = array_map(fn($c) => $c->Field, $columns);
-        return in_array('seller_id', $colNames) ? 'seller_id' : 'user_id';
+        $col = in_array('seller_id', $colNames) ? 'seller_id' : 'user_id';
+        return $col;
     }
 
-    /**
-     * GET /api/seller/orders/stats
-     */
+    /* ── GET /api/seller/orders/stats ── */
     public function stats(Request $request)
     {
         $seller   = auth()->user();
@@ -59,9 +58,7 @@ class SellerOrderController extends Controller
         ]]);
     }
 
-    /**
-     * GET /api/seller/orders
-     */
+    /* ── GET /api/seller/orders ── */
     public function index(Request $request)
     {
         $seller   = auth()->user();
@@ -72,6 +69,9 @@ class SellerOrderController extends Controller
 
         if ($request->filled('status')) {
             $query->where('status', $request->status);
+        }
+        if ($request->filled('payment_status')) {
+            $query->where('payment_status', $request->payment_status);
         }
         if ($request->filled('from_date')) {
             $query->whereDate('created_at', '>=', $request->from_date);
@@ -95,10 +95,7 @@ class SellerOrderController extends Controller
         return response()->json(['success' => true, 'data' => $orders]);
     }
 
-    /**
-     * GET /api/seller/orders/{id}
-     * Returns nested { order, items, seller_subtotal } to match frontend OrderDetail type.
-     */
+    /* ── GET /api/seller/orders/{id} ── */
     public function show(Request $request, $id)
     {
         $seller    = auth()->user();
@@ -109,7 +106,6 @@ class SellerOrderController extends Controller
                       ->whereIn('id', $orderIds)
                       ->findOrFail($id);
 
-        // Filter to only this seller's items
         $sellerItems = $order->items->filter(function ($item) use ($seller, $sellerCol) {
             $product = DB::table('products')
                 ->where('id', $item->product_id)
@@ -136,10 +132,7 @@ class SellerOrderController extends Controller
         ]);
     }
 
-    /**
-     * PATCH /api/seller/orders/{id}/status
-     * ← FIXED: expanded allowed statuses to match the dropdown options in the frontend
-     */
+    /* ── PATCH /api/seller/orders/{id}/status ── */
     public function updateStatus(Request $request, $id)
     {
         $request->validate([
@@ -148,14 +141,24 @@ class SellerOrderController extends Controller
 
         $seller   = auth()->user();
         $orderIds = $this->sellerOrderIds($seller->id);
-
-        $order = Order::whereIn('id', $orderIds)->findOrFail($id);
+        $order    = Order::whereIn('id', $orderIds)->findOrFail($id);
         $order->update(['status' => $request->status]);
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Order status updated.',
-            'data'    => $order,
+        return response()->json(['success' => true, 'message' => 'Order status updated.', 'data' => $order]);
+    }
+
+    /* ── PATCH /api/seller/orders/{id}/payment ── NEW ── */
+    public function updatePayment(Request $request, $id)
+    {
+        $request->validate([
+            'payment_status' => 'required|in:unpaid,paid,refunded',
         ]);
+
+        $seller   = auth()->user();
+        $orderIds = $this->sellerOrderIds($seller->id);
+        $order    = Order::whereIn('id', $orderIds)->findOrFail($id);
+        $order->update(['payment_status' => $request->payment_status]);
+
+        return response()->json(['success' => true, 'message' => 'Payment status updated.', 'data' => $order]);
     }
 }

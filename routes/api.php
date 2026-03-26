@@ -16,7 +16,7 @@ use App\Http\Controllers\Admin\SellerController;
 use App\Http\Controllers\Admin\ProductController as AdminProductController;
 use App\Http\Controllers\Admin\OrderController as AdminOrderController;
 use App\Http\Controllers\Api\NotificationController;
-use App\Http\Controllers\Admin\AdminNotificationController; // ← FIXED: was NotificationController
+use App\Http\Controllers\Admin\AdminNotificationController;
 use App\Http\Controllers\Admin\UserController as AdminUserController;
 
 /*
@@ -28,7 +28,6 @@ use App\Http\Controllers\Admin\UserController as AdminUserController;
 Route::post('/auth/login',    [AuthController::class, 'login']);
 Route::post('/auth/register', [AuthController::class, 'register']);
 
-// Public product routes
 Route::get('/products',          [\App\Http\Controllers\Api\ProductController::class, 'index']);
 Route::get('/products/featured', [\App\Http\Controllers\Api\ProductController::class, 'featured']);
 Route::get('/products/{slug}',   [\App\Http\Controllers\Api\ProductController::class, 'show']);
@@ -61,7 +60,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // SELLER APPLICATIONS
     Route::post('/seller-applications',       [SellerApplicationController::class, 'store']);
-    Route::get('/seller-applications/status', [SellerApplicationController::class, 'status']); // ← status BEFORE {id}
+    Route::get('/seller-applications/status', [SellerApplicationController::class, 'status']);
 
     // CART
     Route::prefix('cart')->group(function () {
@@ -77,17 +76,17 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/',                  [FavoriteController::class, 'index']);
         Route::post('/',                 [FavoriteController::class, 'store']);
         Route::delete('/{productId}',    [FavoriteController::class, 'destroy']);
-        Route::get('/check/{productId}', [FavoriteController::class, 'check']); // ← check BEFORE {productId} delete
+        Route::get('/check/{productId}', [FavoriteController::class, 'check']);
     });
 
     // CHECKOUT
     Route::post('/checkout', [CheckoutController::class, 'store']);
 
-    // NOTIFICATIONS (seller/client bell)
+    // NOTIFICATIONS
     Route::prefix('notifications')->group(function () {
         Route::get('/',             [NotificationController::class, 'index']);
-        Route::get('/unread-count', [NotificationController::class, 'unreadCount']); // ← unread-count BEFORE {id}
-        Route::patch('/read-all',   [NotificationController::class, 'markAllRead']); // ← read-all BEFORE {id}
+        Route::get('/unread-count', [NotificationController::class, 'unreadCount']);
+        Route::patch('/read-all',   [NotificationController::class, 'markAllRead']);
         Route::patch('/{id}/read',  [NotificationController::class, 'markRead']);
     });
 
@@ -111,11 +110,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/products/{id}/images/{imageId}',        [SellerProductController::class, 'destroyImage']);
         Route::patch('/products/{id}/images/{imageId}/primary', [SellerProductController::class, 'setPrimaryImage']);
 
-        // Orders — stats BEFORE {id}
-        Route::get('/orders/stats',         [SellerOrderController::class, 'stats']);
-        Route::get('/orders',               [SellerOrderController::class, 'index']);
-        Route::get('/orders/{id}',          [SellerOrderController::class, 'show']);
-        Route::patch('/orders/{id}/status', [SellerOrderController::class, 'updateStatus']);
+        // Orders — stats BEFORE {id}, payment BEFORE status to avoid conflicts
+        Route::get('/orders/stats',           [SellerOrderController::class, 'stats']);
+        Route::get('/orders',                 [SellerOrderController::class, 'index']);
+        Route::get('/orders/{id}',            [SellerOrderController::class, 'show']);
+        Route::patch('/orders/{id}/status',   [SellerOrderController::class, 'updateStatus']);
+        Route::patch('/orders/{id}/payment',  [SellerOrderController::class, 'updatePayment']); // ← NEW
     });
 
     /*
@@ -166,7 +166,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/seller-applications/{application}/approve', [SellerApplicationController::class, 'approve']);
         Route::post('/seller-applications/{application}/reject',  [SellerApplicationController::class, 'reject']);
 
-        // Products — stats/approve/reject/disable BEFORE {id}
+        // Products
         Route::get('/products',                [AdminProductController::class, 'index']);
         Route::get('/products/{id}',           [AdminProductController::class, 'show']);
         Route::put('/products/{id}',           [AdminProductController::class, 'update']);
@@ -181,7 +181,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/orders/{id}',          [AdminOrderController::class, 'show']);
         Route::patch('/orders/{id}/status', [AdminOrderController::class, 'updateStatus']);
 
-        // Admin Notifications — unread-count and read-all BEFORE {id}
+        // Admin Notifications
         Route::prefix('notifications')->group(function () {
             Route::get('/',             [AdminNotificationController::class, 'index']);
             Route::get('/unread-count', [AdminNotificationController::class, 'unreadCount']);
