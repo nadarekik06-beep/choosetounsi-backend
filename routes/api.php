@@ -18,6 +18,7 @@ use App\Http\Controllers\Admin\OrderController as AdminOrderController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Admin\AdminNotificationController;
 use App\Http\Controllers\Admin\UserController as AdminUserController;
+use App\Http\Controllers\Api\SubcategoryController;
 
 /*
 |--------------------------------------------------------------------------
@@ -39,7 +40,16 @@ Route::get('/categories/{slug}/products', [CategoryController::class, 'products'
 
 Route::get('/auth/google/redirect', [AuthController::class, 'googleRedirect']);
 Route::get('/auth/google/callback', [AuthController::class, 'googleCallback']);
-
+// ── Public ───────────────────────────────────────────────────────────────────
+ 
+// Subcategories for a category
+Route::get('/categories/{slug}/subcategories', [SubcategoryController::class, 'index']);
+ 
+// Dynamic attributes for a subcategory (used by the product form)
+Route::get('/subcategories/{id}/attributes', [SubcategoryController::class, 'attributes']);
+ 
+// Filterable attributes present in a category (used by the sidebar filter)
+Route::get('/categories/{slug}/filter-attributes', [\App\Http\Controllers\Api\ProductController::class, 'filterAttributes']);
 /*
 |--------------------------------------------------------------------------
 | AUTHENTICATED ROUTES

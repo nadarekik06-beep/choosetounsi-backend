@@ -11,28 +11,14 @@ class Category extends Model
     use HasFactory;
 
     protected $fillable = [
-        'name',
-        'name_ar',
-        'slug',
-        'description',
-        'icon',
-        'image',
-        'is_active',
-        'order',
+        'name', 'name_ar', 'slug', 'description', 'icon', 'image', 'is_active', 'order',
     ];
 
-    protected $casts = [
-        'is_active' => 'boolean',
-    ];
-
-    // ═══════════════════════════════════════════════
-    // BOOT METHOD - Auto-generate slug
-    // ═══════════════════════════════════════════════
+    protected $casts = ['is_active' => 'boolean'];
 
     protected static function boot()
     {
         parent::boot();
-
         static::creating(function ($category) {
             if (empty($category->slug)) {
                 $category->slug = Str::slug($category->name);
@@ -40,42 +26,39 @@ class Category extends Model
         });
     }
 
-    // ═══════════════════════════════════════════════
-    // RELATIONSHIPS
-    // ═══════════════════════════════════════════════
+    // ── Relationships ──────────────────────────────────────────────────────
 
     public function products()
     {
         return $this->hasMany(Product::class);
     }
 
+    /**
+     * Active + approved products
+     */
     public function activeProducts()
     {
-        return $this->products()
-            ->where('is_approved', true)
-            ->where('is_active', true);
+        return $this->products()->where('is_approved', true)->where('is_active', true);
     }
 
-    // ═══════════════════════════════════════════════
-    // SCOPES
-    // ═══════════════════════════════════════════════
-
-    public function scopeActive($query)
+    /**
+     * All subcategories (ordered)
+     */
+    public function subcategories()
     {
-        return $query->where('is_active', true);
+        return $this->hasMany(Subcategory::class)->orderBy('order');
     }
 
-    public function scopeOrdered($query)
+    /**
+     * Active subcategories
+     */
+    public function activeSubcategories()
     {
-        return $query->orderBy('order', 'asc');
+        return $this->subcategories()->where('is_active', true);
     }
 
-    // ═══════════════════════════════════════════════
-    // HELPER METHODS
-    // ═══════════════════════════════════════════════
+    // ── Scopes ─────────────────────────────────────────────────────────────
 
-    public function getProductCount()
-    {
-        return $this->activeProducts()->count();
-    }
+    public function scopeActive($query)   { return $query->where('is_active', true); }
+    public function scopeOrdered($query)  { return $query->orderBy('order', 'asc'); }
 }

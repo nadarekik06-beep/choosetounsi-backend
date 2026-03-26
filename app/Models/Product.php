@@ -12,213 +12,193 @@ class Product extends Model
     use HasFactory;
 
     protected $fillable = [
-        'seller_id',
-        'category_id',
-        'name',
-        'slug',
-        'description',
-        'short_description',
-        'price',
-        'stock',
-        'sku',
-        'is_approved',
-        'is_active',
-        'featured',
-        'views',
+        'seller_id', 'category_id', 'subcategory_id',
+        'name', 'slug', 'description', 'short_description',
+        'price', 'stock', 'sku',
+        'is_approved', 'is_active', 'featured', 'views',
     ];
 
     protected $casts = [
         'is_approved' => 'boolean',
-        'is_active' => 'boolean',
-        'featured' => 'boolean',
-        'price' => 'decimal:2',
+        'is_active'   => 'boolean',
+        'featured'    => 'boolean',
+        'price'       => 'decimal:2',
     ];
 
     protected $appends = ['primary_image_url'];
 
-    // ═══════════════════════════════════════════════════════════════════
-    // BOOT METHOD - Auto-generate slug and handle deletions
-    // ═══════════════════════════════════════════════════════════════════
+    // ── Boot ──────────────────────────────────────────────────────────────
 
     protected static function boot()
     {
         parent::boot();
 
-        // Auto-generate slug on creation
         static::creating(function ($product) {
             if (empty($product->slug)) {
                 $product->slug = Str::slug($product->name);
             }
         });
 
-        // Delete all images when product is deleted
         static::deleting(function ($product) {
-            // Delete image files from storage
             foreach ($product->images as $image) {
                 Storage::disk('public')->delete($image->image_path);
             }
-            // Delete image records
             $product->images()->delete();
+            $product->attributeValues()->delete();
         });
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // RELATIONSHIPS
-    // ═══════════════════════════════════════════════════════════════════
+    // ── Relationships ──────────────────────────────────────────────────────
 
-    /**
-     * Product belongs to a seller (User)
-     */
     public function seller()
     {
         return $this->belongsTo(User::class, 'seller_id');
-    }public function orderItems()
-{
-    return $this->hasMany(OrderItem::class);
-}
+    }
 
-    /**
-     * Product belongs to a category
-     */
     public function category()
     {
         return $this->belongsTo(Category::class);
     }
 
-    /**
-     * Product has many images
-     */
+    public function subcategory()
+    {
+        return $this->belongsTo(Subcategory::class);
+    }
+
     public function images()
     {
         return $this->hasMany(ProductImage::class)->orderBy('order');
     }
 
-    /**
-     * Get the primary image
-     */
     public function primaryImage()
     {
         return $this->hasOne(ProductImage::class)->where('is_primary', true);
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // SCOPES
-    // ═══════════════════════════════════════════════════════════════════
-
-    /**
-     * Scope: Only approved products
-     */
-    public function scopeApproved($query)
+    public function orderItems()
     {
-        return $query->where('is_approved', true);
+        return $this->hasMany(OrderItem::class);
     }
 
     /**
-     * Scope: Only pending products
+     * Raw attribute value rows.
      */
-    public function scopePending($query)
+    public function attributeValues()
     {
-        return $query->where('is_approved', false);
+        return $this->hasMany(ProductAttributeValue::class);
     }
 
     /**
-     * Scope: Only active products
+     * Attribute values with their attribute definitions & options eager-loaded.
      */
-    public function scopeActive($query)
+    public function attributes()
     {
-        return $query->where('is_active', true);
+        return $this->attributeValues()->with(['attribute.options']);
     }
 
-    /**
-     * Scope: Available products (approved AND active)
-     */
-    public function scopeAvailable($query)
-    {
-        return $query->where('is_approved', true)
-                     ->where('is_active', true);
-    }
+    // ── Scopes ─────────────────────────────────────────────────────────────
+
+    public function scopeApproved($query)  { return $query->where('is_approved', true); }
+    public function scopePending($query)   { return $query->where('is_approved', false); }
+    public function scopeActive($query)    { return $query->where('is_active', true); }
+    public function scopeAvailable($query) { return $query->where('is_approved', true)->where('is_active', true); }
+    public function scopeFeatured($query)  { return $query->where('featured', true); }
+    public function scopeInStock($query)   { return $query->where('stock', '>', 0); }
 
     /**
-     * Scope: Featured products
+     * Filter by a specific attribute value.
+     * Usage: ->hasAttribute('color', [3, 7])  (option IDs)
+     *        ->hasAttribute('brand', 'Nike')   (text)
      */
-    public function scopeFeatured($query)
+    public function scopeHasAttribute($query, string $attrSlug, $value)
     {
-        return $query->where('featured', true);
+        return $query->whereHas('attributeValues', function ($q) use ($attrSlug, $value) {
+            $q->whereHas('attribute', fn($a) => $a->where('slug', $attrSlug));
+
+            if (is_array($value)) {
+                // For multiselect: check that JSON contains ALL given option IDs
+                foreach ($value as $v) {
+                    $q->where('value', 'like', '%"' . $v . '"%');
+                }
+            } else {
+                $q->where('value', $value);
+            }
+        });
     }
 
-    /**
-     * Scope: In stock products
-     */
-    public function scopeInStock($query)
-    {
-        return $query->where('stock', '>', 0);
-    }
-    
-    // ═══════════════════════════════════════════════════════════════════
-    // HELPER METHODS
-    // ═══════════════════════════════════════════════════════════════════
+    // ── Helpers ────────────────────────────────────────────────────────────
 
-    /**
-     * Check if product is available for purchase
-     */
-    public function isAvailable()
+    public function isAvailable(): bool
     {
         return $this->is_approved && $this->is_active && $this->stock > 0;
     }
 
-    /**
-     * Get primary image URL
-     */
-    public function getPrimaryImageUrl()
+    public function getPrimaryImageUrl(): string
     {
         $primary = $this->primaryImage;
-        
-        if ($primary) {
-            return Storage::url($primary->image_path);
-        }
-        
-        // Return placeholder if no image
-        return asset('images/placeholder-product.jpg');
+        return $primary
+            ? Storage::url($primary->image_path)
+            : asset('images/placeholder-product.jpg');
     }
 
-    /**
-     * Accessor for primary_image_url (for JSON responses)
-     */
-    public function getPrimaryImageUrlAttribute()
+    public function getPrimaryImageUrlAttribute(): string
     {
         return $this->getPrimaryImageUrl();
     }
 
-    /**
-     * Increment product views
-     */
-    public function incrementViews()
+    public function incrementViews(): void
     {
         $this->increment('views');
     }
 
-    /**
-     * Get formatted price with currency
-     */
-    public function getFormattedPriceAttribute()
+    public function getFormattedPriceAttribute(): string
     {
         return number_format($this->price, 2) . ' TND';
     }
 
-    /**
-     * Check if product is out of stock
-     */
-    public function isOutOfStock()
+    public function isOutOfStock(): bool
     {
         return $this->stock <= 0;
     }
 
-    /**
-     * Check if product is low on stock (less than 10)
-     */
-    public function isLowStock()
+    public function isLowStock(): bool
     {
         return $this->stock > 0 && $this->stock < 10;
     }
-    
+
+    /**
+     * Save attribute values for this product.
+     * $data = ['color' => '[1,2]', 'size' => '[3]', 'brand' => 'Nike', ...]
+     * Keys are attribute slugs, values are already-serialized strings.
+     */
+    public function syncAttributeValues(array $data): void
+    {
+        $attrMap = Attribute::whereIn('slug', array_keys($data))->pluck('id', 'slug');
+
+        foreach ($data as $slug => $value) {
+            if (!isset($attrMap[$slug]) || $value === null || $value === '') continue;
+
+            ProductAttributeValue::updateOrCreate(
+                ['product_id' => $this->id, 'attribute_id' => $attrMap[$slug]],
+                ['value' => $value]
+            );
+        }
+    }
+
+    /**
+     * Return attribute values as a keyed array suitable for the front-end form.
+     * [ 'color' => [1,2], 'brand' => 'Nike', ... ]
+     */
+    public function getAttributeValuesForForm(): array
+    {
+        return $this->attributeValues()
+            ->with('attribute')
+            ->get()
+            ->mapWithKeys(function ($pav) {
+                $attr  = $pav->attribute;
+                $value = $attr->decodeValue($pav->value);
+                return [$attr->slug => $value];
+            })
+            ->toArray();
+    }
 }

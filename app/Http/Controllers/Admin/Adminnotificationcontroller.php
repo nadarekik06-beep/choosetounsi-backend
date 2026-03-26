@@ -1,10 +1,7 @@
 <?php
-// app/Http/Controllers/Admin/NotificationController.php — FIXED
-// Changes from original:
-//   1. Added try/catch around every method → no more 500 with blank response
-//   2. ->read_at and ->created_at cast to ISO string (prevents null serialisation issues)
-//   3. Explicit 401 guard if $request->user() is null
-//   4. per_page capped at 100 to prevent abuse
+
+// app/Http/Controllers/Admin/AdminNotificationController.php
+// Class name MUST be AdminNotificationController to match api.php
 
 namespace App\Http\Controllers\Admin;
 
@@ -12,104 +9,88 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
-class NotificationController extends Controller
+class AdminNotificationController extends Controller
 {
-    /**
-     * GET /api/admin/notifications
-     */
     public function index(Request $request)
     {
         try {
             $admin = $request->user();
-
-            if (!$admin) {
-                return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
-            }
+            if (!$admin) return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
 
             $perPage = min((int) $request->query('per_page', 20), 100);
-
-            $notifications = $admin->notifications()
-                ->orderByDesc('created_at')
-                ->paginate($perPage);
+            $notifications = $admin->notifications()->orderByDesc('created_at')->paginate($perPage);
 
             return response()->json([
                 'success' => true,
-                'data'    => $notifications->map(function ($n) {
-                    return [
-                        'id'         => $n->id,
-                        'data'       => $n->data,
-                        'is_read'    => ! is_null($n->read_at),
-                        'read_at'    => $n->read_at?->toISOString(),
-                        'created_at' => $n->created_at->toISOString(),
-                    ];
-                }),
-                'meta' => [
+                'data'    => $notifications->map(fn($n) => $this->format($n)),
+                'meta'    => [
                     'current_page' => $notifications->currentPage(),
                     'last_page'    => $notifications->lastPage(),
                     'total'        => $notifications->total(),
                 ],
             ]);
         } catch (\Exception $e) {
-            Log::error('[Admin\NotificationController::index] ' . $e->getMessage(), [
-                'trace' => $e->getTraceAsString(),
-            ]);
+            Log::error('[AdminNotificationController::index] ' . $e->getMessage());
             return response()->json(['success' => false, 'message' => 'Server error.'], 500);
         }
     }
 
-    /**
-     * GET /api/admin/notifications/unread-count
-     */
     public function unreadCount(Request $request)
     {
         try {
             $admin = $request->user();
-
-            if (!$admin) {
-                return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
-            }
+            if (!$admin) return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
 
             return response()->json([
                 'success' => true,
                 'count'   => $admin->unreadNotifications()->count(),
             ]);
         } catch (\Exception $e) {
-            Log::error('[Admin\NotificationController::unreadCount] ' . $e->getMessage());
-            // Return 0 instead of 500 so the frontend badge just shows nothing
+            Log::error('[AdminNotificationController::unreadCount] ' . $e->getMessage());
             return response()->json(['success' => false, 'count' => 0], 500);
         }
     }
 
-    /**
-     * PATCH /api/admin/notifications/{id}/read
-     */
-    public function markRead(Request $request, $id)
+    public function markRead(Request $request, string $id)
     {
         try {
-            $notification = $request->user()->notifications()->findOrFail($id);
+            $notification = $request->user()->notifications()->where('id', $id)->firstOrFail();
             $notification->markAsRead();
-
             return response()->json(['success' => true]);
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json(['success' => false, 'message' => 'Notification not found.'], 404);
+            return response()->json(['success' => false, 'message' => 'Not found.'], 404);
         } catch (\Exception $e) {
-            Log::error('[Admin\NotificationController::markRead] ' . $e->getMessage());
+            Log::error('[AdminNotificationController::markRead] ' . $e->getMessage());
             return response()->json(['success' => false], 500);
         }
     }
 
-    /**
-     * PATCH /api/admin/notifications/read-all
-     */
     public function markAllRead(Request $request)
     {
         try {
             $request->user()->unreadNotifications()->update(['read_at' => now()]);
-
             return response()->json(['success' => true]);
         } catch (\Exception $e) {
-            Log::error('[Admin\NotificationController::markAllRead] ' . $e->getMessage());
+            Log::error('[AdminNotificationController::markAllRead] ' . $e->getMessage());
             return response()->json(['success' => false], 500);
         }
+    }
+
+    private function format($notification): array
+    {
+        return [
+            'id'         => $notification->id,
+            'is_read'    => !is_null($notification->read_at),
+            'read_at'    => $notification->read_at?->toISOString(),
+            'created_at' => $notification->created_at->toISOString(),
+            'data'       => [
+                'type'   => $notification->data['type']   ?? 'general',
+                'action' => $notification->data['action'] ?? 'info',
+                'title'  => $notification->data['title']  ?? $notification->data['message'] ?? 'Notification',
+                'body'   => $notification->data['body']   ?? $notification->data['message'] ?? '',
+                'icon'   => $notification->data['icon']   ?? 'package',
+                'link'   => $notification->data['link']   ?? $notification->data['url']     ?? '',
+            ],
+        ];
     }
 }
