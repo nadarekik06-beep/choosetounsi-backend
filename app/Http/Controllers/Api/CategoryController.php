@@ -127,6 +127,23 @@ class CategoryController extends Controller
             $query->where('stock', '>', 0);
         }
 
+        // ─── Attribute filters ─────────────────────────────────────────────
+        // Frontend sends: attrs[color]=1,3&attrs[size]=5,7
+        // OR within attribute, AND across attributes.
+        if ($attrs = $request->query('attrs')) {
+            foreach ($attrs as $attrSlug => $optionIds) {
+                if (empty($optionIds)) continue;
+                $ids = is_array($optionIds)
+                    ? array_map('intval', $optionIds)
+                    : array_filter(array_map('intval', explode(',', $optionIds)));
+                if (empty($ids)) continue;
+                $query->whereHas('attributeValues', function ($q) use ($attrSlug, $ids) {
+                    $q->whereHas('attribute', fn($a) => $a->where('slug', $attrSlug))
+                      ->whereIn('attribute_option_id', $ids);
+                });
+            }
+        }
+
         // ─── Sorting ──────────────────────────────────────────────────────
         $sort  = $request->query('sort',  'created_at');
         $order = in_array($request->query('order'), ['asc', 'desc'])
