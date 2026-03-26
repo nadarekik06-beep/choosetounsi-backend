@@ -128,18 +128,43 @@ class CategoryController extends Controller
         }
 
         // ─── Attribute filters ─────────────────────────────────────────────
-        // Frontend sends: attrs[color]=1,3&attrs[size]=5,7
-        // OR within attribute, AND across attributes.
+        // Frontend sends: attrs[color]=1,3&attrs[size]=5
+        // Values stored in product_attribute_values.value as:
+        //   select/color   → "5"          (single option ID as string)
+        //   multiselect    → "[3,7,12]"   (JSON array of option IDs)
+        //   boolean        → "1" or "0"
+        // Logic: OR within an attribute, AND across attributes.
         if ($attrs = $request->query('attrs')) {
             foreach ($attrs as $attrSlug => $optionIds) {
                 if (empty($optionIds)) continue;
+
+                // Parse IDs sent from frontend
                 $ids = is_array($optionIds)
                     ? array_map('intval', $optionIds)
-                    : array_filter(array_map('intval', explode(',', $optionIds)));
+                    : array_filter(array_map('intval', explode(',', (string) $optionIds)));
+
                 if (empty($ids)) continue;
+
                 $query->whereHas('attributeValues', function ($q) use ($attrSlug, $ids) {
-                    $q->whereHas('attribute', fn($a) => $a->where('slug', $attrSlug))
-                      ->whereIn('attribute_option_id', $ids);
+                    // Match the right attribute by slug
+                    $q->whereHas('attribute', fn($a) => $a->where('slug', $attrSlug));
+
+                    // Match value — OR group across all selected option IDs.
+                    // select/color:    value = "5"         → exact string match
+                    // multiselect:     value = "[3,7,12]"  → JSON array contains the ID
+                    $q->where(function ($vq) use ($ids) {
+                        foreach ($ids as $optId) {
+                            $idStr  = (string) $optId;
+                            $idJson = (string) $optId;   // JSON_CONTAINS needle must be valid JSON
+
+                            // select / color: stored as plain string e.g. "5"
+                            $vq->orWhere('value', $idStr);
+
+                            // multiselect: stored as JSON array e.g. "[3,7]"
+                            // JSON_CONTAINS(json_doc, candidate) — both args must be valid JSON
+                            $vq->orWhereRaw('JSON_VALID(`value`) = 1 AND JSON_CONTAINS(`value`, ?)', [$idJson]);
+                        }
+                    });
                 });
             }
         }
