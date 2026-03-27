@@ -9,11 +9,13 @@ class OrderItem extends Model
 {
     use HasFactory;
 
-    protected $table = 'order_items'; // explicit — avoids any table name guessing
+    protected $table = 'order_items';
 
     protected $fillable = [
         'order_id',
         'product_id',
+        'variant_id',
+        'variant_label',
         'product_name',
         'quantity',
         'unit_price',
@@ -22,10 +24,7 @@ class OrderItem extends Model
     ];
 
     protected $casts = [
-        'unit_price' => 'decimal:3',
-        'price'      => 'decimal:3',
-        'total'      => 'decimal:3',
-        'quantity'   => 'integer',
+        'quantity' => 'integer',
     ];
 
     /* ── Accessors ── */
@@ -35,9 +34,17 @@ class OrderItem extends Model
         return (float) ($value ?: ($this->attributes['price'] ?? 0));
     }
 
+    public function getPriceAttribute($value): float
+    {
+        return (float) ($value ?: ($this->attributes['unit_price'] ?? 0));
+    }
+
     public function getTotalAttribute($value): float
     {
-        return (float) ($value ?: ($this->getUnitPriceAttribute($this->attributes['unit_price'] ?? 0) * ($this->attributes['quantity'] ?? 1)));
+        if ($value) return (float) $value;
+        $unitPrice = (float) ($this->attributes['unit_price'] ?? $this->attributes['price'] ?? 0);
+        $quantity  = (int)   ($this->attributes['quantity'] ?? 1);
+        return round($unitPrice * $quantity, 2);
     }
 
     /* ── Relationships ── */
@@ -47,13 +54,13 @@ class OrderItem extends Model
         return $this->belongsTo(Order::class);
     }
 
-    /**
-     * The product this item refers to.
-     * Uses withTrashed() so soft-deleted products still resolve
-     * (the product name is also stored in product_name as a snapshot).
-     */
     public function product(): \Illuminate\Database\Eloquent\Relations\BelongsTo
     {
         return $this->belongsTo(Product::class, 'product_id')->withTrashed();
+    }
+
+    public function variant(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(ProductVariant::class, 'variant_id');
     }
 }

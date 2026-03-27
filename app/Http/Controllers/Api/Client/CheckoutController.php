@@ -78,14 +78,14 @@ class CheckoutController extends Controller
                 $price = $item->variant
                     ? (float) ($item->variant->price_override ?? $item->product->price)
                     : (float) $item->product->price;
-                return round($price * $item->quantity, 3);
+                return round($price * $item->quantity, 2);
             });
 
             $order = Order::create([
                 'user_id'        => $user->id,
                 'order_number'   => 'ORD-' . strtoupper(Str::random(8)),
                 'status'         => 'pending',
-                'payment_status' => 'pending',
+                'payment_status' => 'unpaid',
                 'total_amount'   => $total,
                 'wilaya'         => $request->wilaya,
                 'address'        => $request->address,
@@ -113,7 +113,8 @@ class CheckoutController extends Controller
                     'product_name' => $product->name,
                     'quantity'     => $item->quantity,
                     'unit_price'   => $unitPrice,
-                    'total'        => round($unitPrice * $item->quantity, 3),
+                    'price'        => $unitPrice,
+                    'total'        => round($unitPrice * $item->quantity, 2),
                 ]);
 
                 // ── Decrement stock ─────────────────────────────────────────
@@ -140,6 +141,10 @@ class CheckoutController extends Controller
 
         } catch (\Throwable $e) {
             DB::rollBack();
+            \Log::error('Checkout failed: ' . $e->getMessage(), [
+                'file'  => $e->getFile(),
+                'line'  => $e->getLine(),
+            ]);
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to place order. Please try again.',

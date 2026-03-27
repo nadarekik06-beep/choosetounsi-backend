@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Api\Client;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Storage;
 
 class ClientOrderApiController extends Controller
 {
@@ -17,7 +16,7 @@ class ClientOrderApiController extends Controller
     {
         $orders = Order::where('user_id', $request->user()->id)
             ->with([
-                'items.product.primaryImage',
+                'items.product.images',
             ])
             ->orderByDesc('created_at')
             ->paginate(10);
@@ -42,7 +41,7 @@ class ClientOrderApiController extends Controller
             return response()->json(['success' => false, 'message' => 'Not found.'], 404);
         }
 
-        $order->load(['items.product.primaryImage']);
+        $order->load(['items.product.images']);
 
         return response()->json([
             'success' => true,
@@ -78,16 +77,23 @@ class ClientOrderApiController extends Controller
         // Format each order item to include variant info
         $data['items'] = $order->items->map(function ($item) {
             $product = $item->product;
-            $imgPath = $product?->primaryImage?->image_path;
-            $imageUrl = $imgPath
-                ? rtrim(config('app.url'), '/') . '/storage/' . ltrim($imgPath, '/')
-                : null;
+
+            // Resolve primary image URL from already-loaded images relation
+            $imageUrl = null;
+            if ($product) {
+                $primary = $product->images
+                    ->firstWhere('is_primary', true)
+                    ?? $product->images->first();
+                if ($primary) {
+                    $imageUrl = rtrim(config('app.url'), '/') . '/storage/' . ltrim($primary->image_path, '/');
+                }
+            }
 
             return [
                 'id'            => $item->id,
                 'product_id'    => $item->product_id,
                 'variant_id'    => $item->variant_id,
-                'variant_label' => $item->variant_label,   // snapshot saved at order time
+                'variant_label' => $item->variant_label,
                 'product_name'  => $item->product_name,
                 'quantity'      => $item->quantity,
                 'unit_price'    => (float) $item->unit_price,
