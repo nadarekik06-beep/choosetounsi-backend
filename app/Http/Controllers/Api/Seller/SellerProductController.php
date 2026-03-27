@@ -6,8 +6,12 @@ use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Models\ProductImage;
 use App\Models\ProductVariant;
+use App\Models\User;
+use App\Notifications\ProductActionNotification;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class SellerProductController extends Controller
@@ -23,7 +27,7 @@ class SellerProductController extends Controller
             'category:id,name,slug',
             'subcategory:id,name,slug',
             'primaryImage',
-            'variants',  // needed for has_variants + variant_stock on list
+            'variants',
         ]);
 
         if ($request->filled('search')) {
@@ -50,8 +54,8 @@ class SellerProductController extends Controller
             $p->primary_image_url = $p->primaryImage
                 ? Storage::url($p->primaryImage->image_path)
                 : null;
-            $p->has_variants   = $p->variants->isNotEmpty();
-            $p->variant_stock  = $p->variants->sum('stock');
+            $p->has_variants  = $p->variants->isNotEmpty();
+            $p->variant_stock = $p->variants->sum('stock');
             return $p;
         });
 
@@ -119,41 +123,37 @@ class SellerProductController extends Controller
 
     /**
      * POST /api/seller/products
-     *
-     * Accepts multipart/form-data with PHP-style array notation for variants:
-     *   variants[0][option_ids][0] = 3
-     *   variants[0][stock]         = 10
-     *   variants[0][is_active]     = 1
      */
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'name'                         => 'required|string|max:255',
-            'slug'                         => 'nullable|string|max:255|unique:products,slug',
-            'sku'                          => 'nullable|string|unique:products,sku',
-            'description'                  => 'nullable|string',
-            'short_description'            => 'nullable|string|max:500',
-            'price'                        => 'required|numeric|min:0',
-            'stock'                        => 'required|integer|min:0',
-            'category_id'                  => 'required|exists:categories,id',
-            'subcategory_id'               => 'nullable|exists:subcategories,id',
-            'is_active'                    => 'sometimes',
-            'images'                       => 'nullable|array|max:8',
-            'images.*'                     => 'image|mimes:jpeg,png,jpg,webp|max:5120',
-            'attributes'                   => 'nullable|array',
-            'variants'                     => 'nullable|array',
-            'variants.*.id'                => 'nullable|integer|exists:product_variants,id',
-            'variants.*.option_ids'        => 'required_with:variants|array',
-            'variants.*.option_ids.*'      => 'integer|exists:attribute_options,id',
-            'variants.*.stock'             => 'required_with:variants|integer|min:0',
-            'variants.*.price_override'    => 'nullable|numeric|min:0',
-            'variants.*.sku'               => 'nullable|string',
-            'variants.*.is_active'         => 'sometimes',
+            'name'                      => 'required|string|max:255',
+            'slug'                      => 'nullable|string|max:255|unique:products,slug',
+            'sku'                       => 'nullable|string|unique:products,sku',
+            'description'               => 'nullable|string',
+            'short_description'         => 'nullable|string|max:500',
+            'price'                     => 'required|numeric|min:0',
+            'stock'                     => 'required|integer|min:0',
+            'category_id'               => 'required|exists:categories,id',
+            'subcategory_id'            => 'nullable|exists:subcategories,id',
+            'is_active'                 => 'sometimes',
+            'images'                    => 'nullable|array|max:8',
+            'images.*'                  => 'image|mimes:jpeg,png,jpg,webp|max:5120',
+            'attributes'                => 'nullable|array',
+            'variants'                  => 'nullable|array',
+            'variants.*.id'             => 'nullable|integer|exists:product_variants,id',
+            'variants.*.option_ids'     => 'required_with:variants|array',
+            'variants.*.option_ids.*'   => 'integer|exists:attribute_options,id',
+            'variants.*.stock'          => 'required_with:variants|integer|min:0',
+            'variants.*.price_override' => 'nullable|numeric|min:0',
+            'variants.*.sku'            => 'nullable|string',
+            'variants.*.is_active'      => 'sometimes',
         ]);
 
+        $seller   = $request->user();
         $isActive = filter_var($request->input('is_active', true), FILTER_VALIDATE_BOOLEAN);
 
-        $product = $request->user()->products()->create([
+        $product = $seller->products()->create([
             'name'              => $validated['name'],
             'slug'              => $validated['slug'] ?? Str::slug($validated['name']),
             'sku'               => $validated['sku']               ?? null,
@@ -169,7 +169,7 @@ class SellerProductController extends Controller
             'views'             => 0,
         ]);
 
-        // ── Images ────────────────────────────────────────────────────────
+        // Images
         if ($request->hasFile('images')) {
             foreach ($request->file('images') as $index => $image) {
                 $path = $image->store('products', 'public');
@@ -182,14 +182,24 @@ class SellerProductController extends Controller
             }
         }
 
-        // ── Product-level attributes ───────────────────────────────────────
+        // Attributes
         if (!empty($validated['attributes'])) {
             $product->syncAttributeValues($validated['attributes']);
         }
 
-        // ── Variants ──────────────────────────────────────────────────────
+        // Variants
         if (!empty($validated['variants'])) {
             $this->saveVariants($product, $validated['variants']);
+        }
+
+        // ── Notify all admins ─────────────────────────────────────────────
+        try {
+            $admins = User::where('role', 'admin')->where('is_active', true)->get();
+            Notification::send($admins, new ProductActionNotification(
+                'created', $product->id, $product->name, $seller->name, $seller->id
+            ));
+        } catch (\Exception $e) {
+            Log::error('[SellerProductController::store] Notification failed: ' . $e->getMessage());
         }
 
         return response()->json([
@@ -205,34 +215,35 @@ class SellerProductController extends Controller
      */
     public function update(Request $request, int $id)
     {
+        $seller  = $request->user();
         $product = Product::where('id', $id)
-            ->where('seller_id', $request->user()->id)
+            ->where('seller_id', $seller->id)
             ->firstOrFail();
 
         $validated = $request->validate([
-            'name'                         => 'required|string|max:255',
-            'slug'                         => 'nullable|string|max:255|unique:products,slug,' . $product->id,
-            'sku'                          => 'nullable|string|unique:products,sku,' . $product->id,
-            'description'                  => 'nullable|string',
-            'short_description'            => 'nullable|string|max:500',
-            'price'                        => 'required|numeric|min:0',
-            'stock'                        => 'required|integer|min:0',
-            'category_id'                  => 'required|exists:categories,id',
-            'subcategory_id'               => 'nullable|exists:subcategories,id',
-            'is_active'                    => 'sometimes',
-            'images'                       => 'nullable|array|max:8',
-            'images.*'                     => 'image|mimes:jpeg,png,jpg,webp|max:5120',
-            'delete_image_ids'             => 'nullable|array',
-            'delete_image_ids.*'           => 'integer',
-            'attributes'                   => 'nullable|array',
-            'variants'                     => 'nullable|array',
-            'variants.*.id'                => 'nullable|integer',
-            'variants.*.option_ids'        => 'required_with:variants|array',
-            'variants.*.option_ids.*'      => 'integer|exists:attribute_options,id',
-            'variants.*.stock'             => 'required_with:variants|integer|min:0',
-            'variants.*.price_override'    => 'nullable|numeric|min:0',
-            'variants.*.sku'               => 'nullable|string',
-            'variants.*.is_active'         => 'sometimes',
+            'name'                      => 'required|string|max:255',
+            'slug'                      => 'nullable|string|max:255|unique:products,slug,' . $product->id,
+            'sku'                       => 'nullable|string|unique:products,sku,' . $product->id,
+            'description'               => 'nullable|string',
+            'short_description'         => 'nullable|string|max:500',
+            'price'                     => 'required|numeric|min:0',
+            'stock'                     => 'required|integer|min:0',
+            'category_id'               => 'required|exists:categories,id',
+            'subcategory_id'            => 'nullable|exists:subcategories,id',
+            'is_active'                 => 'sometimes',
+            'images'                    => 'nullable|array|max:8',
+            'images.*'                  => 'image|mimes:jpeg,png,jpg,webp|max:5120',
+            'delete_image_ids'          => 'nullable|array',
+            'delete_image_ids.*'        => 'integer',
+            'attributes'                => 'nullable|array',
+            'variants'                  => 'nullable|array',
+            'variants.*.id'             => 'nullable|integer',
+            'variants.*.option_ids'     => 'required_with:variants|array',
+            'variants.*.option_ids.*'   => 'integer|exists:attribute_options,id',
+            'variants.*.stock'          => 'required_with:variants|integer|min:0',
+            'variants.*.price_override' => 'nullable|numeric|min:0',
+            'variants.*.sku'            => 'nullable|string',
+            'variants.*.is_active'      => 'sometimes',
         ]);
 
         $isActive = filter_var($request->input('is_active', $product->is_active), FILTER_VALIDATE_BOOLEAN);
@@ -250,7 +261,7 @@ class SellerProductController extends Controller
             'is_active'         => $isActive,
         ]);
 
-        // ── Delete images ──────────────────────────────────────────────────
+        // Delete images
         if (!empty($validated['delete_image_ids'])) {
             $toDelete = $product->images()->whereIn('id', $validated['delete_image_ids'])->get();
             foreach ($toDelete as $img) {
@@ -259,7 +270,7 @@ class SellerProductController extends Controller
             }
         }
 
-        // ── Upload new images ──────────────────────────────────────────────
+        // Upload new images
         if ($request->hasFile('images')) {
             $maxOrder = $product->images()->max('order') ?? -1;
             foreach ($request->file('images') as $index => $image) {
@@ -273,14 +284,24 @@ class SellerProductController extends Controller
             }
         }
 
-        // ── Product-level attributes ───────────────────────────────────────
+        // Attributes
         if (isset($validated['attributes'])) {
             $product->syncAttributeValues($validated['attributes']);
         }
 
-        // ── Variants ──────────────────────────────────────────────────────
+        // Variants
         if (isset($validated['variants'])) {
             $this->saveVariants($product, $validated['variants']);
+        }
+
+        // ── Notify all admins ─────────────────────────────────────────────
+        try {
+            $admins = User::where('role', 'admin')->where('is_active', true)->get();
+            Notification::send($admins, new ProductActionNotification(
+                'updated', $product->id, $product->name, $seller->name, $seller->id
+            ));
+        } catch (\Exception $e) {
+            Log::error('[SellerProductController::update] Notification failed: ' . $e->getMessage());
         }
 
         return response()->json([
@@ -295,15 +316,30 @@ class SellerProductController extends Controller
      */
     public function destroy(Request $request, int $id)
     {
+        $seller  = $request->user();
         $product = Product::where('id', $id)
-            ->where('seller_id', $request->user()->id)
+            ->where('seller_id', $seller->id)
             ->firstOrFail();
+
+        // Capture before delete
+        $productId   = $product->id;
+        $productName = $product->name;
 
         foreach ($product->images as $image) {
             Storage::disk('public')->delete($image->image_path);
         }
 
         $product->delete();
+
+        // ── Notify all admins ─────────────────────────────────────────────
+        try {
+            $admins = User::where('role', 'admin')->where('is_active', true)->get();
+            Notification::send($admins, new ProductActionNotification(
+                'deleted', $productId, $productName, $seller->name, $seller->id
+            ));
+        } catch (\Exception $e) {
+            Log::error('[SellerProductController::destroy] Notification failed: ' . $e->getMessage());
+        }
 
         return response()->json(['success' => true, 'message' => 'Product deleted.']);
     }
@@ -349,21 +385,10 @@ class SellerProductController extends Controller
         return response()->json(['success' => true, 'message' => 'Primary image updated.']);
     }
 
-    // ── Private helpers ────────────────────────────────────────────────────
+    // ── Private helpers ────────────────────────────────────────────────────────
 
-    /**
-     * Save variants for a product from the request's variants array.
-     * Handles both create (no id) and update (with id).
-     *
-     * $variantsData shape (from FormData PHP array parsing):
-     * [
-     *   ['option_ids' => ['3', '7'], 'stock' => '10', 'price_override' => '', 'is_active' => '1'],
-     *   ...
-     * ]
-     */
     private function saveVariants(Product $product, array $variantsData): void
     {
-        // IDs present in incoming data
         $incomingIds = collect($variantsData)
             ->pluck('id')
             ->filter()
@@ -371,7 +396,6 @@ class SellerProductController extends Controller
             ->values()
             ->toArray();
 
-        // Delete variants not in the new list
         if (!empty($incomingIds)) {
             $product->variants()->whereNotIn('id', $incomingIds)->delete();
         } else {
@@ -387,12 +411,10 @@ class SellerProductController extends Controller
 
             if (!$variant) continue;
 
-            // Cast is_active: "1"/"0"/true/false all handled
             $active = isset($vData['is_active'])
                 ? filter_var($vData['is_active'], FILTER_VALIDATE_BOOLEAN)
                 : true;
 
-            // Cast price_override: empty string → null
             $priceOverride = isset($vData['price_override']) && $vData['price_override'] !== ''
                 ? (float) $vData['price_override']
                 : null;
@@ -405,7 +427,6 @@ class SellerProductController extends Controller
                 'is_active'      => $active,
             ])->save();
 
-            // Sync attribute options
             if (isset($vData['option_ids']) && is_array($vData['option_ids'])) {
                 $optionIds = array_values(
                     array_filter(
