@@ -30,8 +30,8 @@ class Subcategory extends Model
     }
 
     /**
-     * Attributes linked to this subcategory via the subcategory_attributes pivot.
-     * The pivot carries is_required and order overrides per subcategory.
+     * ALL attributes linked to this subcategory.
+     * Pivot carries: is_required, is_variant, order
      */
     public function attributes()
     {
@@ -41,8 +41,43 @@ class Subcategory extends Model
             'subcategory_id',
             'attribute_id'
         )
-        ->withPivot('is_required', 'order')
-        ->with('options')          // always eager-load options
+        ->withPivot('is_required', 'is_variant', 'order')
+        ->with('options')
+        ->orderBy('subcategory_attributes.order');
+    }
+
+    /**
+     * Only the attributes marked as variant axes for this subcategory.
+     * These generate the combination matrix (Color×Size, RAM×Storage, etc.)
+     */
+    public function variantAttributes()
+    {
+        return $this->belongsToMany(
+            Attribute::class,
+            'subcategory_attributes',
+            'subcategory_id',
+            'attribute_id'
+        )
+        ->wherePivot('is_variant', true)
+        ->withPivot('is_required', 'is_variant', 'order')
+        ->with('options')
+        ->orderBy('subcategory_attributes.order');
+    }
+
+    /**
+     * Only informational (non-variant) attributes.
+     */
+    public function infoAttributes()
+    {
+        return $this->belongsToMany(
+            Attribute::class,
+            'subcategory_attributes',
+            'subcategory_id',
+            'attribute_id'
+        )
+        ->wherePivot('is_variant', false)
+        ->withPivot('is_required', 'is_variant', 'order')
+        ->with('options')
         ->orderBy('subcategory_attributes.order');
     }
 }

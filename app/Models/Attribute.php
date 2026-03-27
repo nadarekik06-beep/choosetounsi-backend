@@ -27,10 +27,14 @@ class Attribute extends Model
         return $this->hasMany(AttributeOption::class)->orderBy('order');
     }
 
+    /**
+     * Subcategories this attribute is linked to.
+     * Pivot carries: is_required, is_variant, order
+     */
     public function subcategories()
     {
         return $this->belongsToMany(Subcategory::class, 'subcategory_attributes')
-            ->withPivot('is_required', 'order');
+            ->withPivot('is_required', 'is_variant', 'order');
     }
 
     public function productValues()
@@ -41,7 +45,7 @@ class Attribute extends Model
     // ── Helpers ────────────────────────────────────────────────────────────
 
     /**
-     * Decode a stored value.
+     * Decode a stored product_attribute_value.value string.
      * select/multiselect/color → array of option IDs
      * text/number/boolean     → raw scalar
      */

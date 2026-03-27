@@ -6,6 +6,21 @@ use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
+/**
+ * SubcategoryAndAttributeSeeder (Combined)
+ *
+ * Combines the full subcategory + attribute data seed with
+ * the is_variant flag logic from the second seeder.
+ *
+ * STEP 1 — Fetch category IDs
+ * STEP 2 — Insert subcategories
+ * STEP 3 — Insert global attributes
+ * STEP 4 — Insert attribute options (including colors with hex)
+ * STEP 5 — Map attributes → subcategories (subcategory_attributes)
+ * STEP 6 — Apply is_variant flags based on subcategory name keywords
+ *
+ * Run: php artisan db:seed --class=SubcategoryAndAttributeSeeder
+ */
 class SubcategoryAndAttributeSeeder extends Seeder
 {
     public function run(): void
@@ -38,30 +53,30 @@ class SubcategoryAndAttributeSeeder extends Seeder
                 ['name' => 'Sportswear',    'name_ar' => 'ملابس رياضية'],
             ],
             'electronics-tech' => [
-                ['name' => 'Smartphone',       'name_ar' => 'هاتف ذكي'],
-                ['name' => 'Laptop',           'name_ar' => 'حاسوب محمول'],
-                ['name' => 'Tablet',           'name_ar' => 'تابلت'],
-                ['name' => 'Earphones',        'name_ar' => 'سماعات أذن'],
-                ['name' => 'Headphones',       'name_ar' => 'سماعات رأس'],
-                ['name' => 'Bluetooth Speaker','name_ar' => 'مكبر صوت'],
-                ['name' => 'Smartwatch',       'name_ar' => 'ساعة ذكية'],
-                ['name' => 'Phone Case',       'name_ar' => 'غطاء هاتف'],
-                ['name' => 'Charger',          'name_ar' => 'شاحن'],
-                ['name' => 'USB Drive',        'name_ar' => 'ذاكرة USB'],
-                ['name' => 'Gaming Console',   'name_ar' => 'وحدة ألعاب'],
-                ['name' => 'TV',               'name_ar' => 'تلفاز'],
+                ['name' => 'Smartphone',        'name_ar' => 'هاتف ذكي'],
+                ['name' => 'Laptop',            'name_ar' => 'حاسوب محمول'],
+                ['name' => 'Tablet',            'name_ar' => 'تابلت'],
+                ['name' => 'Earphones',         'name_ar' => 'سماعات أذن'],
+                ['name' => 'Headphones',        'name_ar' => 'سماعات رأس'],
+                ['name' => 'Bluetooth Speaker', 'name_ar' => 'مكبر صوت'],
+                ['name' => 'Smartwatch',        'name_ar' => 'ساعة ذكية'],
+                ['name' => 'Phone Case',        'name_ar' => 'غطاء هاتف'],
+                ['name' => 'Charger',           'name_ar' => 'شاحن'],
+                ['name' => 'USB Drive',         'name_ar' => 'ذاكرة USB'],
+                ['name' => 'Gaming Console',    'name_ar' => 'وحدة ألعاب'],
+                ['name' => 'TV',                'name_ar' => 'تلفاز'],
             ],
             'home-living' => [
-                ['name' => 'Sofa',             'name_ar' => 'أريكة'],
-                ['name' => 'Bed Frame',        'name_ar' => 'سرير'],
-                ['name' => 'Dining Table',     'name_ar' => 'طاولة طعام'],
-                ['name' => 'Rug',              'name_ar' => 'سجادة'],
-                ['name' => 'Curtains',         'name_ar' => 'ستائر'],
-                ['name' => 'Wall Art',         'name_ar' => 'لوحة جدارية'],
-                ['name' => 'Candle',           'name_ar' => 'شمعة'],
-                ['name' => 'Crockery Set',     'name_ar' => 'طقم أواني'],
-                ['name' => 'Bed Sheets',       'name_ar' => 'ملاءات سرير'],
-                ['name' => 'Storage Box',      'name_ar' => 'صندوق تخزين'],
+                ['name' => 'Sofa',         'name_ar' => 'أريكة'],
+                ['name' => 'Bed Frame',    'name_ar' => 'سرير'],
+                ['name' => 'Dining Table', 'name_ar' => 'طاولة طعام'],
+                ['name' => 'Rug',          'name_ar' => 'سجادة'],
+                ['name' => 'Curtains',     'name_ar' => 'ستائر'],
+                ['name' => 'Wall Art',     'name_ar' => 'لوحة جدارية'],
+                ['name' => 'Candle',       'name_ar' => 'شمعة'],
+                ['name' => 'Crockery Set', 'name_ar' => 'طقم أواني'],
+                ['name' => 'Bed Sheets',   'name_ar' => 'ملاءات سرير'],
+                ['name' => 'Storage Box',  'name_ar' => 'صندوق تخزين'],
             ],
             'food-grocery' => [
                 ['name' => 'Olive Oil',        'name_ar' => 'زيت زيتون'],
@@ -75,26 +90,26 @@ class SubcategoryAndAttributeSeeder extends Seeder
                 ['name' => 'Organic Products', 'name_ar' => 'منتجات عضوية'],
             ],
             'beauty-personal-care' => [
-                ['name' => 'Moisturiser',      'name_ar' => 'مرطب'],
-                ['name' => 'Serum',            'name_ar' => 'سيروم'],
-                ['name' => 'Face Mask',        'name_ar' => 'قناع وجه'],
-                ['name' => 'Lipstick',         'name_ar' => 'أحمر شفاه'],
-                ['name' => 'Foundation',       'name_ar' => 'كريم أساس'],
-                ['name' => 'Mascara',          'name_ar' => 'ماسكارا'],
-                ['name' => 'Eau de Parfum',    'name_ar' => 'عطر'],
-                ['name' => 'Shampoo',          'name_ar' => 'شامبو'],
-                ['name' => 'Hair Mask',        'name_ar' => 'قناع شعر'],
-                ['name' => 'Argan Oil',        'name_ar' => 'زيت أرغان'],
+                ['name' => 'Moisturiser',   'name_ar' => 'مرطب'],
+                ['name' => 'Serum',         'name_ar' => 'سيروم'],
+                ['name' => 'Face Mask',     'name_ar' => 'قناع وجه'],
+                ['name' => 'Lipstick',      'name_ar' => 'أحمر شفاه'],
+                ['name' => 'Foundation',    'name_ar' => 'كريم أساس'],
+                ['name' => 'Mascara',       'name_ar' => 'ماسكارا'],
+                ['name' => 'Eau de Parfum', 'name_ar' => 'عطر'],
+                ['name' => 'Shampoo',       'name_ar' => 'شامبو'],
+                ['name' => 'Hair Mask',     'name_ar' => 'قناع شعر'],
+                ['name' => 'Argan Oil',     'name_ar' => 'زيت أرغان'],
             ],
             'sports-outdoors' => [
-                ['name' => 'Running Shoes',    'name_ar' => 'أحذية الجري'],
-                ['name' => 'Football Kit',     'name_ar' => 'طقم كرة قدم'],
-                ['name' => 'Yoga Mat',         'name_ar' => 'حصيرة يوغا'],
-                ['name' => 'Weights',          'name_ar' => 'أثقال'],
-                ['name' => 'Bicycle',          'name_ar' => 'دراجة'],
-                ['name' => 'Swimming Gear',    'name_ar' => 'معدات سباحة'],
-                ['name' => 'Sports T-Shirt',   'name_ar' => 'تيشيرت رياضي'],
-                ['name' => 'Tracksuit',        'name_ar' => 'بدلة رياضية'],
+                ['name' => 'Running Shoes',  'name_ar' => 'أحذية الجري'],
+                ['name' => 'Football Kit',   'name_ar' => 'طقم كرة قدم'],
+                ['name' => 'Yoga Mat',       'name_ar' => 'حصيرة يوغا'],
+                ['name' => 'Weights',        'name_ar' => 'أثقال'],
+                ['name' => 'Bicycle',        'name_ar' => 'دراجة'],
+                ['name' => 'Swimming Gear',  'name_ar' => 'معدات سباحة'],
+                ['name' => 'Sports T-Shirt', 'name_ar' => 'تيشيرت رياضي'],
+                ['name' => 'Tracksuit',      'name_ar' => 'بدلة رياضية'],
             ],
             'arts-crafts' => [
                 ['name' => 'Acrylic Paint',    'name_ar' => 'طلاء أكريليك'],
@@ -105,12 +120,12 @@ class SubcategoryAndAttributeSeeder extends Seeder
                 ['name' => 'Knitting Yarn',    'name_ar' => 'خيط تريكو'],
             ],
             'books-stationery' => [
-                ['name' => 'Novel',            'name_ar' => 'رواية'],
-                ['name' => 'Comic / Manga',    'name_ar' => 'مانغا'],
-                ['name' => 'School Textbook',  'name_ar' => 'كتاب مدرسي'],
-                ['name' => 'Notebook',         'name_ar' => 'دفتر'],
-                ['name' => 'Pen Set',          'name_ar' => 'طقم أقلام'],
-                ['name' => 'Planner',          'name_ar' => 'مخطط'],
+                ['name' => 'Novel',           'name_ar' => 'رواية'],
+                ['name' => 'Comic / Manga',   'name_ar' => 'مانغا'],
+                ['name' => 'School Textbook', 'name_ar' => 'كتاب مدرسي'],
+                ['name' => 'Notebook',        'name_ar' => 'دفتر'],
+                ['name' => 'Pen Set',         'name_ar' => 'طقم أقلام'],
+                ['name' => 'Planner',         'name_ar' => 'مخطط'],
             ],
             'kids-baby' => [
                 ['name' => 'Plush Toy',        'name_ar' => 'لعبة محشوة'],
@@ -121,22 +136,22 @@ class SubcategoryAndAttributeSeeder extends Seeder
                 ['name' => 'Toy Car',          'name_ar' => 'سيارة ألعاب'],
             ],
             'automotive' => [
-                ['name' => 'Car Accessory',    'name_ar' => 'إكسسوار سيارة'],
-                ['name' => 'Car Seat Cover',   'name_ar' => 'غطاء مقعد'],
-                ['name' => 'Motorcycle Gear',  'name_ar' => 'معدات موتوسيكل'],
-                ['name' => 'Car Perfume',      'name_ar' => 'معطر سيارة'],
+                ['name' => 'Car Accessory',  'name_ar' => 'إكسسوار سيارة'],
+                ['name' => 'Car Seat Cover', 'name_ar' => 'غطاء مقعد'],
+                ['name' => 'Motorcycle Gear','name_ar' => 'معدات موتوسيكل'],
+                ['name' => 'Car Perfume',    'name_ar' => 'معطر سيارة'],
             ],
             'health-wellness' => [
-                ['name' => 'Vitamins',         'name_ar' => 'فيتامينات'],
-                ['name' => 'Protein Powder',   'name_ar' => 'بروتين'],
-                ['name' => 'Medical Device',   'name_ar' => 'جهاز طبي'],
-                ['name' => 'Essential Oil',    'name_ar' => 'زيت عطري'],
-                ['name' => 'Herbal Tea',       'name_ar' => 'شاي أعشاب'],
+                ['name' => 'Vitamins',       'name_ar' => 'فيتامينات'],
+                ['name' => 'Protein Powder', 'name_ar' => 'بروتين'],
+                ['name' => 'Medical Device', 'name_ar' => 'جهاز طبي'],
+                ['name' => 'Essential Oil',  'name_ar' => 'زيت عطري'],
+                ['name' => 'Herbal Tea',     'name_ar' => 'شاي أعشاب'],
             ],
         ];
 
         // Insert subcategories and track IDs
-        $subcategoryIds = []; // slug => id
+        $subcategoryIds = []; // "catSlug::subSlug" => id
 
         foreach ($subcategoryMap as $catSlug => $subs) {
             if (!isset($cats[$catSlug])) continue;
@@ -144,103 +159,159 @@ class SubcategoryAndAttributeSeeder extends Seeder
 
             foreach ($subs as $order => $sub) {
                 $slug = Str::slug($sub['name']);
-                $id = DB::table('subcategories')->insertGetId([
-                    'category_id' => $catId,
-                    'name'        => $sub['name'],
-                    'name_ar'     => $sub['name_ar'],
-                    'slug'        => $slug,
-                    'is_active'   => true,
-                    'order'       => $order,
-                    'created_at'  => now(),
-                    'updated_at'  => now(),
-                ]);
-                $subcategoryIds["{$catSlug}::{$slug}"] = $id;
+                $key  = "{$catSlug}::{$slug}";
+
+                // Use upsert-style: insert only if slug not already present for this category
+                $existing = DB::table('subcategories')
+                    ->where('category_id', $catId)
+                    ->where('slug', $slug)
+                    ->value('id');
+
+                if ($existing) {
+                    $subcategoryIds[$key] = $existing;
+                } else {
+                    $id = DB::table('subcategories')->insertGetId([
+                        'category_id' => $catId,
+                        'name'        => $sub['name'],
+                        'name_ar'     => $sub['name_ar'],
+                        'slug'        => $slug,
+                        'is_active'   => true,
+                        'order'       => $order,
+                        'created_at'  => now(),
+                        'updated_at'  => now(),
+                    ]);
+                    $subcategoryIds[$key] = $id;
+                }
             }
         }
 
         // ─────────────────────────────────────────────────────────
         // STEP 3 — Global attributes
         // ─────────────────────────────────────────────────────────
-        $attributes = [
+        $attributeDefs = [
             // Clothing
-            ['slug' => 'gender',        'name' => 'Gender',        'name_ar' => 'الجنس',        'type' => 'select',      'is_required' => true,  'is_filterable' => true,  'order' => 1],
-            ['slug' => 'size',          'name' => 'Size',          'name_ar' => 'الحجم',        'type' => 'multiselect', 'is_required' => true,  'is_filterable' => true,  'order' => 2],
-            ['slug' => 'color',         'name' => 'Color',         'name_ar' => 'اللون',        'type' => 'color',       'is_required' => false, 'is_filterable' => true,  'order' => 3],
-            ['slug' => 'brand',         'name' => 'Brand',         'name_ar' => 'الماركة',      'type' => 'text',        'is_required' => false, 'is_filterable' => true,  'order' => 4],
-            ['slug' => 'material',      'name' => 'Material',      'name_ar' => 'المادة',       'type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 5],
-            ['slug' => 'sleeve-type',   'name' => 'Sleeve Type',   'name_ar' => 'نوع الكم',    'type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 6],
-            ['slug' => 'fit',           'name' => 'Fit',           'name_ar' => 'التوافق',      'type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 7],
+            ['slug' => 'gender',          'name' => 'Gender',              'name_ar' => 'الجنس',           'type' => 'select',      'is_required' => true,  'is_filterable' => true,  'order' => 1],
+            ['slug' => 'size',            'name' => 'Size',                'name_ar' => 'الحجم',           'type' => 'multiselect', 'is_required' => true,  'is_filterable' => true,  'order' => 2],
+            ['slug' => 'color',           'name' => 'Color',               'name_ar' => 'اللون',           'type' => 'color',       'is_required' => false, 'is_filterable' => true,  'order' => 3],
+            ['slug' => 'brand',           'name' => 'Brand',               'name_ar' => 'الماركة',         'type' => 'text',        'is_required' => false, 'is_filterable' => true,  'order' => 4],
+            ['slug' => 'material',        'name' => 'Material',            'name_ar' => 'المادة',          'type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 5],
+            ['slug' => 'sleeve-type',     'name' => 'Sleeve Type',         'name_ar' => 'نوع الكم',        'type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 6],
+            ['slug' => 'fit',             'name' => 'Fit',                 'name_ar' => 'التوافق',         'type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 7],
             // Shoes
-            ['slug' => 'shoe-size',     'name' => 'Shoe Size',     'name_ar' => 'مقاس الحذاء', 'type' => 'multiselect', 'is_required' => true,  'is_filterable' => true,  'order' => 2],
-            ['slug' => 'shoe-material', 'name' => 'Shoe Material', 'name_ar' => 'مادة الحذاء', 'type' => 'select',      'is_required' => false, 'is_filterable' => false, 'order' => 5],
+            ['slug' => 'shoe-size',       'name' => 'Shoe Size',           'name_ar' => 'مقاس الحذاء',     'type' => 'multiselect', 'is_required' => true,  'is_filterable' => true,  'order' => 2],
+            ['slug' => 'shoe-material',   'name' => 'Shoe Material',       'name_ar' => 'مادة الحذاء',     'type' => 'select',      'is_required' => false, 'is_filterable' => false, 'order' => 5],
             // Electronics
-            ['slug' => 'storage',       'name' => 'Storage',       'name_ar' => 'التخزين',      'type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 3],
-            ['slug' => 'ram',           'name' => 'RAM',           'name_ar' => 'الرام',        'type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 4],
-            ['slug' => 'screen-size',   'name' => 'Screen Size',   'name_ar' => 'حجم الشاشة',  'type' => 'text',        'is_required' => false, 'is_filterable' => false, 'order' => 5],
-            ['slug' => 'battery',       'name' => 'Battery (mAh)', 'name_ar' => 'البطارية',     'type' => 'number',      'is_required' => false, 'is_filterable' => false, 'order' => 6],
-            ['slug' => 'os',            'name' => 'Operating System','name_ar' => 'نظام التشغيل','type' => 'select',     'is_required' => false, 'is_filterable' => true,  'order' => 7],
-            ['slug' => 'connectivity',  'name' => 'Connectivity',  'name_ar' => 'الاتصال',      'type' => 'multiselect', 'is_required' => false, 'is_filterable' => false, 'order' => 8],
+            ['slug' => 'storage',         'name' => 'Storage',             'name_ar' => 'التخزين',         'type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 3],
+            ['slug' => 'ram',             'name' => 'RAM',                 'name_ar' => 'الرام',           'type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 4],
+            ['slug' => 'screen-size',     'name' => 'Screen Size',         'name_ar' => 'حجم الشاشة',      'type' => 'text',        'is_required' => false, 'is_filterable' => false, 'order' => 5],
+            ['slug' => 'battery',         'name' => 'Battery (mAh)',       'name_ar' => 'البطارية',        'type' => 'number',      'is_required' => false, 'is_filterable' => false, 'order' => 6],
+            ['slug' => 'os',              'name' => 'Operating System',    'name_ar' => 'نظام التشغيل',    'type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 7],
+            ['slug' => 'connectivity',    'name' => 'Connectivity',        'name_ar' => 'الاتصال',         'type' => 'multiselect', 'is_required' => false, 'is_filterable' => false, 'order' => 8],
             // Food
-            ['slug' => 'weight',        'name' => 'Weight / Volume','name_ar' => 'الوزن',       'type' => 'text',        'is_required' => true,  'is_filterable' => false, 'order' => 2],
-            ['slug' => 'origin',        'name' => 'Origin',        'name_ar' => 'المصدر',       'type' => 'text',        'is_required' => false, 'is_filterable' => true,  'order' => 3],
-            ['slug' => 'is-organic',    'name' => 'Organic',       'name_ar' => 'عضوي',         'type' => 'boolean',     'is_required' => false, 'is_filterable' => true,  'order' => 4],
-            ['slug' => 'expiry-months', 'name' => 'Shelf Life (months)','name_ar' => 'مدة الصلاحية','type' => 'number', 'is_required' => false, 'is_filterable' => false, 'order' => 5],
+            ['slug' => 'weight',          'name' => 'Weight / Volume',     'name_ar' => 'الوزن',           'type' => 'text',        'is_required' => true,  'is_filterable' => false, 'order' => 2],
+            ['slug' => 'origin',          'name' => 'Origin',              'name_ar' => 'المصدر',          'type' => 'text',        'is_required' => false, 'is_filterable' => true,  'order' => 3],
+            ['slug' => 'is-organic',      'name' => 'Organic',             'name_ar' => 'عضوي',            'type' => 'boolean',     'is_required' => false, 'is_filterable' => true,  'order' => 4],
+            ['slug' => 'expiry-months',   'name' => 'Shelf Life (months)', 'name_ar' => 'مدة الصلاحية',   'type' => 'number',      'is_required' => false, 'is_filterable' => false, 'order' => 5],
             // Beauty
-            ['slug' => 'skin-type',     'name' => 'Skin Type',     'name_ar' => 'نوع البشرة',  'type' => 'multiselect', 'is_required' => false, 'is_filterable' => true,  'order' => 3],
-            ['slug' => 'volume-ml',     'name' => 'Volume (ml)',   'name_ar' => 'الحجم',        'type' => 'number',      'is_required' => false, 'is_filterable' => false, 'order' => 4],
-            ['slug' => 'fragrance-family','name' => 'Fragrance Family','name_ar' => 'عائلة العطر','type' => 'select',   'is_required' => false, 'is_filterable' => true,  'order' => 3],
+            ['slug' => 'skin-type',       'name' => 'Skin Type',           'name_ar' => 'نوع البشرة',      'type' => 'multiselect', 'is_required' => false, 'is_filterable' => true,  'order' => 3],
+            ['slug' => 'volume-ml',       'name' => 'Volume (ml)',         'name_ar' => 'الحجم',           'type' => 'number',      'is_required' => false, 'is_filterable' => false, 'order' => 4],
+            ['slug' => 'fragrance-family','name' => 'Fragrance Family',    'name_ar' => 'عائلة العطر',     'type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 3],
             // Sports
-            ['slug' => 'sport-type',    'name' => 'Sport',         'name_ar' => 'الرياضة',      'type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 2],
+            ['slug' => 'sport-type',      'name' => 'Sport',               'name_ar' => 'الرياضة',         'type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 2],
             // General
-            ['slug' => 'condition',     'name' => 'Condition',     'name_ar' => 'الحالة',       'type' => 'select',      'is_required' => true,  'is_filterable' => true,  'order' => 1],
-            ['slug' => 'age-group',     'name' => 'Age Group',     'name_ar' => 'الفئة العمرية','type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 8],
+            ['slug' => 'condition',       'name' => 'Condition',           'name_ar' => 'الحالة',          'type' => 'select',      'is_required' => true,  'is_filterable' => true,  'order' => 1],
+            ['slug' => 'age-group',       'name' => 'Age Group',           'name_ar' => 'الفئة العمرية',   'type' => 'select',      'is_required' => false, 'is_filterable' => true,  'order' => 8],
         ];
 
         $attrIds = []; // slug => id
-        foreach ($attributes as $attr) {
-            $id = DB::table('attributes')->insertGetId([
-                'name'          => $attr['name'],
-                'name_ar'       => $attr['name_ar'],
-                'slug'          => $attr['slug'],
-                'type'          => $attr['type'],
-                'is_required'   => $attr['is_required'],
-                'is_filterable' => $attr['is_filterable'],
-                'is_visible'    => true,
-                'order'         => $attr['order'],
-                'created_at'    => now(),
-                'updated_at'    => now(),
-            ]);
-            $attrIds[$attr['slug']] = $id;
+
+        foreach ($attributeDefs as $attr) {
+            $existing = DB::table('attributes')->where('slug', $attr['slug'])->value('id');
+
+            if ($existing) {
+                $attrIds[$attr['slug']] = $existing;
+            } else {
+                $id = DB::table('attributes')->insertGetId([
+                    'name'          => $attr['name'],
+                    'name_ar'       => $attr['name_ar'],
+                    'slug'          => $attr['slug'],
+                    'type'          => $attr['type'],
+                    'is_required'   => $attr['is_required'],
+                    'is_filterable' => $attr['is_filterable'],
+                    'is_visible'    => true,
+                    'order'         => $attr['order'],
+                    'created_at'    => now(),
+                    'updated_at'    => now(),
+                ]);
+                $attrIds[$attr['slug']] = $id;
+            }
         }
 
         // ─────────────────────────────────────────────────────────
         // STEP 4 — Attribute options
         // ─────────────────────────────────────────────────────────
-        $options = [
-            'gender'   => ['Men', 'Women', 'Unisex', 'Kids'],
-            'size'     => ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'One Size'],
-            'shoe-size'=> ['35','36','37','38','39','40','41','42','43','44','45','46'],
-            'material' => ['Cotton','Polyester','Linen','Silk','Wool','Denim','Leather','Synthetic','Mixed'],
-            'sleeve-type'=>['Sleeveless','Short Sleeve','3/4 Sleeve','Long Sleeve','Off-Shoulder'],
-            'fit'      => ['Slim Fit','Regular Fit','Loose Fit','Oversized'],
-            'shoe-material'=>['Leather','Suede','Canvas','Mesh','Synthetic'],
-            'storage'  => ['16GB','32GB','64GB','128GB','256GB','512GB','1TB','2TB'],
-            'ram'      => ['2GB','4GB','6GB','8GB','12GB','16GB','32GB'],
-            'os'       => ['Android','iOS','Windows','macOS','Linux'],
-            'connectivity'=>['Wi-Fi','Bluetooth','NFC','4G','5G','USB-C','USB-A'],
-            'skin-type'=> ['Normal','Oily','Dry','Combination','Sensitive'],
-            'fragrance-family'=>['Floral','Woody','Oriental','Fresh','Citrus','Gourmand'],
-            'sport-type'=>['Football','Basketball','Running','Swimming','Cycling','Yoga','Fitness','Tennis','Hiking'],
-            'condition'=> ['New','Like New','Used - Good','Used - Acceptable'],
-            'age-group'=> ['Baby (0-2)','Kids (3-12)','Teens (13-17)','Adults (18+)','All Ages'],
+        $optionSets = [
+            'gender'           => ['Men', 'Women', 'Unisex', 'Kids', 'Boys', 'Girls'],
+            'size'             => ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'One Size'],
+            'shoe-size'        => ['35','36','37','38','39','40','41','42','43','44','45','46'],
+            'material'         => ['Cotton','Polyester','Linen','Silk','Wool','Denim','Leather','Synthetic','Mixed','Velvet','Suede'],
+            'shoe-material'    => ['Leather','Suede','Canvas','Mesh','Synthetic'],
+            'sleeve-type'      => ['Sleeveless','Short Sleeve','3/4 Sleeve','Long Sleeve','Off-Shoulder'],
+            'fit'              => ['Slim Fit','Regular Fit','Loose Fit','Oversized'],
+            'storage'          => ['16GB','32GB','64GB','128GB','256GB','512GB','1TB','2TB'],
+            'ram'              => ['2GB','4GB','6GB','8GB','12GB','16GB','32GB','64GB'],
+            'os'               => ['Android','iOS','Windows','macOS','Linux'],
+            'connectivity'     => ['Wi-Fi','Bluetooth','NFC','4G','5G','USB-C','USB-A'],
+            'skin-type'        => ['Normal','Oily','Dry','Combination','Sensitive'],
+            'fragrance-family' => ['Floral','Woody','Oriental','Fresh','Citrus','Gourmand'],
+            'sport-type'       => ['Football','Basketball','Running','Swimming','Cycling','Yoga','Fitness','Tennis','Hiking'],
+            'condition'        => ['New','Like New','Good','Fair','Used - Good','Used - Acceptable'],
+            'age-group'        => ['Baby (0-2)','Kids (3-12)','Teens (13-17)','Adults (18+)','All Ages'],
         ];
 
-        foreach ($options as $attrSlug => $values) {
+        foreach ($optionSets as $attrSlug => $values) {
             if (!isset($attrIds[$attrSlug])) continue;
+            $attrId = $attrIds[$attrSlug];
+
             foreach ($values as $order => $value) {
+                $exists = DB::table('attribute_options')
+                    ->where('attribute_id', $attrId)
+                    ->where('value', $value)
+                    ->exists();
+
+                if (!$exists) {
+                    DB::table('attribute_options')->insert([
+                        'attribute_id' => $attrId,
+                        'value'        => $value,
+                        'order'        => $order,
+                        'created_at'   => now(),
+                        'updated_at'   => now(),
+                    ]);
+                }
+            }
+        }
+
+        // Color options with hex codes (merged from both seeders — union of all colors)
+        $colors = [
+            ['Black',  '#000000'], ['White',  '#FFFFFF'], ['Red',    '#DC2626'],
+            ['Blue',   '#2563EB'], ['Green',  '#16A34A'], ['Yellow', '#EAB308'],
+            ['Pink',   '#EC4899'], ['Purple', '#9333EA'], ['Orange', '#F97316'],
+            ['Brown',  '#92400E'], ['Grey',   '#6B7280'], ['Navy',   '#1E3A5F'],
+            ['Beige',  '#D4A574'], ['Gold',   '#D4AF37'], ['Silver', '#C0C0C0'],
+            ['Camel',  '#C19A6B'], ['Khaki',  '#C3B091'],
+        ];
+
+        foreach ($colors as $order => [$value, $hex]) {
+            $exists = DB::table('attribute_options')
+                ->where('attribute_id', $attrIds['color'])
+                ->where('value', $value)
+                ->exists();
+
+            if (!$exists) {
                 DB::table('attribute_options')->insert([
-                    'attribute_id' => $attrIds[$attrSlug],
+                    'attribute_id' => $attrIds['color'],
                     'value'        => $value,
+                    'color_hex'    => $hex,
                     'order'        => $order,
                     'created_at'   => now(),
                     'updated_at'   => now(),
@@ -248,86 +319,90 @@ class SubcategoryAndAttributeSeeder extends Seeder
             }
         }
 
-        // Color options with hex
-        $colors = [
-            ['Black','#000000'],['White','#FFFFFF'],['Red','#DC2626'],['Blue','#2563EB'],
-            ['Green','#16A34A'],['Yellow','#EAB308'],['Pink','#EC4899'],['Purple','#9333EA'],
-            ['Orange','#F97316'],['Brown','#92400E'],['Grey','#6B7280'],['Navy','#1E3A5F'],
-            ['Beige','#D4A574'],['Gold','#D4AF37'],['Silver','#C0C0C0'],
-        ];
-        foreach ($colors as $order => [$value, $hex]) {
-            DB::table('attribute_options')->insert([
-                'attribute_id' => $attrIds['color'],
-                'value'        => $value,
-                'color_hex'    => $hex,
-                'order'        => $order,
-                'created_at'   => now(),
-                'updated_at'   => now(),
-            ]);
-        }
-
         // ─────────────────────────────────────────────────────────
         // STEP 5 — Map attributes → subcategories
         // ─────────────────────────────────────────────────────────
-        // Helper
-        $mapAttrs = function (string $catSlug, string $subSlug, array $attrSlugs, array $required = []) use (&$subcategoryIds, &$attrIds) {
+
+        /**
+         * Insert rows into subcategory_attributes.
+         * Uses upsert so re-running is safe.
+         * is_variant defaults to false here — Step 6 will set correct flags.
+         */
+        $mapAttrs = function (
+            string $catSlug,
+            string $subSlug,
+            array $attrSlugs,
+            array $required = []
+        ) use (&$subcategoryIds, &$attrIds) {
             $key = "{$catSlug}::{$subSlug}";
             if (!isset($subcategoryIds[$key])) return;
             $subId = $subcategoryIds[$key];
+
             foreach ($attrSlugs as $order => $attrSlug) {
                 if (!isset($attrIds[$attrSlug])) continue;
-                DB::table('subcategory_attributes')->insert([
-                    'subcategory_id' => $subId,
-                    'attribute_id'   => $attrIds[$attrSlug],
-                    'is_required'    => in_array($attrSlug, $required),
-                    'order'          => $order,
-                    'created_at'     => now(),
-                    'updated_at'     => now(),
-                ]);
+
+                DB::table('subcategory_attributes')->upsert(
+                    [
+                        'subcategory_id' => $subId,
+                        'attribute_id'   => $attrIds[$attrSlug],
+                        'is_required'    => in_array($attrSlug, $required) ? 1 : 0,
+                        'is_variant'     => 0, // set correctly in Step 6
+                        'order'          => $order,
+                        'created_at'     => now(),
+                        'updated_at'     => now(),
+                    ],
+                    ['subcategory_id', 'attribute_id'],
+                    ['is_required', 'order', 'updated_at']
+                );
             }
         };
 
-        // Fashion subcategories
-        $clothingAttrs   = ['condition', 'gender', 'size', 'color', 'brand', 'material', 'sleeve-type', 'fit', 'age-group'];
-        $clothingReq     = ['condition', 'gender', 'size'];
-        $shoeAttrs       = ['condition', 'gender', 'shoe-size', 'color', 'brand', 'shoe-material'];
-        $shoeReq         = ['condition', 'shoe-size'];
-        $bagAttrs        = ['condition', 'color', 'brand', 'material'];
-        $accessoryAttrs  = ['condition', 'color', 'brand'];
-
+        // Fashion — clothing
+        $clothingAttrs = ['condition', 'gender', 'size', 'color', 'brand', 'material', 'sleeve-type', 'fit', 'age-group'];
+        $clothingReq   = ['condition', 'gender', 'size'];
         foreach (['t-shirt','dress','shirt','jeans','denim-jacket','shorts','sweatshirt','pyjama-set','sportswear'] as $sub) {
             $mapAttrs('fashion-clothing', $sub, $clothingAttrs, $clothingReq);
         }
+
+        // Fashion — shoes
+        $shoeAttrs = ['condition', 'gender', 'shoe-size', 'color', 'brand', 'shoe-material'];
+        $shoeReq   = ['condition', 'shoe-size'];
         foreach (['sneakers','high-heels','sandals'] as $sub) {
             $mapAttrs('fashion-clothing', $sub, $shoeAttrs, $shoeReq);
         }
+
+        // Fashion — bags
+        $bagAttrs = ['condition', 'color', 'brand', 'material'];
         foreach (['handbag','backpack'] as $sub) {
             $mapAttrs('fashion-clothing', $sub, $bagAttrs, ['condition']);
         }
+
+        // Fashion — accessories
+        $accessoryAttrs = ['condition', 'color', 'brand'];
         foreach (['watch','scarf'] as $sub) {
             $mapAttrs('fashion-clothing', $sub, $accessoryAttrs, ['condition']);
         }
 
         // Electronics
-        $mapAttrs('electronics-tech', 'smartphone',       ['condition','brand','storage','ram','screen-size','battery','os','color','connectivity'], ['condition','brand','storage']);
-        $mapAttrs('electronics-tech', 'laptop',           ['condition','brand','storage','ram','screen-size','os','color'], ['condition','brand','storage','ram']);
-        $mapAttrs('electronics-tech', 'tablet',           ['condition','brand','storage','ram','screen-size','os','connectivity'], ['condition','brand']);
-        $mapAttrs('electronics-tech', 'earphones',        ['condition','brand','color','connectivity'], ['condition']);
-        $mapAttrs('electronics-tech', 'headphones',       ['condition','brand','color','connectivity'], ['condition']);
-        $mapAttrs('electronics-tech', 'bluetooth-speaker',['condition','brand','color','connectivity'], ['condition']);
-        $mapAttrs('electronics-tech', 'smartwatch',       ['condition','brand','color','os','connectivity'], ['condition']);
-        $mapAttrs('electronics-tech', 'phone-case',       ['brand','color','material'], []);
-        $mapAttrs('electronics-tech', 'charger',          ['condition','brand','connectivity'], ['condition']);
-        $mapAttrs('electronics-tech', 'usb-drive',        ['condition','brand','storage'], ['storage']);
-        $mapAttrs('electronics-tech', 'gaming-console',   ['condition','brand','storage','color'], ['condition']);
-        $mapAttrs('electronics-tech', 'tv',               ['condition','brand','screen-size'], ['condition']);
+        $mapAttrs('electronics-tech', 'smartphone',        ['condition','brand','storage','ram','screen-size','battery','os','color','connectivity'], ['condition','brand','storage']);
+        $mapAttrs('electronics-tech', 'laptop',            ['condition','brand','storage','ram','screen-size','os','color'],                          ['condition','brand','storage','ram']);
+        $mapAttrs('electronics-tech', 'tablet',            ['condition','brand','storage','ram','screen-size','os','connectivity'],                   ['condition','brand']);
+        $mapAttrs('electronics-tech', 'earphones',         ['condition','brand','color','connectivity'],                                              ['condition']);
+        $mapAttrs('electronics-tech', 'headphones',        ['condition','brand','color','connectivity'],                                              ['condition']);
+        $mapAttrs('electronics-tech', 'bluetooth-speaker', ['condition','brand','color','connectivity'],                                              ['condition']);
+        $mapAttrs('electronics-tech', 'smartwatch',        ['condition','brand','color','os','connectivity'],                                         ['condition']);
+        $mapAttrs('electronics-tech', 'phone-case',        ['brand','color','material'],                                                              []);
+        $mapAttrs('electronics-tech', 'charger',           ['condition','brand','connectivity'],                                                      ['condition']);
+        $mapAttrs('electronics-tech', 'usb-drive',         ['condition','brand','storage'],                                                           ['storage']);
+        $mapAttrs('electronics-tech', 'gaming-console',    ['condition','brand','storage','color'],                                                   ['condition']);
+        $mapAttrs('electronics-tech', 'tv',                ['condition','brand','screen-size'],                                                       ['condition']);
 
-        // Food
+        // Food & Grocery
         foreach (['olive-oil','honey','dates','harissa','spices','tea','coffee','canned-goods','organic-products'] as $sub) {
             $mapAttrs('food-grocery', $sub, ['weight','origin','is-organic','expiry-months'], ['weight']);
         }
 
-        // Beauty
+        // Beauty & Personal Care
         foreach (['moisturiser','serum','face-mask','shampoo','hair-mask','argan-oil'] as $sub) {
             $mapAttrs('beauty-personal-care', $sub, ['condition','brand','skin-type','volume-ml'], []);
         }
@@ -336,20 +411,20 @@ class SubcategoryAndAttributeSeeder extends Seeder
         }
         $mapAttrs('beauty-personal-care', 'eau-de-parfum', ['condition','brand','fragrance-family','volume-ml'], []);
 
-        // Sports
+        // Sports & Outdoors
         foreach (['running-shoes','football-kit','yoga-mat','weights','bicycle','swimming-gear','sports-t-shirt','tracksuit'] as $sub) {
             $mapAttrs('sports-outdoors', $sub, ['condition','brand','color','sport-type','size'], ['condition']);
         }
 
-        // Kids
+        // Kids & Baby
         $mapAttrs('kids-baby', 'baby-clothes',     ['condition','size','color','material','age-group'], ['condition','age-group']);
-        $mapAttrs('kids-baby', 'plush-toy',        ['condition','color','age-group'], ['condition','age-group']);
-        $mapAttrs('kids-baby', 'educational-game', ['condition','age-group'], ['condition','age-group']);
-        $mapAttrs('kids-baby', 'stroller',         ['condition','brand','color'], ['condition']);
-        $mapAttrs('kids-baby', 'baby-bottle',      ['condition','brand','material'], ['condition']);
-        $mapAttrs('kids-baby', 'toy-car',          ['condition','color','age-group'], ['condition']);
+        $mapAttrs('kids-baby', 'plush-toy',        ['condition','color','age-group'],                   ['condition','age-group']);
+        $mapAttrs('kids-baby', 'educational-game', ['condition','age-group'],                            ['condition','age-group']);
+        $mapAttrs('kids-baby', 'stroller',         ['condition','brand','color'],                        ['condition']);
+        $mapAttrs('kids-baby', 'baby-bottle',      ['condition','brand','material'],                     ['condition']);
+        $mapAttrs('kids-baby', 'toy-car',          ['condition','color','age-group'],                    ['condition']);
 
-        // Arts & Crafts — minimal attributes
+        // Arts & Crafts
         foreach (['acrylic-paint','canvas','pottery','embroidery-kit','handmade-jewelry','knitting-yarn'] as $sub) {
             $mapAttrs('arts-crafts', $sub, ['condition','color','brand'], []);
         }
@@ -369,6 +444,116 @@ class SubcategoryAndAttributeSeeder extends Seeder
             $mapAttrs('health-wellness', $sub, ['condition','brand','weight','origin'], []);
         }
 
+        // ─────────────────────────────────────────────────────────
+        // STEP 6 — Apply is_variant flags
+        //
+        // VARIANT attributes  → generate combinations (Color×Size, RAM×Storage …)
+        // INFO attributes     → informational/filter only (Material, Brand, Condition …)
+        //
+        // We iterate all subcategories and update is_variant based on name keywords.
+        // Admin can fine-tune via the admin panel afterwards.
+        // ─────────────────────────────────────────────────────────
+
+        $variantSlugs = [
+            'color', 'size', 'shoe-size', 'storage', 'ram',
+        ];
+
+        // Build a map of variant-eligible attribute IDs for quick lookup
+        $variantAttrIds = array_filter(
+            array_map(fn($s) => $attrIds[$s] ?? null, $variantSlugs)
+        );
+
+        $allSubcategories = DB::table('subcategories')->get(['id', 'name']);
+
+        foreach ($allSubcategories as $sub) {
+            $nameLower = strtolower($sub->name);
+
+            // Determine which attribute IDs should be variant for this subcategory
+            $variantForThis = $this->resolveVariantAttributeIds(
+                $nameLower,
+                $attrIds
+            );
+
+            // Update is_variant for each linked attribute
+            $linkedAttrs = DB::table('subcategory_attributes')
+                ->where('subcategory_id', $sub->id)
+                ->get(['attribute_id']);
+
+            foreach ($linkedAttrs as $link) {
+                $shouldBeVariant = in_array($link->attribute_id, $variantForThis) ? 1 : 0;
+
+                DB::table('subcategory_attributes')
+                    ->where('subcategory_id', $sub->id)
+                    ->where('attribute_id', $link->attribute_id)
+                    ->update([
+                        'is_variant' => $shouldBeVariant,
+                        'updated_at' => now(),
+                    ]);
+            }
+        }
+
         $this->command->info('✅ SubcategoryAndAttributeSeeder completed.');
+        $this->command->info('   Subcategories seeded: ' . count($subcategoryIds));
+        $this->command->info('   Attributes seeded:    ' . count($attrIds));
+        $this->command->info('   is_variant flags applied for ' . $allSubcategories->count() . ' subcategories.');
+        $this->command->info('   Run: php artisan optimize:clear');
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Returns the list of attribute IDs that should be marked is_variant=true
+     * for the given subcategory name.
+     *
+     * RULES:
+     *   VARIANT  → generates product combinations (Color, Size, Storage, RAM)
+     *   INFO     → informational / filter only (Brand, Material, Condition, Gender…)
+     */
+    private function resolveVariantAttributeIds(string $name, array $attrIds): array
+    {
+        $c = fn(string $slug) => $attrIds[$slug] ?? null;
+
+        // Electronics — phones / smartphones
+        if ($this->matches($name, ['phone', 'mobile', 'smartphone'])) {
+            return array_filter([$c('storage'), $c('color')]);
+        }
+
+        // Electronics — laptops / computers
+        if ($this->matches($name, ['laptop', 'computer', 'pc', 'notebook', 'macbook'])) {
+            return array_filter([$c('ram'), $c('storage'), $c('color')]);
+        }
+
+        // Electronics — tablets
+        if ($this->matches($name, ['tablet', 'ipad'])) {
+            return array_filter([$c('storage'), $c('color')]);
+        }
+
+        // Shoes / footwear
+        if ($this->matches($name, ['shoe', 'sneaker', 'boot', 'sandal', 'heel', 'running shoes'])) {
+            return array_filter([$c('shoe-size'), $c('color')]);
+        }
+
+        // Bags / accessories (no size variant)
+        if ($this->matches($name, ['bag', 'handbag', 'purse', 'wallet', 'belt', 'backpack'])) {
+            return array_filter([$c('color')]);
+        }
+
+        // Jeans / bottoms
+        if ($this->matches($name, ['jean', 'pant', 'trouser', 'short', 'legging'])) {
+            return array_filter([$c('size'), $c('color')]);
+        }
+
+        // Default — general apparel / everything else
+        return array_filter([$c('color'), $c('size')]);
+    }
+
+    private function matches(string $name, array $keywords): bool
+    {
+        foreach ($keywords as $kw) {
+            if (str_contains($name, $kw)) return true;
+        }
+        return false;
     }
 }
