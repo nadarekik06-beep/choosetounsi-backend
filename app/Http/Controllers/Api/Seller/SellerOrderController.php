@@ -41,8 +41,12 @@ class SellerOrderController extends Controller
 
         if (empty($orderIds)) {
             return response()->json(['success' => true, 'data' => [
-                'total' => 0, 'pending' => 0, 'completed' => 0,
-                'delivered' => 0, 'cancelled' => 0, 'revenue' => 0,
+                'total'     => 0,
+                'pending'   => 0,
+                'completed' => 0,
+                'delivered' => 0,
+                'cancelled' => 0,
+                'revenue'   => 0,
             ]]);
         }
 
@@ -64,7 +68,7 @@ class SellerOrderController extends Controller
         $seller   = auth()->user();
         $orderIds = $this->sellerOrderIds($seller->id);
 
-        $query = Order::with(['user:id,name,email', 'items'])
+        $query = Order::with(['user:id,name,email,state', 'items'])
                       ->whereIn('id', $orderIds);
 
         if ($request->filled('status')) {
@@ -92,6 +96,16 @@ class SellerOrderController extends Controller
 
         $orders = $query->latest()->paginate((int) $request->query('per_page', 12));
 
+        // Map each order so the frontend gets a consistent `wilaya` field
+        $orders->getCollection()->transform(function ($order) {
+            $arr           = $order->toArray();
+            $arr['wilaya'] = $order->wilaya
+                ?? $order->shipping_address
+                ?? $order->user->state
+                ?? null;
+            return $arr;
+        });
+
         return response()->json(['success' => true, 'data' => $orders]);
     }
 
@@ -102,10 +116,29 @@ class SellerOrderController extends Controller
         $orderIds  = $this->sellerOrderIds($seller->id);
         $sellerCol = $this->getSellerCol();
 
-        $order = Order::with(['user:id,name,email', 'items'])
+        $order = Order::with(['user:id,name,email,state', 'items'])
                       ->whereIn('id', $orderIds)
                       ->findOrFail($id);
 
+        // ── Detect order_items columns once ──────────────────────────────────
+        static $itemCols = null;
+        if ($itemCols === null) {
+            $raw      = DB::select("SHOW COLUMNS FROM order_items");
+            $itemCols = array_map(fn($c) => $c->Field, $raw);
+        }
+
+        // Resolve which column holds the product name
+        $nameCol       = in_array('product_name', $itemCols)  ? 'product_name'  : null;
+        // Resolve price column
+        $priceCol      = in_array('unit_price', $itemCols)    ? 'unit_price'
+                       : (in_array('price', $itemCols)        ? 'price'
+                       : (in_array('unit_cost', $itemCols)    ? 'unit_cost'     : null));
+        // Resolve subtotal column
+        $totalCol      = in_array('total', $itemCols)         ? 'total'
+                       : (in_array('subtotal', $itemCols)     ? 'subtotal'
+                       : (in_array('line_total', $itemCols)   ? 'line_total'    : null));
+
+        // Filter to only this seller's items
         $sellerItems = $order->items->filter(function ($item) use ($seller, $sellerCol) {
             $product = DB::table('products')
                 ->where('id', $item->product_id)
@@ -114,19 +147,60 @@ class SellerOrderController extends Controller
             return $product && $product->{$sellerCol} == $seller->id;
         })->values();
 
-        $subtotal = $sellerItems->sum(fn($item) => (float) $item->unit_price * $item->quantity);
+        // Normalise each item so the frontend always gets the same shape
+        $mappedItems = $sellerItems->map(function ($item) use ($nameCol, $priceCol, $totalCol) {
+
+            // product_name: from column, or fall back to a products JOIN
+            if ($nameCol) {
+                $productName = $item->{$nameCol};
+            } else {
+                $product     = DB::table('products')->where('id', $item->product_id)->first();
+                $productName = $product->name ?? "Product #{$item->product_id}";
+            }
+
+            // unit_price
+            $unitPrice = $priceCol ? (float) $item->{$priceCol} : 0.0;
+
+            // total = unit_price × quantity (compute it; don't trust the stored value)
+            $qty   = (int) $item->quantity;
+            $total = $totalCol
+                ? (float) $item->{$totalCol}
+                : round($unitPrice * $qty, 3);
+
+            return [
+                'id'           => $item->id,
+                'product_id'   => $item->product_id,
+                'product_name' => $productName,
+                'quantity'     => $qty,
+                'unit_price'   => $unitPrice,
+                'total'        => $total,
+            ];
+        });
+
+        // Seller subtotal
+        $subtotal = $mappedItems->sum('total');
+
+        // Wilaya: try dedicated column first, then shipping_address, then user.state
+        $wilaya = $order->wilaya
+            ?? $order->shipping_address
+            ?? $order->user->state
+            ?? null;
 
         $customer = $order->user ? [
             'name'  => $order->user->name,
             'email' => $order->user->email,
-            'state' => null,
+            'state' => $order->user->state ?? null,
         ] : null;
+
+        $orderArr            = $order->toArray();
+        $orderArr['wilaya']  = $wilaya;
+        $orderArr['customer'] = $customer;
 
         return response()->json([
             'success' => true,
             'data'    => [
-                'order'           => array_merge($order->toArray(), ['customer' => $customer]),
-                'items'           => $sellerItems,
+                'order'           => $orderArr,
+                'items'           => $mappedItems->values(),
                 'seller_subtotal' => round($subtotal, 3),
             ],
         ]);
@@ -144,10 +218,14 @@ class SellerOrderController extends Controller
         $order    = Order::whereIn('id', $orderIds)->findOrFail($id);
         $order->update(['status' => $request->status]);
 
-        return response()->json(['success' => true, 'message' => 'Order status updated.', 'data' => $order]);
+        return response()->json([
+            'success' => true,
+            'message' => 'Order status updated.',
+            'data'    => $order,
+        ]);
     }
 
-    /* ── PATCH /api/seller/orders/{id}/payment ── NEW ── */
+    /* ── PATCH /api/seller/orders/{id}/payment ── */
     public function updatePayment(Request $request, $id)
     {
         $request->validate([
@@ -159,6 +237,10 @@ class SellerOrderController extends Controller
         $order    = Order::whereIn('id', $orderIds)->findOrFail($id);
         $order->update(['payment_status' => $request->payment_status]);
 
-        return response()->json(['success' => true, 'message' => 'Payment status updated.', 'data' => $order]);
+        return response()->json([
+            'success' => true,
+            'message' => 'Payment status updated.',
+            'data'    => $order,
+        ]);
     }
 }
