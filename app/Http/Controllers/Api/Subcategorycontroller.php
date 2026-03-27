@@ -3,65 +3,80 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Category;
 use App\Models\Subcategory;
 use Illuminate\Http\Request;
 
 class SubcategoryController extends Controller
 {
     /**
-     * GET /api/categories/{categorySlug}/subcategories
+     * GET /api/categories/{slug}/subcategories
      *
      * Returns all active subcategories for a category.
      */
-    public function index($categorySlug)
+    public function index($slug)
     {
-        $subcategories = Subcategory::whereHas('category', fn($q) => $q->where('slug', $categorySlug))
-            ->active()
-            ->ordered()
-            ->select(['id', 'category_id', 'name', 'name_ar', 'slug', 'icon'])
-            ->get();
+        $category = Category::where('slug', $slug)->firstOrFail();
 
-        return response()->json(['success' => true, 'data' => $subcategories]);
+        $subcategories = Subcategory::where('category_id', $category->id)
+            ->where('is_active', true)
+            ->orderBy('order')
+            ->orderBy('name')
+            ->get(['id', 'category_id', 'name', 'name_ar', 'slug', 'icon', 'order']);
+
+        return response()->json([
+            'success' => true,
+            'data'    => $subcategories,
+        ]);
     }
 
     /**
      * GET /api/subcategories/{id}/attributes
      *
-     * Returns all attributes (with options) for a subcategory.
-     * Used by the dynamic product form.
+     * Returns all attributes linked to this subcategory via subcategory_attributes pivot,
+     * with their full options list.
+     *
+     * Used by:
+     *   1. The seller ProductModal to build the DynamicAttributeSection
+     *   2. The seller ProductModal to determine available variant axes
+     *      (attributes of type 'select', 'color', 'multiselect' with options)
      */
     public function attributes($id)
     {
-        $subcategory = Subcategory::with([
-            'attributes' => function ($q) {
-                $q->where('is_visible', true)
-                  ->with(['options' => fn($o) => $o->orderBy('order')])
-                  ->orderBy('subcategory_attributes.order');
-            },
-        ])->findOrFail($id);
+        $subcategory = Subcategory::findOrFail($id);
 
-        $attrs = $subcategory->attributes->map(function ($attr) {
-            return [
-                'id'            => $attr->id,
-                'slug'          => $attr->slug,
-                'name'          => $attr->name,
-                'name_ar'       => $attr->name_ar,
-                'type'          => $attr->type,
-                'is_required'   => (bool) $attr->pivot->is_required,
-                'is_filterable' => $attr->is_filterable,
-                'options'       => $attr->options->map(fn($o) => [
-                    'id'        => $o->id,
-                    'value'     => $o->value,
-                    'value_ar'  => $o->value_ar,
-                    'color_hex' => $o->color_hex,
-                ]),
-            ];
-        });
+        // Load attributes through the pivot table, ordered by pivot order then attribute order
+        $attributes = $subcategory->attributes()
+            ->orderBy('subcategory_attributes.order')
+            ->orderBy('attributes.order')
+            ->get()
+            ->map(function ($attr) use ($subcategory) {
+                // Get is_required from the pivot
+                $pivot = $attr->pivot ?? null;
+
+                return [
+                    'id'            => $attr->id,
+                    'slug'          => $attr->slug,
+                    'name'          => $attr->name,
+                    'name_ar'       => $attr->name_ar,
+                    'type'          => $attr->type,
+                    'is_required'   => $pivot ? (bool) $pivot->is_required : (bool) $attr->is_required,
+                    'is_filterable' => (bool) $attr->is_filterable,
+                    'order'         => $pivot ? $pivot->order : $attr->order,
+                    // Include all options — essential for the VariantBuilder dropdowns
+                    'options'       => $attr->options->map(fn($opt) => [
+                        'id'        => $opt->id,
+                        'value'     => $opt->value,
+                        'value_ar'  => $opt->value_ar,
+                        'color_hex' => $opt->color_hex,
+                        'order'     => $opt->order,
+                    ])->values(),
+                ];
+            });
 
         return response()->json([
-            'success'      => true,
-            'subcategory'  => ['id' => $subcategory->id, 'name' => $subcategory->name],
-            'attributes'   => $attrs,
+            'success' => true,
+            'data'    => $attributes,
         ]);
     }
 }

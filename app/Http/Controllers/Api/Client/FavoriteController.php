@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Client;
 use App\Http\Controllers\Controller;
 use App\Models\Favorite;
 use App\Models\Product;
+use App\Models\ProductVariant;
 use Illuminate\Http\Request;
 
 class FavoriteController extends Controller
@@ -12,7 +13,11 @@ class FavoriteController extends Controller
     /* ── GET /api/favorites ── */
     public function index(Request $request)
     {
-        $favorites = Favorite::with(['product.primaryImage', 'product.category'])
+        $favorites = Favorite::with([
+            'product.primaryImage',
+            'product.category',
+            'variant.attributeOptions.attribute',
+        ])
             ->where('user_id', $request->user()->id)
             ->latest()
             ->get()
@@ -24,27 +29,54 @@ class FavoriteController extends Controller
     /* ── POST /api/favorites ── */
     public function store(Request $request)
     {
-        $request->validate(['product_id' => 'required|exists:products,id']);
+        $request->validate([
+            'product_id' => 'required|exists:products,id',
+            'variant_id' => 'nullable|exists:product_variants,id',
+        ]);
+
+        // Ensure variant belongs to this product
+        if ($request->filled('variant_id')) {
+            $variant = ProductVariant::where('id', $request->variant_id)
+                ->where('product_id', $request->product_id)
+                ->where('is_active', true)
+                ->first();
+
+            if (!$variant) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Selected variant is unavailable.',
+                ], 422);
+            }
+        }
 
         $favorite = Favorite::firstOrCreate([
             'user_id'    => $request->user()->id,
             'product_id' => $request->product_id,
+            'variant_id' => $request->filled('variant_id') ? $request->variant_id : null,
         ]);
 
         return response()->json([
-            'success'    => true,
-            'message'    => 'Added to favorites.',
-            'favorited'  => true,
-            'data'       => $this->formatFavorite($favorite->load('product.primaryImage')),
+            'success'   => true,
+            'message'   => 'Added to favorites.',
+            'favorited' => true,
+            'data'      => $this->formatFavorite(
+                $favorite->load('product.primaryImage', 'product.category', 'variant.attributeOptions.attribute')
+            ),
         ], 201);
     }
 
     /* ── DELETE /api/favorites/{product_id} ── */
     public function destroy(Request $request, $productId)
     {
-        Favorite::where('user_id', $request->user()->id)
-            ->where('product_id', $productId)
-            ->delete();
+        // Remove all favorites for this product (all variants) — or pass variant_id in body for specific removal
+        $query = Favorite::where('user_id', $request->user()->id)
+            ->where('product_id', $productId);
+
+        if ($request->filled('variant_id')) {
+            $query->where('variant_id', $request->variant_id);
+        }
+
+        $query->delete();
 
         return response()->json([
             'success'   => true,
@@ -56,30 +88,55 @@ class FavoriteController extends Controller
     /* ── GET /api/favorites/check/{product_id} ── */
     public function check(Request $request, $productId)
     {
-        $favorited = Favorite::where('user_id', $request->user()->id)
-            ->where('product_id', $productId)
-            ->exists();
+        $query = Favorite::where('user_id', $request->user()->id)
+            ->where('product_id', $productId);
+
+        if ($request->filled('variant_id')) {
+            $query->where('variant_id', $request->variant_id);
+        }
+
+        $favorited = $query->exists();
 
         return response()->json(['success' => true, 'favorited' => $favorited]);
     }
 
+    /* ── Private helper ── */
     private function formatFavorite(Favorite $fav): array
     {
         $product  = $fav->product;
+        $variant  = $fav->variant;
         $imgPath  = $product->primaryImage?->image_path;
         $imageUrl = $imgPath
             ? rtrim(config('app.url'), '/') . '/storage/' . ltrim($imgPath, '/')
             : null;
 
+        $variantOptions = [];
+        if ($variant && $variant->relationLoaded('attributeOptions')) {
+            foreach ($variant->attributeOptions as $opt) {
+                $variantOptions[$opt->attribute->slug] = [
+                    'id'        => $opt->id,
+                    'value'     => $opt->value,
+                    'color_hex' => $opt->color_hex,
+                ];
+            }
+        }
+
+        $variantLabel = $variant
+            ? $variant->attributeOptions->pluck('value')->join(' / ')
+            : null;
+
         return [
-            'id'         => $fav->id,
-            'product_id' => $product->id,
-            'name'       => $product->name,
-            'slug'       => $product->slug,
-            'price'      => (float) $product->price,
-            'stock'      => $product->stock,
-            'image_url'  => $imageUrl,
-            'category'   => $product->category?->name,
+            'id'              => $fav->id,
+            'product_id'      => $product->id,
+            'variant_id'      => $variant?->id,
+            'variant_label'   => $variantLabel,
+            'variant_options' => $variantOptions,
+            'name'            => $product->name,
+            'slug'            => $product->slug,
+            'price'           => (float) ($variant?->price_override ?? $product->price),
+            'stock'           => $variant ? $variant->stock : $product->stock,
+            'image_url'       => $imageUrl,
+            'category'        => $product->category?->name,
         ];
     }
 }

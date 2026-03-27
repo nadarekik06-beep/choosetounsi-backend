@@ -5,342 +5,416 @@ namespace App\Http\Controllers\Api\Seller;
 use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Models\ProductImage;
-use App\Models\User;
-use App\Notifications\ProductActionNotification;
+use App\Models\ProductVariant;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class SellerProductController extends Controller
 {
-    private function sellerId(): int
-    {
-        return (int) auth()->id();
-    }
-
-    // ── GET /api/seller/products ───────────────────────────────────────────
+    /**
+     * GET /api/seller/products
+     */
     public function index(Request $request)
     {
-        $query = Product::withoutGlobalScopes()
-            ->with(['category:id,name', 'subcategory:id,name', 'primaryImage'])
-            ->where('seller_id', $this->sellerId())
-            ->select([
-                'id', 'seller_id', 'category_id', 'subcategory_id', 'name', 'slug', 'sku',
-                'description', 'short_description', 'price', 'stock',
-                'is_approved', 'is_active', 'featured', 'views', 'created_at',
-            ]);
+        $seller = $request->user();
+
+        $query = $seller->products()->with([
+            'category:id,name,slug',
+            'subcategory:id,name,slug',
+            'primaryImage',
+            'variants',  // needed for has_variants + variant_stock on list
+        ]);
 
         if ($request->filled('search')) {
+            $search = $request->search;
             $query->where(fn($q) =>
-                $q->where('name', 'like', '%' . $request->search . '%')
-                  ->orWhere('sku', 'like', '%' . $request->search . '%')
+                $q->where('name', 'like', "%{$search}%")
+                  ->orWhere('sku', 'like', "%{$search}%")
             );
         }
-        if ($request->filled('is_active'))   $query->where('is_active',   filter_var($request->is_active,   FILTER_VALIDATE_BOOLEAN));
-        if ($request->filled('is_approved'))  $query->where('is_approved',  filter_var($request->is_approved, FILTER_VALIDATE_BOOLEAN));
-        if ($request->filled('category_id'))  $query->where('category_id',  (int) $request->category_id);
-        if ($request->filled('subcategory_id')) $query->where('subcategory_id', (int) $request->subcategory_id);
 
-        $perPage  = (int) $request->get('per_page', 12);
-        $products = $query->orderByDesc('created_at')->paginate($perPage);
+        if ($request->filled('is_active')) {
+            $query->where('is_active', filter_var($request->is_active, FILTER_VALIDATE_BOOLEAN));
+        }
 
-        $products->getCollection()->transform(function ($product) {
-            $product->primary_image_url = $product->primaryImage
-                ? Storage::url($product->primaryImage->image_path)
+        if ($request->filled('is_approved')) {
+            $query->where('is_approved', filter_var($request->is_approved, FILTER_VALIDATE_BOOLEAN));
+        }
+
+        $query->orderByDesc('created_at');
+
+        $products = $query->paginate((int) $request->input('per_page', 12));
+
+        $products->getCollection()->transform(function ($p) {
+            $p->primary_image_url = $p->primaryImage
+                ? Storage::url($p->primaryImage->image_path)
                 : null;
-            return $product;
+            $p->has_variants   = $p->variants->isNotEmpty();
+            $p->variant_stock  = $p->variants->sum('stock');
+            return $p;
         });
 
         return response()->json(['success' => true, 'data' => $products]);
     }
 
-    // ── GET /api/seller/products/stats ────────────────────────────────────
-    public function stats()
+    /**
+     * GET /api/seller/products/stats
+     */
+    public function stats(Request $request)
     {
-        $stats = Product::withoutGlobalScopes()
-            ->where('seller_id', $this->sellerId())
-            ->selectRaw('
-                COUNT(*) as total,
-                SUM(CASE WHEN is_active   = 1 THEN 1 ELSE 0 END) as active,
-                SUM(CASE WHEN is_active   = 0 THEN 1 ELSE 0 END) as inactive,
-                SUM(CASE WHEN is_approved = 1 THEN 1 ELSE 0 END) as approved,
-                SUM(CASE WHEN is_approved = 0 THEN 1 ELSE 0 END) as pending_approval,
-                SUM(stock) as total_stock,
-                SUM(CASE WHEN stock = 0 THEN 1 ELSE 0 END) as out_of_stock
-            ')
-            ->first();
+        $seller = $request->user();
 
-        return response()->json(['success' => true, 'data' => $stats]);
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'total'        => $seller->products()->count(),
+                'approved'     => $seller->products()->where('is_approved', true)->count(),
+                'pending'      => $seller->products()->where('is_approved', false)->count(),
+                'active'       => $seller->products()->where('is_active', true)->count(),
+                'total_stock'  => (int) $seller->products()->sum('stock'),
+                'out_of_stock' => $seller->products()->where('stock', 0)->count(),
+                'total_views'  => (int) $seller->products()->sum('views'),
+            ],
+        ]);
     }
 
-    // ── GET /api/seller/products/{id} ─────────────────────────────────────
-    public function show($id)
+    /**
+     * GET /api/seller/products/{id}
+     */
+    public function show(Request $request, int $id)
     {
-        $product = Product::withoutGlobalScopes()
-            ->with(['category:id,name', 'subcategory:id,name', 'images', 'attributeValues.attribute.options'])
-            ->where('seller_id', $this->sellerId())
-            ->findOrFail($id);
+        $product = Product::where('id', $id)
+            ->where('seller_id', $request->user()->id)
+            ->with([
+                'category:id,name,slug',
+                'subcategory:id,name,slug',
+                'images',
+                'primaryImage',
+                'attributeValues.attribute',
+                'variants.attributeOptions.attribute',
+            ])
+            ->firstOrFail();
+
+        $product->primary_image_url = $product->primaryImage
+            ? Storage::url($product->primaryImage->image_path)
+            : null;
 
         $product->images->each(fn($img) => $img->url = Storage::url($img->image_path));
 
-        // Include existing attribute values keyed by slug for the form
         $product->existing_attributes = $product->getAttributeValuesForForm();
+
+        $product->variant_rows = $product->variants->map(fn($v) => [
+            'id'             => $v->id,
+            'option_ids'     => $v->attributeOptions->pluck('id')->toArray(),
+            'stock'          => $v->stock,
+            'price_override' => $v->price_override,
+            'sku'            => $v->sku,
+            'label'          => $v->label,
+            'option_map'     => $v->option_map,
+        ])->values();
 
         return response()->json(['success' => true, 'data' => $product]);
     }
 
-    // ── POST /api/seller/products ─────────────────────────────────────────
+    /**
+     * POST /api/seller/products
+     *
+     * Accepts multipart/form-data with PHP-style array notation for variants:
+     *   variants[0][option_ids][0] = 3
+     *   variants[0][stock]         = 10
+     *   variants[0][is_active]     = 1
+     */
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'category_id'       => 'required|integer|exists:categories,id',
-            'subcategory_id'    => 'nullable|integer|exists:subcategories,id',
-            'name'              => 'required|string|max:255',
-            'slug'              => 'nullable|string|max:255|unique:products,slug',
-            'description'       => 'nullable|string',
-            'short_description' => 'nullable|string|max:500',
-            'price'             => 'required|numeric|min:0',
-            'stock'             => 'required|integer|min:0',
-            'sku'               => 'nullable|string|max:100|unique:products,sku',
-            'is_active'         => 'sometimes|boolean',
-            'images'            => 'nullable|array|max:8',
-            'images.*'          => 'image|mimes:jpeg,png,jpg,webp|max:5120',
-            // Dynamic attribute values — keys are attribute slugs
-            'attributes'        => 'nullable|array',
+            'name'                         => 'required|string|max:255',
+            'slug'                         => 'nullable|string|max:255|unique:products,slug',
+            'sku'                          => 'nullable|string|unique:products,sku',
+            'description'                  => 'nullable|string',
+            'short_description'            => 'nullable|string|max:500',
+            'price'                        => 'required|numeric|min:0',
+            'stock'                        => 'required|integer|min:0',
+            'category_id'                  => 'required|exists:categories,id',
+            'subcategory_id'               => 'nullable|exists:subcategories,id',
+            'is_active'                    => 'sometimes',
+            'images'                       => 'nullable|array|max:8',
+            'images.*'                     => 'image|mimes:jpeg,png,jpg,webp|max:5120',
+            'attributes'                   => 'nullable|array',
+            'variants'                     => 'nullable|array',
+            'variants.*.id'                => 'nullable|integer|exists:product_variants,id',
+            'variants.*.option_ids'        => 'required_with:variants|array',
+            'variants.*.option_ids.*'      => 'integer|exists:attribute_options,id',
+            'variants.*.stock'             => 'required_with:variants|integer|min:0',
+            'variants.*.price_override'    => 'nullable|numeric|min:0',
+            'variants.*.sku'               => 'nullable|string',
+            'variants.*.is_active'         => 'sometimes',
         ]);
 
-        $slug = $this->generateUniqueSlug(!empty($validated['slug']) ? $validated['slug'] : $validated['name']);
-        $sku  = !empty($validated['sku']) ? $validated['sku'] : $this->generateSku($validated['name']);
+        $isActive = filter_var($request->input('is_active', true), FILTER_VALIDATE_BOOLEAN);
 
-        DB::beginTransaction();
-        try {
-            $product = Product::create([
-                'seller_id'         => $this->sellerId(),
-                'category_id'       => $validated['category_id'],
-                'subcategory_id'    => $validated['subcategory_id'] ?? null,
-                'name'              => $validated['name'],
-                'slug'              => $slug,
-                'description'       => $validated['description'] ?? null,
-                'short_description' => $validated['short_description'] ?? null,
-                'price'             => $validated['price'],
-                'stock'             => $validated['stock'],
-                'sku'               => $sku,
-                'is_active'         => $validated['is_active'] ?? true,
-                'is_approved'       => false,
-                'featured'          => false,
-            ]);
+        $product = $request->user()->products()->create([
+            'name'              => $validated['name'],
+            'slug'              => $validated['slug'] ?? Str::slug($validated['name']),
+            'sku'               => $validated['sku']               ?? null,
+            'description'       => $validated['description']       ?? null,
+            'short_description' => $validated['short_description'] ?? null,
+            'price'             => $validated['price'],
+            'stock'             => $validated['stock'],
+            'category_id'       => $validated['category_id'],
+            'subcategory_id'    => $validated['subcategory_id']    ?? null,
+            'is_active'         => $isActive,
+            'is_approved'       => false,
+            'featured'          => false,
+            'views'             => 0,
+        ]);
 
-            // Save attribute values
-            if (!empty($validated['attributes'])) {
-                $product->syncAttributeValues($validated['attributes']);
+        // ── Images ────────────────────────────────────────────────────────
+        if ($request->hasFile('images')) {
+            foreach ($request->file('images') as $index => $image) {
+                $path = $image->store('products', 'public');
+                ProductImage::create([
+                    'product_id' => $product->id,
+                    'image_path' => $path,
+                    'order'      => $index,
+                    'is_primary' => $index === 0,
+                ]);
             }
-
-            if ($request->hasFile('images')) {
-                $this->uploadImages($product, $request->file('images'));
-            }
-
-            DB::commit();
-        } catch (\Exception $e) {
-            DB::rollBack();
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to create product.',
-                'error'   => config('app.debug') ? $e->getMessage() : null,
-            ], 500);
         }
 
-        Notification::send(
-            User::getAllAdmins(),
-            new ProductActionNotification('created', $product->id, $product->name, $request->user()->name, $request->user()->id)
-        );
+        // ── Product-level attributes ───────────────────────────────────────
+        if (!empty($validated['attributes'])) {
+            $product->syncAttributeValues($validated['attributes']);
+        }
+
+        // ── Variants ──────────────────────────────────────────────────────
+        if (!empty($validated['variants'])) {
+            $this->saveVariants($product, $validated['variants']);
+        }
 
         return response()->json([
             'success' => true,
-            'message' => 'Product submitted successfully. It will be visible after admin approval.',
-            'data'    => $product->load(['category:id,name', 'subcategory:id,name', 'images']),
+            'message' => 'Product created! It will be reviewed by an admin.',
+            'data'    => $product->load(['images', 'category', 'variants.attributeOptions.attribute']),
         ], 201);
     }
 
-    // ── PUT /api/seller/products/{id} ─────────────────────────────────────
-    public function update(Request $request, $id)
+    /**
+     * PUT /api/seller/products/{id}
+     * (also handles POST with _method=PUT for FormData uploads)
+     */
+    public function update(Request $request, int $id)
     {
-        $product = Product::withoutGlobalScopes()
-            ->where('seller_id', $this->sellerId())
-            ->findOrFail($id);
+        $product = Product::where('id', $id)
+            ->where('seller_id', $request->user()->id)
+            ->firstOrFail();
 
         $validated = $request->validate([
-            'category_id'        => 'sometimes|integer|exists:categories,id',
-            'subcategory_id'     => 'nullable|integer|exists:subcategories,id',
-            'name'               => 'sometimes|string|max:255',
-            'slug'               => 'nullable|string|max:255|unique:products,slug,' . $id,
-            'description'        => 'nullable|string',
-            'short_description'  => 'nullable|string|max:500',
-            'price'              => 'sometimes|numeric|min:0',
-            'stock'              => 'sometimes|integer|min:0',
-            'sku'                => 'nullable|string|max:100|unique:products,sku,' . $id,
-            'is_active'          => 'sometimes|boolean',
-            'images'             => 'nullable|array|max:8',
-            'images.*'           => 'image|mimes:jpeg,png,jpg,webp|max:5120',
-            'delete_image_ids'   => 'nullable|array',
-            'delete_image_ids.*' => 'integer',
-            'attributes'         => 'nullable|array',
+            'name'                         => 'required|string|max:255',
+            'slug'                         => 'nullable|string|max:255|unique:products,slug,' . $product->id,
+            'sku'                          => 'nullable|string|unique:products,sku,' . $product->id,
+            'description'                  => 'nullable|string',
+            'short_description'            => 'nullable|string|max:500',
+            'price'                        => 'required|numeric|min:0',
+            'stock'                        => 'required|integer|min:0',
+            'category_id'                  => 'required|exists:categories,id',
+            'subcategory_id'               => 'nullable|exists:subcategories,id',
+            'is_active'                    => 'sometimes',
+            'images'                       => 'nullable|array|max:8',
+            'images.*'                     => 'image|mimes:jpeg,png,jpg,webp|max:5120',
+            'delete_image_ids'             => 'nullable|array',
+            'delete_image_ids.*'           => 'integer',
+            'attributes'                   => 'nullable|array',
+            'variants'                     => 'nullable|array',
+            'variants.*.id'                => 'nullable|integer',
+            'variants.*.option_ids'        => 'required_with:variants|array',
+            'variants.*.option_ids.*'      => 'integer|exists:attribute_options,id',
+            'variants.*.stock'             => 'required_with:variants|integer|min:0',
+            'variants.*.price_override'    => 'nullable|numeric|min:0',
+            'variants.*.sku'               => 'nullable|string',
+            'variants.*.is_active'         => 'sometimes',
         ]);
 
-        if (isset($validated['name']) && !isset($validated['slug'])) {
-            $validated['slug'] = $this->generateUniqueSlug($validated['name'], $id);
+        $isActive = filter_var($request->input('is_active', $product->is_active), FILTER_VALIDATE_BOOLEAN);
+
+        $product->update([
+            'name'              => $validated['name'],
+            'slug'              => $validated['slug'] ?? Str::slug($validated['name']),
+            'sku'               => $validated['sku']               ?? $product->sku,
+            'description'       => $validated['description']       ?? $product->description,
+            'short_description' => $validated['short_description'] ?? $product->short_description,
+            'price'             => $validated['price'],
+            'stock'             => $validated['stock'],
+            'category_id'       => $validated['category_id'],
+            'subcategory_id'    => $validated['subcategory_id']    ?? null,
+            'is_active'         => $isActive,
+        ]);
+
+        // ── Delete images ──────────────────────────────────────────────────
+        if (!empty($validated['delete_image_ids'])) {
+            $toDelete = $product->images()->whereIn('id', $validated['delete_image_ids'])->get();
+            foreach ($toDelete as $img) {
+                Storage::disk('public')->delete($img->image_path);
+                $img->delete();
+            }
         }
 
-        DB::beginTransaction();
-        try {
-            $product->update($validated);
-
-            if (!empty($validated['attributes'])) {
-                $product->syncAttributeValues($validated['attributes']);
+        // ── Upload new images ──────────────────────────────────────────────
+        if ($request->hasFile('images')) {
+            $maxOrder = $product->images()->max('order') ?? -1;
+            foreach ($request->file('images') as $index => $image) {
+                $path = $image->store('products', 'public');
+                ProductImage::create([
+                    'product_id' => $product->id,
+                    'image_path' => $path,
+                    'order'      => $maxOrder + $index + 1,
+                    'is_primary' => false,
+                ]);
             }
-
-            if (!empty($validated['delete_image_ids'])) {
-                $this->deleteImages($product, $validated['delete_image_ids']);
-            }
-
-            if ($request->hasFile('images')) {
-                $this->uploadImages($product, $request->file('images'));
-            }
-
-            DB::commit();
-        } catch (\Exception $e) {
-            DB::rollBack();
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to update product.',
-                'error'   => config('app.debug') ? $e->getMessage() : null,
-            ], 500);
         }
 
-        Notification::send(
-            User::getAllAdmins(),
-            new ProductActionNotification('updated', $product->id, $product->name, $request->user()->name, $request->user()->id)
-        );
+        // ── Product-level attributes ───────────────────────────────────────
+        if (isset($validated['attributes'])) {
+            $product->syncAttributeValues($validated['attributes']);
+        }
 
-        $product->load(['category:id,name', 'subcategory:id,name', 'images']);
-        $product->images->each(fn($img) => $img->url = Storage::url($img->image_path));
+        // ── Variants ──────────────────────────────────────────────────────
+        if (isset($validated['variants'])) {
+            $this->saveVariants($product, $validated['variants']);
+        }
 
         return response()->json([
             'success' => true,
-            'message' => 'Product updated successfully.',
-            'data'    => $product,
+            'message' => 'Product updated.',
+            'data'    => $product->fresh(['images', 'category', 'variants.attributeOptions.attribute']),
         ]);
     }
 
-    // ── DELETE /api/seller/products/{id} ──────────────────────────────────
-    public function destroy($id)
+    /**
+     * DELETE /api/seller/products/{id}
+     */
+    public function destroy(Request $request, int $id)
     {
-        $seller  = auth()->user();
-        $product = Product::withoutGlobalScopes()->where('seller_id', $this->sellerId())->findOrFail($id);
-
-        $productId   = $product->id;
-        $productName = $product->name;
+        $product = Product::where('id', $id)
+            ->where('seller_id', $request->user()->id)
+            ->firstOrFail();
 
         foreach ($product->images as $image) {
             Storage::disk('public')->delete($image->image_path);
         }
+
         $product->delete();
 
-        Notification::send(
-            User::getAllAdmins(),
-            new ProductActionNotification('deleted', $productId, $productName, $seller->name, $seller->id)
-        );
-
-        return response()->json(['success' => true, 'message' => 'Product deleted successfully.']);
+        return response()->json(['success' => true, 'message' => 'Product deleted.']);
     }
 
-    // ── Image helpers (unchanged) ──────────────────────────────────────────
-
-    public function destroyImage($id, $imageId)
+    /**
+     * DELETE /api/seller/products/{id}/images/{imageId}
+     */
+    public function destroyImage(Request $request, int $id, int $imageId)
     {
-        $product    = Product::withoutGlobalScopes()->where('seller_id', $this->sellerId())->findOrFail($id);
+        $product = Product::where('id', $id)
+            ->where('seller_id', $request->user()->id)
+            ->firstOrFail();
+
+        if ($product->images()->count() <= 1) {
+            return response()->json(['success' => false, 'message' => 'Cannot delete the last image.'], 400);
+        }
+
         $image      = $product->images()->findOrFail($imageId);
         $wasPrimary = $image->is_primary;
+
         Storage::disk('public')->delete($image->image_path);
         $image->delete();
+
         if ($wasPrimary) {
-            $next = $product->images()->orderBy('order')->first();
-            if ($next) $next->update(['is_primary' => true]);
+            $product->images()->first()?->update(['is_primary' => true]);
         }
+
         return response()->json(['success' => true, 'message' => 'Image deleted.']);
     }
 
-    public function setPrimaryImage($id, $imageId)
+    /**
+     * PATCH /api/seller/products/{id}/images/{imageId}/primary
+     */
+    public function setPrimaryImage(Request $request, int $id, int $imageId)
     {
-        $product = Product::withoutGlobalScopes()->where('seller_id', $this->sellerId())->findOrFail($id);
-        $image   = $product->images()->findOrFail($imageId);
+        $product = Product::where('id', $id)
+            ->where('seller_id', $request->user()->id)
+            ->firstOrFail();
+
         $product->images()->update(['is_primary' => false]);
-        $image->update(['is_primary' => true]);
+        $product->images()->where('id', $imageId)->update(['is_primary' => true]);
+
         return response()->json(['success' => true, 'message' => 'Primary image updated.']);
     }
 
-    private function uploadImages(Product $product, array $files): void
+    // ── Private helpers ────────────────────────────────────────────────────
+
+    /**
+     * Save variants for a product from the request's variants array.
+     * Handles both create (no id) and update (with id).
+     *
+     * $variantsData shape (from FormData PHP array parsing):
+     * [
+     *   ['option_ids' => ['3', '7'], 'stock' => '10', 'price_override' => '', 'is_active' => '1'],
+     *   ...
+     * ]
+     */
+    private function saveVariants(Product $product, array $variantsData): void
     {
-        $currentMax = $product->images()->max('order') ?? -1;
-        $hasPrimary = $product->images()->where('is_primary', true)->exists();
+        // IDs present in incoming data
+        $incomingIds = collect($variantsData)
+            ->pluck('id')
+            ->filter()
+            ->map(fn($id) => (int) $id)
+            ->values()
+            ->toArray();
 
-        foreach ($files as $index => $file) {
-            $order     = $currentMax + $index + 1;
-            $isPrimary = !$hasPrimary && $index === 0;
-            $path      = $file->store('products/' . $product->seller_id, 'public');
-
-            ProductImage::create([
-                'product_id' => $product->id,
-                'image_path' => $path,
-                'order'      => $order,
-                'is_primary' => $isPrimary,
-            ]);
-
-            if ($isPrimary) $hasPrimary = true;
-        }
-    }
-
-    private function deleteImages(Product $product, array $imageIds): void
-    {
-        $images     = $product->images()->whereIn('id', $imageIds)->get();
-        $hadPrimary = false;
-
-        foreach ($images as $image) {
-            if ($image->is_primary) $hadPrimary = true;
-            Storage::disk('public')->delete($image->image_path);
-            $image->delete();
+        // Delete variants not in the new list
+        if (!empty($incomingIds)) {
+            $product->variants()->whereNotIn('id', $incomingIds)->delete();
+        } else {
+            $product->variants()->delete();
         }
 
-        if ($hadPrimary) {
-            $next = $product->images()->orderBy('order')->first();
-            if ($next) $next->update(['is_primary' => true]);
+        foreach ($variantsData as $vData) {
+            $existingId = isset($vData['id']) && $vData['id'] ? (int) $vData['id'] : null;
+
+            $variant = $existingId
+                ? ProductVariant::find($existingId)
+                : new ProductVariant(['product_id' => $product->id]);
+
+            if (!$variant) continue;
+
+            // Cast is_active: "1"/"0"/true/false all handled
+            $active = isset($vData['is_active'])
+                ? filter_var($vData['is_active'], FILTER_VALIDATE_BOOLEAN)
+                : true;
+
+            // Cast price_override: empty string → null
+            $priceOverride = isset($vData['price_override']) && $vData['price_override'] !== ''
+                ? (float) $vData['price_override']
+                : null;
+
+            $variant->fill([
+                'product_id'     => $product->id,
+                'sku'            => $vData['sku']   ?? null,
+                'price_override' => $priceOverride,
+                'stock'          => (int) ($vData['stock'] ?? 0),
+                'is_active'      => $active,
+            ])->save();
+
+            // Sync attribute options
+            if (isset($vData['option_ids']) && is_array($vData['option_ids'])) {
+                $optionIds = array_values(
+                    array_filter(
+                        array_map('intval', $vData['option_ids']),
+                        fn($id) => $id > 0
+                    )
+                );
+                $variant->attributeOptions()->sync($optionIds);
+            }
         }
-    }
-
-    private function generateUniqueSlug(string $name, ?int $excludeId = null): string
-    {
-        $base = Str::slug($name);
-        $slug = $base;
-        $n    = 1;
-
-        while (true) {
-            $q = Product::withoutGlobalScopes()->where('slug', $slug);
-            if ($excludeId) $q->where('id', '!=', $excludeId);
-            if (!$q->exists()) break;
-            $slug = $base . '-' . $n++;
-        }
-
-        return $slug;
-    }
-
-    private function generateSku(string $productName): string
-    {
-        do {
-            $prefix = 'CT-' . strtoupper(substr(preg_replace('/[^A-Za-z]/', '', $productName), 0, 3));
-            $sku    = $prefix . strtoupper(Str::random(6));
-        } while (Product::withoutGlobalScopes()->where('sku', $sku)->exists());
-
-        return $sku;
     }
 }

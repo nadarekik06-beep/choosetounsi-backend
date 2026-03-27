@@ -22,7 +22,7 @@ class Product extends Model
         'is_approved' => 'boolean',
         'is_active'   => 'boolean',
         'featured'    => 'boolean',
-        'price'       => 'decimal:2',
+        'price'       => 'decimal:3',
     ];
 
     protected $appends = ['primary_image_url'];
@@ -45,6 +45,8 @@ class Product extends Model
             }
             $product->images()->delete();
             $product->attributeValues()->delete();
+            // Cascade handled by DB foreign key, but explicit for clarity
+            $product->variants()->delete();
         });
     }
 
@@ -81,7 +83,7 @@ class Product extends Model
     }
 
     /**
-     * Raw attribute value rows.
+     * Raw attribute value rows (product-level, non-variant attributes).
      */
     public function attributeValues()
     {
@@ -96,6 +98,25 @@ class Product extends Model
         return $this->attributeValues()->with(['attribute.options']);
     }
 
+    /**
+     * All variants for this product (with their option data).
+     */
+    public function variants()
+    {
+        return $this->hasMany(ProductVariant::class)
+            ->with(['attributeOptions.attribute:id,slug,name,type']);
+    }
+
+    /**
+     * Only active variants.
+     */
+    public function activeVariants()
+    {
+        return $this->hasMany(ProductVariant::class)
+            ->where('is_active', true)
+            ->with(['attributeOptions.attribute:id,slug,name,type']);
+    }
+
     // ── Scopes ─────────────────────────────────────────────────────────────
 
     public function scopeApproved($query)  { return $query->where('is_approved', true); }
@@ -106,17 +127,13 @@ class Product extends Model
     public function scopeInStock($query)   { return $query->where('stock', '>', 0); }
 
     /**
-     * Filter by a specific attribute value.
-     * Usage: ->hasAttribute('color', [3, 7])  (option IDs)
-     *        ->hasAttribute('brand', 'Nike')   (text)
+     * Filter by a specific attribute value (product-level attributes).
      */
     public function scopeHasAttribute($query, string $attrSlug, $value)
     {
         return $query->whereHas('attributeValues', function ($q) use ($attrSlug, $value) {
             $q->whereHas('attribute', fn($a) => $a->where('slug', $attrSlug));
-
             if (is_array($value)) {
-                // For multiselect: check that JSON contains ALL given option IDs
                 foreach ($value as $v) {
                     $q->where('value', 'like', '%"' . $v . '"%');
                 }
@@ -124,6 +141,40 @@ class Product extends Model
                 $q->where('value', $value);
             }
         });
+    }
+
+    // ── Accessors ──────────────────────────────────────────────────────────
+
+    /**
+     * True if this product has at least one ProductVariant row.
+     */
+    public function getHasVariantsAttribute(): bool
+    {
+        // Use loaded relation when available to avoid extra query
+        if ($this->relationLoaded('variants')) {
+            return $this->variants->isNotEmpty();
+        }
+        return $this->variants()->exists();
+    }
+
+    /**
+     * Total stock across all active variants.
+     * Used when has_variants = true.
+     */
+    public function getVariantStockAttribute(): int
+    {
+        if ($this->relationLoaded('variants')) {
+            return (int) $this->variants->sum('stock');
+        }
+        return (int) $this->variants()->sum('stock');
+    }
+
+    public function getPrimaryImageUrlAttribute(): string
+    {
+        $primary = $this->primaryImage;
+        return $primary
+            ? Storage::url($primary->image_path)
+            : asset('images/placeholder-product.jpg');
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
@@ -141,11 +192,6 @@ class Product extends Model
             : asset('images/placeholder-product.jpg');
     }
 
-    public function getPrimaryImageUrlAttribute(): string
-    {
-        return $this->getPrimaryImageUrl();
-    }
-
     public function incrementViews(): void
     {
         $this->increment('views');
@@ -153,7 +199,7 @@ class Product extends Model
 
     public function getFormattedPriceAttribute(): string
     {
-        return number_format($this->price, 2) . ' TND';
+        return number_format($this->price, 3) . ' TND';
     }
 
     public function isOutOfStock(): bool
@@ -167,9 +213,8 @@ class Product extends Model
     }
 
     /**
-     * Save attribute values for this product.
+     * Save product-level attribute values.
      * $data = ['color' => '[1,2]', 'size' => '[3]', 'brand' => 'Nike', ...]
-     * Keys are attribute slugs, values are already-serialized strings.
      */
     public function syncAttributeValues(array $data): void
     {
@@ -186,8 +231,7 @@ class Product extends Model
     }
 
     /**
-     * Return attribute values as a keyed array suitable for the front-end form.
-     * [ 'color' => [1,2], 'brand' => 'Nike', ... ]
+     * Return product-level attribute values keyed by slug for the seller form.
      */
     public function getAttributeValuesForForm(): array
     {
@@ -200,5 +244,45 @@ class Product extends Model
                 return [$attr->slug => $value];
             })
             ->toArray();
+    }
+
+    /**
+     * Sync variants for this product.
+     * $variantsData = array of:
+     *   ['id' => optional, 'option_ids' => [3,7], 'stock' => 10, 'price_override' => null, 'sku' => null]
+     */
+    public function syncVariants(array $variantsData): void
+    {
+        // Delete variants no longer present in the payload
+        $incomingIds = collect($variantsData)->pluck('id')->filter()->values()->toArray();
+        if (!empty($incomingIds)) {
+            $this->variants()->whereNotIn('id', $incomingIds)->delete();
+        } else {
+            // No IDs at all means full replacement
+            $this->variants()->delete();
+        }
+
+        foreach ($variantsData as $vData) {
+            $variant = isset($vData['id']) && $vData['id']
+                ? ProductVariant::find($vData['id'])
+                : new ProductVariant(['product_id' => $this->id]);
+
+            if (!$variant) continue;
+
+            $variant->fill([
+                'product_id'     => $this->id,
+                'sku'            => $vData['sku']            ?? null,
+                'price_override' => isset($vData['price_override']) && $vData['price_override'] !== ''
+                    ? (float) $vData['price_override']
+                    : null,
+                'stock'          => (int) ($vData['stock'] ?? 0),
+                'is_active'      => (bool) ($vData['is_active'] ?? true),
+            ])->save();
+
+            if (isset($vData['option_ids']) && is_array($vData['option_ids'])) {
+                $optionIds = array_filter($vData['option_ids'], fn($id) => $id > 0);
+                $variant->attributeOptions()->sync($optionIds);
+            }
+        }
     }
 }

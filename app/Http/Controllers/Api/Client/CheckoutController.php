@@ -6,30 +6,35 @@ use App\Http\Controllers\Controller;
 use App\Models\Cart;
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Models\ProductVariant;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 class CheckoutController extends Controller
 {
     /**
      * POST /api/checkout
-     * Validates cart, creates order + items, decrements stock, clears cart.
+     *
+     * Creates an order from the user's cart.
+     * Validates per-variant (or per-product) stock before committing.
      */
     public function store(Request $request)
     {
         $request->validate([
-            'wilaya'  => 'required|string|max:100',
+            'wilaya'  => 'required|string|max:255',
             'address' => 'required|string|max:500',
-            'phone'   => 'required|string|max:20',
+            'phone'   => 'required|string|max:30',
             'notes'   => 'nullable|string|max:1000',
         ]);
 
         $user = $request->user();
 
-        // ── Load cart ──────────────────────────────────────────────────────
-        $cartItems = Cart::with('product')
-            ->where('user_id', $user->id)
-            ->get();
+        // Load full cart with variant data
+        $cartItems = Cart::with([
+            'product',
+            'variant.attributeOptions.attribute',
+        ])->where('user_id', $user->id)->get();
 
         if ($cartItems->isEmpty()) {
             return response()->json([
@@ -38,87 +43,106 @@ class CheckoutController extends Controller
             ], 422);
         }
 
-        // ── Validate stock ─────────────────────────────────────────────────
-        $errors = [];
+        // ── Pre-flight stock check ──────────────────────────────────────────
         foreach ($cartItems as $item) {
             $product = $item->product;
 
             if (!$product || !$product->is_approved || !$product->is_active) {
-                $errors[] = ($product ? $product->name : 'A product') . ' is no longer available.';
-                continue;
+                return response()->json([
+                    'success' => false,
+                    'message' => "\"$product->name\" is no longer available.",
+                ], 422);
             }
 
-            if ($item->quantity > $product->stock) {
-                $errors[] = $product->name . ': only ' . $product->stock . ' in stock (you requested ' . $item->quantity . ').';
+            // Stock pool is the variant's stock when a variant is chosen
+            $stockPool = $item->variant
+                ? $item->variant->stock
+                : $product->stock;
+
+            if ($stockPool < $item->quantity) {
+                $label = $item->variant
+                    ? "\"{$product->name}\" ({$item->variant->label})"
+                    : "\"{$product->name}\"";
+
+                return response()->json([
+                    'success' => false,
+                    'message' => "{$label} only has {$stockPool} item(s) in stock but {$item->quantity} were requested.",
+                ], 422);
             }
         }
 
-        if ($errors) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Some items are unavailable.',
-                'errors'  => $errors,
-            ], 422);
-        }
-
-        // ── Create order in a transaction ──────────────────────────────────
+        // ── Create order inside a transaction ──────────────────────────────
+        DB::beginTransaction();
         try {
-            $order = DB::transaction(function () use ($cartItems, $user, $request) {
+            $total = $cartItems->sum(function ($item) {
+                $price = $item->variant
+                    ? (float) ($item->variant->price_override ?? $item->product->price)
+                    : (float) $item->product->price;
+                return round($price * $item->quantity, 3);
+            });
 
-                $total = 0;
+            $order = Order::create([
+                'user_id'        => $user->id,
+                'order_number'   => 'ORD-' . strtoupper(Str::random(8)),
+                'status'         => 'pending',
+                'payment_status' => 'pending',
+                'total_amount'   => $total,
+                'wilaya'         => $request->wilaya,
+                'address'        => $request->address,
+                'phone'          => $request->phone,
+                'notes'          => $request->notes ?? null,
+            ]);
 
-                // Create order
-                $order = Order::create([
-                    'user_id'        => $user->id,
-                    'total_amount'   => 0,
-                    'status'         => 'pending',
-                    'payment_status' => 'unpaid',
-                    'wilaya'         => $request->wilaya,
-                    'address'        => $request->address,
-                    'phone'          => $request->phone,
-                    'notes'          => $request->notes,
+            foreach ($cartItems as $item) {
+                $product   = $item->product;
+                $variant   = $item->variant;
+                $unitPrice = $variant
+                    ? (float) ($variant->price_override ?? $product->price)
+                    : (float) $product->price;
+
+                // Build variant label snapshot (persisted for historical records)
+                $variantLabel = $variant
+                    ? $variant->attributeOptions->pluck('value')->join(' / ')
+                    : null;
+
+                OrderItem::create([
+                    'order_id'     => $order->id,
+                    'product_id'   => $product->id,
+                    'variant_id'   => $variant?->id,
+                    'variant_label'=> $variantLabel,
+                    'product_name' => $product->name,
+                    'quantity'     => $item->quantity,
+                    'unit_price'   => $unitPrice,
+                    'total'        => round($unitPrice * $item->quantity, 3),
                 ]);
 
-                foreach ($cartItems as $item) {
-                    $product   = $item->product;
-                    $unitPrice = (float) $product->price;
-                    $lineTotal = round($unitPrice * $item->quantity, 3);
-                    $total    += $lineTotal;
-
-                    OrderItem::create([
-                        'order_id'     => $order->id,
-                        'product_id'   => $product->id,
-                        'product_name' => $product->name,
-                        'quantity'     => $item->quantity,
-                        'unit_price'   => $unitPrice,
-                        'price'        => $unitPrice,
-                        'total'        => $lineTotal,
-                    ]);
-
-                    // Decrement stock
+                // ── Decrement stock ─────────────────────────────────────────
+                if ($variant) {
+                    ProductVariant::where('id', $variant->id)
+                        ->decrement('stock', $item->quantity);
+                } else {
                     $product->decrement('stock', $item->quantity);
                 }
+            }
 
-                $order->update(['total_amount' => round($total, 3)]);
+            // Clear the user's cart
+            Cart::where('user_id', $user->id)->delete();
 
-                // Clear cart
-                Cart::where('user_id', $user->id)->delete();
-
-                return $order;
-            });
+            DB::commit();
 
             return response()->json([
                 'success'      => true,
                 'message'      => 'Order placed successfully!',
                 'order_number' => $order->order_number,
                 'order_id'     => $order->id,
-                'total'        => (float) $order->total_amount,
+                'total'        => $total,
             ], 201);
 
         } catch (\Throwable $e) {
+            DB::rollBack();
             return response()->json([
                 'success' => false,
-                'message' => 'Checkout failed. Please try again.',
+                'message' => 'Failed to place order. Please try again.',
             ], 500);
         }
     }

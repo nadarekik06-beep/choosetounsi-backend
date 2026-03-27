@@ -9,9 +9,18 @@ class Cart extends Model
 {
     use HasFactory;
 
-    protected $fillable = ['user_id', 'product_id', 'quantity'];
+    protected $fillable = [
+        'user_id',
+        'product_id',
+        'variant_id',
+        'quantity',
+    ];
 
-    /* ── Relationships ── */
+    protected $casts = [
+        'quantity' => 'integer',
+    ];
+
+    // ── Relationships ──────────────────────────────────────────────────────
 
     public function user()
     {
@@ -20,14 +29,14 @@ class Cart extends Model
 
     public function product()
     {
-        return $this->belongsTo(Product::class)->with('primaryImage');
+        return $this->belongsTo(Product::class);
     }
 
-    /* ── Helpers ── */
-
-    /** Computed line total */
-    public function getLineTotalAttribute(): float
+    /**
+     * The specific variant chosen (null for non-variant products).
+     */
+    public function variant()
     {
-        return round((float) $this->product->price * $this->quantity, 3);
+        return $this->belongsTo(ProductVariant::class, 'variant_id');
     }
 }

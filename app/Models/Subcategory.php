@@ -4,25 +4,18 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\Str;
 
 class Subcategory extends Model
 {
     use HasFactory;
 
-    protected $fillable = ['category_id', 'name', 'name_ar', 'slug', 'icon', 'is_active', 'order'];
+    protected $fillable = [
+        'category_id', 'name', 'name_ar', 'slug', 'icon', 'is_active', 'order',
+    ];
 
-    protected $casts = ['is_active' => 'boolean'];
-
-    protected static function boot()
-    {
-        parent::boot();
-        static::creating(function ($sub) {
-            if (empty($sub->slug)) {
-                $sub->slug = Str::slug($sub->name);
-            }
-        });
-    }
+    protected $casts = [
+        'is_active' => 'boolean',
+    ];
 
     // ── Relationships ──────────────────────────────────────────────────────
 
@@ -36,22 +29,20 @@ class Subcategory extends Model
         return $this->hasMany(Product::class);
     }
 
+    /**
+     * Attributes linked to this subcategory via the subcategory_attributes pivot.
+     * The pivot carries is_required and order overrides per subcategory.
+     */
     public function attributes()
     {
-        return $this->belongsToMany(Attribute::class, 'subcategory_attributes')
-            ->withPivot('is_required', 'order')
-            ->orderByPivot('order');
-    }
-
-    // ── Scopes ─────────────────────────────────────────────────────────────
-
-    public function scopeActive($query)
-    {
-        return $query->where('is_active', true);
-    }
-
-    public function scopeOrdered($query)
-    {
-        return $query->orderBy('order');
+        return $this->belongsToMany(
+            Attribute::class,
+            'subcategory_attributes',
+            'subcategory_id',
+            'attribute_id'
+        )
+        ->withPivot('is_required', 'order')
+        ->with('options')          // always eager-load options
+        ->orderBy('subcategory_attributes.order');
     }
 }

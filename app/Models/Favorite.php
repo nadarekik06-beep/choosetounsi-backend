@@ -9,7 +9,13 @@ class Favorite extends Model
 {
     use HasFactory;
 
-    protected $fillable = ['user_id', 'product_id'];
+    protected $fillable = [
+        'user_id',
+        'product_id',
+        'variant_id',
+    ];
+
+    // ── Relationships ──────────────────────────────────────────────────────
 
     public function user()
     {
@@ -18,6 +24,14 @@ class Favorite extends Model
 
     public function product()
     {
-        return $this->belongsTo(Product::class)->with('primaryImage');
+        return $this->belongsTo(Product::class);
+    }
+
+    /**
+     * The specific variant favorited (null for non-variant products).
+     */
+    public function variant()
+    {
+        return $this->belongsTo(ProductVariant::class, 'variant_id');
     }
 }

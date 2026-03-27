@@ -5,36 +5,25 @@ namespace App\Http\Controllers\Api\Client;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 
-/**
- * Client Order API Controller
- * Returns JSON — used by the Next.js frontend at /api/client/orders
- */
 class ClientOrderApiController extends Controller
 {
     /**
      * GET /api/client/orders
+     * List the authenticated user's orders (paginated).
      */
     public function index(Request $request)
     {
-        $client = auth()->user();
+        $orders = Order::where('user_id', $request->user()->id)
+            ->with([
+                'items.product.primaryImage',
+            ])
+            ->orderByDesc('created_at')
+            ->paginate(10);
 
-        $query = Order::with(['items'])   // ← removed items.product to avoid crash
-                      ->where('user_id', $client->id);
-
-        if ($request->filled('status')) {
-            $query->where('status', $request->status);
-        }
-
-        if ($request->filled('from_date')) {
-            $query->whereDate('created_at', '>=', $request->from_date);
-        }
-
-        if ($request->filled('to_date')) {
-            $query->whereDate('created_at', '<=', $request->to_date);
-        }
-
-        $orders = $query->latest()->paginate((int) $request->query('per_page', 15));
+        // Attach image URLs and format items
+        $orders->getCollection()->transform(fn($order) => $this->formatOrder($order));
 
         return response()->json([
             'success' => true,
@@ -43,19 +32,21 @@ class ClientOrderApiController extends Controller
     }
 
     /**
-     * GET /api/client/orders/{orderId}
+     * GET /api/client/orders/{order}
+     * Show a single order's full details.
      */
-    public function show(Request $request, $orderId)
+    public function show(Request $request, Order $order)
     {
-        $client = auth()->user();
+        // Ensure the order belongs to this user
+        if ($order->user_id !== $request->user()->id) {
+            return response()->json(['success' => false, 'message' => 'Not found.'], 404);
+        }
 
-        $order = Order::with(['items'])
-                      ->where('user_id', $client->id)
-                      ->findOrFail($orderId);
+        $order->load(['items.product.primaryImage']);
 
         return response()->json([
             'success' => true,
-            'data'    => $order,
+            'data'    => $this->formatOrder($order),
         ]);
     }
 
@@ -64,21 +55,51 @@ class ClientOrderApiController extends Controller
      */
     public function statistics(Request $request)
     {
-        $client = auth()->user();
-
-        $base = Order::where('user_id', $client->id);
+        $user = $request->user();
 
         return response()->json([
             'success' => true,
             'data'    => [
-                'total'     => (clone $base)->count(),
-                'pending'   => (clone $base)->where('status', 'pending')->count(),
-                'completed' => (clone $base)->where('status', 'completed')->count(),
-                'delivered' => (clone $base)->where('status', 'delivered')->count(),
-                'cancelled' => (clone $base)->where('status', 'cancelled')->count(),
-                'spent'     => (clone $base)->whereIn('status', ['completed', 'delivered'])
-                                            ->sum('total_amount'),
+                'total_orders'   => Order::where('user_id', $user->id)->count(),
+                'pending_orders' => Order::where('user_id', $user->id)->where('status', 'pending')->count(),
+                'total_spent'    => (float) Order::where('user_id', $user->id)
+                    ->whereNotIn('status', ['cancelled'])
+                    ->sum('total_amount'),
             ],
         ]);
+    }
+
+    // ── Private helpers ────────────────────────────────────────────────────
+
+    private function formatOrder(Order $order): array
+    {
+        $data = $order->toArray();
+
+        // Format each order item to include variant info
+        $data['items'] = $order->items->map(function ($item) {
+            $product = $item->product;
+            $imgPath = $product?->primaryImage?->image_path;
+            $imageUrl = $imgPath
+                ? rtrim(config('app.url'), '/') . '/storage/' . ltrim($imgPath, '/')
+                : null;
+
+            return [
+                'id'            => $item->id,
+                'product_id'    => $item->product_id,
+                'variant_id'    => $item->variant_id,
+                'variant_label' => $item->variant_label,   // snapshot saved at order time
+                'product_name'  => $item->product_name,
+                'quantity'      => $item->quantity,
+                'unit_price'    => (float) $item->unit_price,
+                'total'         => (float) $item->total,
+                'product'       => $product ? [
+                    'id'                => $product->id,
+                    'slug'              => $product->slug,
+                    'primary_image_url' => $imageUrl,
+                ] : null,
+            ];
+        })->values()->toArray();
+
+        return $data;
     }
 }

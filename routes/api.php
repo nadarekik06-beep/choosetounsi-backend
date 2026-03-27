@@ -3,6 +3,8 @@
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CategoryController;
+use App\Http\Controllers\Api\SubcategoryController;
+use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\SellerApplicationController;
 use App\Http\Controllers\Api\Client\ClientOrderApiController;
 use App\Http\Controllers\Api\Client\ProfileApiController;
@@ -18,38 +20,37 @@ use App\Http\Controllers\Admin\OrderController as AdminOrderController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Admin\AdminNotificationController;
 use App\Http\Controllers\Admin\UserController as AdminUserController;
-use App\Http\Controllers\Api\SubcategoryController;
 
 /*
 |--------------------------------------------------------------------------
-| PUBLIC ROUTES
+| PUBLIC ROUTES (no auth required)
 |--------------------------------------------------------------------------
 */
 
+// Auth
 Route::post('/auth/login',    [AuthController::class, 'login']);
 Route::post('/auth/register', [AuthController::class, 'register']);
+Route::get('/auth/google/redirect', [AuthController::class, 'googleRedirect']);
+Route::get('/auth/google/callback', [AuthController::class, 'googleCallback']);
 
-Route::get('/products',          [\App\Http\Controllers\Api\ProductController::class, 'index']);
-Route::get('/products/featured', [\App\Http\Controllers\Api\ProductController::class, 'featured']);
-Route::get('/products/{slug}',   [\App\Http\Controllers\Api\ProductController::class, 'show']);
+// Products (public)
+Route::get('/products',          [ProductController::class, 'index']);
+Route::get('/products/featured', [ProductController::class, 'featured']);
+Route::get('/products/{slug}',   [ProductController::class, 'show']);
 
+// Categories (public)
 Route::get('/categories',                 [CategoryController::class, 'index']);
 Route::get('/categories/with-products',   [CategoryController::class, 'withProducts']);
 Route::get('/categories/{slug}',          [CategoryController::class, 'show']);
 Route::get('/categories/{slug}/products', [CategoryController::class, 'products']);
 
-Route::get('/auth/google/redirect', [AuthController::class, 'googleRedirect']);
-Route::get('/auth/google/callback', [AuthController::class, 'googleCallback']);
-// ── Public ───────────────────────────────────────────────────────────────────
- 
-// Subcategories for a category
-Route::get('/categories/{slug}/subcategories', [SubcategoryController::class, 'index']);
- 
-// Dynamic attributes for a subcategory (used by the product form)
-Route::get('/subcategories/{id}/attributes', [SubcategoryController::class, 'attributes']);
- 
-// Filterable attributes present in a category (used by the sidebar filter)
-Route::get('/categories/{slug}/filter-attributes', [\App\Http\Controllers\Api\ProductController::class, 'filterAttributes']);
+// Subcategories (public) — CRITICAL for ProductModal variant axes fetch
+Route::get('/categories/{slug}/subcategories',     [SubcategoryController::class, 'index']);
+Route::get('/subcategories/{id}/attributes',       [SubcategoryController::class, 'attributes']);
+
+// Filterable attributes for a category's sidebar filter panel
+Route::get('/categories/{slug}/filter-attributes', [ProductController::class, 'filterAttributes']);
+
 /*
 |--------------------------------------------------------------------------
 | AUTHENTICATED ROUTES
@@ -58,21 +59,21 @@ Route::get('/categories/{slug}/filter-attributes', [\App\Http\Controllers\Api\Pr
 
 Route::middleware('auth:sanctum')->group(function () {
 
-    // AUTH
+    // Auth
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/auth/user',    [AuthController::class, 'user']);
 
-    // PROFILE
+    // Profile
     Route::get('/profile',                 [ProfileApiController::class, 'show']);
     Route::put('/profile',                 [ProfileApiController::class, 'update']);
     Route::put('/profile/password',        [ProfileApiController::class, 'updatePassword']);
     Route::post('/profile/request-seller', [ProfileApiController::class, 'requestSellerRole']);
 
-    // SELLER APPLICATIONS
+    // Seller applications
     Route::post('/seller-applications',       [SellerApplicationController::class, 'store']);
     Route::get('/seller-applications/status', [SellerApplicationController::class, 'status']);
 
-    // CART
+    // Cart
     Route::prefix('cart')->group(function () {
         Route::get('/',        [CartController::class, 'index']);
         Route::post('/',       [CartController::class, 'store']);
@@ -81,7 +82,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/{id}', [CartController::class, 'destroy']);
     });
 
-    // FAVORITES
+    // Favorites
     Route::prefix('favorites')->group(function () {
         Route::get('/',                  [FavoriteController::class, 'index']);
         Route::post('/',                 [FavoriteController::class, 'store']);
@@ -89,10 +90,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/check/{productId}', [FavoriteController::class, 'check']);
     });
 
-    // CHECKOUT
+    // Checkout
     Route::post('/checkout', [CheckoutController::class, 'store']);
 
-    // NOTIFICATIONS
+    // Notifications
     Route::prefix('notifications')->group(function () {
         Route::get('/',             [NotificationController::class, 'index']);
         Route::get('/unread-count', [NotificationController::class, 'unreadCount']);
@@ -109,23 +110,35 @@ Route::middleware('auth:sanctum')->group(function () {
 
         Route::get('/dashboard', [SellerDashboardController::class, 'index']);
 
-        // Products — stats BEFORE {id}
+        // Products — stats route MUST come before {id} to avoid collision
         Route::get('/products/stats',   [SellerProductController::class, 'stats']);
         Route::get('/products',         [SellerProductController::class, 'index']);
+
+        // POST for create, POST with _method=PUT for update (FormData method spoofing)
         Route::post('/products',        [SellerProductController::class, 'store']);
+
         Route::get('/products/{id}',    [SellerProductController::class, 'show']);
+
+        // PUT also kept for JSON clients that can set method directly
         Route::put('/products/{id}',    [SellerProductController::class, 'update']);
+
+        // POST with _method=PUT — Laravel resolves this via the method spoofing middleware
+        // (already enabled by default in Laravel via \Illuminate\Routing\Middleware\SubstituteBindings
+        // and the methodNotAllowed handling — but we explicitly add POST route too)
+        Route::post('/products/{id}',   [SellerProductController::class, 'update']);
+
         Route::delete('/products/{id}', [SellerProductController::class, 'destroy']);
 
+        // Image management
         Route::delete('/products/{id}/images/{imageId}',        [SellerProductController::class, 'destroyImage']);
         Route::patch('/products/{id}/images/{imageId}/primary', [SellerProductController::class, 'setPrimaryImage']);
 
-        // Orders — stats BEFORE {id}, payment BEFORE status to avoid conflicts
-        Route::get('/orders/stats',           [SellerOrderController::class, 'stats']);
-        Route::get('/orders',                 [SellerOrderController::class, 'index']);
-        Route::get('/orders/{id}',            [SellerOrderController::class, 'show']);
-        Route::patch('/orders/{id}/status',   [SellerOrderController::class, 'updateStatus']);
-        Route::patch('/orders/{id}/payment',  [SellerOrderController::class, 'updatePayment']); // ← NEW
+        // Orders — stats BEFORE {id}
+        Route::get('/orders/stats',          [SellerOrderController::class, 'stats']);
+        Route::get('/orders',                [SellerOrderController::class, 'index']);
+        Route::get('/orders/{id}',           [SellerOrderController::class, 'show']);
+        Route::patch('/orders/{id}/status',  [SellerOrderController::class, 'updateStatus']);
+        Route::patch('/orders/{id}/payment', [SellerOrderController::class, 'updatePayment']);
     });
 
     /*
@@ -191,7 +204,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/orders/{id}',          [AdminOrderController::class, 'show']);
         Route::patch('/orders/{id}/status', [AdminOrderController::class, 'updateStatus']);
 
-        // Admin Notifications
+        // Admin notifications
         Route::prefix('notifications')->group(function () {
             Route::get('/',             [AdminNotificationController::class, 'index']);
             Route::get('/unread-count', [AdminNotificationController::class, 'unreadCount']);
