@@ -26,16 +26,21 @@ class CategorySeeder extends Seeder
         ];
 
         foreach ($categories as $index => $category) {
-            DB::table('categories')->insert([
-                'name' => $category['name'],
-                'name_ar' => $category['name_ar'],
-                'slug' => Str::slug($category['name']),
-                'icon' => $category['icon'],
-                'order' => $index + 1,
-                'is_active' => true,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
+
+            $slug = Str::slug($category['name']);
+
+            DB::table('categories')->updateOrInsert(
+                ['slug' => $slug], // condition (unique)
+                [
+                    'name' => $category['name'],
+                    'name_ar' => $category['name_ar'],
+                    'icon' => $category['icon'],
+                    'order' => $index + 1,
+                    'is_active' => true,
+                    'updated_at' => now(),
+                    'created_at' => now(), // safe even if exists
+                ]
+            );
         }
     }
 }
