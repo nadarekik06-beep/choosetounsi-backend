@@ -23,6 +23,12 @@ class RedirectIfAuthenticated
 
         foreach ($guards as $guard) {
             if (Auth::guard($guard)->check()) {
+
+                // ── API / JSON requests: never redirect, just continue ──────
+                if ($request->expectsJson() || $request->is('api/*')) {
+                    return $next($request);
+                }
+
                 $user = Auth::user();
 
                 // Redirect based on role

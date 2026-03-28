@@ -5,44 +5,18 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 
 class OrderController extends Controller
 {
-    /**
-     * GET /api/admin/orders
-     */
     public function index(Request $request)
     {
-        $query = Order::with([
-            'user:id,name,email',
-            'items',              // ← load items only; no nested product here to avoid crash
-        ]);
+        $query = Order::with(['user:id,name,email']);
 
-        if ($status = $request->query('status')) {
-            $query->where('status', $status);
-        }
-
-        if ($search = $request->query('search')) {
-            $query->where(function ($q) use ($search) {
-                $q->where('order_number', 'like', "%{$search}%")
-                  ->orWhereHas('user', function ($u) use ($search) {
-                      $u->where('name', 'like', "%{$search}%")
-                        ->orWhere('email', 'like', "%{$search}%");
-                  });
-            });
-        }
-
-        if ($wilaya = $request->query('wilaya')) {
-            $query->where('wilaya', $wilaya);
-        }
-
-        if ($dateFrom = $request->query('date_from')) {
-            $query->whereDate('created_at', '>=', $dateFrom);
-        }
-
-        if ($dateTo = $request->query('date_to')) {
-            $query->whereDate('created_at', '<=', $dateTo);
-        }
+        if ($s = $request->query('status'))    $query->where('status', $s);
+        if ($s = $request->query('search'))    $query->whereHas('user', fn($q) => $q->where('name', 'like', "%$s%")->orWhere('email', 'like', "%$s%"));
+        if ($d = $request->query('date_from')) $query->whereDate('created_at', '>=', $d);
+        if ($d = $request->query('date_to'))   $query->whereDate('created_at', '<=', $d);
 
         $orders = $query->orderByDesc('created_at')
             ->paginate((int) $request->query('per_page', 15));
@@ -50,63 +24,64 @@ class OrderController extends Controller
         return response()->json(['success' => true, 'data' => $orders]);
     }
 
-    /**
-     * GET /api/admin/orders/{id}
-     */
     public function show($id)
     {
         $order = Order::with([
             'user:id,name,email',
-            'items',              // load items; product data available via product_name snapshot
+            'items',
+            'items.product:id,name,slug',
+            'items.product.primaryImage',
+            // Load variant with images so we can show the right image per item
+            'items.variant:id,product_id,sku',
+            'items.variant.images',
+            'items.variant.attributeOptions.attribute:id,slug,name,type',
         ])->findOrFail($id);
 
-        // Safely attempt to load product if the relation exists and product isn't deleted
+        // Append resolved image URL to each item
         $order->items->each(function ($item) {
-            try {
-                $item->load('product');
-            } catch (\Throwable $e) {
-                // product relationship unavailable — product_name snapshot is still present
-                $item->product = null;
+            $item->resolved_image_url = $this->resolveItemImage($item);
+
+            // Attach variant option map for display
+            if ($item->variant && $item->variant->relationLoaded('attributeOptions')) {
+                $item->variant_options = $item->variant->attributeOptions
+                    ->mapWithKeys(fn($o) => [
+                        $o->attribute->slug => [
+                            'value'     => $o->value,
+                            'color_hex' => $o->color_hex,
+                        ],
+                    ]);
+            } else {
+                $item->variant_options = [];
             }
         });
 
         return response()->json(['success' => true, 'data' => $order]);
     }
 
-    /**
-     * PATCH /api/admin/orders/{id}/status
-     */
     public function updateStatus(Request $request, $id)
     {
-        $request->validate([
-            'status' => 'required|in:pending,processing,completed,delivered,cancelled,refunded',
-        ]);
-
+        $request->validate(['status' => 'required|string|in:pending,processing,completed,cancelled,delivered,refunded']);
         $order = Order::findOrFail($id);
         $order->update(['status' => $request->status]);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Order status updated.',
-            'data'    => $order,
-        ]);
+        return response()->json(['success' => true, 'message' => 'Status updated.', 'data' => $order]);
     }
 
-    /**
-     * GET /api/admin/orders/stats
-     */
-    public function stats()
+    // ── Private ────────────────────────────────────────────────────────────
+
+    private function resolveItemImage($item): ?string
     {
-        return response()->json([
-            'success' => true,
-            'data'    => [
-                'total'     => Order::count(),
-                'pending'   => Order::pending()->count(),
-                'completed' => Order::completed()->count(),
-                'delivered' => Order::delivered()->count(),
-                'cancelled' => Order::where('status', 'cancelled')->count(),
-                'revenue'   => Order::completed()->sum('total_amount'),
-            ],
-        ]);
+        // 1. Stored snapshot (set at checkout)
+        if (!empty($item->image_url)) {
+            return str_starts_with($item->image_url, 'http') ? $item->image_url : url($item->image_url);
+        }
+        // 2. Variant-linked image
+        if ($item->variant && $item->variant->images->isNotEmpty()) {
+            return Storage::url($item->variant->images->first()->image_path);
+        }
+        // 3. Product primary image
+        if ($item->product && $item->product->primaryImage) {
+            return Storage::url($item->product->primaryImage->image_path);
+        }
+        return null;
     }
 }

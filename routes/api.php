@@ -11,7 +11,7 @@ use App\Http\Controllers\Api\Client\ProfileApiController;
 use App\Http\Controllers\Api\Client\CartController;
 use App\Http\Controllers\Api\Client\FavoriteController;
 use App\Http\Controllers\Api\Client\CheckoutController;
-use App\Http\Controllers\Api\Seller\SellerDashboardController;
+use App\Http\Controllers\Seller\SellerDashboardController;       // ← FIXED (no Api\)
 use App\Http\Controllers\Api\Seller\SellerProductController;
 use App\Http\Controllers\Api\Seller\SellerOrderController;
 use App\Http\Controllers\Admin\SellerController;
@@ -44,7 +44,7 @@ Route::get('/categories/with-products',   [CategoryController::class, 'withProdu
 Route::get('/categories/{slug}',          [CategoryController::class, 'show']);
 Route::get('/categories/{slug}/products', [CategoryController::class, 'products']);
 
-// Subcategories (public) — CRITICAL for ProductModal variant axes fetch
+// Subcategories (public)
 Route::get('/categories/{slug}/subcategories',     [SubcategoryController::class, 'index']);
 Route::get('/subcategories/{id}/attributes',       [SubcategoryController::class, 'attributes']);
 
@@ -114,17 +114,15 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/products/stats',   [SellerProductController::class, 'stats']);
         Route::get('/products',         [SellerProductController::class, 'index']);
 
-        // POST for create, POST with _method=PUT for update (FormData method spoofing)
+        // POST for create
         Route::post('/products',        [SellerProductController::class, 'store']);
 
         Route::get('/products/{id}',    [SellerProductController::class, 'show']);
 
-        // PUT also kept for JSON clients that can set method directly
+        // PUT for JSON clients
         Route::put('/products/{id}',    [SellerProductController::class, 'update']);
 
-        // POST with _method=PUT — Laravel resolves this via the method spoofing middleware
-        // (already enabled by default in Laravel via \Illuminate\Routing\Middleware\SubstituteBindings
-        // and the methodNotAllowed handling — but we explicitly add POST route too)
+        // POST with _method=PUT — FormData method spoofing
         Route::post('/products/{id}',   [SellerProductController::class, 'update']);
 
         Route::delete('/products/{id}', [SellerProductController::class, 'destroy']);

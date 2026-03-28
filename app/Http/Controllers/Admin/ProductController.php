@@ -1,5 +1,4 @@
 <?php
-// app/Http/Controllers/Admin/ProductController.php
 
 namespace App\Http\Controllers\Admin;
 
@@ -27,10 +26,8 @@ class ProductController extends Controller
 
         if ($search = $request->query('search'))
             $query->where('name', 'like', '%' . $search . '%');
-
         if ($categoryId = $request->query('category_id'))
             $query->where('category_id', $categoryId);
-
         if ($sellerId = $request->query('seller_id'))
             $query->where('seller_id', $sellerId);
 
@@ -39,11 +36,9 @@ class ProductController extends Controller
 
         $products->getCollection()->transform(function ($product) {
             $product->status = $this->deriveStatus($product);
-
             $product->primary_image_url = $product->primaryImage
                 ? Storage::disk('public')->url($product->primaryImage->image_path)
                 : null;
-
             return $product;
         });
 
@@ -55,8 +50,14 @@ class ProductController extends Controller
         $product = Product::with([
             'seller:id,name,email',
             'category:id,name',
+            'subcategory:id,name',
             'images',
             'primaryImage',
+            // Variants with their own images + options
+            'variants' => fn($q) => $q->with([
+                'attributeOptions.attribute:id,slug,name,type',
+                'images',
+            ]),
         ])->findOrFail($id);
 
         $product->status = $this->deriveStatus($product);
@@ -67,6 +68,21 @@ class ProductController extends Controller
 
         $product->images->each(function ($image) {
             $image->url = Storage::disk('public')->url($image->image_path);
+        });
+
+        // Build variant payload with images
+        $product->variant_data = $product->variants->map(function ($v) {
+            $v->images->each(fn($i) => $i->url = Storage::disk('public')->url($i->image_path));
+            return [
+                'id'             => $v->id,
+                'label'          => $v->label,
+                'sku'            => $v->sku,
+                'stock'          => $v->stock,
+                'price_override' => $v->price_override,
+                'is_active'      => $v->is_active,
+                'option_map'     => $v->option_map,
+                'image_urls'     => $v->images->map(fn($i) => $i->url)->values(),
+            ];
         });
 
         return response()->json(['success' => true, 'data' => $product]);
@@ -90,112 +106,65 @@ class ProductController extends Controller
 
         $product->update($validated);
 
-        // ✅ Notify the seller that admin edited their product
         if ($product->seller) {
-            $product->seller->notify(
-                new ProductActionNotification(
-                    'updated',
-                    $product->id,
-                    $product->name,
-                    'Admin',
-                    0
-                )
-            );
+            $product->seller->notify(new ProductActionNotification(
+                'updated', $product->id, $product->name, 'Admin', 0
+            ));
         }
 
-        // ✅ Load relations including primary image
-        $product->load(['seller:id,name,email', 'category:id,name', 'images', 'primaryImage']);
+        $product->load(['seller:id,name,email', 'category:id,name', 'images', 'primaryImage',
+            'variants.attributeOptions.attribute', 'variants.images']);
 
         $product->status = $this->deriveStatus($product);
-
         $product->primary_image_url = $product->primaryImage
             ? Storage::disk('public')->url($product->primaryImage->image_path)
             : null;
+        $product->images->each(fn($i) => $i->url = Storage::disk('public')->url($i->image_path));
 
-        $product->images->each(function ($image) {
-            $image->url = Storage::disk('public')->url($image->image_path);
-        });
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Product updated successfully.',
-            'data'    => $product,
-        ]);
+        return response()->json(['success' => true, 'message' => 'Product updated.', 'data' => $product]);
     }
 
     public function approve($id)
     {
         $product = Product::with('seller')->findOrFail($id);
         $product->update(['is_approved' => true, 'is_active' => true]);
-
         if ($product->seller) {
-            $product->seller->notify(
-                new ProductReviewedNotification(
-                    'approved',
-                    $product->id,
-                    $product->name
-                )
-            );
+            $product->seller->notify(new ProductReviewedNotification('approved', $product->id, $product->name));
         }
-
         return response()->json(['success' => true, 'message' => 'Product approved.']);
     }
 
     public function reject(Request $request, $id)
     {
         $request->validate(['reason' => 'nullable|string|max:500']);
-
         $product = Product::with('seller')->findOrFail($id);
         $product->update(['is_approved' => false, 'is_active' => false]);
-
         if ($product->seller) {
-            $product->seller->notify(
-                new ProductReviewedNotification(
-                    'rejected',
-                    $product->id,
-                    $product->name,
-                    $request->reason
-                )
-            );
+            $product->seller->notify(new ProductReviewedNotification('rejected', $product->id, $product->name, $request->reason));
         }
-
         return response()->json(['success' => true, 'message' => 'Product rejected.']);
     }
 
     public function disable($id)
     {
-        $product = Product::findOrFail($id);
-        $product->update(['is_active' => false]);
-
+        Product::findOrFail($id)->update(['is_active' => false]);
         return response()->json(['success' => true, 'message' => 'Product disabled.']);
     }
 
     public function destroy($id)
     {
         $product = Product::with('seller')->findOrFail($id);
-
-        $productName = $product->name;
-        $productId   = $product->id;
-        $seller      = $product->seller;
-
+        $name    = $product->name;
+        $pid     = $product->id;
+        $seller  = $product->seller;
         $product->delete();
-
         if ($seller) {
-            $seller->notify(
-                new ProductActionNotification(
-                    'deleted',
-                    $productId,
-                    $productName,
-                    'Admin',
-                    0
-                )
-            );
+            $seller->notify(new ProductActionNotification('deleted', $pid, $name, 'Admin', 0));
         }
-
         return response()->json(['success' => true, 'message' => 'Product deleted.']);
     }
 
-    private function deriveStatus(Product $product)
+    private function deriveStatus(Product $product): string
     {
         if (!$product->is_approved) return 'pending';
         if (!$product->is_active)   return 'disabled';

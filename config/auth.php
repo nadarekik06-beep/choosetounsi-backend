@@ -1,26 +1,5 @@
 <?php
 
-// =============================================================
-// config/auth.php — ADD these entries to your existing file
-// =============================================================
-// In 'guards' array, add:
-//
-//  'admin' => [
-//      'driver'   => 'sanctum',   // uses Sanctum but a separate guard
-//      'provider' => 'admins',
-//  ],
-//
-// In 'providers' array, add:
-//
-//  'admins' => [
-//      'driver' => 'eloquent',
-//      'model'  => App\Models\Admin::class,
-//  ],
-//
-// =============================================================
-// FULL REPLACEMENT config/auth.php:
-// =============================================================
-
 return [
 
     'defaults' => [
@@ -38,8 +17,6 @@ return [
             'driver'   => 'sanctum',
             'provider' => 'users',
         ],
-
-        
     ],
 
     'providers' => [
@@ -47,8 +24,6 @@ return [
             'driver' => 'eloquent',
             'model'  => App\Models\User::class,
         ],
-
-       
     ],
 
     'passwords' => [
@@ -58,71 +33,8 @@ return [
             'expire'   => 60,
             'throttle' => 60,
         ],
-
-        'admins' => [
-            'provider' => 'admins',
-            'table'    => 'password_resets',
-            'expire'   => 60,
-            'throttle' => 60,
-        ],
     ],
 
     'password_timeout' => 10800,
+
 ];
-// ─────────────────────────────────────────────────────────────────
-// FULL REFERENCE config/auth.php (merge into yours):
-// ─────────────────────────────────────────────────────────────────
- 
-return [
-    'defaults' => [
-        'guard'     => 'web',
-        'passwords' => 'users',
-    ],
- 
-    'guards' => [
-        'web' => [
-            'driver'   => 'session',
-            'provider' => 'users',
-        ],
-        'api' => [
-            'driver'   => 'sanctum',
-            'provider' => 'users',
-        ],
-        // ── ADD THIS ──
-        'admin' => [
-            'driver'   => 'sanctum',
-            'provider' => 'admins',
-        ],
-    ],
- 
-    'providers' => [
-        'users' => [
-            'driver' => 'eloquent',
-            'model'  => App\Models\User::class,
-        ],
-        // ── ADD THIS ──
-        'admins' => [
-            'driver' => 'eloquent',
-            'model'  => App\Models\Admin::class,
-        ],
-    ],
- 
-    'passwords' => [
-        'users' => [
-            'provider' => 'users',
-            'table'    => 'password_resets',
-            'expire'   => 60,
-            'throttle' => 60,
-        ],
-        // ── ADD THIS ──
-        'admins' => [
-            'provider' => 'admins',
-            'table'    => 'password_resets',
-            'expire'   => 60,
-            'throttle' => 60,
-        ],
-    ],
- 
-    'password_timeout' => 10800,
-];
- 
