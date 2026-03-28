@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 class OrderController extends Controller
@@ -60,10 +62,39 @@ class OrderController extends Controller
 
     public function updateStatus(Request $request, $id)
     {
-        $request->validate(['status' => 'required|string|in:pending,processing,completed,cancelled,delivered,refunded']);
-        $order = Order::findOrFail($id);
-        $order->update(['status' => $request->status]);
-        return response()->json(['success' => true, 'message' => 'Status updated.', 'data' => $order]);
+        $request->validate([
+            'status' => 'required|string|in:pending,processing,completed,cancelled,delivered,refunded',
+        ]);
+
+        try {
+            // DB::table bypasses Eloquent model events and decimal casting
+            // which is the root cause of the 500 on Order::update()
+            DB::table('orders')
+                ->where('id', $id)
+                ->update([
+                    'status'     => $request->status,
+                    'updated_at' => now(),
+                ]);
+
+            $order = Order::findOrFail($id);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Status updated.',
+                'data'    => $order,
+            ]);
+
+        } catch (\Throwable $e) {
+            Log::error('[AdminOrder::updateStatus] ' . $e->getMessage(), [
+                'order_id' => $id,
+                'status'   => $request->status,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update status: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 
     // ── Private ────────────────────────────────────────────────────────────

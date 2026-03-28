@@ -11,7 +11,7 @@ use App\Http\Controllers\Api\Client\ProfileApiController;
 use App\Http\Controllers\Api\Client\CartController;
 use App\Http\Controllers\Api\Client\FavoriteController;
 use App\Http\Controllers\Api\Client\CheckoutController;
-use App\Http\Controllers\Seller\SellerDashboardController;       // ← FIXED (no Api\)
+use App\Http\Controllers\Api\Seller\SellerDashboardController;       
 use App\Http\Controllers\Api\Seller\SellerProductController;
 use App\Http\Controllers\Api\Seller\SellerOrderController;
 use App\Http\Controllers\Admin\SellerController;
@@ -20,7 +20,9 @@ use App\Http\Controllers\Admin\OrderController as AdminOrderController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Admin\AdminNotificationController;
 use App\Http\Controllers\Admin\UserController as AdminUserController;
-
+use App\Http\Controllers\Api\Client\ComplaintController as ClientComplaintController;
+use App\Http\Controllers\Api\Seller\SellerComplaintController;
+use App\Http\Controllers\Admin\AdminComplaintController;
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES (no auth required)
@@ -137,7 +139,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/orders/{id}',           [SellerOrderController::class, 'show']);
         Route::patch('/orders/{id}/status',  [SellerOrderController::class, 'updateStatus']);
         Route::patch('/orders/{id}/payment', [SellerOrderController::class, 'updatePayment']);
-    });
+        //Complaints abdou
+        Route::get('/complaints/stats',          [SellerComplaintController::class, 'stats']);
+        Route::get('/complaints',                [SellerComplaintController::class, 'index']);
+        Route::get('/complaints/{id}',           [SellerComplaintController::class, 'show']);
+        Route::patch('/complaints/{id}/note',    [SellerComplaintController::class, 'addNote']);
+   
+        });
 
     /*
     |--------------------------------------------------------------------------
@@ -148,7 +156,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/statistics',     [ClientOrderApiController::class, 'statistics']);
         Route::get('/orders',         [ClientOrderApiController::class, 'index']);
         Route::get('/orders/{order}', [ClientOrderApiController::class, 'show']);
-    });
+        //Complaints abdou
+        Route::get('/complaints/eligible-orders', [ClientComplaintController::class, 'eligibleOrders']);
+        Route::get('/complaints',                 [ClientComplaintController::class, 'index']);
+        Route::post('/complaints',                [ClientComplaintController::class, 'store']);
+        Route::get('/complaints/{id}',            [ClientComplaintController::class, 'show']);
+
+        });
 
     /*
     |--------------------------------------------------------------------------
@@ -208,6 +222,12 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get('/unread-count', [AdminNotificationController::class, 'unreadCount']);
             Route::patch('/read-all',   [AdminNotificationController::class, 'markAllRead']);
             Route::patch('/{id}/read',  [AdminNotificationController::class, 'markRead']);
+        //Complaints abdou
+        Route::get('/complaints/stats',           [AdminComplaintController::class, 'stats']);
+        Route::get('/complaints',                 [AdminComplaintController::class, 'index']);
+        Route::get('/complaints/{id}',            [AdminComplaintController::class, 'show']);
+        Route::patch('/complaints/{id}/approve',  [AdminComplaintController::class, 'approve']);
+        Route::patch('/complaints/{id}/reject',   [AdminComplaintController::class, 'reject']);
         });
     });
 });

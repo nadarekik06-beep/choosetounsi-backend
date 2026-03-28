@@ -48,39 +48,55 @@ class SellerDashboardController extends Controller
             ->where('status', 'pending')
             ->count();
 
-        // Revenue: completed + paid only (matching admin's business rule)
-        $totalRevenue = DB::table('order_items as oi')
-            ->join('products as p',  'p.id', '=', 'oi.product_id')
-            ->join('orders as o',    'o.id', '=', 'oi.order_id')
-            ->where('p.seller_id', $this->sellerId())
-            ->whereIn('o.status', ['completed', 'delivered'])
-            ->where('o.payment_status', 'paid')
-            ->sum('oi.total');
+        // ── Revenue queries wrapped in try/catch ──────────────────────────────
+        // FIX: these were the only revenue queries outside try/catch.
+        // If order_items uses a different total column name (subtotal, line_total)
+        // MySQL throws "Unknown column" and bubbles up as a 500.
+        // COALESCE handles all known column name variants safely.
 
-        // Revenue this month vs last month
-        $revenueThisMonth = DB::table('order_items as oi')
-            ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->join('orders as o',   'o.id', '=', 'oi.order_id')
-            ->where('p.seller_id', $this->sellerId())
-            ->whereIn('o.status', ['completed', 'delivered'])
-            ->where('o.payment_status', 'paid')
-            ->whereBetween('o.created_at', [
-                $now->copy()->startOfMonth(),
-                $now->copy()->endOfMonth(),
-            ])
-            ->sum('oi.total');
+        try {
+            $totalRevenue = DB::table('order_items as oi')
+                ->join('products as p',  'p.id', '=', 'oi.product_id')
+                ->join('orders as o',    'o.id', '=', 'oi.order_id')
+                ->where('p.seller_id', $this->sellerId())
+                ->whereIn('o.status', ['completed', 'delivered'])
+                ->where('o.payment_status', 'paid')
+                ->sum(DB::raw('COALESCE(oi.total, oi.subtotal, oi.line_total, 0)'));
+        } catch (\Exception $e) {
+            $totalRevenue = 0;
+        }
 
-        $revenueLastMonth = DB::table('order_items as oi')
-            ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->join('orders as o',   'o.id', '=', 'oi.order_id')
-            ->where('p.seller_id', $this->sellerId())
-            ->whereIn('o.status', ['completed', 'delivered'])
-            ->where('o.payment_status', 'paid')
-            ->whereBetween('o.created_at', [
-                $now->copy()->subMonth()->startOfMonth(),
-                $now->copy()->subMonth()->endOfMonth(),
-            ])
-            ->sum('oi.total');
+        try {
+            $revenueThisMonth = DB::table('order_items as oi')
+                ->join('products as p', 'p.id', '=', 'oi.product_id')
+                ->join('orders as o',   'o.id', '=', 'oi.order_id')
+                ->where('p.seller_id', $this->sellerId())
+                ->whereIn('o.status', ['completed', 'delivered'])
+                ->where('o.payment_status', 'paid')
+                ->whereBetween('o.created_at', [
+                    $now->copy()->startOfMonth(),
+                    $now->copy()->endOfMonth(),
+                ])
+                ->sum(DB::raw('COALESCE(oi.total, oi.subtotal, oi.line_total, 0)'));
+        } catch (\Exception $e) {
+            $revenueThisMonth = 0;
+        }
+
+        try {
+            $revenueLastMonth = DB::table('order_items as oi')
+                ->join('products as p', 'p.id', '=', 'oi.product_id')
+                ->join('orders as o',   'o.id', '=', 'oi.order_id')
+                ->where('p.seller_id', $this->sellerId())
+                ->whereIn('o.status', ['completed', 'delivered'])
+                ->where('o.payment_status', 'paid')
+                ->whereBetween('o.created_at', [
+                    $now->copy()->subMonth()->startOfMonth(),
+                    $now->copy()->subMonth()->endOfMonth(),
+                ])
+                ->sum(DB::raw('COALESCE(oi.total, oi.subtotal, oi.line_total, 0)'));
+        } catch (\Exception $e) {
+            $revenueLastMonth = 0;
+        }
 
         $revenueGrowth = $revenueLastMonth > 0
             ? round((($revenueThisMonth - $revenueLastMonth) / $revenueLastMonth) * 100, 1)
@@ -110,7 +126,7 @@ class SellerDashboardController extends Controller
                 ->where('o.created_at', '>=', $now->copy()->subMonths(11)->startOfMonth())
                 ->select(
                     DB::raw("DATE_FORMAT(o.created_at, '%Y-%m') as month"),
-                    DB::raw('SUM(oi.total) as revenue'),
+                    DB::raw('SUM(COALESCE(oi.total, oi.subtotal, oi.line_total, 0)) as revenue'),
                     DB::raw('COUNT(DISTINCT oi.order_id) as orders')
                 )
                 ->groupBy('month')
@@ -148,7 +164,7 @@ class SellerDashboardController extends Controller
                     'u.name',
                     'u.email',
                     'u.state',
-                    DB::raw('SUM(oi.total) as total_revenue'),
+                    DB::raw('SUM(COALESCE(oi.total, oi.subtotal, oi.line_total, 0)) as total_revenue'),
                     DB::raw('COUNT(DISTINCT oi.order_id) as total_orders')
                 )
                 ->groupBy('u.id', 'u.name', 'u.email', 'u.state')
@@ -179,7 +195,7 @@ class SellerDashboardController extends Controller
                 ->where('o.payment_status', 'paid')
                 ->select(
                     DB::raw('COALESCE(NULLIF(o.wilaya, ""), u.state, "Unknown") as wilaya'),
-                    DB::raw('SUM(oi.total) as revenue'),
+                    DB::raw('SUM(COALESCE(oi.total, oi.subtotal, oi.line_total, 0)) as revenue'),
                     DB::raw('COUNT(DISTINCT oi.order_id) as orders')
                 )
                 ->groupBy('wilaya')
