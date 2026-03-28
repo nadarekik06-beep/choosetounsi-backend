@@ -4,21 +4,23 @@ namespace App\Http\Controllers\Api\Seller;
 
 use App\Http\Controllers\Controller;
 use App\Models\Complaint;
+use App\Notifications\ComplaintStatusChangedNotification;
+use App\Notifications\SellerRejectedComplaintNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
 
 /**
- * Seller Complaint Controller
+ * FILE: app/Http/Controllers/Api/Seller/SellerComplaintController.php  ← REPLACE
  *
- * Sellers can only see complaints related to THEIR products.
- * They can add a seller note and mark as reviewing.
- * Final approve/reject is admin-only.
+ * Changes from v1:
+ *   - Added approve()  → status = APPROVED (direct, no admin needed)
+ *   - Added reject()   → status = SELLER_REJECTED_PENDING_ADMIN + notifies admins
+ *   - addNote() preserved as-is (still usable for adding notes without decision)
  *
- * Routes (under auth:sanctum middleware, prefix /api/seller):
- *   GET   /api/seller/complaints            → index()
- *   GET   /api/seller/complaints/stats      → stats()
- *   GET   /api/seller/complaints/{id}       → show()
- *   PATCH /api/seller/complaints/{id}/note  → addNote()
+ * Routes needed (add to api.php seller group):
+ *   PATCH /api/seller/complaints/{id}/approve
+ *   PATCH /api/seller/complaints/{id}/reject
  */
 class SellerComplaintController extends Controller
 {
@@ -33,11 +35,15 @@ class SellerComplaintController extends Controller
         return response()->json([
             'success' => true,
             'data' => [
-                'total'     => Complaint::forSeller($sellerId)->count(),
-                'pending'   => Complaint::forSeller($sellerId)->pending()->count(),
-                'reviewing' => Complaint::forSeller($sellerId)->reviewing()->count(),
-                'approved'  => Complaint::forSeller($sellerId)->approved()->count(),
-                'rejected'  => Complaint::forSeller($sellerId)->rejected()->count(),
+                'total'                     => Complaint::forSeller($sellerId)->count(),
+                'pending'                   => Complaint::forSeller($sellerId)->pending()->count(),
+                'reviewing'                 => Complaint::forSeller($sellerId)->reviewing()->count(),
+                'approved'                  => Complaint::forSeller($sellerId)->approved()->count(),
+                'seller_rejected'           => Complaint::forSeller($sellerId)->sellerRejected()->count(),
+                'rejected'                  => Complaint::forSeller($sellerId)->rejected()->count(),
+                'needs_action'              => Complaint::forSeller($sellerId)
+                    ->whereIn('status', [Complaint::STATUS_PENDING, Complaint::STATUS_REVIEWING])
+                    ->count(),
             ],
         ]);
     }
@@ -58,11 +64,9 @@ class SellerComplaintController extends Controller
         if ($request->filled('status')) {
             $query->where('status', $request->status);
         }
-
         if ($request->filled('from_date')) {
             $query->whereDate('created_at', '>=', $request->from_date);
         }
-
         if ($request->filled('to_date')) {
             $query->whereDate('created_at', '<=', $request->to_date);
         }
@@ -92,7 +96,7 @@ class SellerComplaintController extends Controller
 
     // ─────────────────────────────────────────────────────────────────────
     // PATCH /api/seller/complaints/{id}/note
-    // Seller adds a note and transitions status → reviewing.
+    // Preserved from v1 — seller adds note, transitions to reviewing.
     // ─────────────────────────────────────────────────────────────────────
 
     public function addNote(Request $request, $id)
@@ -101,14 +105,12 @@ class SellerComplaintController extends Controller
             'seller_note' => 'required|string|min:10|max:1000',
         ]);
 
-        $complaint = Complaint::forSeller($request->user()->id)
-            ->findOrFail($id);
+        $complaint = Complaint::forSeller($request->user()->id)->findOrFail($id);
 
-        // Only act on pending complaints
-        if (!$complaint->isPending()) {
+        if (!$complaint->sellerCanAct()) {
             return response()->json([
                 'success' => false,
-                'message' => 'This complaint has already been reviewed.',
+                'message' => 'This complaint can no longer be updated by the seller.',
             ], 422);
         }
 
@@ -121,7 +123,101 @@ class SellerComplaintController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Your note has been submitted. The complaint is now under admin review.',
+            'message' => 'Note submitted. The complaint is now under review.',
+            'data'    => $complaint->fresh(),
+        ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // PATCH /api/seller/complaints/{id}/approve  ← NEW
+    // Seller approves → status = APPROVED (direct, admin not needed)
+    // Client is notified.
+    // ─────────────────────────────────────────────────────────────────────
+
+    public function approve(Request $request, $id)
+    {
+        $request->validate([
+            'seller_note' => 'nullable|string|max:1000',
+        ]);
+
+        $complaint = Complaint::forSeller($request->user()->id)
+            ->with('user')
+            ->findOrFail($id);
+
+        if (!$complaint->sellerCanAct()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This complaint can no longer be updated by the seller.',
+            ], 422);
+        }
+
+        try {
+            $complaint->sellerApprove($request->seller_note);
+        } catch (\Throwable $e) {
+            Log::error('[SellerComplaint] approve failed: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => 'Failed to approve complaint.'], 500);
+        }
+
+        // Notify the client
+        try {
+            $complaint->user->notify(new ComplaintStatusChangedNotification($complaint));
+        } catch (\Throwable $e) {
+            Log::error('[SellerComplaint] Approve notification failed: ' . $e->getMessage());
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Complaint approved. The client has been notified.',
+            'data'    => $complaint->fresh(),
+        ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // PATCH /api/seller/complaints/{id}/reject  ← NEW
+    // Seller rejects → status = SELLER_REJECTED_PENDING_ADMIN
+    // Admin is notified immediately. Client is NOT notified yet.
+    // ─────────────────────────────────────────────────────────────────────
+
+    public function reject(Request $request, $id)
+    {
+        $request->validate([
+            'seller_note'      => 'required|string|min:10|max:1000',
+            'rejection_reason' => 'required|string|min:10|max:1000',
+        ]);
+
+        $seller    = $request->user();
+        $complaint = Complaint::forSeller($seller->id)->findOrFail($id);
+
+        if (!$complaint->sellerCanAct()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This complaint can no longer be updated by the seller.',
+            ], 422);
+        }
+
+        try {
+            $complaint->sellerReject(
+                $request->seller_note,
+                $request->rejection_reason
+            );
+        } catch (\Throwable $e) {
+            Log::error('[SellerComplaint] reject failed: ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => 'Failed to reject complaint.'], 500);
+        }
+
+        // Notify all admins — they must validate this rejection
+        try {
+            $admins = \App\Models\User::where('role', 'admin')
+                ->where('is_active', true)
+                ->get();
+            Notification::send($admins, new SellerRejectedComplaintNotification($complaint, $seller));
+        } catch (\Throwable $e) {
+            Log::error('[SellerComplaint] Reject admin notification failed: ' . $e->getMessage());
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Rejection submitted. Admin has been notified and will make the final decision.',
             'data'    => $complaint->fresh(),
         ]);
     }

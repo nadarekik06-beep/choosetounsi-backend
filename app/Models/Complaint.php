@@ -7,29 +7,15 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Storage;
 
 /**
- * App\Models\Complaint
+ * FILE: app/Models/Complaint.php  ← REPLACE existing file
  *
- * Represents a client complaint / return request on an order.
- *
- * Status lifecycle:
- *   pending → reviewing → approved
- *                      → rejected (with rejection_reason)
- *
- * @property int         $id
- * @property int         $user_id
- * @property int         $order_id
- * @property int|null    $seller_id
- * @property string      $complaint_type
- * @property string|null $other_reason
- * @property string      $description
- * @property string|null $image_path
- * @property string      $status
- * @property string|null $rejection_reason
- * @property string|null $seller_note
- * @property \Carbon\Carbon|null $reviewed_at
- * @property \Carbon\Carbon|null $resolved_at
- * @property \Carbon\Carbon      $created_at
- * @property \Carbon\Carbon      $updated_at
+ * Changes from v1:
+ *   - Added STATUS_SELLER_REJECTED constant
+ *   - Added isSellerRejectedPendingAdmin() helper
+ *   - Added sellerApprove() helper
+ *   - Added sellerReject() helper
+ *   - Updated VALID_STATUSES array
+ *   - Updated isResolved() to include seller_rejected_pending_admin as non-final
  */
 class Complaint extends Model
 {
@@ -37,24 +23,26 @@ class Complaint extends Model
 
     // ── Constants ──────────────────────────────────────────────────────────
 
-    const STATUS_PENDING   = 'pending';
-    const STATUS_REVIEWING = 'reviewing';
-    const STATUS_APPROVED  = 'approved';
-    const STATUS_REJECTED  = 'rejected';
+    const STATUS_PENDING                    = 'pending';
+    const STATUS_REVIEWING                  = 'reviewing';
+    const STATUS_APPROVED                   = 'approved';
+    const STATUS_SELLER_REJECTED            = 'seller_rejected_pending_admin'; // NEW
+    const STATUS_REJECTED                   = 'rejected';
 
     const VALID_STATUSES = [
         self::STATUS_PENDING,
         self::STATUS_REVIEWING,
         self::STATUS_APPROVED,
+        self::STATUS_SELLER_REJECTED,
         self::STATUS_REJECTED,
     ];
 
     const COMPLAINT_TYPES = [
-        'wrong_product'  => 'Wrong product received',
-        'wrong_size'     => 'Wrong size',
-        'wrong_color'    => 'Wrong color',
-        'damaged_product'=> 'Damaged / defective product',
-        'other'          => 'Other',
+        'wrong_product'   => 'Wrong product received',
+        'wrong_size'      => 'Wrong size',
+        'wrong_color'     => 'Wrong color',
+        'damaged_product' => 'Damaged / defective product',
+        'other'           => 'Other',
     ];
 
     /** Maximum days after delivery the client can file a complaint. */
@@ -73,6 +61,7 @@ class Complaint extends Model
         'status',
         'rejection_reason',
         'seller_note',
+        'seller_decision',   // NEW: 'approved' | 'rejected'
         'reviewed_at',
         'resolved_at',
     ];
@@ -88,36 +77,17 @@ class Complaint extends Model
 
     // ── Relationships ──────────────────────────────────────────────────────
 
-    public function user()
-    {
-        return $this->belongsTo(User::class);
-    }
-
-    public function order()
-    {
-        return $this->belongsTo(Order::class);
-    }
-
-    public function seller()
-    {
-        return $this->belongsTo(User::class, 'seller_id');
-    }
+    public function user()   { return $this->belongsTo(User::class); }
+    public function order()  { return $this->belongsTo(Order::class); }
+    public function seller() { return $this->belongsTo(User::class, 'seller_id'); }
 
     // ── Accessors ──────────────────────────────────────────────────────────
 
-    /**
-     * Full URL for the proof image, or null if none uploaded.
-     */
     public function getImageUrlAttribute(): ?string
     {
-        return $this->image_path
-            ? Storage::url($this->image_path)
-            : null;
+        return $this->image_path ? Storage::url($this->image_path) : null;
     }
 
-    /**
-     * Human-readable label for the complaint type.
-     */
     public function getTypeLabel(): string
     {
         if ($this->complaint_type === 'other' && $this->other_reason) {
@@ -128,27 +98,42 @@ class Complaint extends Model
 
     // ── Scopes ─────────────────────────────────────────────────────────────
 
-    public function scopePending($q)   { return $q->where('status', self::STATUS_PENDING); }
-    public function scopeReviewing($q) { return $q->where('status', self::STATUS_REVIEWING); }
-    public function scopeApproved($q)  { return $q->where('status', self::STATUS_APPROVED); }
-    public function scopeRejected($q)  { return $q->where('status', self::STATUS_REJECTED); }
+    public function scopePending($q)          { return $q->where('status', self::STATUS_PENDING); }
+    public function scopeReviewing($q)        { return $q->where('status', self::STATUS_REVIEWING); }
+    public function scopeApproved($q)         { return $q->where('status', self::STATUS_APPROVED); }
+    public function scopeRejected($q)         { return $q->where('status', self::STATUS_REJECTED); }
+    public function scopeSellerRejected($q)   { return $q->where('status', self::STATUS_SELLER_REJECTED); }
+    public function scopeForSeller($q, int $sellerId) { return $q->where('seller_id', $sellerId); }
 
-    public function scopeForSeller($q, int $sellerId)
-    {
-        return $q->where('seller_id', $sellerId);
-    }
+    // ── Status helpers ─────────────────────────────────────────────────────
 
-    // ── Helpers ────────────────────────────────────────────────────────────
-
-    public function isPending(): bool   { return $this->status === self::STATUS_PENDING; }
-    public function isReviewing(): bool { return $this->status === self::STATUS_REVIEWING; }
-    public function isApproved(): bool  { return $this->status === self::STATUS_APPROVED; }
-    public function isRejected(): bool  { return $this->status === self::STATUS_REJECTED; }
-    public function isResolved(): bool  { return in_array($this->status, [self::STATUS_APPROVED, self::STATUS_REJECTED]); }
+    public function isPending(): bool                  { return $this->status === self::STATUS_PENDING; }
+    public function isReviewing(): bool                { return $this->status === self::STATUS_REVIEWING; }
+    public function isApproved(): bool                 { return $this->status === self::STATUS_APPROVED; }
+    public function isSellerRejectedPendingAdmin(): bool { return $this->status === self::STATUS_SELLER_REJECTED; }
+    public function isRejected(): bool                 { return $this->status === self::STATUS_REJECTED; }
 
     /**
-     * Mark as reviewing (seller acknowledges).
+     * A complaint is "resolved" only when admin has made the FINAL decision.
+     * seller_rejected_pending_admin is NOT resolved — admin still needs to act.
      */
+    public function isResolved(): bool
+    {
+        return in_array($this->status, [self::STATUS_APPROVED, self::STATUS_REJECTED]);
+    }
+
+    /**
+     * Can the seller still act on this complaint?
+     * Seller can act when status is pending or reviewing.
+     */
+    public function sellerCanAct(): bool
+    {
+        return in_array($this->status, [self::STATUS_PENDING, self::STATUS_REVIEWING]);
+    }
+
+    // ── Action helpers ─────────────────────────────────────────────────────
+
+    /** Seller adds note → reviewing */
     public function markReviewing(?string $sellerNote = null): void
     {
         $this->update([
@@ -158,9 +143,31 @@ class Complaint extends Model
         ]);
     }
 
-    /**
-     * Approve (admin decision).
-     */
+    /** Seller approves → APPROVED directly (no admin needed) */
+    public function sellerApprove(?string $sellerNote = null): void
+    {
+        $this->update([
+            'status'          => self::STATUS_APPROVED,
+            'seller_note'     => $sellerNote ?? $this->seller_note,
+            'seller_decision' => 'approved',
+            'reviewed_at'     => $this->reviewed_at ?? now(),
+            'resolved_at'     => now(),
+        ]);
+    }
+
+    /** Seller rejects → SELLER_REJECTED_PENDING_ADMIN (admin must validate) */
+    public function sellerReject(string $sellerNote, string $rejectionReason): void
+    {
+        $this->update([
+            'status'           => self::STATUS_SELLER_REJECTED,
+            'seller_note'      => $sellerNote,
+            'seller_decision'  => 'rejected',
+            'rejection_reason' => $rejectionReason,
+            'reviewed_at'      => now(),
+        ]);
+    }
+
+    /** Admin approves (final) */
     public function approve(): void
     {
         $this->update([
@@ -169,9 +176,25 @@ class Complaint extends Model
         ]);
     }
 
-    /**
-     * Reject (admin decision with mandatory reason).
-     */
+    /** Admin confirms seller rejection → REJECTED (final) */
+    public function confirmRejection(): void
+    {
+        $this->update([
+            'status'      => self::STATUS_REJECTED,
+            'resolved_at' => now(),
+        ]);
+    }
+
+    /** Admin overrides seller rejection → APPROVED (final) */
+    public function overrideToApproved(): void
+    {
+        $this->update([
+            'status'      => self::STATUS_APPROVED,
+            'resolved_at' => now(),
+        ]);
+    }
+
+    /** Admin rejects (from any non-resolved status, with reason) */
     public function reject(string $reason): void
     {
         $this->update([
