@@ -14,9 +14,11 @@ use App\Http\Controllers\Api\Client\CheckoutController;
 use App\Http\Controllers\Api\Seller\SellerDashboardController;
 use App\Http\Controllers\Api\Seller\SellerProductController;
 use App\Http\Controllers\Api\Seller\SellerOrderController;
+use App\Http\Controllers\Api\Seller\ProductUpdateRequestController as SellerProductUpdateRequestController;
 use App\Http\Controllers\Admin\SellerController;
 use App\Http\Controllers\Admin\ProductController as AdminProductController;
 use App\Http\Controllers\Admin\OrderController as AdminOrderController;
+use App\Http\Controllers\Admin\ProductUpdateRequestController as AdminProductUpdateRequestController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Admin\AdminNotificationController;
 use App\Http\Controllers\Admin\UserController as AdminUserController;
@@ -112,6 +114,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/products/{id}/images/{imageId}',        [SellerProductController::class, 'destroyImage']);
         Route::patch('/products/{id}/images/{imageId}/primary', [SellerProductController::class, 'setPrimaryImage']);
 
+        // Product update requests (for approved/locked products)
+        Route::get('/products/{id}/update-requests', [SellerProductUpdateRequestController::class, 'index']);
+        Route::post('/products/{id}/request-update', [SellerProductUpdateRequestController::class, 'store']);
+
         Route::get('/orders/stats',          [SellerOrderController::class, 'stats']);
         Route::get('/orders',                [SellerOrderController::class, 'index']);
         Route::get('/orders/{id}',           [SellerOrderController::class, 'show']);
@@ -190,21 +196,28 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/products/{id}/disable', [AdminProductController::class, 'disable']);
         Route::delete('/products/{id}',        [AdminProductController::class, 'destroy']);
 
+        // Product update requests (must be before /products/{id} to avoid route conflicts)
+        Route::get('/product-update-requests/stats',         [AdminProductUpdateRequestController::class, 'stats']);
+        Route::get('/product-update-requests',               [AdminProductUpdateRequestController::class, 'index']);
+        Route::get('/product-update-requests/{id}',          [AdminProductUpdateRequestController::class, 'show']);
+        Route::post('/product-update-requests/{id}/approve', [AdminProductUpdateRequestController::class, 'approve']);
+        Route::post('/product-update-requests/{id}/reject',  [AdminProductUpdateRequestController::class, 'reject']);
+
         // Orders
         Route::get('/orders/stats',         [AdminOrderController::class, 'stats']);
         Route::get('/orders',               [AdminOrderController::class, 'index']);
         Route::get('/orders/{id}',          [AdminOrderController::class, 'show']);
         Route::patch('/orders/{id}/status', [AdminOrderController::class, 'updateStatus']);
 
-        // Admin notifications  ← closing brace is HERE, NOT after complaints
+        // Admin notifications
         Route::prefix('notifications')->group(function () {
             Route::get('/',             [AdminNotificationController::class, 'index']);
             Route::get('/unread-count', [AdminNotificationController::class, 'unreadCount']);
             Route::patch('/read-all',   [AdminNotificationController::class, 'markAllRead']);
             Route::patch('/{id}/read',  [AdminNotificationController::class, 'markRead']);
-        }); // ← notifications group ends HERE
+        });
 
-        // Admin complaints  ← OUTSIDE notifications, INSIDE admin
+        // Admin complaints
         Route::get('/complaints/stats',                    [AdminComplaintController::class, 'stats']);
         Route::get('/complaints',                          [AdminComplaintController::class, 'index']);
         Route::get('/complaints/{id}',                     [AdminComplaintController::class, 'show']);
