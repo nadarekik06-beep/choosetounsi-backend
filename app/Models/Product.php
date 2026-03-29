@@ -169,12 +169,26 @@ class Product extends Model
         return (int) $this->variants()->sum('stock');
     }
 
-    public function getPrimaryImageUrlAttribute(): string
+    /**
+     * FIXED: Returns null instead of a broken placeholder URL when no image exists.
+     * The placeholder file doesn't exist on disk, causing 404 errors in the browser.
+     * Returning null lets the frontend render its own icon fallback cleanly.
+     *
+     * Also resolves from the already-loaded `images` collection when available
+     * (e.g. in SellerProductController::index) to avoid an extra DB query.
+     */
+    public function getPrimaryImageUrlAttribute(): ?string
     {
+        if ($this->relationLoaded('images')) {
+            $primary = $this->images->firstWhere('is_primary', true)
+                     ?? $this->images->sortBy('order')->first();
+            return $primary ? Storage::url($primary->image_path) : null;
+        }
+
         $primary = $this->primaryImage;
         return $primary
             ? Storage::url($primary->image_path)
-            : asset('images/placeholder-product.jpg');
+            : null;
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
@@ -184,12 +198,15 @@ class Product extends Model
         return $this->is_approved && $this->is_active && $this->stock > 0;
     }
 
-    public function getPrimaryImageUrl(): string
+    /**
+     * FIXED: Returns null instead of a broken placeholder URL when no image exists.
+     */
+    public function getPrimaryImageUrl(): ?string
     {
         $primary = $this->primaryImage;
         return $primary
             ? Storage::url($primary->image_path)
-            : asset('images/placeholder-product.jpg');
+            : null;
     }
 
     public function incrementViews(): void

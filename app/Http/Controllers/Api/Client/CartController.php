@@ -17,6 +17,7 @@ class CartController extends Controller
             'product.primaryImage',
             'product.category',
             'variant.attributeOptions.attribute',
+            'variant.images',
         ])
             ->where('user_id', $request->user()->id)
             ->get()
@@ -45,7 +46,6 @@ class CartController extends Controller
 
         $product = Product::findOrFail($request->product_id);
 
-        // Availability check
         if (!$product->is_approved || !$product->is_active) {
             return response()->json([
                 'success' => false,
@@ -56,7 +56,6 @@ class CartController extends Controller
         $qty     = $request->input('quantity', 1);
         $variant = null;
 
-        // ── Resolve stock from variant or product ──────────────────────────
         if ($request->filled('variant_id')) {
             $variant = ProductVariant::where('id', $request->variant_id)
                 ->where('product_id', $product->id)
@@ -72,7 +71,6 @@ class CartController extends Controller
 
             $stockPool = $variant->stock;
         } elseif ($product->has_variants) {
-            // Product uses variants but none was sent
             return response()->json([
                 'success' => false,
                 'message' => 'Please select a variant before adding to cart.',
@@ -88,7 +86,6 @@ class CartController extends Controller
             ], 422);
         }
 
-        // ── Find or create cart item keyed by product + variant ────────────
         $cartItem = Cart::firstOrNew([
             'user_id'    => $request->user()->id,
             'product_id' => $product->id,
@@ -111,7 +108,12 @@ class CartController extends Controller
             'success' => true,
             'message' => 'Added to cart.',
             'data'    => $this->formatItem(
-                $cartItem->fresh(['product.primaryImage', 'product.category', 'variant.attributeOptions.attribute'])
+                $cartItem->fresh([
+                    'product.primaryImage',
+                    'product.category',
+                    'variant.attributeOptions.attribute',
+                    'variant.images',
+                ])
             ),
         ], 201);
     }
@@ -126,7 +128,6 @@ class CartController extends Controller
             ->where('user_id', $request->user()->id)
             ->firstOrFail();
 
-        // Check stock against correct pool
         $stockPool = $cartItem->variant
             ? $cartItem->variant->stock
             : $cartItem->product->stock;
@@ -144,7 +145,12 @@ class CartController extends Controller
             'success' => true,
             'message' => 'Cart updated.',
             'data'    => $this->formatItem(
-                $cartItem->fresh(['product.primaryImage', 'product.category', 'variant.attributeOptions.attribute'])
+                $cartItem->fresh([
+                    'product.primaryImage',
+                    'product.category',
+                    'variant.attributeOptions.attribute',
+                    'variant.images',
+                ])
             ),
         ]);
     }
@@ -171,19 +177,22 @@ class CartController extends Controller
     {
         $product  = $item->product;
         $variant  = $item->variant;
-        $imgPath  = $product->primaryImage?->image_path;
-        $imageUrl = $imgPath
-            ? rtrim(config('app.url'), '/') . '/storage/' . ltrim($imgPath, '/')
-            : null;
 
-        // Price and stock come from variant when present, otherwise from product
+        // IMAGE PRIORITY: variant image → product primary image → null
+        if ($variant && $variant->relationLoaded('images') && $variant->images->isNotEmpty()) {
+            $imageUrl = rtrim(config('app.url'), '/') . '/storage/' . ltrim($variant->images->first()->image_path, '/');
+        } elseif ($product->primaryImage) {
+            $imageUrl = rtrim(config('app.url'), '/') . '/storage/' . ltrim($product->primaryImage->image_path, '/');
+        } else {
+            $imageUrl = null;
+        }
+
         $effectivePrice = $variant
             ? (float) ($variant->price_override ?? $product->price)
             : (float) $product->price;
 
         $stock = $variant ? $variant->stock : $product->stock;
 
-        // Build variant option map for the front-end
         $variantOptions = [];
         if ($variant && $variant->relationLoaded('attributeOptions')) {
             foreach ($variant->attributeOptions as $opt) {

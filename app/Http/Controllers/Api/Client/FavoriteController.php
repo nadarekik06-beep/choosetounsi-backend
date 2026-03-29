@@ -17,6 +17,7 @@ class FavoriteController extends Controller
             'product.primaryImage',
             'product.category',
             'variant.attributeOptions.attribute',
+            'variant.images',
         ])
             ->where('user_id', $request->user()->id)
             ->latest()
@@ -34,7 +35,6 @@ class FavoriteController extends Controller
             'variant_id' => 'nullable|exists:product_variants,id',
         ]);
 
-        // Ensure variant belongs to this product
         if ($request->filled('variant_id')) {
             $variant = ProductVariant::where('id', $request->variant_id)
                 ->where('product_id', $request->product_id)
@@ -60,7 +60,12 @@ class FavoriteController extends Controller
             'message'   => 'Added to favorites.',
             'favorited' => true,
             'data'      => $this->formatFavorite(
-                $favorite->load('product.primaryImage', 'product.category', 'variant.attributeOptions.attribute')
+                $favorite->load([
+                    'product.primaryImage',
+                    'product.category',
+                    'variant.attributeOptions.attribute',
+                    'variant.images',
+                ])
             ),
         ], 201);
     }
@@ -68,7 +73,6 @@ class FavoriteController extends Controller
     /* ── DELETE /api/favorites/{product_id} ── */
     public function destroy(Request $request, $productId)
     {
-        // Remove all favorites for this product (all variants) — or pass variant_id in body for specific removal
         $query = Favorite::where('user_id', $request->user()->id)
             ->where('product_id', $productId);
 
@@ -105,10 +109,15 @@ class FavoriteController extends Controller
     {
         $product  = $fav->product;
         $variant  = $fav->variant;
-        $imgPath  = $product->primaryImage?->image_path;
-        $imageUrl = $imgPath
-            ? rtrim(config('app.url'), '/') . '/storage/' . ltrim($imgPath, '/')
-            : null;
+
+        // IMAGE PRIORITY: variant image → product primary image → null
+        if ($variant && $variant->relationLoaded('images') && $variant->images->isNotEmpty()) {
+            $imageUrl = rtrim(config('app.url'), '/') . '/storage/' . ltrim($variant->images->first()->image_path, '/');
+        } elseif ($product->primaryImage) {
+            $imageUrl = rtrim(config('app.url'), '/') . '/storage/' . ltrim($product->primaryImage->image_path, '/');
+        } else {
+            $imageUrl = null;
+        }
 
         $variantOptions = [];
         if ($variant && $variant->relationLoaded('attributeOptions')) {
