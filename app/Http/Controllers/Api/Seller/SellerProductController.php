@@ -24,7 +24,7 @@ class SellerProductController extends Controller
         $query  = $seller->products()->with([
             'category:id,name,slug',
             'subcategory:id,name,slug',
-            'images',          // load ALL images (includes color_option_id ones)
+            'primaryImage',
         ]);
 
         if ($request->filled('search')) {
@@ -42,21 +42,11 @@ class SellerProductController extends Controller
             ->paginate((int) $request->input('per_page', 12));
 
         $products->getCollection()->transform(function ($p) {
-            // ── IMAGE PRIORITY ─────────────────────────────────────────────
-            // 1. Any image explicitly marked is_primary = true (works for both
-            //    general images AND color images, whichever was saved first)
-            // 2. First image ordered by `order` ASC (fallback, any type)
-            // 3. null  →  frontend shows the ImageIcon placeholder (no broken img)
-            $primaryImage = $p->images->firstWhere('is_primary', true)
-                         ?? $p->images->sortBy('order')->first();
-
-            $p->primary_image_url = $primaryImage
-                ? Storage::url($primaryImage->image_path)
+            $p->primary_image_url = $p->primaryImage
+                ? Storage::url($p->primaryImage->image_path)
                 : null;
-
-            $p->has_variants  = $p->images->isNotEmpty()
-                ? $p->variants()->exists()
-                : $p->variants()->exists();
+            // Use DB queries instead of eager-loaded relations to avoid
+            // missing-relationship crashes on old model versions
             $p->has_variants  = $p->variants()->exists();
             $p->variant_stock = $p->variants()->sum('stock');
             return $p;
@@ -77,9 +67,15 @@ class SellerProductController extends Controller
                 'primaryImage',
                 'attributeValues.attribute',
                 'variants.attributeOptions.attribute',
-                'variants.images',
             ])
             ->findOrFail($id);
+
+        // Load variant images only if the relationship exists on the model
+        try {
+            $product->load('variants.images');
+        } catch (\Throwable $e) {
+            Log::warning('[SellerProduct::show] variants.images not available: ' . $e->getMessage());
+        }
 
         $product->primary_image_url = $product->primaryImage
             ? Storage::url($product->primaryImage->image_path)
@@ -99,7 +95,7 @@ class SellerProductController extends Controller
             'price_override' => $v->price_override !== null ? (string) $v->price_override : '',
             'sku'            => $v->sku ?? '',
             'is_active'      => $v->is_active,
-            'image_urls'     => $v->relationLoaded('images')
+            'image_urls'     => method_exists($v, 'images') && $v->relationLoaded('images')
                 ? $v->images->map(fn($i) => Storage::url($i->image_path))->toArray()
                 : [],
         ]);
@@ -130,6 +126,8 @@ class SellerProductController extends Controller
 
     public function store(Request $request)
     {
+        // DEBUG WRAPPER — returns the exact error as JSON instead of a blank 500
+        // Remove this try/catch once the issue is resolved
         try {
             return $this->doStore($request);
         } catch (\Throwable $e) {
@@ -138,7 +136,7 @@ class SellerProductController extends Controller
                 'line' => $e->getLine(),
             ]);
             return response()->json([
-                'success'     => false,
+                'success' => false,
                 'debug_error' => $e->getMessage(),
                 'debug_file'  => basename($e->getFile()),
                 'debug_line'  => $e->getLine(),
@@ -148,6 +146,7 @@ class SellerProductController extends Controller
 
     private function doStore(Request $request)
     {
+        // ── Step-by-step debug: log every stage so we can pinpoint the crash ──
         Log::info('[SellerProduct::store] START', [
             'has_images'       => $request->hasFile('images'),
             'has_color_images' => $request->hasFile('color_images'),
@@ -224,11 +223,6 @@ class SellerProductController extends Controller
             throw $e;
         }
 
-        // ── Guarantee at least one image is marked primary ─────────────────
-        // Covers the case where color images were saved but none got is_primary
-        // (e.g. a race condition or re-save scenario)
-        $this->ensurePrimaryImage($product);
-
         $this->notifyAdmins('created', $product, $seller);
 
         Log::info('[SellerProduct::store] DONE', ['id' => $product->id]);
@@ -238,7 +232,7 @@ class SellerProductController extends Controller
             'message' => 'Product created! It will be reviewed by an admin.',
             'data'    => $product->load(['images', 'category', 'variants.attributeOptions.attribute']),
         ], 201);
-    }
+    } // end doStore
 
     // ── Update ─────────────────────────────────────────────────────────────────
 
@@ -311,9 +305,6 @@ class SellerProductController extends Controller
             throw $e;
         }
 
-        // ── Guarantee at least one image is marked primary after all saves ──
-        $this->ensurePrimaryImage($product);
-
         $this->notifyAdmins('updated', $product, $seller);
 
         return response()->json([
@@ -367,7 +358,7 @@ class SellerProductController extends Controller
         $image->delete();
 
         if ($wasPrimary) {
-            $product->images()->orderBy('order')->first()?->update(['is_primary' => true]);
+            $product->images()->first()?->update(['is_primary' => true]);
         }
 
         return response()->json(['success' => true, 'message' => 'Image deleted.']);
@@ -470,79 +461,67 @@ class SellerProductController extends Controller
         }
     }
 
-    private function saveColorImages(Product $product, Request $request): void
-    {
-        if (!Schema::hasColumn('product_images', 'color_option_id')) {
-            Log::warning('[SellerProduct] color_option_id column missing — run: php artisan migrate');
-            return;
-        }
-
-        if (!$request->hasFile('color_images')) return;
-
-        $colorImagesInput = $request->file('color_images', []);
-        if (empty($colorImagesInput) || !is_array($colorImagesInput)) return;
-
-        $maxOrder   = $product->images()->max('order') ?? -1;
-        $hasPrimary = $product->images()->where('is_primary', true)->exists();
-        $orderIdx   = 0;
-
-        foreach ($colorImagesInput as $colorOptionId => $files) {
-            $colorOptionId = (int) $colorOptionId;
-            $colorOption   = AttributeOption::find($colorOptionId);
-            if (!$colorOption) continue;
-
-            foreach ($product->images()->where('color_option_id', $colorOptionId)->get() as $old) {
-                Storage::disk('public')->delete($old->image_path);
-                $old->delete();
-            }
-
-            $variantId = DB::table('variant_attribute_values as vav')
-                ->join('product_variants as pv', 'pv.id', '=', 'vav.variant_id')
-                ->where('pv.product_id', $product->id)
-                ->where('vav.attribute_option_id', $colorOptionId)
-                ->value('pv.id');
-
-            foreach ((array) $files as $j => $file) {
-                if (!$file || !method_exists($file, 'isValid') || !$file->isValid()) continue;
-
-                $path = $file->store('products', 'public');
-
-                // Mark the very first color image as primary when no primary exists yet.
-                // This ensures color-only products always have a thumbnail in the listing.
-                $setPrimary = !$hasPrimary && $orderIdx === 0;
-
-                ProductImage::create([
-                    'product_id'      => $product->id,
-                    'variant_id'      => $variantId ?: null,
-                    'color_option_id' => $colorOptionId,
-                    'image_path'      => $path,
-                    'order'           => $maxOrder + $orderIdx + 1,
-                    'is_primary'      => $setPrimary,
-                ]);
-
-                if ($setPrimary) $hasPrimary = true;
-                $orderIdx++;
-            }
-        }
+   private function saveColorImages(Product $product, Request $request): void
+{
+    if (!Schema::hasColumn('product_images', 'color_option_id')) {
+        Log::warning('[SellerProduct] color_option_id column missing — run: php artisan migrate');
+        return;
     }
 
+    // ── FIX: hasFile() fails on nested arrays — use getAllFiles() instead ──
+    $allFiles = $request->allFiles();
+    if (empty($allFiles['color_images'])) return;
+
+    $colorImagesInput = $allFiles['color_images'];
+    if (empty($colorImagesInput) || !is_array($colorImagesInput)) return;
+
+    $maxOrder   = $product->images()->max('order') ?? -1;
+    $hasPrimary = $product->images()->where('is_primary', true)->exists();
+    $orderIdx   = 0;
+
+    foreach ($colorImagesInput as $colorOptionId => $files) {
+        $colorOptionId = (int) $colorOptionId;
+        $colorOption   = AttributeOption::find($colorOptionId);
+        if (!$colorOption) continue;
+
+        // Delete old images for this color before saving new ones
+        foreach ($product->images()->where('color_option_id', $colorOptionId)->get() as $old) {
+            Storage::disk('public')->delete($old->image_path);
+            $old->delete();
+        }
+
+        // Find the variant linked to this color option
+        $variantId = DB::table('variant_attribute_values as vav')
+            ->join('product_variants as pv', 'pv.id', '=', 'vav.variant_id')
+            ->where('pv.product_id', $product->id)
+            ->where('vav.attribute_option_id', $colorOptionId)
+            ->value('pv.id');
+
+        foreach ((array) $files as $j => $file) {
+            if (!$file || !method_exists($file, 'isValid') || !$file->isValid()) continue;
+
+            $path = $file->store('products', 'public');
+
+            $setPrimary = !$hasPrimary && $orderIdx === 0;
+
+            ProductImage::create([
+                'product_id'      => $product->id,
+                'variant_id'      => $variantId ?: null,
+                'color_option_id' => $colorOptionId,
+                'image_path'      => $path,
+                'order'           => $maxOrder + $orderIdx + 1,
+                'is_primary'      => $setPrimary,
+            ]);
+
+            if ($setPrimary) $hasPrimary = true;
+            $orderIdx++;
+        }
+    }
+}
     /**
-     * Guarantee that exactly one product image has is_primary = true.
-     * Called after all image-save operations complete.
-     * Safe to call multiple times — only acts when no primary exists.
+     * Generate a unique slug. Appends -2, -3, etc. if base slug is taken.
+     * Pass $excludeId on update to ignore the product's own current slug.
      */
-    private function ensurePrimaryImage(Product $product): void
-    {
-        $hasPrimary = $product->images()->where('is_primary', true)->exists();
-        if (!$hasPrimary) {
-            $first = $product->images()->orderBy('order')->orderBy('id')->first();
-            if ($first) {
-                $first->update(['is_primary' => true]);
-                Log::info('[SellerProduct] ensurePrimaryImage: promoted image #' . $first->id . ' for product #' . $product->id);
-            }
-        }
-    }
-
     private function uniqueSlug(string $base, ?int $excludeId = null): string
     {
         $slug     = Str::slug($base);
