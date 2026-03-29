@@ -285,19 +285,49 @@ class ProductController extends Controller
 
     /**
      * GET /api/categories/{slug}/filter-attributes
+     *
+     * Returns filterable attributes for a category, sourcing attribute IDs from
+     * BOTH product_attribute_values (non-variant attributes like Brand, Material)
+     * AND variant_attribute_values (variant attributes like Color, Size).
      */
     public function filterAttributes($slug)
     {
-        $attrIds = DB::table('product_attribute_values as pav')
-            ->join('products as p', 'p.id', '=', 'pav.product_id')
+        // Step 1: Collect all approved+active product IDs in this category
+        $productIds = DB::table('products as p')
             ->join('categories as c', 'c.id', '=', 'p.category_id')
             ->where('c.slug', $slug)
             ->where('p.is_approved', true)
             ->where('p.is_active', true)
-            ->distinct()
-            ->pluck('pav.attribute_id');
+            ->pluck('p.id');
 
-        $attributes = Attribute::whereIn('id', $attrIds)
+        if ($productIds->isEmpty()) {
+            return response()->json(['success' => true, 'data' => []]);
+        }
+
+        // Step 2: Attribute IDs from non-variant product_attribute_values
+        $nonVariantAttrIds = DB::table('product_attribute_values')
+            ->whereIn('product_id', $productIds)
+            ->distinct()
+            ->pluck('attribute_id');
+
+        // Step 3: Attribute IDs from variant_attribute_values
+        // Path: product_variants → variant_attribute_values → attribute_options → attribute_id
+        $variantAttrIds = DB::table('product_variants as pv')
+            ->join('variant_attribute_values as vav', 'vav.variant_id', '=', 'pv.id')
+            ->join('attribute_options as ao', 'ao.id', '=', 'vav.attribute_option_id')
+            ->whereIn('pv.product_id', $productIds)
+            ->distinct()
+            ->pluck('ao.attribute_id');
+
+        // Step 4: Union both sets — unique attribute IDs from both systems
+        $allAttrIds = $nonVariantAttrIds->merge($variantAttrIds)->unique()->values();
+
+        if ($allAttrIds->isEmpty()) {
+            return response()->json(['success' => true, 'data' => []]);
+        }
+
+        // Step 5: Load filterable attributes with their options
+        $attributes = Attribute::whereIn('id', $allAttrIds)
             ->where('is_filterable', true)
             ->with(['options' => fn($q) => $q->orderBy('order')])
             ->orderBy('order')

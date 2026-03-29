@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
@@ -127,19 +128,77 @@ class Product extends Model
     public function scopeInStock($query)   { return $query->where('stock', '>', 0); }
 
     /**
-     * Filter by a specific attribute value (product-level attributes).
+     * Filter by a specific attribute value.
+     *
+     * Routing logic:
+     *   - is_variant = true  → values live in variant_attribute_values
+     *                          (product → product_variants → variant_attribute_values)
+     *   - is_variant = false → values live in product_attribute_values
+     *
+     * $values is always an array of attribute_option_id integers,
+     * e.g. attrs[color][]=104 → $values = [104]
+     *
+     * When multiple option IDs are passed for the same attribute (OR logic):
+     *   → product must have a variant matching ANY of the selected option IDs
+     *
+     * When multiple attributes are filtered (AND logic):
+     *   → index() calls this scope once per attribute, Laravel chains as AND
      */
-    public function scopeHasAttribute($query, string $attrSlug, $value)
+    public function scopeHasAttribute($query, string $attrSlug, array $values)
     {
-        return $query->whereHas('attributeValues', function ($q) use ($attrSlug, $value) {
-            $q->whereHas('attribute', fn($a) => $a->where('slug', $attrSlug));
-            if (is_array($value)) {
-                foreach ($value as $v) {
-                    $q->where('value', 'like', '%"' . $v . '"%');
-                }
-            } else {
-                $q->where('value', $value);
-            }
+        // Resolve attribute ID from slug
+        $attribute = DB::table('attributes')
+            ->where('slug', $attrSlug)
+            ->select('id')
+            ->first();
+
+        if (!$attribute) {
+            // Unknown attribute slug → return no results
+            return $query->whereRaw('1 = 0');
+        }
+
+        // Check if this attribute is marked is_variant=true in any subcategory
+        $isVariant = DB::table('subcategory_attributes')
+            ->where('attribute_id', $attribute->id)
+            ->where('is_variant', true)
+            ->exists();
+
+        // Cast all values to integers (frontend sends option IDs)
+        $optionIds = array_values(array_map('intval', $values));
+
+        if ($isVariant) {
+            // Values live in variant_attribute_values via the pivot:
+            //   product_variants.id = variant_attribute_values.variant_id
+            //   variant_attribute_values.attribute_option_id IN ($optionIds)
+            return $query->whereExists(function ($sub) use ($optionIds) {
+                $sub->select(DB::raw(1))
+                    ->from('product_variants')
+                    ->join(
+                        'variant_attribute_values',
+                        'variant_attribute_values.variant_id',
+                        '=',
+                        'product_variants.id'
+                    )
+                    ->whereColumn('product_variants.product_id', 'products.id')
+                    ->where('product_variants.is_active', true)
+                    ->whereIn('variant_attribute_values.attribute_option_id', $optionIds);
+            });
+        }
+
+        // Non-variant: values are stored JSON-encoded in product_attribute_values.value
+        // e.g. value = '[3,7]' or value = '3'
+        // OR logic across the selected option IDs
+        return $query->whereExists(function ($sub) use ($attribute, $optionIds) {
+            $sub->select(DB::raw(1))
+                ->from('product_attribute_values')
+                ->whereColumn('product_attribute_values.product_id', 'products.id')
+                ->where('product_attribute_values.attribute_id', $attribute->id)
+                ->where(function ($orQ) use ($optionIds) {
+                    foreach ($optionIds as $id) {
+                        $orQ->orWhere('product_attribute_values.value', 'like', '%"' . $id . '"%')
+                            ->orWhere('product_attribute_values.value', (string) $id);
+                    }
+                });
         });
     }
 
