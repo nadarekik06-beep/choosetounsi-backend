@@ -461,59 +461,63 @@ class SellerProductController extends Controller
         }
     }
 
-    private function saveColorImages(Product $product, Request $request): void
-    {
-        // Skip if migration hasn't run yet
-        if (!Schema::hasColumn('product_images', 'color_option_id')) {
-            Log::warning('[SellerProduct] color_option_id column missing — run: php artisan migrate');
-            return;
-        }
-
-        if (!$request->hasFile('color_images')) return;
-
-        $colorImagesInput = $request->file('color_images', []);
-        if (empty($colorImagesInput) || !is_array($colorImagesInput)) return;
-
-        $maxOrder   = $product->images()->max('order') ?? -1;
-        $hasPrimary = $product->images()->where('is_primary', true)->exists();
-        $orderIdx   = 0;
-
-        foreach ($colorImagesInput as $colorOptionId => $files) {
-            $colorOptionId = (int) $colorOptionId;
-            $colorOption   = AttributeOption::find($colorOptionId);
-            if (!$colorOption) continue;
-
-            foreach ($product->images()->where('color_option_id', $colorOptionId)->get() as $old) {
-                Storage::disk('public')->delete($old->image_path);
-                $old->delete();
-            }
-
-            $variantId = DB::table('variant_attribute_values as vav')
-                ->join('product_variants as pv', 'pv.id', '=', 'vav.variant_id')
-                ->where('pv.product_id', $product->id)
-                ->where('vav.attribute_option_id', $colorOptionId)
-                ->value('pv.id');
-
-            foreach ((array) $files as $j => $file) {
-                if (!$file || !method_exists($file, 'isValid') || !$file->isValid()) continue;
-
-                $path = $file->store('products', 'public');
-
-                ProductImage::create([
-                    'product_id'      => $product->id,
-                    'variant_id'      => $variantId ?: null,
-                    'color_option_id' => $colorOptionId,
-                    'image_path'      => $path,
-                    'order'           => $maxOrder + $orderIdx + 1,
-                    'is_primary'      => !$hasPrimary && $orderIdx === 0,
-                ]);
-
-                if (!$hasPrimary && $orderIdx === 0) $hasPrimary = true;
-                $orderIdx++;
-            }
-        }
+   private function saveColorImages(Product $product, Request $request): void
+{
+    if (!Schema::hasColumn('product_images', 'color_option_id')) {
+        Log::warning('[SellerProduct] color_option_id column missing — run: php artisan migrate');
+        return;
     }
 
+    // ── FIX: hasFile() fails on nested arrays — use getAllFiles() instead ──
+    $allFiles = $request->allFiles();
+    if (empty($allFiles['color_images'])) return;
+
+    $colorImagesInput = $allFiles['color_images'];
+    if (empty($colorImagesInput) || !is_array($colorImagesInput)) return;
+
+    $maxOrder   = $product->images()->max('order') ?? -1;
+    $hasPrimary = $product->images()->where('is_primary', true)->exists();
+    $orderIdx   = 0;
+
+    foreach ($colorImagesInput as $colorOptionId => $files) {
+        $colorOptionId = (int) $colorOptionId;
+        $colorOption   = AttributeOption::find($colorOptionId);
+        if (!$colorOption) continue;
+
+        // Delete old images for this color before saving new ones
+        foreach ($product->images()->where('color_option_id', $colorOptionId)->get() as $old) {
+            Storage::disk('public')->delete($old->image_path);
+            $old->delete();
+        }
+
+        // Find the variant linked to this color option
+        $variantId = DB::table('variant_attribute_values as vav')
+            ->join('product_variants as pv', 'pv.id', '=', 'vav.variant_id')
+            ->where('pv.product_id', $product->id)
+            ->where('vav.attribute_option_id', $colorOptionId)
+            ->value('pv.id');
+
+        foreach ((array) $files as $j => $file) {
+            if (!$file || !method_exists($file, 'isValid') || !$file->isValid()) continue;
+
+            $path = $file->store('products', 'public');
+
+            $setPrimary = !$hasPrimary && $orderIdx === 0;
+
+            ProductImage::create([
+                'product_id'      => $product->id,
+                'variant_id'      => $variantId ?: null,
+                'color_option_id' => $colorOptionId,
+                'image_path'      => $path,
+                'order'           => $maxOrder + $orderIdx + 1,
+                'is_primary'      => $setPrimary,
+            ]);
+
+            if ($setPrimary) $hasPrimary = true;
+            $orderIdx++;
+        }
+    }
+}
     /**
      * Generate a unique slug. Appends -2, -3, etc. if base slug is taken.
      * Pass $excludeId on update to ignore the product's own current slug.
