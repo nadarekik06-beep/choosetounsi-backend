@@ -85,7 +85,7 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     Route::post('/checkout', [CheckoutController::class, 'store']);
-
+    Route::post('/checkout/buy-now', [CheckoutController::class, 'buyNow']);
     // Client notifications
     Route::prefix('notifications')->group(function () {
         Route::get('/',             [NotificationController::class, 'index']);
