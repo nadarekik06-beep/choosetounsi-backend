@@ -68,7 +68,8 @@ class SellerOrderController extends Controller
         $seller   = auth()->user();
         $orderIds = $this->sellerOrderIds($seller->id);
 
-        $query = Order::with(['user:id,name,email,state', 'items'])
+        // FIX: removed 'state' from the select — that column does not exist in users table
+        $query = Order::with(['user:id,name,email', 'items'])
                       ->whereIn('id', $orderIds);
 
         if ($request->filled('status')) {
@@ -97,11 +98,11 @@ class SellerOrderController extends Controller
         $orders = $query->latest()->paginate((int) $request->query('per_page', 12));
 
         // Map each order so the frontend gets a consistent `wilaya` field
+        // FIX: removed ->user->state fallback since 'state' column doesn't exist
         $orders->getCollection()->transform(function ($order) {
             $arr           = $order->toArray();
             $arr['wilaya'] = $order->wilaya
                 ?? $order->shipping_address
-                ?? $order->user->state
                 ?? null;
             return $arr;
         });
@@ -116,7 +117,8 @@ class SellerOrderController extends Controller
         $orderIds  = $this->sellerOrderIds($seller->id);
         $sellerCol = $this->getSellerCol();
 
-        $order = Order::with(['user:id,name,email,state', 'items'])
+        // FIX: removed 'state' from the select — that column does not exist in users table
+        $order = Order::with(['user:id,name,email', 'items'])
                       ->whereIn('id', $orderIds)
                       ->findOrFail($id);
 
@@ -128,15 +130,15 @@ class SellerOrderController extends Controller
         }
 
         // Resolve which column holds the product name
-        $nameCol       = in_array('product_name', $itemCols)  ? 'product_name'  : null;
+        $nameCol  = in_array('product_name', $itemCols) ? 'product_name' : null;
         // Resolve price column
-        $priceCol      = in_array('unit_price', $itemCols)    ? 'unit_price'
-                       : (in_array('price', $itemCols)        ? 'price'
-                       : (in_array('unit_cost', $itemCols)    ? 'unit_cost'     : null));
+        $priceCol = in_array('unit_price', $itemCols)   ? 'unit_price'
+                  : (in_array('price', $itemCols)       ? 'price'
+                  : (in_array('unit_cost', $itemCols)   ? 'unit_cost' : null));
         // Resolve subtotal column
-        $totalCol      = in_array('total', $itemCols)         ? 'total'
-                       : (in_array('subtotal', $itemCols)     ? 'subtotal'
-                       : (in_array('line_total', $itemCols)   ? 'line_total'    : null));
+        $totalCol = in_array('total', $itemCols)        ? 'total'
+                  : (in_array('subtotal', $itemCols)    ? 'subtotal'
+                  : (in_array('line_total', $itemCols)  ? 'line_total' : null));
 
         // Filter to only this seller's items
         $sellerItems = $order->items->filter(function ($item) use ($seller, $sellerCol) {
@@ -180,20 +182,20 @@ class SellerOrderController extends Controller
         // Seller subtotal
         $subtotal = $mappedItems->sum('total');
 
-        // Wilaya: try dedicated column first, then shipping_address, then user.state
+        // Wilaya: try dedicated column first, then shipping_address
+        // FIX: removed ->user->state fallback since 'state' column doesn't exist
         $wilaya = $order->wilaya
             ?? $order->shipping_address
-            ?? $order->user->state
             ?? null;
 
+        // FIX: removed 'state' from customer array since column doesn't exist
         $customer = $order->user ? [
             'name'  => $order->user->name,
             'email' => $order->user->email,
-            'state' => $order->user->state ?? null,
         ] : null;
 
-        $orderArr            = $order->toArray();
-        $orderArr['wilaya']  = $wilaya;
+        $orderArr             = $order->toArray();
+        $orderArr['wilaya']   = $wilaya;
         $orderArr['customer'] = $customer;
 
         return response()->json([
