@@ -49,7 +49,7 @@ Route::get('/categories/{slug}/products', [CategoryController::class, 'products'
 Route::get('/categories/{slug}/subcategories',     [SubcategoryController::class, 'index']);
 Route::get('/subcategories/{id}/attributes',       [SubcategoryController::class, 'attributes']);
 Route::get('/categories/{slug}/filter-attributes', [ProductController::class, 'filterAttributes']);
-
+Route::post('/ai/chat', [\App\Http\Controllers\Api\AiChatController::class, 'handle']);
 /*
 |--------------------------------------------------------------------------
 | AUTHENTICATED ROUTES
