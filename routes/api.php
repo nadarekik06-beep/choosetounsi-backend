@@ -25,6 +25,9 @@ use App\Http\Controllers\Admin\UserController as AdminUserController;
 use App\Http\Controllers\Api\Client\ComplaintController as ClientComplaintController;
 use App\Http\Controllers\Api\Seller\SellerComplaintController;
 use App\Http\Controllers\Admin\AdminComplaintController;
+use App\Http\Controllers\Admin\AdminCategoryController;
+use App\Http\Controllers\Admin\AdminSubcategoryController;
+use App\Http\Controllers\Admin\AdminAttributeController;   // ← ADD THIS LINE
 
 /*
 |--------------------------------------------------------------------------
@@ -50,6 +53,7 @@ Route::get('/categories/{slug}/subcategories',     [SubcategoryController::class
 Route::get('/subcategories/{id}/attributes',       [SubcategoryController::class, 'attributes']);
 Route::get('/categories/{slug}/filter-attributes', [ProductController::class, 'filterAttributes']);
 Route::post('/ai/chat', [\App\Http\Controllers\Api\AiChatController::class, 'handle']);
+
 /*
 |--------------------------------------------------------------------------
 | AUTHENTICATED ROUTES
@@ -84,8 +88,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/check/{productId}', [FavoriteController::class, 'check']);
     });
 
-    Route::post('/checkout', [CheckoutController::class, 'store']);
+    Route::post('/checkout',         [CheckoutController::class, 'store']);
     Route::post('/checkout/buy-now', [CheckoutController::class, 'buyNow']);
+
     // Client notifications
     Route::prefix('notifications')->group(function () {
         Route::get('/',             [NotificationController::class, 'index']);
@@ -114,7 +119,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/products/{id}/images/{imageId}',        [SellerProductController::class, 'destroyImage']);
         Route::patch('/products/{id}/images/{imageId}/primary', [SellerProductController::class, 'setPrimaryImage']);
 
-        // Product update requests (for approved/locked products)
         Route::get('/products/{id}/update-requests', [SellerProductUpdateRequestController::class, 'index']);
         Route::post('/products/{id}/request-update', [SellerProductUpdateRequestController::class, 'store']);
 
@@ -124,7 +128,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/orders/{id}/status',  [SellerOrderController::class, 'updateStatus']);
         Route::patch('/orders/{id}/payment', [SellerOrderController::class, 'updatePayment']);
 
-        // Seller complaints
         Route::get('/complaints/stats',          [SellerComplaintController::class, 'stats']);
         Route::get('/complaints',                [SellerComplaintController::class, 'index']);
         Route::get('/complaints/{id}',           [SellerComplaintController::class, 'show']);
@@ -143,7 +146,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/orders',         [ClientOrderApiController::class, 'index']);
         Route::get('/orders/{order}', [ClientOrderApiController::class, 'show']);
 
-        // Client complaints
         Route::get('/complaints/eligible-orders', [ClientComplaintController::class, 'eligibleOrders']);
         Route::get('/complaints',                 [ClientComplaintController::class, 'index']);
         Route::post('/complaints',                [ClientComplaintController::class, 'store']);
@@ -157,13 +159,37 @@ Route::middleware('auth:sanctum')->group(function () {
     */
     Route::prefix('admin')->middleware('role:admin')->group(function () {
 
-        // Categories
-        Route::get('/categories',               [CategoryController::class, 'adminIndex']);
-        Route::post('/categories',              [CategoryController::class, 'store']);
-        Route::put('/categories/{category}',    [CategoryController::class, 'update']);
-        Route::delete('/categories/{category}', [CategoryController::class, 'destroy']);
+        // ── Categories ────────────────────────────────────────────────────
+        Route::get('/categories',               [AdminCategoryController::class, 'index']);
+        Route::get('/categories/{id}',          [AdminCategoryController::class, 'show']);
+        Route::post('/categories',              [AdminCategoryController::class, 'store']);
+        Route::put('/categories/{id}',          [AdminCategoryController::class, 'update']);
+        Route::patch('/categories/{id}/toggle', [AdminCategoryController::class, 'toggle']);
+        Route::delete('/categories/{id}',       [AdminCategoryController::class, 'destroy']);
 
-        // Users
+        // ── Subcategory ↔ Attribute assignment (BEFORE subcategory CRUD) ──
+        Route::get('/subcategories/{id}/attributes',            [AdminAttributeController::class, 'subcategoryAttributes']);
+        Route::post('/subcategories/{id}/attributes',           [AdminAttributeController::class, 'assignAttribute']);
+        Route::put('/subcategories/{id}/attributes/{attrId}',   [AdminAttributeController::class, 'updateAssignment']);
+        Route::delete('/subcategories/{id}/attributes/{attrId}',[AdminAttributeController::class, 'removeAttribute']);
+
+        // ── Subcategories ─────────────────────────────────────────────────
+        Route::get('/subcategories',       [AdminSubcategoryController::class, 'index']);
+        Route::get('/subcategories/{id}',  [AdminSubcategoryController::class, 'show']);
+        Route::post('/subcategories',      [AdminSubcategoryController::class, 'store']);
+        Route::put('/subcategories/{id}',  [AdminSubcategoryController::class, 'update']);
+        Route::delete('/subcategories/{id}',[AdminSubcategoryController::class, 'destroy']);
+
+        // ── Global Attributes ─────────────────────────────────────────────
+        Route::get('/attributes',                         [AdminAttributeController::class, 'index']);
+        Route::post('/attributes',                        [AdminAttributeController::class, 'store']);
+        Route::put('/attributes/{id}',                    [AdminAttributeController::class, 'update']);
+        Route::delete('/attributes/{id}',                 [AdminAttributeController::class, 'destroy']);
+        Route::post('/attributes/{id}/options',           [AdminAttributeController::class, 'addOption']);
+        Route::put('/attributes/{id}/options/{optId}',    [AdminAttributeController::class, 'updateOption']);
+        Route::delete('/attributes/{id}/options/{optId}', [AdminAttributeController::class, 'deleteOption']);
+
+        // ── Users ─────────────────────────────────────────────────────────
         Route::get('/users',              [AdminUserController::class, 'index']);
         Route::get('/users/{id}',         [AdminUserController::class, 'show']);
         Route::put('/users/{id}',         [AdminUserController::class, 'update']);
@@ -171,7 +197,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/users/{id}/unban', [AdminUserController::class, 'unban']);
         Route::delete('/users/{id}',      [AdminUserController::class, 'destroy']);
 
-        // Sellers
+        // ── Sellers ───────────────────────────────────────────────────────
         Route::get('/sellers',                [SellerController::class, 'index']);
         Route::get('/sellers/{id}',           [SellerController::class, 'show']);
         Route::put('/sellers/{id}',           [SellerController::class, 'update']);
@@ -181,13 +207,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/sellers/{id}/reject',  [SellerController::class, 'reject']);
         Route::patch('/sellers/{id}/suspend', [SellerController::class, 'suspend']);
 
-        // Seller applications
+        // ── Seller Applications ───────────────────────────────────────────
         Route::get('/seller-applications',                        [SellerApplicationController::class, 'index']);
         Route::get('/seller-applications/{id}',                   [SellerApplicationController::class, 'show']);
         Route::post('/seller-applications/{application}/approve', [SellerApplicationController::class, 'approve']);
         Route::post('/seller-applications/{application}/reject',  [SellerApplicationController::class, 'reject']);
 
-        // Products
+        // ── Products ──────────────────────────────────────────────────────
         Route::get('/products',                [AdminProductController::class, 'index']);
         Route::get('/products/{id}',           [AdminProductController::class, 'show']);
         Route::put('/products/{id}',           [AdminProductController::class, 'update']);
@@ -196,20 +222,20 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/products/{id}/disable', [AdminProductController::class, 'disable']);
         Route::delete('/products/{id}',        [AdminProductController::class, 'destroy']);
 
-        // Product update requests (must be before /products/{id} to avoid route conflicts)
+        // ── Product Update Requests ───────────────────────────────────────
         Route::get('/product-update-requests/stats',         [AdminProductUpdateRequestController::class, 'stats']);
         Route::get('/product-update-requests',               [AdminProductUpdateRequestController::class, 'index']);
         Route::get('/product-update-requests/{id}',          [AdminProductUpdateRequestController::class, 'show']);
         Route::post('/product-update-requests/{id}/approve', [AdminProductUpdateRequestController::class, 'approve']);
         Route::post('/product-update-requests/{id}/reject',  [AdminProductUpdateRequestController::class, 'reject']);
 
-        // Orders
+        // ── Orders ────────────────────────────────────────────────────────
         Route::get('/orders/stats',         [AdminOrderController::class, 'stats']);
         Route::get('/orders',               [AdminOrderController::class, 'index']);
         Route::get('/orders/{id}',          [AdminOrderController::class, 'show']);
         Route::patch('/orders/{id}/status', [AdminOrderController::class, 'updateStatus']);
 
-        // Admin notifications
+        // ── Admin Notifications ───────────────────────────────────────────
         Route::prefix('notifications')->group(function () {
             Route::get('/',             [AdminNotificationController::class, 'index']);
             Route::get('/unread-count', [AdminNotificationController::class, 'unreadCount']);
@@ -217,7 +243,7 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::patch('/{id}/read',  [AdminNotificationController::class, 'markRead']);
         });
 
-        // Admin complaints
+        // ── Admin Complaints ──────────────────────────────────────────────
         Route::get('/complaints/stats',                    [AdminComplaintController::class, 'stats']);
         Route::get('/complaints',                          [AdminComplaintController::class, 'index']);
         Route::get('/complaints/{id}',                     [AdminComplaintController::class, 'show']);
