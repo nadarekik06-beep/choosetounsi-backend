@@ -152,168 +152,287 @@ class ProductController extends Controller
      * GET /api/products/{slug}
      * UNCHANGED — full variant/image logic is already correct here.
      */
-    public function show($slug)
-    {
-        $product = Product::where('slug', $slug)
-            ->available()
-            ->with([
-                'category:id,name,slug',
-                'subcategory:id,name,slug',
-                'seller:id,name',
-                'images',
-                'primaryImage',
-                'attributeValues.attribute.options',
-                'variants' => fn($q) => $q->where('is_active', true)
-                    ->with([
-                        'attributeOptions.attribute:id,slug,name,type',
-                        'images',
-                    ]),
-            ])
-            ->first();
+   public function show($slug)
+{
+    $product = Product::where('slug', $slug)
+        ->available()
+        ->with([
+            'category:id,name,slug',
+            'subcategory:id,name,slug',
+            'seller:id,name',
+            'images',
+            'primaryImage',
+            'attributeValues.attribute.options',
+            'variants' => fn($q) => $q->where('is_active', true)
+                ->with([
+                    'attributeOptions.attribute:id,slug,name,type',
+                    'images',
+                ]),
+        ])
+        ->first();
 
-        if (!$product) {
-            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
+    if (!$product) {
+        return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
+    }
+
+    $product->incrementViews();
+
+    // ── Product-level attribute data (unchanged) ────────────────────────────
+    $product->attribute_data = $product->attributeValues->map(function ($pav) {
+        $attr  = $pav->attribute;
+        $value = $attr->decodeValue($pav->value);
+        $label = $value;
+        if (in_array($attr->type, ['select', 'multiselect', 'color'])) {
+            $ids   = (array) $value;
+            $label = $attr->options->whereIn('id', $ids)->pluck('value')->join(', ');
+        }
+        return [
+            'slug'  => $attr->slug,
+            'name'  => $attr->name,
+            'type'  => $attr->type,
+            'value' => $value,
+            'label' => $label,
+        ];
+    })->keyBy('slug');
+
+    // ── Product-level images (unchanged) ───────────────────────────────────
+    $product->primary_image_url = $product->primaryImage
+        ? Storage::url($product->primaryImage->image_path)
+        : null;
+
+    $product->images->each(fn($img) => $img->url = Storage::url($img->image_path));
+
+    // ── Variants + axes + color image map ──────────────────────────────────
+    $hasVariants     = $product->variants->isNotEmpty();
+    $variantsPayload = [];
+    $selectableAxes  = [];
+    $colorImages     = [];      // groupKey  → [url, ...]
+    $colorPrimaryImage = [];    // groupKey  → url
+
+    if ($hasVariants) {
+
+        // Product-level images (no color_option_id, no variant_id)
+        $productImageUrls = $product->images
+            ->filter(fn($i) => is_null($i->variant_id) && is_null($i->color_option_id))
+            ->map(fn($i) => Storage::url($i->image_path))
+            ->values()
+            ->toArray();
+
+        // ── Build colorImages keyed by GROUP KEY ("3|7"), not single opt id ─
+        //
+        // Images were saved with color_option_id = primaryColorOptionId
+        // (the lowest sorted ID in the group).  We need to map them back
+        // to the full group key.
+        //
+        // Step 1: collect all unique color groups from variants
+        $colorGroupMap = [];   // primaryOptId (int) → sorted ids array
+        foreach ($product->variants as $v) {
+            $colorOpts = $v->attributeOptions
+                ->filter(fn($o) => $o->attribute->slug === 'color')
+                ->sortBy('id')
+                ->values();
+
+            if ($colorOpts->isEmpty()) continue;
+
+            $primaryId = $colorOpts->first()->id;
+            $allIds    = $colorOpts->pluck('id')->toArray();
+
+            if (!isset($colorGroupMap[$primaryId])) {
+                $colorGroupMap[$primaryId] = $allIds;
+            }
         }
 
-        $product->incrementViews();
+        // Step 2: load product images that have color_option_id set
+        // and map them to their group key
+        $product->images
+            ->filter(fn($i) => $i->color_option_id !== null)
+            ->each(function ($img) use (&$colorImages, &$colorPrimaryImage, $colorGroupMap) {
+                $cid      = $img->color_option_id;
+                $groupIds = $colorGroupMap[$cid] ?? [$cid];
+                $groupKey = implode('|', $groupIds);
+                $url      = Storage::url($img->image_path);
 
-        // ── Product-level attribute data ────────────────────────────────────
-        $product->attribute_data = $product->attributeValues->map(function ($pav) {
-            $attr  = $pav->attribute;
-            $value = $attr->decodeValue($pav->value);
-            $label = $value;
-            if (in_array($attr->type, ['select', 'multiselect', 'color'])) {
-                $ids   = (array) $value;
-                $label = $attr->options->whereIn('id', $ids)->pluck('value')->join(', ');
-            }
-            return [
-                'slug'  => $attr->slug,
-                'name'  => $attr->name,
-                'type'  => $attr->type,
-                'value' => $value,
-                'label' => $label,
-            ];
-        })->keyBy('slug');
+                $colorImages[$groupKey][] = $url;
+                if ($img->is_primary || !isset($colorPrimaryImage[$groupKey])) {
+                    $colorPrimaryImage[$groupKey] = $url;
+                }
 
-        // ── Product-level images ────────────────────────────────────────────
-        $product->primary_image_url = $product->primaryImage
-            ? Storage::url($product->primaryImage->image_path)
-            : null;
+                // ALSO keep backward-compat entry keyed by single primary opt id
+                // so existing frontend code using color_images[colorOptId] still works
+                $colorImages[$cid][] = $url;
+                if ($img->is_primary || !isset($colorPrimaryImage[$cid])) {
+                    $colorPrimaryImage[$cid] = $url;
+                }
+            });
 
-        $product->images->each(function ($img) {
-            $img->url = Storage::url($img->image_path);
-        });
-
-        // ── Variants + axes + color image map ──────────────────────────────
-        $hasVariants     = $product->variants->isNotEmpty();
-        $variantsPayload = [];
-        $selectableAxes  = [];
-        $colorImages     = [];
-        $colorPrimaryImage = [];
-
-        if ($hasVariants) {
-            $productImageUrls = $product->images
-                ->filter(fn($i) => is_null($i->variant_id) && is_null($i->color_option_id))
+        // ── Build variants payload ─────────────────────────────────────────
+        $variantsPayload = $product->variants->map(function ($v) use (
+            $productImageUrls, &$colorImages, &$colorPrimaryImage
+        ) {
+            $variantImageUrls = $v->images
                 ->map(fn($i) => Storage::url($i->image_path))
                 ->values()
                 ->toArray();
 
-            $product->images
-                ->filter(fn($i) => $i->color_option_id !== null)
-                ->each(function ($img) use (&$colorImages, &$colorPrimaryImage) {
-                    $cid = $img->color_option_id;
-                    $url = Storage::url($img->image_path);
-                    $colorImages[$cid][] = $url;
-                    if ($img->is_primary || !isset($colorPrimaryImage[$cid])) {
-                        $colorPrimaryImage[$cid] = $url;
+            // Collect all color options for this variant (sorted by id)
+            $colorOpts = $v->attributeOptions
+                ->filter(fn($o) => $o->attribute->slug === 'color')
+                ->sortBy('id')
+                ->values();
+
+            $colorOptId = null;
+            $groupKey   = null;
+
+            if ($colorOpts->isNotEmpty()) {
+                $colorOptId = $colorOpts->first()->id;    // primary (lowest) id
+                $groupKey   = $colorOpts->pluck('id')->implode('|');
+
+                // Merge variant's own images into the group bucket
+                foreach ($variantImageUrls as $url) {
+                    if (!in_array($url, $colorImages[$groupKey] ?? [])) {
+                        $colorImages[$groupKey][] = $url;
                     }
-                });
-
-            $variantsPayload = $product->variants->map(function ($v) use (
-                $productImageUrls, &$colorImages, &$colorPrimaryImage
-            ) {
-                $variantImageUrls = $v->images
-                    ->map(fn($i) => Storage::url($i->image_path))
-                    ->values()
-                    ->toArray();
-
-                $colorOptId = null;
-                if ($v->relationLoaded('attributeOptions')) {
-                    $colorOpt = $v->attributeOptions->first(
-                        fn($o) => $o->attribute->slug === 'color'
-                    );
-                    if ($colorOpt) {
-                        $colorOptId = $colorOpt->id;
-                        foreach ($variantImageUrls as $url) {
-                            if (!in_array($url, $colorImages[$colorOptId] ?? [])) {
-                                $colorImages[$colorOptId][] = $url;
-                            }
-                        }
-                        if ($variantImageUrls && !isset($colorPrimaryImage[$colorOptId])) {
-                            $colorPrimaryImage[$colorOptId] = $variantImageUrls[0];
-                        }
+                    // backward-compat single-id key
+                    if (!in_array($url, $colorImages[$colorOptId] ?? [])) {
+                        $colorImages[$colorOptId][] = $url;
                     }
                 }
-
-                $resolvedImages = $variantImageUrls;
-                if (empty($resolvedImages) && $colorOptId && !empty($colorImages[$colorOptId])) {
-                    $resolvedImages = $colorImages[$colorOptId];
+                if ($variantImageUrls) {
+                    $colorPrimaryImage[$groupKey]   ??= $variantImageUrls[0];
+                    $colorPrimaryImage[$colorOptId] ??= $variantImageUrls[0];
                 }
-                if (empty($resolvedImages)) {
-                    $resolvedImages = $productImageUrls;
-                }
+            }
 
-                return [
-                    'id'               => $v->id,
-                    'sku'              => $v->sku,
-                    'stock'            => $v->stock,
-                    'is_active'        => $v->is_active,
-                    'price'            => $v->effective_price,
-                    'price_override'   => $v->price_override,
-                    'label'            => $v->label,
-                    'option_map'       => $v->option_map,
-                    'color_option_id'  => $colorOptId,
-                    'image_urls'       => $resolvedImages,
-                    'primary_image_url'=> $resolvedImages[0] ?? null,
+            // Image resolution priority: variant > group > product
+            $resolvedImages = $variantImageUrls;
+            if (empty($resolvedImages) && $groupKey && !empty($colorImages[$groupKey])) {
+                $resolvedImages = array_values(array_unique($colorImages[$groupKey]));
+            }
+            if (empty($resolvedImages)) {
+                $resolvedImages = $productImageUrls;
+            }
+
+            return [
+                'id'                => $v->id,
+                'sku'               => $v->sku,
+                'stock'             => $v->stock,
+                'is_active'         => $v->is_active,
+                'price'             => $v->effective_price,
+                'price_override'    => $v->price_override,
+                'label'             => $v->label,
+                'option_map'        => $v->option_map,   // now includes 'ids' for color
+                'color_option_id'   => $colorOptId,      // primary color opt id (backward compat)
+                'color_group_key'   => $groupKey,        // e.g. "3|7"
+                'image_urls'        => $resolvedImages,
+                'primary_image_url' => $resolvedImages[0] ?? null,
+            ];
+        })->values();
+
+        // ── Build selectable_axes ──────────────────────────────────────────
+        //
+        // KEY CHANGE: the color axis exposes COLOR GROUPS as options,
+        // not individual colors.  Each group option gets:
+        //   id        = primaryColorOptId  (lowest id, used as the selection key)
+        //   ids       = [3, 7]            (full group, for matching)
+        //   value     = "Red+Blue"
+        //   color_hex = hex of first color (for the swatch circle)
+        //   swatches  = [{id,value,color_hex}, ...]  (for multi-dot display)
+        //   primary_image = first image url for this group
+        //
+        // Non-color axes are unchanged.
+
+        $axisMap      = [];   // slug → axis definition
+        $colorGroups  = [];   // groupKey → group option entry (de-duplicated)
+
+        foreach ($product->variants as $variant) {
+            $colorOpts = $variant->attributeOptions
+                ->filter(fn($o) => $o->attribute->slug === 'color')
+                ->sortBy('id')
+                ->values();
+
+            $nonColorOpts = $variant->attributeOptions
+                ->filter(fn($o) => $o->attribute->slug !== 'color');
+
+            // Register the color axis itself
+            if ($colorOpts->isNotEmpty() && !isset($axisMap['color'])) {
+                $firstColorAttr = $colorOpts->first()->attribute;
+                $axisMap['color'] = [
+                    'slug'    => 'color',
+                    'name'    => $firstColorAttr->name,
+                    'type'    => 'color',
+                    'options' => [],   // filled below from $colorGroups
                 ];
-            })->values();
+            }
 
-            $axisMap = [];
-            foreach ($product->variants as $variant) {
-                foreach ($variant->attributeOptions as $opt) {
-                    $slug = $opt->attribute->slug;
-                    if (!isset($axisMap[$slug])) {
-                        $axisMap[$slug] = [
-                            'slug'    => $slug,
-                            'name'    => $opt->attribute->name,
-                            'type'    => $opt->attribute->type,
-                            'options' => [],
-                        ];
-                    }
-                    $axisMap[$slug]['options'][$opt->id] = [
-                        'id'            => $opt->id,
-                        'value'         => $opt->value,
-                        'color_hex'     => $opt->color_hex,
-                        'primary_image' => $colorPrimaryImage[$opt->id] ?? null,
+            // Register this color group as one selectable option
+            if ($colorOpts->isNotEmpty()) {
+                $groupKey   = $colorOpts->pluck('id')->implode('|');
+                $primaryId  = $colorOpts->first()->id;
+
+                if (!isset($colorGroups[$groupKey])) {
+                    $colorGroups[$groupKey] = [
+                        // 'id' is the value the frontend stores in selectedOptions['color']
+                        'id'            => $primaryId,
+                        // 'ids' lets the frontend do a containment check for matching
+                        'ids'           => $colorOpts->pluck('id')->toArray(),
+                        'value'         => $colorOpts->pluck('value')->implode('+'),
+                        'color_hex'     => $colorOpts->first()->color_hex,
+                        // swatches for rendering multiple dots in the swatch button
+                        'swatches'      => $colorOpts->map(fn($o) => [
+                            'id'        => $o->id,
+                            'value'     => $o->value,
+                            'color_hex' => $o->color_hex,
+                        ])->toArray(),
+                        'primary_image' => $colorPrimaryImage[$groupKey] ?? null,
                     ];
                 }
             }
-            foreach ($axisMap as &$axis) {
-                $axis['options'] = array_values($axis['options']);
+
+            // Non-color axes: one entry per individual option (unchanged)
+            foreach ($nonColorOpts as $opt) {
+                $slug = $opt->attribute->slug;
+                if (!isset($axisMap[$slug])) {
+                    $axisMap[$slug] = [
+                        'slug'    => $slug,
+                        'name'    => $opt->attribute->name,
+                        'type'    => $opt->attribute->type,
+                        'options' => [],
+                    ];
+                }
+                $axisMap[$slug]['options'][$opt->id] = [
+                    'id'            => $opt->id,
+                    'value'         => $opt->value,
+                    'color_hex'     => $opt->color_hex,
+                    'primary_image' => null,
+                ];
             }
-            unset($axis);
-            $selectableAxes = array_values($axisMap);
         }
 
-        $data                    = $product->toArray();
-        $data['has_variants']    = $hasVariants;
-        $data['variants']        = $variantsPayload;
-        $data['selectable_axes'] = $selectableAxes;
-        $data['attribute_data']  = $product->attribute_data;
-        $data['color_images']    = $colorImages;
+        // Attach de-duplicated color group options to the color axis
+        if (isset($axisMap['color'])) {
+            $axisMap['color']['options'] = array_values($colorGroups);
+        }
 
-        return response()->json(['success' => true, 'data' => $data]);
+        // Flatten other axes options
+        foreach ($axisMap as $slug => &$axis) {
+            if ($slug !== 'color') {
+                $axis['options'] = array_values($axis['options']);
+            }
+        }
+        unset($axis);
+
+        $selectableAxes = array_values($axisMap);
     }
+
+    $data                    = $product->toArray();
+    $data['has_variants']    = $hasVariants;
+    $data['variants']        = $variantsPayload;
+    $data['selectable_axes'] = $selectableAxes;
+    $data['attribute_data']  = $product->attribute_data;
+    $data['color_images']    = $colorImages;
+
+    return response()->json(['success' => true, 'data' => $data]);
+}
 
     /**
      * GET /api/categories/{slug}/filter-attributes

@@ -102,21 +102,42 @@ class ProductVariant extends Model
      * Returns: ['color' => ['id' => 3, 'value' => 'Red', 'color_hex' => '#FF0000'], ...]
      */
     public function getOptionMapAttribute(): array
-    {
-        if (!$this->relationLoaded('attributeOptions')) {
-            return [];
-        }
+{
+    if (!$this->relationLoaded('attributeOptions')) {
+        return [];
+    }
 
-        $map = [];
-        foreach ($this->attributeOptions as $opt) {
-            $map[$opt->attribute->slug] = [
+    $map        = [];
+    $colorGroup = [];   // accumulate all color options for this variant
+
+    foreach ($this->attributeOptions as $opt) {
+        $slug = $opt->attribute->slug;
+
+        if ($slug === 'color') {
+            $colorGroup[] = $opt;
+        } else {
+            $map[$slug] = [
                 'id'        => $opt->id,
                 'value'     => $opt->value,
                 'color_hex' => $opt->color_hex,
             ];
         }
-        return $map;
     }
+
+    if (!empty($colorGroup)) {
+        // Sort by id so the key is stable regardless of DB return order
+        usort($colorGroup, fn($a, $b) => $a->id <=> $b->id);
+
+        $map['color'] = [
+            'id'        => $colorGroup[0]->id,   // primary (lowest) ID — backward compat
+            'ids'       => array_map(fn($o) => $o->id, $colorGroup),
+            'value'     => implode('+', array_map(fn($o) => $o->value, $colorGroup)),
+            'color_hex' => $colorGroup[0]->color_hex,
+        ];
+    }
+
+    return $map;
+}
 
     /**
      * Resolved image URLs for this variant.
