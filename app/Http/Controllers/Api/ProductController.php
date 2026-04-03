@@ -13,6 +13,15 @@ class ProductController extends Controller
 {
     /**
      * GET /api/products
+     *
+     * CHANGES vs. original:
+     *  - Added 'variants.attributeOptions.attribute' to eager-loads so we can
+     *    extract color swatches without extra queries (single JOIN, not N+1).
+     *  - In the transform loop, we extract a `color_swatches` array
+     *    [{id, value, color_hex}] for every distinct color option across
+     *    the product's active variants.  The frontend card renders these as
+     *    small colored circles.
+     *  - Everything else is IDENTICAL to the original.
      */
     public function index(Request $request)
     {
@@ -22,8 +31,18 @@ class ProductController extends Controller
                 'subcategory:id,name,slug',
                 'primaryImage',
                 'seller:id,name',
+                // ── NEW: load active variants with their color option data ──
+                // Uses a constrained eager-load so only active variants are
+                // fetched, keeping the query lean.
+                'variants' => fn($q) => $q
+                    ->where('is_active', true)
+                    ->with([
+                        'attributeOptions' => fn($q2) => $q2
+                            ->with('attribute:id,slug,type'),
+                    ]),
             ]);
 
+        // ── Filters (unchanged) ────────────────────────────────────────────
         if ($search = $request->query('search')) {
             $query->where(fn($q) =>
                 $q->where('name', 'like', "%{$search}%")
@@ -64,10 +83,45 @@ class ProductController extends Controller
 
         $perPage  = (int) $request->query('per_page', 20);
         $products = $query->paginate(min($perPage, 60));
+
         $products->getCollection()->transform(function ($p) {
+            // ── Primary image URL (unchanged) ──────────────────────────────
             $p->primary_image_url = $p->primaryImage
                 ? Storage::url($p->primaryImage->image_path)
                 : null;
+
+            // ── NEW: color_swatches ────────────────────────────────────────
+            // Walk the already-loaded variants → attributeOptions and collect
+            // every option whose parent attribute has slug = 'color'.
+            // De-duplicate by option id so the same color isn't listed twice
+            // (e.g. Red appears in Red/S AND Red/M → one swatch).
+            $swatches = [];
+            $seen     = [];
+
+            foreach ($p->variants as $variant) {
+                foreach ($variant->attributeOptions as $opt) {
+                    // Guard: attribute must be the color axis
+                    if (
+                        $opt->attribute &&
+                        $opt->attribute->slug === 'color' &&
+                        !in_array($opt->id, $seen, true)
+                    ) {
+                        $seen[]    = $opt->id;
+                        $swatches[] = [
+                            'id'        => $opt->id,
+                            'value'     => $opt->value,
+                            'color_hex' => $opt->color_hex,
+                        ];
+                    }
+                }
+            }
+
+            $p->color_swatches = $swatches;
+
+            // Hide the raw variants relation from the JSON response —
+            // the card only needs color_swatches, not the full variant tree.
+            $p->unsetRelation('variants');
+
             return $p;
         });
 
@@ -76,6 +130,7 @@ class ProductController extends Controller
 
     /**
      * GET /api/products/featured
+     * UNCHANGED
      */
     public function featured()
     {
@@ -95,13 +150,7 @@ class ProductController extends Controller
 
     /**
      * GET /api/products/{slug}
-     *
-     * Returns full product including:
-     *   - attribute_data   (product-level attributes)
-     *   - has_variants     (bool)
-     *   - variants[]       (each with images[], image_urls[], color_option_id)
-     *   - selectable_axes[]
-     *   - color_images{}   (keyed by color option_id → [url, url, …])
+     * UNCHANGED — full variant/image logic is already correct here.
      */
     public function show($slug)
     {
@@ -114,11 +163,10 @@ class ProductController extends Controller
                 'images',
                 'primaryImage',
                 'attributeValues.attribute.options',
-                // Variants with their images AND attribute options
                 'variants' => fn($q) => $q->where('is_active', true)
                     ->with([
                         'attributeOptions.attribute:id,slug,name,type',
-                        'images',                          // variant-specific images
+                        'images',
                     ]),
             ])
             ->first();
@@ -157,23 +205,19 @@ class ProductController extends Controller
         });
 
         // ── Variants + axes + color image map ──────────────────────────────
-        $hasVariants    = $product->variants->isNotEmpty();
+        $hasVariants     = $product->variants->isNotEmpty();
         $variantsPayload = [];
         $selectableAxes  = [];
-        // Map: color_option_id → [url, url, …]
         $colorImages     = [];
-        // Map: color_option_id → [primary url]  (first image per color)
         $colorPrimaryImage = [];
 
         if ($hasVariants) {
-            // Collect all product-level image URLs for fallback
             $productImageUrls = $product->images
                 ->filter(fn($i) => is_null($i->variant_id) && is_null($i->color_option_id))
                 ->map(fn($i) => Storage::url($i->image_path))
                 ->values()
                 ->toArray();
 
-            // Build color_images map from product_images with color_option_id
             $product->images
                 ->filter(fn($i) => $i->color_option_id !== null)
                 ->each(function ($img) use (&$colorImages, &$colorPrimaryImage) {
@@ -188,14 +232,11 @@ class ProductController extends Controller
             $variantsPayload = $product->variants->map(function ($v) use (
                 $productImageUrls, &$colorImages, &$colorPrimaryImage
             ) {
-                // Collect variant-specific image URLs
                 $variantImageUrls = $v->images
                     ->map(fn($i) => Storage::url($i->image_path))
                     ->values()
                     ->toArray();
 
-                // Also build the color_images map from variant images
-                // (images linked via variant_id, grouped by color)
                 $colorOptId = null;
                 if ($v->relationLoaded('attributeOptions')) {
                     $colorOpt = $v->attributeOptions->first(
@@ -214,10 +255,6 @@ class ProductController extends Controller
                     }
                 }
 
-                // Decide which images to show for this variant:
-                // 1. Variant's own images
-                // 2. Color group images
-                // 3. Product-level images (fallback)
                 $resolvedImages = $variantImageUrls;
                 if (empty($resolvedImages) && $colorOptId && !empty($colorImages[$colorOptId])) {
                     $resolvedImages = $colorImages[$colorOptId];
@@ -227,23 +264,20 @@ class ProductController extends Controller
                 }
 
                 return [
-                    'id'              => $v->id,
-                    'sku'             => $v->sku,
-                    'stock'           => $v->stock,
-                    'is_active'       => $v->is_active,
-                    'price'           => $v->effective_price,
-                    'price_override'  => $v->price_override,
-                    'label'           => $v->label,
-                    'option_map'      => $v->option_map,
-                    'color_option_id' => $colorOptId,
-                    // All images for this variant/color
-                    'image_urls'      => $resolvedImages,
-                    // Convenience: the first image
-                    'primary_image_url' => $resolvedImages[0] ?? null,
+                    'id'               => $v->id,
+                    'sku'              => $v->sku,
+                    'stock'            => $v->stock,
+                    'is_active'        => $v->is_active,
+                    'price'            => $v->effective_price,
+                    'price_override'   => $v->price_override,
+                    'label'            => $v->label,
+                    'option_map'       => $v->option_map,
+                    'color_option_id'  => $colorOptId,
+                    'image_urls'       => $resolvedImages,
+                    'primary_image_url'=> $resolvedImages[0] ?? null,
                 ];
             })->values();
 
-            // Build selectable_axes
             $axisMap = [];
             foreach ($product->variants as $variant) {
                 foreach ($variant->attributeOptions as $opt) {
@@ -260,7 +294,6 @@ class ProductController extends Controller
                         'id'            => $opt->id,
                         'value'         => $opt->value,
                         'color_hex'     => $opt->color_hex,
-                        // attach the primary image for this color option in the axis
                         'primary_image' => $colorPrimaryImage[$opt->id] ?? null,
                     ];
                 }
@@ -277,7 +310,6 @@ class ProductController extends Controller
         $data['variants']        = $variantsPayload;
         $data['selectable_axes'] = $selectableAxes;
         $data['attribute_data']  = $product->attribute_data;
-        // Color → images map for instant switching without variant match
         $data['color_images']    = $colorImages;
 
         return response()->json(['success' => true, 'data' => $data]);
@@ -285,14 +317,10 @@ class ProductController extends Controller
 
     /**
      * GET /api/categories/{slug}/filter-attributes
-     *
-     * Returns filterable attributes for a category, sourcing attribute IDs from
-     * BOTH product_attribute_values (non-variant attributes like Brand, Material)
-     * AND variant_attribute_values (variant attributes like Color, Size).
+     * UNCHANGED
      */
     public function filterAttributes($slug)
     {
-        // Step 1: Collect all approved+active product IDs in this category
         $productIds = DB::table('products as p')
             ->join('categories as c', 'c.id', '=', 'p.category_id')
             ->where('c.slug', $slug)
@@ -304,14 +332,11 @@ class ProductController extends Controller
             return response()->json(['success' => true, 'data' => []]);
         }
 
-        // Step 2: Attribute IDs from non-variant product_attribute_values
         $nonVariantAttrIds = DB::table('product_attribute_values')
             ->whereIn('product_id', $productIds)
             ->distinct()
             ->pluck('attribute_id');
 
-        // Step 3: Attribute IDs from variant_attribute_values
-        // Path: product_variants → variant_attribute_values → attribute_options → attribute_id
         $variantAttrIds = DB::table('product_variants as pv')
             ->join('variant_attribute_values as vav', 'vav.variant_id', '=', 'pv.id')
             ->join('attribute_options as ao', 'ao.id', '=', 'vav.attribute_option_id')
@@ -319,14 +344,12 @@ class ProductController extends Controller
             ->distinct()
             ->pluck('ao.attribute_id');
 
-        // Step 4: Union both sets — unique attribute IDs from both systems
         $allAttrIds = $nonVariantAttrIds->merge($variantAttrIds)->unique()->values();
 
         if ($allAttrIds->isEmpty()) {
             return response()->json(['success' => true, 'data' => []]);
         }
 
-        // Step 5: Load filterable attributes with their options
         $attributes = Attribute::whereIn('id', $allAttrIds)
             ->where('is_filterable', true)
             ->with(['options' => fn($q) => $q->orderBy('order')])
