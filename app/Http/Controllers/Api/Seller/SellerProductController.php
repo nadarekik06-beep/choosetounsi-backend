@@ -465,92 +465,56 @@ class SellerProductController extends Controller
 {
     $allFiles = $request->allFiles();
     if (empty($allFiles['color_images'])) return;
- 
+
     $colorImagesInput = $allFiles['color_images'];
     if (empty($colorImagesInput) || !is_array($colorImagesInput)) return;
- 
-    // Build a map: variantIndex (int) → ProductVariant
-    // We need this to translate the frontend's 0-based index to a real variant_id.
-    // The variants were just saved by saveVariants(), so we reload them ordered by id
-    // (same order they were created) to match the frontend index.
-    //
-    // IMPORTANT: this only works reliably when variants are sent in a stable order.
-    // The frontend VariantBuilder sends them in the same order the rows appear.
-    $variantsInput = $request->input('variants', []);
-    $variantIndexMap = []; // index → variant_id
- 
-    if (!empty($variantsInput) && is_array($variantsInput)) {
-        foreach ($variantsInput as $index => $row) {
-            $optionIds = array_values(array_filter(
-                array_map('intval', (array) ($row['option_ids'] ?? [])),
-                fn($id) => $id > 0
-            ));
-            if (empty($optionIds)) continue;
- 
-            $existingId = isset($row['id']) && $row['id'] ? (int) $row['id'] : null;
- 
-            if ($existingId) {
-                // Editing an existing variant — use its known ID directly
-                $variantIndexMap[$index] = $existingId;
-            } else {
-                // Newly created variant — find by matching option_ids
-                // The variant was just inserted by saveVariants(), find it by
-                // checking variant_attribute_values for this product.
-                $variant = \Illuminate\Support\Facades\DB::table('product_variants as pv')
-                    ->where('pv.product_id', $product->id)
-                    ->whereExists(function ($sub) use ($optionIds) {
-                        $sub->select(\Illuminate\Support\Facades\DB::raw(1))
-                            ->from('variant_attribute_values as vav')
-                            ->whereColumn('vav.variant_id', 'pv.id')
-                            ->whereIn('vav.attribute_option_id', $optionIds)
-                            ->groupBy('vav.variant_id')
-                            ->havingRaw('COUNT(DISTINCT vav.attribute_option_id) = ?', [count($optionIds)]);
-                    })
-                    ->value('pv.id');
- 
-                if ($variant) {
-                    $variantIndexMap[$index] = $variant;
-                }
-            }
-        }
-    }
- 
+
     $maxOrder   = $product->images()->max('order') ?? -1;
     $hasPrimary = $product->images()->where('is_primary', true)->exists();
     $orderIdx   = 0;
- 
-    foreach ($colorImagesInput as $variantIndex => $files) {
-        $variantIndex = (int) $variantIndex;
-        $variantId    = $variantIndexMap[$variantIndex] ?? null;
- 
-        if (!$variantId) {
-            \Illuminate\Support\Facades\Log::warning(
-                "[SellerProduct::saveColorImages] No variant found for index {$variantIndex}"
-            );
+
+    foreach ($colorImagesInput as $groupKey => $files) {
+        // groupKey is a "|"-joined sorted list of color option IDs, e.g. "3|7"
+        // We use the FIRST color option ID as color_option_id on the image row.
+        // This keeps the existing schema intact and allows ProductController@show
+        // to still build its colorImages map by color_option_id.
+        $colorOptionIds = array_values(array_filter(
+            array_map('intval', explode('|', (string) $groupKey)),
+            fn($id) => $id > 0
+        ));
+
+        if (empty($colorOptionIds)) {
+            Log::warning("[SellerProduct::saveColorImages] Invalid groupKey: {$groupKey}");
             continue;
         }
- 
-        // Delete old variant-linked images before saving new ones (update scenario)
-        foreach ($product->images()->where('variant_id', $variantId)->get() as $old) {
-            \Illuminate\Support\Facades\Storage::disk('public')->delete($old->image_path);
-            $old->delete();
-        }
- 
-        foreach ((array) $files as $j => $file) {
+
+        $primaryColorOptionId = $colorOptionIds[0];
+
+        // Delete existing images for this color group before saving new ones
+        // (handles the update scenario — new upload replaces old)
+        $product->images()
+            ->where('color_option_id', $primaryColorOptionId)
+            ->get()
+            ->each(function ($old) {
+                Storage::disk('public')->delete($old->image_path);
+                $old->delete();
+            });
+
+        foreach ((array) $files as $file) {
             if (!$file || !method_exists($file, 'isValid') || !$file->isValid()) continue;
- 
+
             $path       = $file->store('products', 'public');
             $setPrimary = !$hasPrimary && $orderIdx === 0;
- 
+
             ProductImage::create([
                 'product_id'      => $product->id,
-                'variant_id'      => $variantId,
-                'color_option_id' => null,   // no longer used for variant images
+                'variant_id'      => null,           // no longer tied to a specific variant
+                'color_option_id' => $primaryColorOptionId,
                 'image_path'      => $path,
                 'order'           => $maxOrder + $orderIdx + 1,
                 'is_primary'      => $setPrimary,
             ]);
- 
+
             if ($setPrimary) $hasPrimary = true;
             $orderIdx++;
         }
