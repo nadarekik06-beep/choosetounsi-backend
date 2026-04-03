@@ -4,9 +4,14 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Product;
+use App\Models\ProductVariant;
+use App\Models\ProductAttributeValue;
+use App\Models\Attribute;
 use App\Notifications\ProductReviewedNotification;
 use App\Notifications\ProductActionNotification;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 class ProductController extends Controller
@@ -49,11 +54,11 @@ class ProductController extends Controller
     {
         $product = Product::with([
             'seller:id,name,email',
-            'category:id,name',
-            'subcategory:id,name',
+            'category:id,name,slug',
+            'subcategory:id,name,slug,category_id',
             'images',
             'primaryImage',
-            // Variants with their own images + options
+            'attributeValues.attribute',
             'variants' => fn($q) => $q->with([
                 'attributeOptions.attribute:id,slug,name,type',
                 'images',
@@ -70,7 +75,23 @@ class ProductController extends Controller
             $image->url = Storage::disk('public')->url($image->image_path);
         });
 
-        // Build variant payload with images
+        // Build variant payload identical to SellerProductController@show
+        $product->variant_rows = $product->variants->map(fn($v) => [
+            'id'             => $v->id,
+            'option_ids'     => $v->attributeOptions->pluck('id')->toArray(),
+            'stock'          => $v->stock,
+            'price_override' => $v->price_override !== null ? (string) $v->price_override : '',
+            'sku'            => $v->sku ?? '',
+            'is_active'      => $v->is_active,
+            'image_urls'     => $v->images->map(fn($i) => Storage::disk('public')->url($i->image_path))->toArray(),
+        ]);
+
+        // Build existing_attributes identical to SellerProductController@show
+        $product->existing_attributes = $product->attributeValues
+            ->mapWithKeys(fn($v) => [
+                $v->attribute->slug => $v->attribute->decodeValue($v->value),
+            ]);
+
         $product->variant_data = $product->variants->map(function ($v) {
             $v->images->each(fn($i) => $i->url = Storage::disk('public')->url($i->image_path));
             return [
@@ -88,38 +109,165 @@ class ProductController extends Controller
         return response()->json(['success' => true, 'data' => $product]);
     }
 
+    /**
+     * PUT /api/admin/products/{id}
+     *
+     * Full product edit for admin — same logic as SellerProductController@update
+     * but without seller ownership check and without resetting approval status.
+     */
     public function update(Request $request, $id)
     {
         $product = Product::with('seller')->findOrFail($id);
 
-        $validated = $request->validate([
+        $request->validate([
             'name'              => 'sometimes|required|string|max:255',
             'description'       => 'nullable|string',
             'short_description' => 'nullable|string|max:500',
             'price'             => 'sometimes|required|numeric|min:0',
             'stock'             => 'sometimes|required|integer|min:0',
             'category_id'       => 'sometimes|required|exists:categories,id',
+            'subcategory_id'    => 'nullable|exists:subcategories,id',
             'is_active'         => 'sometimes|boolean',
             'is_approved'       => 'sometimes|boolean',
             'featured'          => 'sometimes|boolean',
         ]);
 
-        $product->update($validated);
+        // ── Scalar fields ──────────────────────────────────────────────────
+        $fieldsToUpdate = [];
 
-        if ($product->seller) {
-            $product->seller->notify(new ProductActionNotification(
-                'updated', $product->id, $product->name, 'Admin', 0
-            ));
+        foreach (['name', 'description', 'short_description', 'price', 'stock',
+                  'category_id', 'subcategory_id', 'is_active', 'is_approved', 'featured'] as $field) {
+            if ($request->has($field)) {
+                $fieldsToUpdate[$field] = $request->input($field);
+            }
         }
 
-        $product->load(['seller:id,name,email', 'category:id,name', 'images', 'primaryImage',
-            'variants.attributeOptions.attribute', 'variants.images']);
+        // Null out subcategory_id when category changes and no subcategory given
+        if (isset($fieldsToUpdate['category_id']) &&
+            $fieldsToUpdate['category_id'] != $product->category_id &&
+            !$request->has('subcategory_id')) {
+            $fieldsToUpdate['subcategory_id'] = null;
+        }
+
+        if (!empty($fieldsToUpdate)) {
+            $product->update($fieldsToUpdate);
+        }
+
+        // ── Attributes ─────────────────────────────────────────────────────
+        if ($request->has('attributes')) {
+            $attrs = $request->input('attributes', []);
+            if (is_array($attrs)) {
+                foreach ($attrs as $slug => $value) {
+                    $attr = Attribute::where('slug', $slug)->first();
+                    if (!$attr) continue;
+
+                    $raw = in_array($attr->type, ['select', 'multiselect', 'color'])
+                        ? json_encode((array) $value)
+                        : (string) $value;
+
+                    ProductAttributeValue::updateOrCreate(
+                        ['product_id' => $product->id, 'attribute_id' => $attr->id],
+                        ['value' => $raw]
+                    );
+                }
+            }
+        }
+
+        // ── Variants ───────────────────────────────────────────────────────
+        if ($request->has('variants')) {
+            $variantsInput = $request->input('variants', []);
+            if (is_array($variantsInput) && !empty($variantsInput)) {
+                $keepIds = [];
+
+                foreach ($variantsInput as $row) {
+                    if (!is_array($row)) continue;
+
+                    $optionIds = array_values(array_filter(
+                        array_map('intval', (array) ($row['option_ids'] ?? [])),
+                        fn($i) => $i > 0
+                    ));
+                    if (empty($optionIds)) continue;
+
+                    $existingId    = isset($row['id']) && $row['id'] ? (int) $row['id'] : null;
+                    $stock         = (int) ($row['stock'] ?? 0);
+                    $sku           = !empty($row['sku']) ? (string) $row['sku'] : null;
+                    $isActive      = filter_var($row['is_active'] ?? '1', FILTER_VALIDATE_BOOLEAN);
+                    $priceOverride = isset($row['price_override']) && $row['price_override'] !== '' && $row['price_override'] !== null
+                        ? (float) $row['price_override'] : null;
+
+                    $variant = $existingId
+                        ? ProductVariant::where('product_id', $product->id)->find($existingId)
+                        : null;
+
+                    if ($variant) {
+                        $variant->update([
+                            'stock'          => $stock,
+                            'price_override' => $priceOverride,
+                            'sku'            => $sku,
+                            'is_active'      => $isActive,
+                        ]);
+                    } else {
+                        $variant = ProductVariant::create([
+                            'product_id'     => $product->id,
+                            'stock'          => $stock,
+                            'price_override' => $priceOverride,
+                            'sku'            => $sku,
+                            'is_active'      => $isActive,
+                        ]);
+                    }
+
+                    $variant->attributeOptions()->sync($optionIds);
+                    $keepIds[] = $variant->id;
+                }
+
+                if (!empty($keepIds)) {
+                    $product->variants()->whereNotIn('id', $keepIds)->delete();
+                }
+            }
+        }
+
+        // ── Notify seller ──────────────────────────────────────────────────
+        if ($product->seller) {
+            try {
+                $product->seller->notify(new ProductActionNotification(
+                    'updated', $product->id, $product->name, 'Admin', 0
+                ));
+            } catch (\Throwable $e) {
+                Log::warning('[AdminProduct::update] Notification failed: ' . $e->getMessage());
+            }
+        }
+
+        // ── Reload and return ──────────────────────────────────────────────
+        $product->load([
+            'seller:id,name,email',
+            'category:id,name,slug',
+            'subcategory:id,name,slug,category_id',
+            'images',
+            'primaryImage',
+            'attributeValues.attribute',
+            'variants.attributeOptions.attribute',
+            'variants.images',
+        ]);
 
         $product->status = $this->deriveStatus($product);
         $product->primary_image_url = $product->primaryImage
             ? Storage::disk('public')->url($product->primaryImage->image_path)
             : null;
         $product->images->each(fn($i) => $i->url = Storage::disk('public')->url($i->image_path));
+
+        $product->variant_rows = $product->variants->map(fn($v) => [
+            'id'             => $v->id,
+            'option_ids'     => $v->attributeOptions->pluck('id')->toArray(),
+            'stock'          => $v->stock,
+            'price_override' => $v->price_override !== null ? (string) $v->price_override : '',
+            'sku'            => $v->sku ?? '',
+            'is_active'      => $v->is_active,
+        ]);
+
+        $product->existing_attributes = $product->attributeValues
+            ->mapWithKeys(fn($v) => [
+                $v->attribute->slug => $v->attribute->decodeValue($v->value),
+            ]);
 
         return response()->json(['success' => true, 'message' => 'Product updated.', 'data' => $product]);
     }
