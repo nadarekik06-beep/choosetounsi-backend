@@ -256,7 +256,18 @@ class Product extends Model
     {
         return $this->is_approved && $this->is_active && $this->stock > 0;
     }
+    public function syncActiveStatusFromVariants(): void
+{
+    $totalVariants  = $this->variants()->count();
+    $activeVariants = $this->variants()->where('is_active', true)->count();
 
+    $shouldBeActive = $totalVariants > 0 && $activeVariants > 0;
+
+    if ($this->is_active !== $shouldBeActive) {
+        $this->is_active = $shouldBeActive;
+        $this->saveQuietly();
+    }
+}
     /**
      * FIXED: Returns null instead of a broken placeholder URL when no image exists.
      */

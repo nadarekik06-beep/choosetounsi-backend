@@ -134,12 +134,31 @@ class ProductController extends Controller
 
         // ── Scalar fields ──────────────────────────────────────────────────
         $fieldsToUpdate = [];
-
         foreach (['name', 'description', 'short_description', 'price', 'stock',
-                  'category_id', 'subcategory_id', 'is_active', 'is_approved', 'featured'] as $field) {
+                  'category_id', 'subcategory_id', 'is_approved', 'featured'] as $field) {
             if ($request->has($field)) {
                 $fieldsToUpdate[$field] = $request->input($field);
             }
+        }
+
+        // is_active is NOT a free scalar field — it is derived from variants.
+        // If admin tries to manually activate a product that has no active variants,
+        // reject immediately with a clear explanation.
+        if ($request->has('is_active') && $request->boolean('is_active')) {
+            $hasVariants      = $product->variants()->exists();
+            $hasActiveVariant = $product->variants()->where('is_active', true)->exists();
+
+            if ($hasVariants && !$hasActiveVariant) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot activate this product: it has no active variants. Activate at least one variant first.',
+                ], 422);
+            }
+        }
+
+        // Manual deactivation by admin is always allowed.
+        if ($request->has('is_active') && !$request->boolean('is_active')) {
+            $fieldsToUpdate['is_active'] = false;
         }
 
         // Null out subcategory_id when category changes and no subcategory given
@@ -224,6 +243,9 @@ class ProductController extends Controller
                     $product->variants()->whereNotIn('id', $keepIds)->delete();
                 }
             }
+
+            // Enforce variant→status rule after any variant change.
+            $product->fresh()->syncActiveStatusFromVariants();
         }
 
         // ── Notify seller ──────────────────────────────────────────────────
@@ -273,14 +295,20 @@ class ProductController extends Controller
     }
 
     public function approve($id)
-    {
-        $product = Product::with('seller')->findOrFail($id);
-        $product->update(['is_approved' => true, 'is_active' => true]);
-        if ($product->seller) {
-            $product->seller->notify(new ProductReviewedNotification('approved', $product->id, $product->name));
-        }
-        return response()->json(['success' => true, 'message' => 'Product approved.']);
+{
+    $product = Product::with('seller')->findOrFail($id);
+
+    // Approve first, then let variant state decide is_active.
+    // Never force is_active = true — a product with no active variants
+    // must stay inactive even after approval.
+    $product->update(['is_approved' => true]);
+    $product->fresh()->syncActiveStatusFromVariants();
+
+    if ($product->seller) {
+        $product->seller->notify(new ProductReviewedNotification('approved', $product->id, $product->name));
     }
+    return response()->json(['success' => true, 'message' => 'Product approved.']);
+}
 
     public function reject(Request $request, $id)
     {

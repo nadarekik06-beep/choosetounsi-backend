@@ -201,6 +201,7 @@ class SellerProductController extends Controller
 
         try {
             $this->saveVariants($product, $request);
+            $product->fresh()->syncActiveStatusFromVariants(); // enforce variant→status rule
             Log::info('[SellerProduct::store] Variants saved');
         } catch (\Throwable $e) {
             Log::error('[SellerProduct::store] VARIANTS FAILED', ['error' => $e->getMessage()]);
@@ -276,6 +277,7 @@ class SellerProductController extends Controller
 
         try {
             $this->saveVariants($product, $request);
+            $product->fresh()->syncActiveStatusFromVariants(); // enforce variant→status rule
             Log::info('[SellerProduct::update] Variants saved');
         } catch (\Throwable $e) {
             Log::error('[SellerProduct::update] VARIANTS FAILED', ['error' => $e->getMessage()]);
