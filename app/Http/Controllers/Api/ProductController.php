@@ -120,7 +120,11 @@ class ProductController extends Controller
 
             // Hide the raw variants relation from the JSON response —
             // the card only needs color_swatches, not the full variant tree.
-            $p->unsetRelation('variants');
+            $p->setRelation('variants', $p->variants->map(fn($v) => [
+                'id'    => $v->id,
+                'stock' => $v->stock,
+])->values());
+
 
             return $p;
         });
