@@ -64,6 +64,15 @@ class Order extends Model
         return $this->hasMany(OrderItem::class);
     }
 
+    /**
+     * Per-seller sub-orders created at checkout time.
+     * One SellerOrder row per seller involved in this checkout.
+     */
+    public function sellerOrders()
+    {
+        return $this->hasMany(SellerOrder::class);
+    }
+
     /* ── Scopes ── */
 
     public function scopeCompleted($query)  { return $query->where('status', 'completed'); }

@@ -13,9 +13,17 @@ class OrderItem extends Model
     protected $table = 'order_items';
 
     protected $fillable = [
-        'order_id', 'product_id', 'variant_id', 'variant_label',
-        'product_name', 'quantity', 'unit_price', 'price', 'total',
-        'image_url',   // optional snapshot stored at order time
+        'order_id',
+        'seller_order_id',   // ← NEW: links item to its seller's sub-order
+        'product_id',
+        'variant_id',
+        'variant_label',
+        'product_name',
+        'quantity',
+        'unit_price',
+        'price',
+        'total',
+        'image_url',         // optional snapshot stored at order time
     ];
 
     protected $casts = ['quantity' => 'integer'];
@@ -78,9 +86,18 @@ class OrderItem extends Model
         return $this->belongsTo(Order::class);
     }
 
+    /**
+     * The seller's sub-order this item belongs to.
+     * Null for items created before the seller_orders migration.
+     */
+    public function sellerOrder()
+    {
+        return $this->belongsTo(SellerOrder::class, 'seller_order_id');
+    }
+
     public function product()
     {
-        return $this->belongsTo(Product::class, 'product_id'); // removed withTrashed() — Product does not use SoftDeletes
+        return $this->belongsTo(Product::class, 'product_id');
     }
 
     public function variant()

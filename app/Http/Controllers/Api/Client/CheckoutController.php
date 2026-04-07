@@ -8,6 +8,7 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Models\SellerOrder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -18,8 +19,13 @@ class CheckoutController extends Controller
      * POST /api/checkout
      *
      * Creates an order from the user's cart.
-     * Validates per-variant (or per-product) stock before committing.
-     * ── UNCHANGED from original ──
+     *
+     * ── KEY CHANGE ──
+     * After creating the single `orders` row (customer's unified view),
+     * we group cart items by seller_id and create one `seller_orders` row
+     * per seller. Each OrderItem is linked to its seller's sub-order via
+     * `seller_order_id`. This allows sellers to independently update the
+     * status of their own slice without affecting other sellers' items.
      */
     public function store(Request $request)
     {
@@ -32,7 +38,7 @@ class CheckoutController extends Controller
 
         $user = $request->user();
 
-        // Load full cart with variant data
+        // Load full cart with variant + product data including seller_id
         $cartItems = Cart::with([
             'product',
             'variant.attributeOptions.attribute',
@@ -45,7 +51,7 @@ class CheckoutController extends Controller
             ], 422);
         }
 
-        // ── Pre-flight stock check ──────────────────────────────────────────
+        // ── Pre-flight stock + availability check ───────────────────────────
         foreach ($cartItems as $item) {
             $product = $item->product;
 
@@ -72,9 +78,13 @@ class CheckoutController extends Controller
             }
         }
 
-        // ── Create order inside a transaction ──────────────────────────────
+        // ── Detect which column holds the seller foreign key ────────────────
+        // (Handles both seller_id and legacy user_id column names)
+        $sellerCol = $this->getSellerCol();
+
         DB::beginTransaction();
         try {
+            // ── Step 1: Compute order total ─────────────────────────────────
             $total = $cartItems->sum(function ($item) {
                 $price = $item->variant
                     ? (float) ($item->variant->price_override ?? $item->product->price)
@@ -82,6 +92,8 @@ class CheckoutController extends Controller
                 return round($price * $item->quantity, 2);
             });
 
+            // ── Step 2: Create the parent order ─────────────────────────────
+            // One row per checkout session — this is the customer's unified view.
             $order = Order::create([
                 'user_id'        => $user->id,
                 'order_number'   => 'ORD-' . strtoupper(Str::random(8)),
@@ -94,47 +106,78 @@ class CheckoutController extends Controller
                 'notes'          => $request->notes ?? null,
             ]);
 
-            foreach ($cartItems as $item) {
-                $product   = $item->product;
-                $variant   = $item->variant;
-                $unitPrice = $variant
-                    ? (float) ($variant->price_override ?? $product->price)
-                    : (float) $product->price;
+            // ── Step 3: Group cart items by seller ──────────────────────────
+            // Each group becomes one SellerOrder row.
+            $groupedBySeller = $cartItems->groupBy(function ($item) use ($sellerCol) {
+                return $item->product->{$sellerCol};
+            });
 
-                $variantLabel = $variant
-                    ? $variant->attributeOptions->pluck('value')->join(' / ')
-                    : null;
+            // ── Step 4: Create one SellerOrder per seller ───────────────────
+            foreach ($groupedBySeller as $sellerId => $sellerItems) {
 
-                OrderItem::create([
-                    'order_id'      => $order->id,
-                    'product_id'    => $product->id,
-                    'variant_id'    => $variant?->id,
-                    'variant_label' => $variantLabel,
-                    'product_name'  => $product->name,
-                    'quantity'      => $item->quantity,
-                    'unit_price'    => $unitPrice,
-                    'price'         => $unitPrice,
-                    'total'         => round($unitPrice * $item->quantity, 2),
+                // Compute this seller's subtotal
+                $sellerSubtotal = $sellerItems->sum(function ($item) {
+                    $price = $item->variant
+                        ? (float) ($item->variant->price_override ?? $item->product->price)
+                        : (float) $item->product->price;
+                    return round($price * $item->quantity, 2);
+                });
+
+                $sellerOrder = SellerOrder::create([
+                    'order_id'       => $order->id,
+                    'seller_id'      => $sellerId,
+                    'status'         => 'pending',
+                    'payment_status' => 'unpaid',
+                    'subtotal'       => $sellerSubtotal,
                 ]);
 
-                if ($variant) {
-                    ProductVariant::where('id', $variant->id)
-                        ->decrement('stock', $item->quantity);
-                } else {
-                    $product->decrement('stock', $item->quantity);
+                // ── Step 5: Create OrderItems linked to this SellerOrder ────
+                foreach ($sellerItems as $item) {
+                    $product   = $item->product;
+                    $variant   = $item->variant;
+                    $unitPrice = $variant
+                        ? (float) ($variant->price_override ?? $product->price)
+                        : (float) $product->price;
+
+                    $variantLabel = $variant
+                        ? $variant->attributeOptions->pluck('value')->join(' / ')
+                        : null;
+
+                    OrderItem::create([
+                        'order_id'        => $order->id,
+                        'seller_order_id' => $sellerOrder->id,   // ← KEY LINK
+                        'product_id'      => $product->id,
+                        'variant_id'      => $variant?->id,
+                        'variant_label'   => $variantLabel,
+                        'product_name'    => $product->name,
+                        'quantity'        => $item->quantity,
+                        'unit_price'      => $unitPrice,
+                        'price'           => $unitPrice,
+                        'total'           => round($unitPrice * $item->quantity, 2),
+                    ]);
+
+                    // ── Step 6: Decrement stock ─────────────────────────────
+                    if ($variant) {
+                        ProductVariant::where('id', $variant->id)
+                            ->decrement('stock', $item->quantity);
+                    } else {
+                        $product->decrement('stock', $item->quantity);
+                    }
                 }
             }
 
+            // ── Step 7: Clear the cart ──────────────────────────────────────
             Cart::where('user_id', $user->id)->delete();
 
             DB::commit();
 
             return response()->json([
-                'success'      => true,
-                'message'      => 'Order placed successfully!',
-                'order_number' => $order->order_number,
-                'order_id'     => $order->id,
-                'total'        => $total,
+                'success'        => true,
+                'message'        => 'Order placed successfully!',
+                'order_number'   => $order->order_number,
+                'order_id'       => $order->id,
+                'total'          => $total,
+                'seller_count'   => $groupedBySeller->count(), // informational
             ], 201);
 
         } catch (\Throwable $e) {
@@ -154,7 +197,7 @@ class CheckoutController extends Controller
      * POST /api/checkout/buy-now
      *
      * Creates a single-item order directly — does NOT touch the cart.
-     * Accepts: product_id, variant_id (optional), quantity, wilaya, address, phone, notes.
+     * A SellerOrder is also created for the single seller involved.
      */
     public function buyNow(Request $request)
     {
@@ -186,7 +229,7 @@ class CheckoutController extends Controller
         if ($request->filled('variant_id')) {
             $variant = ProductVariant::with('attributeOptions.attribute')
                 ->where('id', $request->variant_id)
-                ->where('product_id', $product->id)   // security: variant must belong to product
+                ->where('product_id', $product->id)
                 ->first();
 
             if (!$variant) {
@@ -230,9 +273,13 @@ class CheckoutController extends Controller
             ? $variant->attributeOptions->pluck('value')->join(' / ')
             : null;
 
-        // ── Create order in transaction ─────────────────────────────────────
+        // ── Detect seller column ────────────────────────────────────────────
+        $sellerCol = $this->getSellerCol();
+        $sellerId  = $product->{$sellerCol};
+
         DB::beginTransaction();
         try {
+            // Create parent order
             $order = Order::create([
                 'user_id'        => $user->id,
                 'order_number'   => 'ORD-' . strtoupper(Str::random(8)),
@@ -245,16 +292,27 @@ class CheckoutController extends Controller
                 'notes'          => $request->notes ?? null,
             ]);
 
+            // Create the single seller's sub-order
+            $sellerOrder = SellerOrder::create([
+                'order_id'       => $order->id,
+                'seller_id'      => $sellerId,
+                'status'         => 'pending',
+                'payment_status' => 'unpaid',
+                'subtotal'       => $total,
+            ]);
+
+            // Create the order item linked to the seller's sub-order
             OrderItem::create([
-                'order_id'      => $order->id,
-                'product_id'    => $product->id,
-                'variant_id'    => $variant?->id,
-                'variant_label' => $variantLabel,
-                'product_name'  => $product->name,
-                'quantity'      => $quantity,
-                'unit_price'    => $unitPrice,
-                'price'         => $unitPrice,
-                'total'         => $total,
+                'order_id'        => $order->id,
+                'seller_order_id' => $sellerOrder->id,  // ← KEY LINK
+                'product_id'      => $product->id,
+                'variant_id'      => $variant?->id,
+                'variant_label'   => $variantLabel,
+                'product_name'    => $product->name,
+                'quantity'        => $quantity,
+                'unit_price'      => $unitPrice,
+                'price'           => $unitPrice,
+                'total'           => $total,
             ]);
 
             // Decrement stock
@@ -285,5 +343,23 @@ class CheckoutController extends Controller
                 'message' => 'Failed to place order. Please try again.',
             ], 500);
         }
+    }
+
+    // ── Private helpers ──────────────────────────────────────────────────────
+
+    /**
+     * Detect whether the products table uses `seller_id` or the legacy `user_id`
+     * as the seller foreign key. Cached statically for the request lifetime.
+     */
+    private function getSellerCol(): string
+    {
+        static $col = null;
+        if ($col) return $col;
+
+        $columns  = DB::select("SHOW COLUMNS FROM products");
+        $colNames = array_map(fn($c) => $c->Field, $columns);
+        $col = in_array('seller_id', $colNames) ? 'seller_id' : 'user_id';
+
+        return $col;
     }
 }
