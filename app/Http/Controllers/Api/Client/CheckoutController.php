@@ -51,7 +51,7 @@ class CheckoutController extends Controller
             ], 422);
         }
 
-        // ── Pre-flight stock + availability check ───────────────────────────
+// ── Pre-flight stock + availability check ───────────────────────────
         foreach ($cartItems as $item) {
             $product = $item->product;
 
@@ -61,6 +61,9 @@ class CheckoutController extends Controller
                     'message' => "\"$product->name\" is no longer available.",
                 ], 422);
             }
+
+            // Block sellers from purchasing their own products
+            $this->ensureNotProductOwner($request, $product);
 
             $stockPool = $item->variant
                 ? $item->variant->stock

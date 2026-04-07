@@ -59,6 +59,11 @@ class CartController extends Controller
 
         $product = Product::findOrFail($productId);
 
+// Block sellers from adding their own products to cart
+        $this->ensureNotProductOwner($request, $product);
+
+// If product has variants, variant_id is required
+
         // If product has variants, variant_id is required
         if ($product->variants()->exists() && !$variantId) {
             return response()->json([

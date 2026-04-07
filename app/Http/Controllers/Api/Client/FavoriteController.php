@@ -45,6 +45,10 @@ class FavoriteController extends Controller
         $productId = $request->product_id;
         $variantId = $request->variant_id ?? null;
 
+// Block sellers from favoriting their own products
+        $product = Product::findOrFail($productId);
+        $this->ensureNotProductOwner($request, $product);
+
         $existing = Favorite::where('user_id', $user->id)
             ->where('product_id', $productId)
             ->where('variant_id', $variantId)
