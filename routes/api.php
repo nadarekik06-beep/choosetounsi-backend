@@ -28,7 +28,7 @@ use App\Http\Controllers\Admin\AdminComplaintController;
 use App\Http\Controllers\Admin\AdminCategoryController;
 use App\Http\Controllers\Admin\AdminSubcategoryController;
 use App\Http\Controllers\Admin\AdminAttributeController;   // ← ADD THIS LINE
-
+use App\Http\Controllers\Api\Client\AddressController;
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES
@@ -253,5 +253,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/complaints/{id}/override-approve',  [AdminComplaintController::class, 'overrideToApproved']);
 
     }); // ← admin group ends HERE
+    // ── Address Book ──────────────────────────────────────────────────────────
+Route::prefix('addresses')->group(function () {
+    Route::get('/',             [AddressController::class, 'index']);
+    Route::post('/',            [AddressController::class, 'store']);
+    Route::put('/{id}',         [AddressController::class, 'update']);
+    Route::delete('/{id}',      [AddressController::class, 'destroy']);
+    Route::patch('/{id}/default',[AddressController::class, 'setDefault']);
+});
 
 }); // ← auth:sanctum group ends HERE
