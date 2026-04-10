@@ -14,8 +14,15 @@ use Illuminate\Support\Facades\Notification;
 
 class SellerApplicationController extends Controller
 {
+    // ── Public / authenticated ─────────────────────────────────────────────
+
     /**
      * POST /api/seller-applications
+     *
+     * What changed vs old version:
+     *   - `subscription_plan` input field renamed to `preferred_plan`
+     *   - We store preferred_plan (user's interest) but ALWAYS set plan = 'free'
+     *     because the active plan is only activated after approval + payment.
      */
     public function store(Request $request)
     {
@@ -46,6 +53,9 @@ class SellerApplicationController extends Controller
             'facebook_url'         => 'nullable|url|max:500',
             'instagram_url'        => 'nullable|url|max:500',
             'website_url'          => 'nullable|url|max:500',
+            // preferred_plan: what the user expressed interest in
+            // Validated as green/red/black to match pricing page options
+            'preferred_plan'       => 'nullable|in:green,red,black',
         ]);
 
         $profilePicturePath = null;
@@ -72,13 +82,17 @@ class SellerApplicationController extends Controller
             'city'                 => $validated['city'],
             'profile_picture'      => $profilePicturePath,
             'sample_images'        => $sampleImagePaths ?: null,
-            'facebook_url'         => isset($validated['facebook_url']) ? $validated['facebook_url'] : null,
-            'instagram_url'        => isset($validated['instagram_url']) ? $validated['instagram_url'] : null,
-            'website_url'          => isset($validated['website_url']) ? $validated['website_url'] : null,
+            'facebook_url'         => $validated['facebook_url'] ?? null,
+            'instagram_url'        => $validated['instagram_url'] ?? null,
+            'website_url'          => $validated['website_url'] ?? null,
             'status'               => 'pending',
+            // preferred_plan: what the user expressed interest in (default: green = free)
+            'preferred_plan'       => $validated['preferred_plan'] ?? 'green',
+            // plan: ALWAYS 'free' at application time — upgraded after approval + payment
+            'plan'                 => 'free',
         ]);
 
-        // Notify all admins — admin is in users table with role='admin'
+        // Notify all admins
         Notification::send(
             User::getAllAdmins(),
             new NewSellerApplicationNotification(
@@ -99,15 +113,34 @@ class SellerApplicationController extends Controller
     /**
      * GET /api/seller-applications/status
      */
-    public function status()
-    {
-        $user        = Auth::user();
-        $application = SellerApplication::where('user_id', $user->id)->latest()->first();
+    // app/Http/Controllers/Api/SellerApplicationController.php
+// Only the status() method — don't touch anything else.
 
-        return response()->json(['success' => true, 'data' => $application]);
+public function status(Request $request): \Illuminate\Http\JsonResponse
+{
+    $application = \App\Models\SellerApplication::where('user_id', $request->user()->id)
+        ->latest()
+        ->first();
+
+    if (! $application) {
+        return response()->json(['success' => true, 'data' => null]);
     }
 
-    // ── Admin methods ──────────────────────────────────────────────
+    return response()->json([
+        'success' => true,
+        'data' => [
+            'id'              => $application->id,
+            'status'          => $application->status,
+            'plan'            => $application->plan,           // ← ensure this is here
+            'preferred_plan'  => $application->preferred_plan,
+            'rejection_reason'=> $application->rejection_reason,
+            'reviewed_at'     => $application->reviewed_at,
+            'created_at'      => $application->created_at->format('Y-m-d\TH:i:s\Z'),
+        ],
+    ]);
+}
+
+    // ── Admin methods ──────────────────────────────────────────────────────
 
     /**
      * GET /api/admin/seller-applications
@@ -147,11 +180,19 @@ class SellerApplicationController extends Controller
 
     /**
      * POST /api/admin/seller-applications/{application}/approve
+     *
+     * What changed vs old version:
+     *   - Explicitly sets plan = 'free' on approval (not the preferred_plan)
+     *   - preferred_plan is preserved so the seller dashboard can later
+     *     show "You selected Red Pepper — upgrade now"
      */
     public function approve(Request $request, SellerApplication $application)
     {
         $application->update([
             'status'      => 'approved',
+            'plan'        => 'free',   // Active plan is ALWAYS free at approval
+            // preferred_plan intentionally NOT changed — it stays as the seller's
+            // expressed interest so the dashboard can show upgrade prompts.
             'reviewed_at' => now(),
         ]);
 

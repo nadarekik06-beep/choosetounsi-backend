@@ -69,12 +69,12 @@ class OrderController extends Controller
         try {
             // DB::table bypasses Eloquent model events and decimal casting
             // which is the root cause of the 500 on Order::update()
-            DB::table('orders')
-                ->where('id', $id)
+            DB::table('seller_orders')
+                ->where('order_id', $id)
                 ->update([
                     'status'     => $request->status,
                     'updated_at' => now(),
-                ]);
+        ]);
 
             $order = Order::findOrFail($id);
 
@@ -115,4 +115,63 @@ class OrderController extends Controller
         }
         return null;
     }
+    // Add to AdminOrderController — confirmPayment handles COD & D17
+
+public function confirmPayment(Request $request, $id)
+{
+    $request->validate([
+        'd17_reference' => 'nullable|string|max:100',
+    ]);
+
+    try {
+        $order = Order::findOrFail($id);
+
+        if (!in_array($order->payment_method, ['cod', 'd17'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only COD and D17 orders require manual payment confirmation.',
+            ], 422);
+        }
+
+        $updateData = [
+            'payment_status' => 'paid',
+            'status'         => 'processing',
+            'updated_at'     => now(),
+        ];
+
+        if ($request->d17_reference) {
+            $updateData['d17_reference'] = $request->d17_reference;
+        }
+
+        DB::table('orders')->where('id', $id)->update($updateData);
+
+        // Cascade payment confirmation to all seller_orders
+        DB::table('seller_orders')
+            ->where('order_id', $id)
+            ->update(['payment_status' => 'paid', 'updated_at' => now()]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Payment confirmed.',
+            'data'    => Order::findOrFail($id),
+        ]);
+
+    } catch (\Throwable $e) {
+        Log::error('[AdminOrder::confirmPayment] ' . $e->getMessage(), ['order_id' => $id]);
+        return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+    }
+}
+
+// Add to AdminOrderController — stats endpoint (if not already present)
+public function stats(Request $request)
+{
+    return response()->json(['success' => true, 'data' => [
+        'total'     => Order::count(),
+        'pending'   => Order::where('status', 'pending')->count(),
+        'completed' => Order::where('status', 'completed')->count(),
+        'delivered' => Order::where('status', 'delivered')->count(),
+        'cancelled' => Order::where('status', 'cancelled')->count(),
+        'revenue'   => Order::where('payment_status', 'paid')->sum('total_amount'),
+    ]]);
+}
 }

@@ -492,4 +492,92 @@ class ProductController extends Controller
 
         return response()->json(['success' => true, 'data' => $attributes]);
     }
+    /**
+     * POST /api/products/by-ids
+     *
+     * Accepts a list of product IDs (from the AI search service)
+     * and returns full product data in the same order.
+     *
+     * Used exclusively by the search results page to hydrate
+     * AI-ranked product IDs into displayable product cards.
+     *
+     * Does NOT touch any existing method or model logic.
+     */
+    public function byIds(Request $request)
+    {
+        $request->validate([
+            'ids'   => 'required|array|max:50',
+            'ids.*' => 'integer|min:1',
+        ]);
+
+        $ids = $request->input('ids');
+
+        // Single efficient query — no N+1, no Eloquent overhead
+        $rows = DB::table('products as p')
+            ->select([
+                'p.id',
+                'p.name',
+                'p.slug',
+                'p.description',
+                'p.price',
+                'p.stock',
+                'p.views',
+                'p.featured',
+                'c.name  as category_name',
+                'c.slug  as category_slug',
+                's.name  as subcategory_name',
+                's.slug  as subcategory_slug',
+                'pi.image_path as primary_image',
+            ])
+            ->leftJoin('categories as c',     'c.id',  '=', 'p.category_id')
+            ->leftJoin('subcategories as s',  's.id',  '=', 'p.subcategory_id')
+            ->leftJoin('product_images as pi', function ($join) {
+                $join->on('pi.product_id', '=', 'p.id')
+                     ->where('pi.is_primary', '=', 1);
+            })
+            ->whereIn('p.id', $ids)
+            ->where('p.is_approved', 1)
+            ->where('p.is_active',   1)
+            ->whereNull('p.deleted_at')
+            ->get();
+
+        // Build an id → product map for fast lookup
+        $indexed = $rows->keyBy('id');
+
+        // Re-order by the original AI ranking (the $ids array order)
+        $ordered = collect($ids)
+            ->map(function ($id) use ($indexed) {
+                $p = $indexed->get($id);
+                if (!$p) return null;
+
+                // Build the public image URL exactly like the rest of the app
+                $imageUrl = $p->primary_image
+                    ? Storage::url($p->primary_image)
+                    : null;
+
+                return [
+                    'id'               => $p->id,
+                    'name'             => $p->name,
+                    'slug'             => $p->slug,
+                    'description'      => $p->description,
+                    'price'            => (float) $p->price,
+                    'stock'            => (int)   $p->stock,
+                    'views'            => (int)   ($p->views   ?? 0),
+                    'featured'         => (bool)  ($p->featured ?? false),
+                    'category_name'    => $p->category_name,
+                    'category_slug'    => $p->category_slug,
+                    'subcategory_name' => $p->subcategory_name,
+                    'subcategory_slug' => $p->subcategory_slug,
+                    'primary_image'    => $imageUrl,
+                ];
+            })
+            ->filter()   // remove nulls (deleted / unapproved products)
+            ->values();
+
+        return response()->json([
+            'success'  => true,
+            'products' => $ordered,
+            'count'    => $ordered->count(),
+        ]);
+    }
 }

@@ -37,4 +37,11 @@ return [
 'gemini' => [
     'api_key' => env('GEMINI_API_KEY'),
 ],
+'ai' => ['url' => env('AI_SERVICE_URL', 'http://localhost:8001')],
+
+'stripe' => [
+    'key'            => env('STRIPE_KEY'),
+    'secret'         => env('STRIPE_SECRET'),
+    'webhook_secret' => env('STRIPE_WEBHOOK_SECRET'),
+],
 ];

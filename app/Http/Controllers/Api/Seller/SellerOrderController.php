@@ -133,6 +133,7 @@ class SellerOrderController extends Controller
                 'order' => array_merge($order->toArray(), [
                     'status'         => $sellerOrder->status,          // seller-scoped status
                     'payment_status' => $sellerOrder->payment_status,  // seller-scoped payment
+                    'payment_method'  => $order->payment_method,
                     'wilaya'         => $order->wilaya ?? $order->shipping_address ?? null,
                     'customer'       => $customer,
                     // seller_order_id so the frontend knows which sub-order this is
@@ -199,6 +200,7 @@ class SellerOrderController extends Controller
             'order_number'   => $order?->order_number,
             'status'         => $so->status,           // seller-scoped ✓
             'payment_status' => $so->payment_status,   // seller-scoped ✓
+            'payment_method' => $order?->payment_method,
             'total_amount'   => (float) $so->subtotal,
             'wilaya'         => $order?->wilaya ?? $order?->shipping_address ?? null,
             'created_at'     => $so->created_at,

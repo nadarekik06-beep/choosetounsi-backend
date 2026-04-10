@@ -29,6 +29,8 @@ use App\Http\Controllers\Admin\AdminCategoryController;
 use App\Http\Controllers\Admin\AdminSubcategoryController;
 use App\Http\Controllers\Admin\AdminAttributeController;   // ← ADD THIS LINE
 use App\Http\Controllers\Api\Client\AddressController;
+use App\Http\Controllers\Api\SearchController;
+use App\Http\Controllers\Api\Seller\SellerSubscriptionController;
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES
@@ -53,6 +55,20 @@ Route::get('/categories/{slug}/subcategories',     [SubcategoryController::class
 Route::get('/subcategories/{id}/attributes',       [SubcategoryController::class, 'attributes']);
 Route::get('/categories/{slug}/filter-attributes', [ProductController::class, 'filterAttributes']);
 Route::post('/ai/chat', [\App\Http\Controllers\Api\AiChatController::class, 'handle']);
+
+Route::post('/search/text',  [\App\Http\Controllers\Api\SearchController::class, 'searchText']);
+Route::post('/search/image', [\App\Http\Controllers\Api\SearchController::class, 'searchImage']);
+Route::post('/products/by-ids', [ProductController::class, 'byIds']);
+Route::get('/products',          [ProductController::class, 'index']);
+Route::get('/products/featured', [ProductController::class, 'featured']);
+Route::get('/products/{slug}',   [ProductController::class, 'show']);
+// This must come BEFORE the auth:sanctum group
+Route::post(
+    '/payment/stripe/webhook',
+    [\App\Http\Controllers\Api\Client\PaymentController::class, 'stripeWebhook']
+)->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class]);
+
+
 
 /*
 |--------------------------------------------------------------------------
@@ -104,7 +120,16 @@ Route::middleware('auth:sanctum')->group(function () {
     | SELLER ROUTES
     |----------------------------------------------------------------------
     */
+ /*
+    |----------------------------------------------------------------------
+    | SELLER ROUTES
+    |----------------------------------------------------------------------
+    */
     Route::prefix('seller')->group(function () {
+
+        // ── Subscription (Phase 2) ────────────────────────────────────────
+        Route::get('/subscription',          [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'show']);
+        Route::post('/subscription/upgrade', [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'upgrade']);
 
         Route::get('/dashboard', [SellerDashboardController::class, 'index']);
 
@@ -212,7 +237,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/seller-applications/{id}',                   [SellerApplicationController::class, 'show']);
         Route::post('/seller-applications/{application}/approve', [SellerApplicationController::class, 'approve']);
         Route::post('/seller-applications/{application}/reject',  [SellerApplicationController::class, 'reject']);
-
+        
         // ── Products ──────────────────────────────────────────────────────
         Route::get('/products',                [AdminProductController::class, 'index']);
         Route::get('/products/{id}',           [AdminProductController::class, 'show']);
@@ -252,6 +277,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/complaints/{id}/confirm-rejection', [AdminComplaintController::class, 'confirmRejection']);
         Route::patch('/complaints/{id}/override-approve',  [AdminComplaintController::class, 'overrideToApproved']);
 
+        Route::patch('/orders/{id}/confirm-payment',  [\App\Http\Controllers\Admin\OrderController::class, 'confirmPayment']);
+        Route::patch('/users/{id}/wallet/top-up',     [\App\Http\Controllers\Admin\UserController::class, 'walletTopUp']);
+
     }); // ← admin group ends HERE
     // ── Address Book ──────────────────────────────────────────────────────────
 Route::prefix('addresses')->group(function () {
@@ -261,5 +289,8 @@ Route::prefix('addresses')->group(function () {
     Route::delete('/{id}',      [AddressController::class, 'destroy']);
     Route::patch('/{id}/default',[AddressController::class, 'setDefault']);
 });
+Route::get('/wallet/balance',                   [\App\Http\Controllers\Api\Client\PaymentController::class, 'walletBalance']);
+Route::get('/wallet/transactions',              [\App\Http\Controllers\Api\Client\PaymentController::class, 'walletTransactions']);
+Route::post('/payment/stripe/create-intent',    [\App\Http\Controllers\Api\Client\PaymentController::class, 'createStripeIntent']);
 
 }); // ← auth:sanctum group ends HERE
