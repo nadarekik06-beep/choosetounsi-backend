@@ -45,70 +45,87 @@ class CartController extends Controller
      * Add product (optionally with variant) to cart.
      */
     public function store(Request $request)
-    {
-        $request->validate([
-            'product_id' => 'required|exists:products,id',
-            'variant_id' => 'nullable|exists:product_variants,id',
-            'quantity'   => 'integer|min:1|max:100',
-        ]);
+{
+    $request->validate([
+        'product_id' => 'required|exists:products,id',
+        'variant_id' => 'nullable|exists:product_variants,id',
+        'quantity'   => 'integer|min:1|max:100',
+    ]);
 
-        $user      = $request->user();
-        $productId = $request->product_id;
-        $variantId = $request->variant_id ?? null;
-        $qty       = $request->quantity   ?? 1;
+    $user      = $request->user();
+    $productId = $request->product_id;
+    $variantId = $request->variant_id ?? null;   // explicit null normalisation
+    $qty       = $request->quantity   ?? 1;
 
-        $product = Product::findOrFail($productId);
+    $product = Product::findOrFail($productId);
 
-// Block sellers from adding their own products to cart
-        $this->ensureNotProductOwner($request, $product);
+    $this->ensureNotProductOwner($request, $product);
 
-// If product has variants, variant_id is required
+    // Variant required if product has variants
+    if ($product->variants()->exists() && !$variantId) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Please select a variant.',
+        ], 422);
+    }
 
-        // If product has variants, variant_id is required
-        if ($product->variants()->exists() && !$variantId) {
+    // Stock check
+    if ($variantId) {
+        $variant = ProductVariant::findOrFail($variantId);
+
+        // Confirm the variant actually belongs to this product
+        if ($variant->product_id !== $product->id) {
             return response()->json([
                 'success' => false,
-                'message' => 'Please select a variant.',
+                'message' => 'Invalid variant for this product.',
             ], 422);
         }
 
-        // Check stock
-        if ($variantId) {
-            $variant = ProductVariant::findOrFail($variantId);
-            if ($variant->stock < $qty) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Not enough stock for this variant.',
-                ], 422);
-            }
-        } else {
-            if ($product->stock < $qty) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Not enough stock.',
-                ], 422);
-            }
+        if ($variant->stock < $qty) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Not enough stock for this variant.',
+            ], 422);
         }
-
-        // Upsert: if same product+variant already in cart, increment
-        $cartItem = Cart::where('user_id', $user->id)
-            ->where('product_id', $productId)
-            ->where('variant_id', $variantId)
-            ->first();
-
-        if ($cartItem) {
-            $cartItem->increment('quantity', $qty);
-        } else {
-            Cart::create([
-                'user_id'    => $user->id,
-                'product_id' => $productId,
-                'variant_id' => $variantId,
-                'quantity'   => $qty,
-            ]);
+    } else {
+        if ($product->stock < $qty) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Not enough stock.',
+            ], 422);
         }
-
-        return $this->index($request);
     }
+
+    // ── Upsert: find existing row for this exact (user, product, variant) ──
+    //
+    // IMPORTANT: whereNull vs where(null) matters in Laravel.
+    // `where('variant_id', null)` compiles to `variant_id = NULL` which is
+    // always false in SQL. You must use `whereNull` for the null branch.
+
+    $query = Cart::where('user_id', $user->id)
+                 ->where('product_id', $productId);
+
+    $query = $variantId
+        ? $query->where('variant_id', $variantId)
+        : $query->whereNull('variant_id');
+
+    $cartItem = $query->first();
+
+    if ($cartItem) {
+        // Same variant already in cart → increment
+        $cartItem->increment('quantity', $qty);
+    } else {
+        // New variant (or non-variant product not yet in cart) → new row
+        Cart::create([
+            'user_id'    => $user->id,
+            'product_id' => $productId,
+            'variant_id' => $variantId,   // null for non-variant products
+            'quantity'   => $qty,
+        ]);
+    }
+
+    return $this->index($request);
+}
 
     /**
      * PUT /api/cart/{id}

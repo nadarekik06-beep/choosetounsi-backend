@@ -18,6 +18,7 @@ class Cart extends Model
 
     protected $casts = [
         'quantity' => 'integer',
+        'variant_id' => 'integer',
     ];
 
     // ── Relationships ──────────────────────────────────────────────────────
