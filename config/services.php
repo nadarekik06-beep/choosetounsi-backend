@@ -44,4 +44,8 @@ return [
     'secret'         => env('STRIPE_SECRET'),
     'webhook_secret' => env('STRIPE_WEBHOOK_SECRET'),
 ],
+'groq' => [
+    'key'   => env('GROQ_API_KEY'),
+    'model' => env('GROQ_MODEL', 'llama3-8b-8192'),
+],
 ];

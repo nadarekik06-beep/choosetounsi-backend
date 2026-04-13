@@ -31,6 +31,8 @@ use App\Http\Controllers\Admin\AdminAttributeController;   // ← ADD THIS LINE
 use App\Http\Controllers\Api\Client\AddressController;
 use App\Http\Controllers\Api\SearchController;
 use App\Http\Controllers\Api\Seller\SellerSubscriptionController;
+use App\Http\Controllers\AIController;
+
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES
@@ -292,5 +294,6 @@ Route::prefix('addresses')->group(function () {
 Route::get('/wallet/balance',                   [\App\Http\Controllers\Api\Client\PaymentController::class, 'walletBalance']);
 Route::get('/wallet/transactions',              [\App\Http\Controllers\Api\Client\PaymentController::class, 'walletTransactions']);
 Route::post('/payment/stripe/create-intent',    [\App\Http\Controllers\Api\Client\PaymentController::class, 'createStripeIntent']);
-
+// AI proxy — Red/Black Pepper only
+Route::middleware('auth:sanctum')->post('/ai/groq', [AIController::class, 'proxy']);
 }); // ← auth:sanctum group ends HERE

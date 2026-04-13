@@ -15,7 +15,7 @@ class SellerController extends Controller
 {
     public function index(Request $request)
     {
-        $query = User::sellers()->withCount('products');
+    $query = User::sellers()->withCount('products')->with('sellerApplication');
 
         if ($status = $request->query('status')) {
             if ($status === 'approved')       $query->where('is_approved', true)->where('is_active', true);
@@ -30,9 +30,18 @@ class SellerController extends Controller
             });
         }
 
+$paginated = $query->orderByDesc('created_at')->paginate($request->query('per_page', 15));
+
+        $paginated->getCollection()->transform(function (User $seller) {
+            $app = $seller->sellerApplication;
+            $seller->active_plan    = $app?->plan           ?? 'free';
+            $seller->preferred_plan = $app?->preferred_plan ?? 'green';
+            return $seller;
+        });
+
         return response()->json([
             'success' => true,
-            'data'    => $query->orderByDesc('created_at')->paginate($request->query('per_page', 15)),
+            'data'    => $paginated,
         ]);
     }
 
@@ -64,7 +73,9 @@ class SellerController extends Controller
             'facebook_url'         => $app ? $app->facebook_url : null,
             'instagram_url'        => $app ? $app->instagram_url : null,
             'website_url'          => $app ? $app->website_url : null,
-            'app_status'           => $app ? $app->status : null,
+            'app_status'           => $app ? $app->status       : null,
+            'active_plan'          => $app ? $app->plan         : 'free',
+            'preferred_plan'       => $app ? $app->preferred_plan : 'green',
         ]]);
     }
 

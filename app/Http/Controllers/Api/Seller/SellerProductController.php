@@ -45,8 +45,6 @@ class SellerProductController extends Controller
             $p->primary_image_url = $p->primaryImage
                 ? Storage::url($p->primaryImage->image_path)
                 : null;
-            // Use DB queries instead of eager-loaded relations to avoid
-            // missing-relationship crashes on old model versions
             $p->has_variants  = $p->variants()->exists();
             $p->variant_stock = $p->variants()->sum('stock');
             return $p;
@@ -70,7 +68,6 @@ class SellerProductController extends Controller
             ])
             ->findOrFail($id);
 
-        // Load variant images only if the relationship exists on the model
         try {
             $product->load('variants.images');
         } catch (\Throwable $e) {
@@ -126,8 +123,6 @@ class SellerProductController extends Controller
 
     public function store(Request $request)
     {
-        // DEBUG WRAPPER — returns the exact error as JSON instead of a blank 500
-        // Remove this try/catch once the issue is resolved
         try {
             return $this->doStore($request);
         } catch (\Throwable $e) {
@@ -136,7 +131,7 @@ class SellerProductController extends Controller
                 'line' => $e->getLine(),
             ]);
             return response()->json([
-                'success' => false,
+                'success'     => false,
                 'debug_error' => $e->getMessage(),
                 'debug_file'  => basename($e->getFile()),
                 'debug_line'  => $e->getLine(),
@@ -146,7 +141,6 @@ class SellerProductController extends Controller
 
     private function doStore(Request $request)
     {
-        // ── Step-by-step debug: log every stage so we can pinpoint the crash ──
         Log::info('[SellerProduct::store] START', [
             'has_images'       => $request->hasFile('images'),
             'has_color_images' => $request->hasFile('color_images'),
@@ -201,7 +195,7 @@ class SellerProductController extends Controller
 
         try {
             $this->saveVariants($product, $request);
-            $product->fresh()->syncActiveStatusFromVariants(); // enforce variant→status rule
+            $product->fresh()->syncActiveStatusFromVariants();
             Log::info('[SellerProduct::store] Variants saved');
         } catch (\Throwable $e) {
             Log::error('[SellerProduct::store] VARIANTS FAILED', ['error' => $e->getMessage()]);
@@ -233,7 +227,7 @@ class SellerProductController extends Controller
             'message' => 'Product created! It will be reviewed by an admin.',
             'data'    => $product->load(['images', 'category', 'variants.attributeOptions.attribute']),
         ], 201);
-    } // end doStore
+    }
 
     // ── Update ─────────────────────────────────────────────────────────────────
 
@@ -277,7 +271,7 @@ class SellerProductController extends Controller
 
         try {
             $this->saveVariants($product, $request);
-            $product->fresh()->syncActiveStatusFromVariants(); // enforce variant→status rule
+            $product->fresh()->syncActiveStatusFromVariants();
             Log::info('[SellerProduct::update] Variants saved');
         } catch (\Throwable $e) {
             Log::error('[SellerProduct::update] VARIANTS FAILED', ['error' => $e->getMessage()]);
@@ -388,10 +382,32 @@ class SellerProductController extends Controller
         }
     }
 
+    /**
+     * Save / update / delete variants for a product.
+     *
+     * FIX: When a variant row arrives WITHOUT an id (new variant in edit mode,
+     * or a re-submission after a previous save that lost the id), we now try to
+     * find an EXISTING variant whose option set exactly matches the incoming
+     * option_ids before creating a new one.  This prevents phantom duplicates
+     * being inserted on every "Save Changes" click.
+     *
+     * Match logic:
+     *   1. If row has an id  → find by (product_id, id)  [unchanged]
+     *   2. If row has no id  → find existing variant whose sorted option IDs
+     *                          exactly equal the sorted incoming option IDs
+     *   3. If still nothing  → create new variant  [unchanged]
+     */
     private function saveVariants(Product $product, Request $request): void
     {
         $variantsInput = $request->input('variants', []);
         if (empty($variantsInput) || !is_array($variantsInput)) return;
+
+        // ── Pre-load all existing variants with their options once ──────────
+        // This avoids N+1 queries inside the loop and makes the find-by-option
+        // lookup fast even for products with many variants.
+        $existingVariants = $product->variants()
+            ->with('attributeOptions:id')
+            ->get();
 
         $keepIds = [];
 
@@ -411,11 +427,26 @@ class SellerProductController extends Controller
                 ? (float) $row['price_override']
                 : null;
 
+            // ── Step 1: try to find by explicit id ─────────────────────────
             $existingId = isset($row['id']) && $row['id'] ? (int) $row['id'] : null;
             $variant    = $existingId
-                ? ProductVariant::where('product_id', $product->id)->find($existingId)
+                ? $existingVariants->firstWhere('id', $existingId)
                 : null;
 
+            // ── Step 2: find by matching option set (no id provided) ────────
+            if (!$variant) {
+                $sortedIncoming = $optionIds;
+                sort($sortedIncoming);
+                $count = count($sortedIncoming);
+
+                $variant = $existingVariants->first(function ($v) use ($sortedIncoming, $count) {
+                    // attributeOptions was eager-loaded with only id selected
+                    $vIds = $v->attributeOptions->pluck('id')->sort()->values()->toArray();
+                    return count($vIds) === $count && $vIds === $sortedIncoming;
+                });
+            }
+
+            // ── Step 3: update existing or create new ──────────────────────
             if ($variant) {
                 $variant->update([
                     'stock'          => $stock,
@@ -437,6 +468,7 @@ class SellerProductController extends Controller
             $keepIds[] = $variant->id;
         }
 
+        // Delete variants that were removed by the seller
         if (!empty($keepIds)) {
             $product->variants()->whereNotIn('id', $keepIds)->delete();
         }
@@ -463,69 +495,77 @@ class SellerProductController extends Controller
         }
     }
 
-   private function saveColorImages(Product $product, Request $request): void
-{
-    $allFiles = $request->allFiles();
-    if (empty($allFiles['color_images'])) return;
+    /**
+     * Save color-group images.
+     *
+     * Frontend sends:  color_images[{groupKey}][j] = File
+     * where groupKey is the sorted color option IDs joined by "|", e.g. "101|102".
+     *
+     * We store each image with color_option_id = primaryColorOptionId (lowest id
+     * in the group).  ProductController::show() rebuilds the group key from the
+     * colorGroupMap and re-exposes images under both keys for backward compat.
+     *
+     * On UPDATE: we delete all existing images for the primaryColorOptionId before
+     * saving the new batch — so new uploads always replace old ones cleanly.
+     */
+    private function saveColorImages(Product $product, Request $request): void
+    {
+        $allFiles = $request->allFiles();
+        if (empty($allFiles['color_images'])) return;
 
-    $colorImagesInput = $allFiles['color_images'];
-    if (empty($colorImagesInput) || !is_array($colorImagesInput)) return;
+        $colorImagesInput = $allFiles['color_images'];
+        if (empty($colorImagesInput) || !is_array($colorImagesInput)) return;
 
-    $maxOrder   = $product->images()->max('order') ?? -1;
-    $hasPrimary = $product->images()->where('is_primary', true)->exists();
-    $orderIdx   = 0;
+        $maxOrder   = $product->images()->max('order') ?? -1;
+        $hasPrimary = $product->images()->where('is_primary', true)->exists();
+        $orderIdx   = 0;
 
-    foreach ($colorImagesInput as $groupKey => $files) {
-        // groupKey is a "|"-joined sorted list of color option IDs, e.g. "3|7"
-        // We use the FIRST color option ID as color_option_id on the image row.
-        // This keeps the existing schema intact and allows ProductController@show
-        // to still build its colorImages map by color_option_id.
-        $colorOptionIds = array_values(array_filter(
-            array_map('intval', explode('|', (string) $groupKey)),
-            fn($id) => $id > 0
-        ));
+        foreach ($colorImagesInput as $groupKey => $files) {
+            // groupKey is a "|"-joined sorted list of color option IDs, e.g. "101|102"
+            // Parse out all IDs; use the first (lowest) as the storage key.
+            $colorOptionIds = array_values(array_filter(
+                array_map('intval', explode('_', (string) $groupKey)),
+                fn($id) => $id > 0
+            ));
 
-        if (empty($colorOptionIds)) {
-            Log::warning("[SellerProduct::saveColorImages] Invalid groupKey: {$groupKey}");
-            continue;
-        }
+            if (empty($colorOptionIds)) {
+                Log::warning("[SellerProduct::saveColorImages] Invalid groupKey: {$groupKey}");
+                continue;
+            }
 
-        $primaryColorOptionId = $colorOptionIds[0];
+            $primaryColorOptionId = $colorOptionIds[0];   // lowest sorted id
 
-        // Delete existing images for this color group before saving new ones
-        // (handles the update scenario — new upload replaces old)
-        $product->images()
-            ->where('color_option_id', $primaryColorOptionId)
-            ->get()
-            ->each(function ($old) {
-                Storage::disk('public')->delete($old->image_path);
-                $old->delete();
-            });
+            // Delete existing images for this color group before saving new ones
+            // (handles the update scenario — new upload replaces old)
+            $product->images()
+                ->where('color_option_id', $primaryColorOptionId)
+                ->get()
+                ->each(function ($old) {
+                    Storage::disk('public')->delete($old->image_path);
+                    $old->delete();
+                });
 
-        foreach ((array) $files as $file) {
-            if (!$file || !method_exists($file, 'isValid') || !$file->isValid()) continue;
+            foreach ((array) $files as $file) {
+                if (!$file || !method_exists($file, 'isValid') || !$file->isValid()) continue;
 
-            $path       = $file->store('products', 'public');
-            $setPrimary = !$hasPrimary && $orderIdx === 0;
+                $path       = $file->store('products', 'public');
+                $setPrimary = !$hasPrimary && $orderIdx === 0;
 
-            ProductImage::create([
-                'product_id'      => $product->id,
-                'variant_id'      => null,           // no longer tied to a specific variant
-                'color_option_id' => $primaryColorOptionId,
-                'image_path'      => $path,
-                'order'           => $maxOrder + $orderIdx + 1,
-                'is_primary'      => $setPrimary,
-            ]);
+                ProductImage::create([
+                    'product_id'      => $product->id,
+                    'variant_id'      => null,                 // group-level, not variant-specific
+                    'color_option_id' => $primaryColorOptionId,
+                    'image_path'      => $path,
+                    'order'           => $maxOrder + $orderIdx + 1,
+                    'is_primary'      => $setPrimary,
+                ]);
 
-            if ($setPrimary) $hasPrimary = true;
-            $orderIdx++;
+                if ($setPrimary) $hasPrimary = true;
+                $orderIdx++;
+            }
         }
     }
-}
-    /**
-     * Generate a unique slug. Appends -2, -3, etc. if base slug is taken.
-     * Pass $excludeId on update to ignore the product's own current slug.
-     */
+
     private function uniqueSlug(string $base, ?int $excludeId = null): string
     {
         $slug     = Str::slug($base);

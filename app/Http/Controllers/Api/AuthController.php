@@ -60,11 +60,33 @@ class AuthController extends Controller
     /* ──────────────────────────────────────────────────────── */
     /*  Get current authenticated user                          */
     /* ──────────────────────────────────────────────────────── */
-    public function user(Request $request)
-    {
-        return response()->json(['user' => $this->userResponse($request->user())]);
-    }
+public function user(Request $request): \Illuminate\Http\JsonResponse
+{
+    /** @var \App\Models\User $user */
+    $user = $request->user();
 
+    // Eager-load the latest application so we don't N+1 later
+    $user->load('sellerApplication');
+
+    $application = $user->sellerApplication;
+
+    return response()->json([
+        'user' => [
+            'id'          => $user->id,
+            'name'        => $user->name,
+            'email'       => $user->email,
+            'role'        => $user->role,
+            'is_approved' => $user->is_approved,
+            'is_active'   => $user->is_active,
+            'avatar'      => $user->avatar,
+
+            // ── THE FIX: surface active plan at the top level ────────────
+            // Read from seller_applications.plan (your current source of truth)
+            // 'free' if no application exists yet (safe default)
+            'active_plan' => $application?->plan ?? 'free',
+        ],
+    ]);
+}
     /* ──────────────────────────────────────────────────────── */
     /*  Logout                                                  */
     /* ──────────────────────────────────────────────────────── */
