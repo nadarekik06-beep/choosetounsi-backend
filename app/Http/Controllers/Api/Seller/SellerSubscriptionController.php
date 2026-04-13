@@ -23,7 +23,7 @@ class SellerSubscriptionController extends Controller
      */
     public function show(Request $request): JsonResponse
     {
-        /** @var User $user */
+        /** @var User $user */   
         $user = $request->user();
 
         $application = SellerApplication::where('user_id', $user->id)->first();
