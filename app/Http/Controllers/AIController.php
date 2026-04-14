@@ -1,11 +1,20 @@
 <?php
+// app/Http/Controllers/AIController.php  ← REPLACE EXISTING
 
 namespace App\Http\Controllers;
 
+use App\Models\SellerApplication;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * General AI proxy controller.
+ *
+ * FIX: The original checked $user->active_plan which doesn't exist on the
+ * User model. The active plan lives on seller_applications.plan.
+ * This version queries SellerApplication correctly.
+ */
 class AIController extends Controller
 {
     private string $groqApiKey;
@@ -20,16 +29,27 @@ class AIController extends Controller
 
     /**
      * Proxy AI requests from the seller frontend to Groq.
-     * Only accessible to sellers with active_plan = 'red' or 'black'.
+     * Only accessible to sellers with plan = 'red' or 'black'.
+     *
+     * Route: POST /api/ai/groq  (already in api.php)
      */
     public function proxy(Request $request)
     {
         $user = $request->user();
 
-        // Plan gate — only Red and Black Pepper sellers
-        if (!in_array($user->active_plan, ['red', 'black'])) {
+        // ── Plan gate (FIXED) ──────────────────────────────────────────────
+        // The active plan lives on seller_applications.plan, NOT on the User model.
+        $application = SellerApplication::where('user_id', $user->id)
+            ->where('status', 'approved')
+            ->first();
+
+        $plan = $application?->plan ?? 'free';
+
+        if (!in_array($plan, ['red', 'black'])) {
             return response()->json([
-                'error' => 'AI tools require Red Pepper or Black Pepper subscription.',
+                'success' => false,
+                'error'   => 'AI tools require Red Pepper or Black Pepper subscription.',
+                'code'    => 'PLAN_REQUIRED',
             ], 403);
         }
 
@@ -47,16 +67,10 @@ class AIController extends Controller
         $messages = [];
 
         if ($request->filled('systemPrompt')) {
-            $messages[] = [
-                'role'    => 'system',
-                'content' => $request->systemPrompt,
-            ];
+            $messages[] = ['role' => 'system', 'content' => $request->systemPrompt];
         }
 
-        $messages[] = [
-            'role'    => 'user',
-            'content' => $request->userPrompt,
-        ];
+        $messages[] = ['role' => 'user', 'content' => $request->userPrompt];
 
         try {
             $response = Http::withHeaders([
@@ -74,14 +88,10 @@ class AIController extends Controller
                     'status' => $response->status(),
                     'body'   => $response->body(),
                 ]);
-                return response()->json([
-                    'error' => 'AI service temporarily unavailable.',
-                ], 502);
+                return response()->json(['error' => 'AI service temporarily unavailable.'], 502);
             }
 
-            $data   = $response->json();
-            $result = $data['choices'][0]['message']['content'] ?? '';
-
+            $result = $response->json('choices.0.message.content', '');
             return response()->json(['result' => $result]);
 
         } catch (\Exception $e) {

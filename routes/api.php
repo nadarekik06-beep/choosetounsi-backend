@@ -32,7 +32,8 @@ use App\Http\Controllers\Api\Client\AddressController;
 use App\Http\Controllers\Api\SearchController;
 use App\Http\Controllers\Api\Seller\SellerSubscriptionController;
 use App\Http\Controllers\AIController;
-
+use App\Http\Controllers\Api\Seller\SellerAnalyticsController;
+use App\Http\Controllers\Api\Seller\SellerAIController;
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES
@@ -132,7 +133,28 @@ Route::middleware('auth:sanctum')->group(function () {
         // ── Subscription (Phase 2) ────────────────────────────────────────
         Route::get('/subscription',          [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'show']);
         Route::post('/subscription/upgrade', [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'upgrade']);
+        
+        // ── Advanced Analytics (Red Pepper +) ─────────────────────────────
+        Route::prefix('analytics')
+            ->middleware('seller.plan:red')
+            ->group(function () {
+                Route::get('/overview',  [SellerAnalyticsController::class, 'overview']);
+                Route::get('/products',  [SellerAnalyticsController::class, 'products']);
+                Route::get('/customers', [SellerAnalyticsController::class, 'customers']);
+                Route::get('/heatmap',   [SellerAnalyticsController::class, 'heatmap']);
+            });
+ 
+        // ── AI Business Tools (Red Pepper +) ──────────────────────────────
+        Route::prefix('ai')
+            ->middleware('seller.plan:red')
+            ->group(function () {
+                Route::post('/price-optimizer',       [SellerAIController::class, 'priceOptimizer']);
+                Route::post('/sales-predictor',       [SellerAIController::class, 'salesPredictor']);
+                Route::post('/description-generator', [SellerAIController::class, 'descriptionGenerator']);
+                Route::post('/recommender',           [SellerAIController::class, 'recommender']);
+            });
 
+ 
         Route::get('/dashboard', [SellerDashboardController::class, 'index']);
 
         Route::get('/products/stats',   [SellerProductController::class, 'stats']);

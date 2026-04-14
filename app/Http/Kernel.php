@@ -70,5 +70,7 @@ class Kernel extends HttpKernel
         'client' => \App\Http\Middleware\ClientMiddleware::class,
         'role' => \App\Http\Middleware\RoleMiddleware::class,
         'active.user' => \App\Http\Middleware\ActiveUserMiddleware::class,
-    ];
+        'seller.plan' => \App\Http\Middleware\SellerPlanMiddleware::class,
+    
+        ];
 }
