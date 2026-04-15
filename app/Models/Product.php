@@ -258,10 +258,18 @@ class Product extends Model
     }
     public function syncActiveStatusFromVariants(): void
 {
-    $totalVariants  = $this->variants()->count();
-    $activeVariants = $this->variants()->where('is_active', true)->count();
+    $totalVariants = $this->variants()->count();
 
-    $shouldBeActive = $totalVariants > 0 && $activeVariants > 0;
+    // Simple product path: no variants exist → preserve seller's is_active as-is.
+    // This handles the edge case where the seller chose a variant-capable subcategory
+    // but did not generate any variant combinations (product acts as simple).
+    if ($totalVariants === 0) {
+        return;
+    }
+
+    // Variant product path: active iff at least one variant is active.
+    $activeVariants = $this->variants()->where('is_active', true)->count();
+    $shouldBeActive = $activeVariants > 0;
 
     if ($this->is_active !== $shouldBeActive) {
         $this->is_active = $shouldBeActive;

@@ -10,6 +10,7 @@ use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\SellerOrder;
 use App\Services\WalletService;
+use App\Services\StockAlertService;          // ← NEW
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -17,14 +18,13 @@ use Illuminate\Support\Str;
 
 class CheckoutController extends Controller
 {
-    public function __construct(private WalletService $walletService) {}
+    public function __construct(
+        private WalletService     $walletService,
+        private StockAlertService $stockAlertService,   // ← NEW (auto-injected by Laravel DI)
+    ) {}
 
     /**
      * POST /api/checkout
-     *
-     * Creates an order from the user's cart.
-     * Cart items are grouped by seller — one SellerOrder row per seller.
-     * Each OrderItem is linked to its seller's sub-order via seller_order_id.
      */
     public function store(Request $request)
     {
@@ -38,7 +38,6 @@ class CheckoutController extends Controller
 
         $user = $request->user();
 
-        // Load full cart with variant + product data including seller_id
         $cartItems = Cart::with([
             'product',
             'variant.attributeOptions.attribute',
@@ -64,7 +63,6 @@ class CheckoutController extends Controller
                 ], 422);
             }
 
-            // Block sellers from purchasing their own products
             $this->ensureNotProductOwner($request, $product);
 
             $stockPool = $item->variant
@@ -83,13 +81,9 @@ class CheckoutController extends Controller
             }
         }
 
-        // ── Detect which column holds the seller foreign key ─────────────────
         $sellerCol = $this->getSellerCol();
+        $total     = $this->calculateCartTotal($cartItems);
 
-        // ── Compute total (used for wallet pre-check) ────────────────────────
-        $total = $this->calculateCartTotal($cartItems);
-
-        // ── Wallet pre-check (before touching the DB) ────────────────────────
         if ($paymentMethod === 'wallet') {
             if ((float) $user->wallet_balance < $total) {
                 return response()->json([
@@ -103,9 +97,16 @@ class CheckoutController extends Controller
             }
         }
 
+        // ── Collect decremented models for post-commit stock checks ──────────
+        // We cannot check stock INSIDE the transaction because updateQuietly
+        // (used by StockAlertService to stamp notification timestamps) would
+        // participate in the same transaction and roll back on checkout failure.
+        // Instead, we collect the models and check AFTER commit.
+        $decrementedVariants = [];   // [ ['variant' => $v, 'product' => $p] ]
+        $decrementedProducts = [];   // [ $p ]
+
         DB::beginTransaction();
         try {
-            // ── Step 1: Create the parent order ──────────────────────────────
             $order = Order::create([
                 'user_id'        => $user->id,
                 'order_number'   => 'ORD-' . strtoupper(Str::random(8)),
@@ -119,12 +120,10 @@ class CheckoutController extends Controller
                 'notes'          => $request->notes ?? null,
             ]);
 
-            // ── Step 2: Group cart items by seller ────────────────────────────
             $groupedBySeller = $cartItems->groupBy(function ($item) use ($sellerCol) {
                 return $item->product->{$sellerCol};
             });
 
-            // ── Step 3: Create one SellerOrder per seller ─────────────────────
             foreach ($groupedBySeller as $sellerId => $sellerItems) {
 
                 $sellerSubtotal = $sellerItems->sum(function ($item) {
@@ -142,7 +141,6 @@ class CheckoutController extends Controller
                     'subtotal'       => $sellerSubtotal,
                 ]);
 
-                // ── Step 4: Create OrderItems linked to this SellerOrder ──────
                 foreach ($sellerItems as $item) {
                     $product   = $item->product;
                     $variant   = $item->variant;
@@ -150,7 +148,6 @@ class CheckoutController extends Controller
                         ? (float) ($variant->price_override ?? $product->price)
                         : (float) $product->price;
 
-                    // Build variant label from attributeOptions (authoritative snapshot)
                     $variantLabel = $variant
                         ? $variant->attributeOptions->pluck('value')->join(' / ')
                         : null;
@@ -168,35 +165,32 @@ class CheckoutController extends Controller
                         'total'           => round($unitPrice * $item->quantity, 3),
                     ]);
 
-                    // ── Step 5: Decrement stock ───────────────────────────────
+                    // ── Decrement stock ───────────────────────────────────────
                     if ($variant) {
                         ProductVariant::where('id', $variant->id)
                             ->decrement('stock', $item->quantity);
+
+                        // Queue for post-commit check
+                        $decrementedVariants[] = [
+                            'variant_id' => $variant->id,
+                            'product'    => $product,
+                        ];
                     } else {
                         $product->decrement('stock', $item->quantity);
+
+                        // Queue for post-commit check
+                        $decrementedProducts[] = $product->id;
                     }
                 }
             }
 
-            // ── Step 6: Deduct wallet balance if applicable ───────────────────
             if ($paymentMethod === 'wallet') {
                 $this->walletService->deductForOrder($user, $order);
             }
 
-            // ── Step 7: Clear the cart ────────────────────────────────────────
             Cart::where('user_id', $user->id)->delete();
 
             DB::commit();
-
-            return response()->json([
-                'success'        => true,
-                'message'        => 'Order placed successfully!',
-                'order_number'   => $order->order_number,
-                'order_id'       => $order->id,
-                'total'          => $total,
-                'seller_count'   => $groupedBySeller->count(),
-                'needs_payment'  => $paymentMethod === 'card',
-            ], 201);
 
         } catch (\Throwable $e) {
             DB::rollBack();
@@ -209,13 +203,25 @@ class CheckoutController extends Controller
                 'message' => 'Failed to place order. Please try again.',
             ], 500);
         }
+
+        // ── Post-commit: fire stock alerts ────────────────────────────────────
+        // Now outside the transaction — StockAlertService's updateQuietly calls
+        // won't interfere with order creation.
+        $this->fireStockAlerts($decrementedVariants, $decrementedProducts);
+
+        return response()->json([
+            'success'        => true,
+            'message'        => 'Order placed successfully!',
+            'order_number'   => $order->order_number,
+            'order_id'       => $order->id,
+            'total'          => $total,
+            'seller_count'   => $groupedBySeller->count(),
+            'needs_payment'  => $paymentMethod === 'card',
+        ], 201);
     }
 
     /**
      * POST /api/checkout/buy-now
-     *
-     * Creates a single-item order directly — does NOT touch the cart.
-     * A SellerOrder is also created for the single seller involved.
      */
     public function buyNow(Request $request)
     {
@@ -234,7 +240,6 @@ class CheckoutController extends Controller
         $quantity      = (int) $request->quantity;
         $paymentMethod = $request->payment_method ?? 'cod';
 
-        // ── Load product ──────────────────────────────────────────────────────
         $product = Product::find($request->product_id);
 
         if (!$product || !$product->is_approved || !$product->is_active) {
@@ -244,7 +249,6 @@ class CheckoutController extends Controller
             ], 422);
         }
 
-        // ── Load variant if provided ──────────────────────────────────────────
         $variant = null;
         if ($request->filled('variant_id')) {
             $variant = ProductVariant::with('attributeOptions.attribute')
@@ -252,22 +256,14 @@ class CheckoutController extends Controller
                 ->where('product_id', $product->id)
                 ->first();
 
-            if (!$variant) {
+            if (!$variant || !$variant->is_active) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Selected variant not found.',
-                ], 422);
-            }
-
-            if (!$variant->is_active) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Selected variant is no longer available.',
+                    'message' => 'Selected variant is not available.',
                 ], 422);
             }
         }
 
-        // ── Stock check ───────────────────────────────────────────────────────
         $stockPool = $variant ? $variant->stock : $product->stock;
 
         if ($stockPool < $quantity) {
@@ -281,24 +277,17 @@ class CheckoutController extends Controller
             ], 422);
         }
 
-        // ── Effective unit price ──────────────────────────────────────────────
-        $unitPrice = $variant
+        $unitPrice    = $variant
             ? (float) ($variant->price_override ?? $product->price)
             : (float) $product->price;
-
-        $subtotal = round($unitPrice * $quantity, 3);
-        $total    = round($subtotal + 8, 3); // +8 DT shipping
-
-        // ── Variant label snapshot (from attributeOptions) ────────────────────
+        $subtotal     = round($unitPrice * $quantity, 3);
+        $total        = round($subtotal + 8, 3);
         $variantLabel = $variant
             ? $variant->attributeOptions->pluck('value')->join(' / ')
             : null;
+        $sellerCol    = $this->getSellerCol();
+        $sellerId     = $product->{$sellerCol};
 
-        // ── Detect seller column ──────────────────────────────────────────────
-        $sellerCol = $this->getSellerCol();
-        $sellerId  = $product->{$sellerCol};
-
-        // ── Wallet pre-check ──────────────────────────────────────────────────
         if ($paymentMethod === 'wallet') {
             if ((float) $user->wallet_balance < $total) {
                 return response()->json([
@@ -312,9 +301,11 @@ class CheckoutController extends Controller
             }
         }
 
+        $decrementedVariants = [];
+        $decrementedProducts = [];
+
         DB::beginTransaction();
         try {
-            // Create parent order
             $order = Order::create([
                 'user_id'        => $user->id,
                 'order_number'   => 'ORD-' . strtoupper(Str::random(8)),
@@ -328,7 +319,6 @@ class CheckoutController extends Controller
                 'notes'          => $request->notes ?? null,
             ]);
 
-            // Create the single seller's sub-order
             $sellerOrder = SellerOrder::create([
                 'order_id'       => $order->id,
                 'seller_id'      => $sellerId,
@@ -337,7 +327,6 @@ class CheckoutController extends Controller
                 'subtotal'       => $subtotal,
             ]);
 
-            // Create the order item linked to the seller's sub-order
             OrderItem::create([
                 'order_id'        => $order->id,
                 'seller_order_id' => $sellerOrder->id,
@@ -354,25 +343,20 @@ class CheckoutController extends Controller
             // Decrement stock
             if ($variant) {
                 ProductVariant::where('id', $variant->id)->decrement('stock', $quantity);
+                $decrementedVariants[] = [
+                    'variant_id' => $variant->id,
+                    'product'    => $product,
+                ];
             } else {
                 $product->decrement('stock', $quantity);
+                $decrementedProducts[] = $product->id;
             }
 
-            // Deduct wallet balance if applicable
             if ($paymentMethod === 'wallet') {
                 $this->walletService->deductForOrder($user, $order);
             }
 
             DB::commit();
-
-            return response()->json([
-                'success'       => true,
-                'message'       => 'Order placed successfully!',
-                'order_number'  => $order->order_number,
-                'order_id'      => $order->id,
-                'total'         => $total,
-                'needs_payment' => $paymentMethod === 'card',
-            ], 201);
 
         } catch (\Throwable $e) {
             DB::rollBack();
@@ -385,14 +369,57 @@ class CheckoutController extends Controller
                 'message' => 'Failed to place order. Please try again.',
             ], 500);
         }
+
+        // Post-commit stock alerts
+        $this->fireStockAlerts($decrementedVariants, $decrementedProducts);
+
+        return response()->json([
+            'success'       => true,
+            'message'       => 'Order placed successfully!',
+            'order_number'  => $order->order_number,
+            'order_id'      => $order->id,
+            'total'         => $total,
+            'needs_payment' => $paymentMethod === 'card',
+        ], 201);
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
     /**
-     * Compute cart total (subtotal + 8 DT shipping).
-     * Uses price_override when a variant is present, falls back to product price.
+     * Fire stock alerts after the transaction is committed.
+     *
+     * We fresh()-load each model to get the post-decrement DB values —
+     * the in-memory models still hold the pre-decrement stock values
+     * because raw ->decrement() doesn't update the model instance.
+     *
+     * @param array $decrementedVariants  [ ['variant_id' => int, 'product' => Product] ]
+     * @param array $decrementedProducts  [ int $productId ]
      */
+    private function fireStockAlerts(array $decrementedVariants, array $decrementedProducts): void
+    {
+        try {
+            foreach ($decrementedVariants as $entry) {
+                $freshVariant = ProductVariant::find($entry['variant_id']);
+                if ($freshVariant) {
+                    // Load attributeOptions so LowStockNotification can build the label
+                    // without an extra query inside the notification class.
+                    $freshVariant->load('attributeOptions.attribute');
+                    $this->stockAlertService->checkVariant($freshVariant, $entry['product']);
+                }
+            }
+
+            foreach ($decrementedProducts as $productId) {
+                $freshProduct = Product::with('seller')->find($productId);
+                if ($freshProduct) {
+                    $this->stockAlertService->checkProduct($freshProduct);
+                }
+            }
+        } catch (\Throwable $e) {
+            // NEVER let alert failures surface to the user — order is already placed.
+            Log::error('[Checkout] fireStockAlerts failed: ' . $e->getMessage());
+        }
+    }
+
     private function calculateCartTotal($cartItems): float
     {
         $subtotal = $cartItems->sum(function ($item) {
@@ -402,13 +429,9 @@ class CheckoutController extends Controller
             return round($price * $item->quantity, 3);
         });
 
-        return round($subtotal + 8, 3); // +8 DT shipping
+        return round($subtotal + 8, 3);
     }
 
-    /**
-     * Detect whether the products table uses `seller_id` or the legacy `user_id`
-     * as the seller foreign key. Cached statically for the request lifetime.
-     */
     private function getSellerCol(): string
     {
         static $col = null;

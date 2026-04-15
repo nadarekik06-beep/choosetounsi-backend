@@ -195,7 +195,14 @@ class SellerProductController extends Controller
 
         try {
             $this->saveVariants($product, $request);
-            $product->fresh()->syncActiveStatusFromVariants();
+            // FIX: Only sync active status from variants when the request actually
+            // contained variant data. For simple products (no variants submitted),
+            // the seller's chosen is_active is already persisted above — calling
+            // syncActiveStatusFromVariants() with zero variants would force
+            // is_active = false and override the seller's intent.
+            if (!empty($request->input('variants', []))) {
+                $product->fresh()->syncActiveStatusFromVariants();
+            }
             Log::info('[SellerProduct::store] Variants saved');
         } catch (\Throwable $e) {
             Log::error('[SellerProduct::store] VARIANTS FAILED', ['error' => $e->getMessage()]);
@@ -271,7 +278,14 @@ class SellerProductController extends Controller
 
         try {
             $this->saveVariants($product, $request);
-            $product->fresh()->syncActiveStatusFromVariants();
+            // FIX: Only sync active status from variants when the request actually
+            // contained variant data. For simple products (no variants submitted),
+            // the seller's chosen is_active is already persisted above — calling
+            // syncActiveStatusFromVariants() with zero variants would force
+            // is_active = false and override the seller's intent.
+            if (!empty($request->input('variants', []))) {
+                $product->fresh()->syncActiveStatusFromVariants();
+            }
             Log::info('[SellerProduct::update] Variants saved');
         } catch (\Throwable $e) {
             Log::error('[SellerProduct::update] VARIANTS FAILED', ['error' => $e->getMessage()]);

@@ -7,13 +7,13 @@ use App\Models\Cart;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
 class CartController extends Controller
 {
     /**
      * GET /api/cart
-     * Returns all cart items with variant-aware image URLs.
      */
     public function index(Request $request)
     {
@@ -42,101 +42,141 @@ class CartController extends Controller
 
     /**
      * POST /api/cart
-     * Add product (optionally with variant) to cart.
+     *
+     * FIX: Stock check now compares (existing_cart_qty + incoming_qty) against
+     * actual stock — not just incoming_qty in isolation.
      */
     public function store(Request $request)
-{
-    $request->validate([
-        'product_id' => 'required|exists:products,id',
-        'variant_id' => 'nullable|exists:product_variants,id',
-        'quantity'   => 'integer|min:1|max:100',
-    ]);
-
-    $user      = $request->user();
-    $productId = $request->product_id;
-    $variantId = $request->variant_id ?? null;   // explicit null normalisation
-    $qty       = $request->quantity   ?? 1;
-
-    $product = Product::findOrFail($productId);
-
-    $this->ensureNotProductOwner($request, $product);
-
-    // Variant required if product has variants
-    if ($product->variants()->exists() && !$variantId) {
-        return response()->json([
-            'success' => false,
-            'message' => 'Please select a variant.',
-        ], 422);
-    }
-
-    // Stock check
-    if ($variantId) {
-        $variant = ProductVariant::findOrFail($variantId);
-
-        // Confirm the variant actually belongs to this product
-        if ($variant->product_id !== $product->id) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Invalid variant for this product.',
-            ], 422);
-        }
-
-        if ($variant->stock < $qty) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Not enough stock for this variant.',
-            ], 422);
-        }
-    } else {
-        if ($product->stock < $qty) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Not enough stock.',
-            ], 422);
-        }
-    }
-
-    // ── Upsert: find existing row for this exact (user, product, variant) ──
-    //
-    // IMPORTANT: whereNull vs where(null) matters in Laravel.
-    // `where('variant_id', null)` compiles to `variant_id = NULL` which is
-    // always false in SQL. You must use `whereNull` for the null branch.
-
-    $query = Cart::where('user_id', $user->id)
-                 ->where('product_id', $productId);
-
-    $query = $variantId
-        ? $query->where('variant_id', $variantId)
-        : $query->whereNull('variant_id');
-
-    $cartItem = $query->first();
-
-    if ($cartItem) {
-        // Same variant already in cart → increment
-        $cartItem->increment('quantity', $qty);
-    } else {
-        // New variant (or non-variant product not yet in cart) → new row
-        Cart::create([
-            'user_id'    => $user->id,
-            'product_id' => $productId,
-            'variant_id' => $variantId,   // null for non-variant products
-            'quantity'   => $qty,
+    {
+        $request->validate([
+            'product_id' => 'required|exists:products,id',
+            'variant_id' => 'nullable|exists:product_variants,id',
+            'quantity'   => 'integer|min:1|max:100',
         ]);
-    }
 
-    return $this->index($request);
-}
+        $user      = $request->user();
+        $productId = $request->product_id;
+        $variantId = $request->variant_id ?? null;
+        $qty       = $request->quantity   ?? 1;
+
+        $product = Product::findOrFail($productId);
+
+        $this->ensureNotProductOwner($request, $product);
+
+        if ($product->variants()->exists() && !$variantId) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Please select a variant.',
+            ], 422);
+        }
+
+        // ── Find existing cart row ──────────────────────────────────────────
+        $query = Cart::where('user_id', $user->id)
+                     ->where('product_id', $productId);
+        $query = $variantId
+            ? $query->where('variant_id', $variantId)
+            : $query->whereNull('variant_id');
+
+        $cartItem = $query->first();
+
+        // How many does the user already have in cart for this exact variant?
+        $existingQty = $cartItem ? $cartItem->quantity : 0;
+
+        // ── THE CORE FIX: check cumulative quantity against real stock ──────
+        if ($variantId) {
+            $variant = ProductVariant::findOrFail($variantId);
+
+            if ($variant->product_id !== $product->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Invalid variant for this product.',
+                ], 422);
+            }
+
+            $available = $variant->stock;
+            $requested = $existingQty + $qty;   // ← cumulative, not just incoming
+
+            if ($requested > $available) {
+                $canAdd = $available - $existingQty;
+                return response()->json([
+                    'success'   => false,
+                    'message'   => $canAdd > 0
+                        ? "Only {$canAdd} more item(s) can be added (stock: {$available}, in cart: {$existingQty})."
+                        : "You already have all available stock ({$available}) in your cart.",
+                    'available' => $available,
+                    'in_cart'   => $existingQty,
+                    'can_add'   => max(0, $canAdd),
+                ], 422);
+            }
+        } else {
+            $available = $product->stock;
+            $requested = $existingQty + $qty;
+
+            if ($requested > $available) {
+                $canAdd = $available - $existingQty;
+                return response()->json([
+                    'success'   => false,
+                    'message'   => $canAdd > 0
+                        ? "Only {$canAdd} more item(s) can be added (stock: {$available}, in cart: {$existingQty})."
+                        : "You already have all available stock ({$available}) in your cart.",
+                    'available' => $available,
+                    'in_cart'   => $existingQty,
+                    'can_add'   => max(0, $canAdd),
+                ], 422);
+            }
+        }
+
+        // ── Upsert ────────────────────────────────────────────────────────────
+        if ($cartItem) {
+            $cartItem->increment('quantity', $qty);
+        } else {
+            Cart::create([
+                'user_id'    => $user->id,
+                'product_id' => $productId,
+                'variant_id' => $variantId,
+                'quantity'   => $qty,
+            ]);
+        }
+
+        return $this->index($request);
+    }
 
     /**
      * PUT /api/cart/{id}
-     * Update quantity of a cart item.
+     *
+     * FIX: Now validates requested quantity against real stock.
+     * Clamps to available stock instead of blindly setting whatever
+     * the client sends.
      */
     public function update(Request $request, $id)
     {
         $request->validate(['quantity' => 'required|integer|min:1|max:100']);
 
-        $item = Cart::where('user_id', $request->user()->id)->findOrFail($id);
-        $item->update(['quantity' => $request->quantity]);
+        $item = Cart::where('user_id', $request->user()->id)
+            ->with(['variant', 'product'])
+            ->findOrFail($id);
+
+        // ── Resolve available stock for this specific item ──────────────────
+        $available = $item->variant
+            ? $item->variant->stock
+            : $item->product->stock;
+
+        $requested = (int) $request->quantity;
+
+        // ── Clamp to available stock ────────────────────────────────────────
+        if ($requested > $available) {
+            if ($available <= 0) {
+                // Item went out of stock since being added — remove it
+                $item->delete();
+                return $this->index($request);
+            }
+            // Silently clamp to max available instead of erroring
+            // This handles the race condition where stock sold out
+            // between the user loading the page and updating the cart
+            $requested = $available;
+        }
+
+        $item->update(['quantity' => $requested]);
 
         return $this->index($request);
     }
@@ -152,7 +192,6 @@ class CartController extends Controller
 
     /**
      * DELETE /api/cart
-     * Clear entire cart.
      */
     public function clear(Request $request)
     {
@@ -163,35 +202,22 @@ class CartController extends Controller
         ]);
     }
 
-    // ── Private helpers ──────────────────────────────────────────────────────
+    // ── Private helpers ────────────────────────────────────────────────────────
 
-    /**
-     * Build a single cart item payload with the correct variant-aware image URL.
-     *
-     * Image priority:
-     *   1. Variant's own images (most specific)
-     *   2. Product images grouped by this variant's color option
-     *   3. Product primary image (fallback for non-variant products)
-     */
     private function formatCartItem(Cart $item): array
     {
         $product = $item->product;
         $variant = $item->variant;
 
-        // ── Resolve price ──────────────────────────────────────────────────
         $price = $variant
             ? ($variant->price_override !== null
                 ? (float) $variant->price_override
                 : (float) $product->price)
             : (float) $product->price;
 
-        // ── Resolve image URL ──────────────────────────────────────────────
         $imageUrl = $this->resolveImageUrl($product, $variant);
+        $stock    = $variant ? $variant->stock : $product->stock;
 
-        // ── Resolve stock ──────────────────────────────────────────────────
-        $stock = $variant ? $variant->stock : $product->stock;
-
-        // ── Variant label & options ────────────────────────────────────────
         $variantLabel   = null;
         $variantOptions = [];
 
@@ -224,34 +250,18 @@ class CartController extends Controller
         ];
     }
 
-    /**
-     * Resolve the best image URL for a cart item.
-     *
-     * Priority:
-     *  1. Variant's own images (variant_id match)
-     *  2. Product images with this variant's color_option_id
-     *  3. Product primary image
-     *  4. First product image
-     *  5. null
-     */
     private function resolveImageUrl(Product $product, ?ProductVariant $variant): ?string
     {
         if ($variant) {
-            // 1. Variant's own uploaded images
             if ($variant->relationLoaded('images') && $variant->images->isNotEmpty()) {
                 $primary = $variant->images->firstWhere('is_primary', true)
                         ?? $variant->images->sortBy('order')->first();
-                if ($primary) {
-                    return Storage::url($primary->image_path);
-                }
+                if ($primary) return Storage::url($primary->image_path);
             }
 
-            // 2. Product images grouped by this variant's color option
             $colorOptId = null;
             if ($variant->relationLoaded('attributeOptions')) {
-                $colorOpt   = $variant->attributeOptions->first(
-                    fn($o) => $o->attribute->slug === 'color'
-                );
+                $colorOpt   = $variant->attributeOptions->first(fn($o) => $o->attribute->slug === 'color');
                 $colorOptId = $colorOpt?->id;
             }
 
@@ -260,19 +270,14 @@ class CartController extends Controller
                     ->where('color_option_id', $colorOptId)
                     ->sortBy('order')
                     ->first();
-                if ($colorImage) {
-                    return Storage::url($colorImage->image_path);
-                }
+                if ($colorImage) return Storage::url($colorImage->image_path);
             }
         }
 
-        // 3. Product primary image (for non-variant products)
         if ($product->relationLoaded('images')) {
             $primary = $product->images->firstWhere('is_primary', true)
                     ?? $product->images->sortBy('order')->first();
-            if ($primary) {
-                return Storage::url($primary->image_path);
-            }
+            if ($primary) return Storage::url($primary->image_path);
         }
 
         return null;
