@@ -12,7 +12,14 @@ use Illuminate\Support\Facades\Storage;
 class ProductController extends Controller
 {
     /**
-     * GET /api/products  — UNCHANGED
+     * GET /api/products
+     *
+     * CHANGES vs previous version:
+     *   - Sponsored products are ranked first via orderByDesc('is_sponsored')
+     *     then orderByDesc('sponsored_priority') within sponsored group.
+     *   - is_sponsored field included in the transformed product payload
+     *     so the frontend can render the SponsoredBadge.
+     *   - All existing filters, pagination, and transform logic unchanged.
      */
     public function index(Request $request)
     {
@@ -60,7 +67,19 @@ class ProductController extends Controller
                 $query->hasAttribute($slug, (array) $values);
             }
         }
+
+        // ── Sorting ────────────────────────────────────────────────────────
+        // Sponsored products always float to the top regardless of the
+        // user-selected sort. Within each tier (sponsored / non-sponsored),
+        // the user-selected sort is applied normally.
         $sort = $request->query('sort', 'created_at');
+
+        // Step 1: sponsored tier always wins
+        $query
+            ->orderByDesc('is_sponsored')           // sponsored products first
+            ->orderByDesc('sponsored_priority');     // higher priority wins within sponsored
+
+        // Step 2: user-selected sort applied within each tier
         match ($sort) {
             'price_asc'  => $query->orderBy('price'),
             'price_desc' => $query->orderByDesc('price'),
@@ -75,6 +94,10 @@ class ProductController extends Controller
             $p->primary_image_url = $p->primaryImage
                 ? Storage::url($p->primaryImage->image_path)
                 : null;
+
+            // ── Expose is_sponsored so the frontend can show the badge ──
+            $p->is_sponsored       = (bool) $p->is_sponsored;
+            $p->sponsored_priority = (int)  $p->sponsored_priority;
 
             $swatches = [];
             $seen     = [];
@@ -219,8 +242,6 @@ class ProductController extends Controller
                 ->toArray();
 
             // ── colorGroupMap: primaryOptId → sorted ids[] ─────────────────
-            // Needed to reconstruct groupKey from color_option_id stored
-            // on product_images rows (which only store the primary id).
             $colorGroupMap = [];
 
             foreach ($product->variants as $v) {
@@ -272,8 +293,6 @@ class ProductController extends Controller
                     ->toArray();
 
                 // ── FIX 2: record first image per variant_id ───────────────
-                // This covers multi-color variants whose images have no
-                // color_option_id — they are stored with variant_id only.
                 if (!empty($variantImageUrls)) {
                     $variantPrimaryImage[$v->id] = $variantImageUrls[0];
                 }
@@ -330,11 +349,6 @@ class ProductController extends Controller
             })->values();
 
             // ── selectable_axes ────────────────────────────────────────────
-            //
-            // $colorGroups is keyed by primaryId (int) — FIX 1.
-            // This guarantees each entry has a unique `id` field, so
-            // array_values() never produces two entries with the same id.
-
             $axisMap             = [];
             $colorGroups         = [];   // int primaryId → option entry
             $registeredOptionIds = [];   // string axisSlug → int[]
@@ -354,24 +368,17 @@ class ProductController extends Controller
                         'slug'    => 'color',
                         'name'    => $colorOpts->first()->attribute->name,
                         'type'    => 'color',
-                        'options' => [],   // filled from $colorGroups at end
+                        'options' => [],
                     ];
                 }
 
-                // ── FIX 1: key by primaryId, not groupKey ──────────────────
+                // ── FIX 1: key by primaryId ────────────────────────────────
                 if ($colorOpts->isNotEmpty()) {
                     $primaryId = $colorOpts->first()->id;
                     $groupKey  = $colorOpts->pluck('id')->implode('|');
 
                     if (!isset($colorGroups[$primaryId])) {
-                        // ── FIX 2: resolve primary_image with fallback chain ─
-                        // Priority:
-                        //   1. colorPrimaryImage[$groupKey]  — from color_option_id images
-                        //   2. variantPrimaryImage[$variant->id] — from variant_id images
-                        //      (covers multi-color variants with no color_option_id)
-                        // This is why the frontend was showing color circles for
-                        // multi-color variants: step 1 returned null and there
-                        // was no step 2.
+                        // ── FIX 2: fallback chain for primary_image ─────────
                         $resolvedPrimaryImage =
                             $colorPrimaryImage[$groupKey]
                             ?? $variantPrimaryImage[$variant->id]
@@ -393,7 +400,7 @@ class ProductController extends Controller
                     }
                 }
 
-                // Non-color axes — keyed by opt id for dedup
+                // Non-color axes
                 foreach ($nonColorOpts as $opt) {
                     $axisSlug = $opt->attribute->slug;
                     $optId    = $opt->id;

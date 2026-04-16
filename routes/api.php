@@ -34,6 +34,7 @@ use App\Http\Controllers\Api\Seller\SellerSubscriptionController;
 use App\Http\Controllers\AIController;
 use App\Http\Controllers\Api\Seller\SellerAnalyticsController;
 use App\Http\Controllers\Api\Seller\SellerAIController;
+use App\Http\Controllers\Api\Seller\BlackPepperController;
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES
@@ -153,7 +154,24 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('/description-generator', [SellerAIController::class, 'descriptionGenerator']);
                 Route::post('/recommender',           [SellerAIController::class, 'recommender']);
             });
-
+        Route::prefix('black')
+    ->middleware('seller.plan:black')
+    ->group(function () {
+        // AI Hub: trend detection + inventory alerts + market insights
+        Route::get('/ai-hub',          [BlackPepperController::class, 'aiHub']);
+ 
+        // Profit Command Center: revenue, margins, 30-day forecast
+        Route::get('/profit-center',   [BlackPepperController::class, 'profitCenter']);
+ 
+        // Visibility: sponsored products management
+        Route::get('/sponsored',                   [BlackPepperController::class, 'sponsoredProducts']);
+        Route::post('/sponsor/{id}',               [BlackPepperController::class, 'toggleSponsorship']);
+ 
+        // VIP: request reel / promotion / support
+        Route::get('/vip-requests',    [BlackPepperController::class, 'myVipRequests']);
+        Route::post('/vip-request',    [BlackPepperController::class, 'submitVipRequest']);
+    });
+ 
  
         Route::get('/dashboard', [SellerDashboardController::class, 'index']);
 
