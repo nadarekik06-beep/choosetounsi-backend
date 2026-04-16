@@ -36,6 +36,7 @@ use App\Http\Controllers\AIController;
 use App\Http\Controllers\Api\Seller\SellerAnalyticsController;
 use App\Http\Controllers\Api\Seller\SellerAIController;
 use App\Http\Controllers\Api\Seller\BlackPepperController;
+use App\Http\Controllers\Admin\AdminVipRequestController;
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES
@@ -324,6 +325,14 @@ Route::middleware('auth:sanctum')->group(function () {
 
         Route::patch('/orders/{id}/confirm-payment',  [\App\Http\Controllers\Admin\OrderController::class, 'confirmPayment']);
         Route::patch('/users/{id}/wallet/top-up',     [\App\Http\Controllers\Admin\UserController::class, 'walletTopUp']);
+        // ── VIP Requests (Black Pepper sellers) ──────────────────────────────────
+        Route::get('/vip-requests/stats',            [AdminVipRequestController::class, 'stats']);
+        Route::get('/vip-requests',                  [AdminVipRequestController::class, 'index']);
+        Route::get('/vip-requests/{id}',             [AdminVipRequestController::class, 'show']);
+        Route::patch('/vip-requests/{id}/approve',   [AdminVipRequestController::class, 'approve']);
+        Route::patch('/vip-requests/{id}/complete',  [AdminVipRequestController::class, 'complete']);
+        Route::patch('/vip-requests/{id}/reject',    [AdminVipRequestController::class, 'reject']);
+        Route::patch('/vip-requests/{id}/note',      [AdminVipRequestController::class, 'addNote']);
 
     }); // ← admin group ends HERE
     // ── Address Book ──────────────────────────────────────────────────────────
