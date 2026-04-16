@@ -1,5 +1,4 @@
 <?php
-// app/Http/Controllers/Api/Seller/ProductUpdateRequestController.php
 
 namespace App\Http\Controllers\Api\Seller;
 
@@ -12,6 +11,30 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 
+/**
+ * ProductUpdateRequestController  (Seller side)
+ *
+ * UPDATED: The `store` method now accepts full variant CRUD data inside
+ * `proposed_data.variants`.  Each variant row can contain:
+ *
+ *   Existing variant (has `id`):
+ *     - stock, price_override, sku, is_active   ← all editable
+ *     - option_ids                               ← structural change (new combo)
+ *     - _delete: true                            ← mark for deletion
+ *
+ *   New variant (no `id`):
+ *     - option_ids (required), stock, price_override, sku, is_active
+ *
+ * The admin's approve() method (in Admin\ProductUpdateRequestController)
+ * already handles the full variant apply logic via applyVariants() — no
+ * changes needed there.
+ *
+ * Business rules enforced here:
+ *   - Stock-only changes on approved products → still goes through approval
+ *     (use the dedicated POST /restock endpoint for that instead)
+ *   - Structural variant changes (new variant, delete, option change) → approval
+ *   - One pending request per product at a time
+ */
 class ProductUpdateRequestController extends Controller
 {
     /**
@@ -33,6 +56,8 @@ class ProductUpdateRequestController extends Controller
     /**
      * Submit a new update request.
      * POST /api/seller/products/{id}/request-update
+     *
+     * Accepts full variant CRUD in addition to scalar fields.
      */
     public function store(Request $request, int $productId)
     {
@@ -61,29 +86,41 @@ class ProductUpdateRequestController extends Controller
             ], 422);
         }
 
+        // ── Validation ────────────────────────────────────────────────────
         $validated = $request->validate([
+            // Scalar fields
             'price'          => 'sometimes|numeric|min:0',
             'stock'          => 'sometimes|integer|min:0',
             'category_id'    => 'sometimes|exists:categories,id',
             'subcategory_id' => 'sometimes|nullable|exists:subcategories,id',
-            'variants'       => 'sometimes|array',
-            'variants.*.id'             => 'sometimes|integer',
-            'variants.*.option_ids'     => 'sometimes|array',
-            'variants.*.stock'          => 'sometimes|integer|min:0',
-            'variants.*.price_override' => 'sometimes|nullable|numeric|min:0',
-            'variants.*.sku'            => 'sometimes|nullable|string|max:100',
-            'variants.*.is_active'      => 'sometimes|boolean',
-            'note'           => 'sometimes|nullable|string|max:1000',
+
+            // Full variant CRUD
+            'variants'                      => 'sometimes|array',
+            'variants.*.id'                 => 'sometimes|nullable|integer',
+            'variants.*.option_ids'         => 'sometimes|array',
+            'variants.*.option_ids.*'       => 'integer|min:1',
+            'variants.*.stock'              => 'sometimes|integer|min:0',
+            'variants.*.price_override'     => 'sometimes|nullable|numeric|min:0',
+            'variants.*.sku'                => 'sometimes|nullable|string|max:100',
+            'variants.*.is_active'          => 'sometimes|boolean',
+            'variants.*._delete'            => 'sometimes|boolean',
+
+            'note' => 'sometimes|nullable|string|max:1000',
         ]);
 
-        // Build only the fields that were actually sent
+        // ── Build proposed_data ───────────────────────────────────────────
         $proposedData = [];
-        $criticalFields = ['price', 'stock', 'category_id', 'subcategory_id', 'variants'];
 
-        foreach ($criticalFields as $field) {
+        // Scalar fields
+        foreach (['price', 'stock', 'category_id', 'subcategory_id'] as $field) {
             if ($request->has($field)) {
                 $proposedData[$field] = $validated[$field] ?? $request->input($field);
             }
+        }
+
+        // Full variant CRUD
+        if ($request->has('variants') && is_array($validated['variants'] ?? null)) {
+            $proposedData['variants'] = $this->sanitizeVariants($validated['variants']);
         }
 
         if (empty($proposedData)) {
@@ -93,7 +130,8 @@ class ProductUpdateRequestController extends Controller
             ], 422);
         }
 
-        if (isset($validated['note'])) {
+        // Attach seller note
+        if (!empty($validated['note'])) {
             $proposedData['_note'] = $validated['note'];
         }
 
@@ -104,7 +142,6 @@ class ProductUpdateRequestController extends Controller
             'status'        => 'pending',
         ]);
 
-        // Notify all admins
         $this->notifyAdmins($updateRequest, $product, $seller);
 
         return response()->json([
@@ -115,6 +152,70 @@ class ProductUpdateRequestController extends Controller
     }
 
     // ── Private helpers ─────────────────────────────────────────────────────
+
+    /**
+     * Sanitize and normalize variant rows before storing in proposed_data.
+     * Ensures consistent types and strips unknown keys.
+     */
+    private function sanitizeVariants(array $variants): array
+    {
+        $sanitized = [];
+
+        foreach ($variants as $row) {
+            if (!is_array($row)) continue;
+
+            $clean = [];
+
+            // Existing variant ID
+            if (isset($row['id']) && $row['id']) {
+                $clean['id'] = (int) $row['id'];
+            }
+
+            // Deletion flag
+            if (!empty($row['_delete'])) {
+                $clean['_delete'] = true;
+                if (isset($clean['id'])) $sanitized[] = $clean;
+                continue;
+            }
+
+            // Option IDs (required for new variants, optional for existing)
+            if (isset($row['option_ids']) && is_array($row['option_ids'])) {
+                $clean['option_ids'] = array_values(array_filter(
+                    array_map('intval', $row['option_ids']),
+                    fn($id) => $id > 0
+                ));
+            }
+
+            // Stock
+            if (array_key_exists('stock', $row)) {
+                $clean['stock'] = (int) $row['stock'];
+            }
+
+            // Price override
+            if (array_key_exists('price_override', $row)) {
+                $clean['price_override'] = ($row['price_override'] !== '' && $row['price_override'] !== null)
+                    ? (float) $row['price_override']
+                    : null;
+            }
+
+            // SKU
+            if (array_key_exists('sku', $row)) {
+                $clean['sku'] = $row['sku'] ?: null;
+            }
+
+            // Active state
+            if (array_key_exists('is_active', $row)) {
+                $clean['is_active'] = (bool) $row['is_active'];
+            }
+
+            // Only add rows that have meaningful content
+            if (isset($clean['id']) || (isset($clean['option_ids']) && !empty($clean['option_ids']))) {
+                $sanitized[] = $clean;
+            }
+        }
+
+        return $sanitized;
+    }
 
     private function notifyAdmins(ProductUpdateRequest $updateRequest, Product $product, User $seller): void
     {

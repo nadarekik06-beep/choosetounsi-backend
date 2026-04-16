@@ -41,7 +41,6 @@ class ProductUpdateRequestController extends Controller
         $requests = $query->orderByDesc('created_at')
             ->paginate((int) $request->query('per_page', 15));
 
-        // Attach primary image URL + old values snapshot
         $requests->getCollection()->transform(function ($r) {
             if ($r->product && $r->product->primaryImage) {
                 $r->product->primary_image_url = \Storage::url($r->product->primaryImage->image_path);
@@ -67,16 +66,17 @@ class ProductUpdateRequestController extends Controller
             'seller:id,name,email',
         ])->findOrFail($id);
 
-        // Build "current values" snapshot for comparison in admin UI
         $product = $updateRequest->product;
+
+        // Build current values snapshot for diff view in admin UI
         $updateRequest->current_data = [
-            'price'          => $product->price,
-            'stock'          => $product->stock,
-            'category_id'    => $product->category_id,
-            'category_name'  => $product->category?->name,
-            'subcategory_id' => $product->subcategory_id,
+            'price'            => $product->price,
+            'stock'            => $product->stock,
+            'category_id'      => $product->category_id,
+            'category_name'    => $product->category?->name,
+            'subcategory_id'   => $product->subcategory_id,
             'subcategory_name' => $product->subcategory?->name,
-            'variants'       => $product->variants->map(fn($v) => [
+            'variants'         => $product->variants->map(fn($v) => [
                 'id'             => $v->id,
                 'label'          => $v->label,
                 'stock'          => $v->stock,
@@ -115,7 +115,7 @@ class ProductUpdateRequestController extends Controller
             $product      = $updateRequest->product;
             $proposedData = $updateRequest->proposed_data;
 
-            // Apply scalar fields (only those present in proposed_data)
+            // Apply scalar fields
             $scalarFields = ['price', 'stock', 'category_id', 'subcategory_id'];
             $toUpdate = [];
             foreach ($scalarFields as $field) {
@@ -127,16 +127,14 @@ class ProductUpdateRequestController extends Controller
                 $product->update($toUpdate);
             }
 
-            // Apply variants if present
+            // Apply variants if present (full CRUD including deletions)
             if (array_key_exists('variants', $proposedData) && is_array($proposedData['variants'])) {
                 $this->applyVariants($product, $proposedData['variants']);
             }
 
-            // Mark request approved
             $updateRequest->update(['status' => 'approved']);
         });
 
-        // Notify seller
         $this->notifySeller($updateRequest, 'approved');
 
         return response()->json([
@@ -168,7 +166,6 @@ class ProductUpdateRequestController extends Controller
             'admin_comment' => $request->admin_comment,
         ]);
 
-        // Notify seller
         $this->notifySeller($updateRequest, 'rejected', $request->admin_comment);
 
         return response()->json([
@@ -195,12 +192,31 @@ class ProductUpdateRequestController extends Controller
 
     // ── Private helpers ─────────────────────────────────────────────────────
 
+    /**
+     * Apply full variant CRUD from proposed_data.variants.
+     *
+     * Handles:
+     *   - _delete: true  → delete the variant
+     *   - existing id     → update all editable fields (stock, price, sku, is_active, option_ids)
+     *   - no id           → create new variant
+     *
+     * After applying, syncActiveStatusFromVariants() re-derives product active state.
+     */
     private function applyVariants(Product $product, array $variantsData): void
     {
         $keepIds = [];
 
         foreach ($variantsData as $row) {
             if (!is_array($row)) continue;
+
+            // ── Handle explicit deletion ───────────────────────────────────
+            if (!empty($row['_delete'])) {
+                $deleteId = isset($row['id']) ? (int) $row['id'] : null;
+                if ($deleteId) {
+                    $product->variants()->where('id', $deleteId)->delete();
+                }
+                continue;
+            }
 
             $optionIds = array_values(array_filter(
                 array_map('intval', (array) ($row['option_ids'] ?? [])),
@@ -213,13 +229,17 @@ class ProductUpdateRequestController extends Controller
                 : null;
 
             if ($variant) {
+                // Update existing variant — all fields from proposed_data
                 $fields = [];
                 if (array_key_exists('stock', $row))          $fields['stock']          = (int) $row['stock'];
-                if (array_key_exists('price_override', $row)) $fields['price_override'] = $row['price_override'] !== '' && $row['price_override'] !== null ? (float) $row['price_override'] : null;
+                if (array_key_exists('price_override', $row)) $fields['price_override'] = ($row['price_override'] !== '' && $row['price_override'] !== null) ? (float) $row['price_override'] : null;
                 if (array_key_exists('sku', $row))            $fields['sku']            = $row['sku'] ?: null;
                 if (array_key_exists('is_active', $row))      $fields['is_active']      = (bool) $row['is_active'];
                 if (!empty($fields)) $variant->update($fields);
             } else {
+                // Create new variant
+                if (empty($optionIds)) continue;
+
                 $variant = ProductVariant::create([
                     'product_id'     => $product->id,
                     'stock'          => (int) ($row['stock'] ?? 0),
@@ -229,15 +249,16 @@ class ProductUpdateRequestController extends Controller
                 ]);
             }
 
+            // Sync option IDs when provided
             if (!empty($optionIds)) {
                 $variant->attributeOptions()->sync($optionIds);
             }
+
             $keepIds[] = $variant->id;
         }
 
-        if (!empty($keepIds)) {
-            $product->variants()->whereNotIn('id', $keepIds)->delete();
-        }
+        // Re-sync active status after all variant changes
+        $product->fresh()->syncActiveStatusFromVariants();
     }
 
     private function notifySeller(ProductUpdateRequest $updateRequest, string $action, ?string $adminComment = null): void

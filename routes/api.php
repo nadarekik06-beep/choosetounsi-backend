@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\Seller\SellerDashboardController;
 use App\Http\Controllers\Api\Seller\SellerProductController;
 use App\Http\Controllers\Api\Seller\SellerOrderController;
 use App\Http\Controllers\Api\Seller\ProductUpdateRequestController as SellerProductUpdateRequestController;
+use App\Http\Controllers\Api\Seller\RestockController;
 use App\Http\Controllers\Admin\SellerController;
 use App\Http\Controllers\Admin\ProductController as AdminProductController;
 use App\Http\Controllers\Admin\OrderController as AdminOrderController;
@@ -182,6 +183,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/products/{id}',    [SellerProductController::class, 'update']);
         Route::post('/products/{id}',   [SellerProductController::class, 'update']);
         Route::delete('/products/{id}', [SellerProductController::class, 'destroy']);
+
+        Route::post('/products/{id}/restock', [RestockController::class, 'restock']); // ← NEW
 
         Route::delete('/products/{id}/images/{imageId}',        [SellerProductController::class, 'destroyImage']);
         Route::patch('/products/{id}/images/{imageId}/primary', [SellerProductController::class, 'setPrimaryImage']);

@@ -92,6 +92,8 @@ class SellerProductController extends Controller
             'price_override' => $v->price_override !== null ? (string) $v->price_override : '',
             'sku'            => $v->sku ?? '',
             'is_active'      => $v->is_active,
+            'label'          => $v->label,
+            'option_map'     => $v->option_map,
             'image_urls'     => method_exists($v, 'images') && $v->relationLoaded('images')
                 ? $v->images->map(fn($i) => Storage::url($i->image_path))->toArray()
                 : [],
