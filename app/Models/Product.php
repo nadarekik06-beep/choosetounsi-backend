@@ -286,6 +286,17 @@ class Product extends Model
             ? Storage::url($primary->image_path)
             : null;
     }
+    public function sponsorships()
+    {
+        return $this->hasMany(\App\Models\Sponsorship::class);
+    }
+    public function activeSponsorship()
+    {
+        return $this->hasOne(\App\Models\Sponsorship::class)
+                    ->where('status', 'active')
+                    ->orderByDesc('boost_score');
+    }
+ 
 
     public function incrementViews(): void
     {

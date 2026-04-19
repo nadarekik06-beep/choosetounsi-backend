@@ -37,6 +37,10 @@ use App\Http\Controllers\Api\Seller\SellerAnalyticsController;
 use App\Http\Controllers\Api\Seller\SellerAIController;
 use App\Http\Controllers\Api\Seller\BlackPepperController;
 use App\Http\Controllers\Admin\AdminVipRequestController;
+use App\Http\Controllers\Api\Seller\SponsorshipController;
+use App\Http\Controllers\Admin\AdminSponsorshipController;
+
+
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES
@@ -74,6 +78,9 @@ Route::post(
     [\App\Http\Controllers\Api\Client\PaymentController::class, 'stripeWebhook']
 )->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class]);
 
+Route::get('/sponsored-products', [SponsorshipController::class, 'publicFeed']);
+Route::post('/sponsorships/{id}/impression', [SponsorshipController::class, 'recordImpression']);
+Route::post('/sponsorships/{id}/click', [SponsorshipController::class, 'recordClick']);
 
 
 /*
@@ -205,7 +212,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/complaints/{id}/note',    [SellerComplaintController::class, 'addNote']);
         Route::patch('/complaints/{id}/approve', [SellerComplaintController::class, 'approve']);
         Route::patch('/complaints/{id}/reject',  [SellerComplaintController::class, 'reject']);
+        Route::prefix('sponsorships')->group(function () {
+        Route::get('/quota',          [SponsorshipController::class, 'quota']);
+        Route::get('/',               [SponsorshipController::class, 'index']);
+        Route::post('/sponsor',       [SponsorshipController::class, 'sponsor']);
+        Route::delete('/{id}/cancel', [SponsorshipController::class, 'cancel']);
     });
+ });
 
     /*
     |----------------------------------------------------------------------
@@ -333,7 +346,11 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/vip-requests/{id}/complete',  [AdminVipRequestController::class, 'complete']);
         Route::patch('/vip-requests/{id}/reject',    [AdminVipRequestController::class, 'reject']);
         Route::patch('/vip-requests/{id}/note',      [AdminVipRequestController::class, 'addNote']);
-
+        Route::get('/sponsorships/stats',         [AdminSponsorshipController::class, 'stats']);
+        Route::get('/sponsorships',               [AdminSponsorshipController::class, 'index']);
+        Route::patch('/sponsorships/{id}/cancel', [AdminSponsorshipController::class, 'cancel']);
+        Route::patch('/sponsorships/{id}/boost',  [AdminSponsorshipController::class, 'boost']);
+ 
     }); // ← admin group ends HERE
     // ── Address Book ──────────────────────────────────────────────────────────
 Route::prefix('addresses')->group(function () {

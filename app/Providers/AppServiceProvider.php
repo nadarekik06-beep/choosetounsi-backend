@@ -8,6 +8,8 @@ use App\Observers\ProductObserver;
 use App\Observers\ProductVariantObserver;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\ServiceProvider;
+use App\Models\Order;
+use App\Observers\OrderObserver;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -26,5 +28,7 @@ class AppServiceProvider extends ServiceProvider
         // Stock alert observers — handles seller dashboard edits.
         // Checkout decrement path is handled directly in CheckoutController.
         Product::observe(ProductObserver::class);
+        Order::observe(OrderObserver::class);
+
     }
 }
