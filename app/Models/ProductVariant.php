@@ -101,9 +101,23 @@ class ProductVariant extends Model
      */
     public function getLabelAttribute(): string
     {
-        return $this->relationLoaded('attributeOptions')
-            ? $this->attributeOptions->pluck('value')->join(' / ')
-            : '';
+        $options = $this->relationLoaded('attributeOptions')
+            ? $this->attributeOptions
+            : $this->attributeOptions()->get();   // lazy fallback
+ 
+        if ($options->isEmpty()) return '';
+ 
+        // Color options first, then others sorted by attribute slug
+        $colorValues    = $options
+            ->filter(fn($opt) => optional($opt->attribute)->slug === 'color')
+            ->map(fn($opt) => $opt->value);
+ 
+        $nonColorValues = $options
+            ->filter(fn($opt) => optional($opt->attribute)->slug !== 'color')
+            ->sortBy(fn($opt) => optional($opt->attribute)->slug ?? '')
+            ->map(fn($opt) => $opt->value);
+ 
+        return $colorValues->merge($nonColorValues)->filter()->join(' / ');
     }
 
     /**

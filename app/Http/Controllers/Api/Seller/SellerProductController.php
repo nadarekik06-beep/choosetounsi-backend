@@ -53,7 +53,7 @@ class SellerProductController extends Controller
         return response()->json(['success' => true, 'data' => $products]);
     }
 
-    // ── Show ───────────────────────────────────────────────────────────────────
+// ── Show ───────────────────────────────────────────────────────────────────
 
     public function show(Request $request, $id)
     {
@@ -85,22 +85,123 @@ class SellerProductController extends Controller
                 $v->attribute->slug => $v->attribute->decodeValue($v->value),
             ]);
 
-        $product->variant_rows = $product->variants->map(fn($v) => [
-            'id'             => $v->id,
-            'option_ids'     => $v->attributeOptions->pluck('id')->toArray(),
-            'stock'          => $v->stock,
-            'price_override' => $v->price_override !== null ? (string) $v->price_override : '',
-            'sku'            => $v->sku ?? '',
-            'is_active'      => $v->is_active,
-            'label'          => $v->label,
-            'option_map'     => $v->option_map,
-            'image_urls'     => method_exists($v, 'images') && $v->relationLoaded('images')
-                ? $v->images->map(fn($i) => Storage::url($i->image_path))->toArray()
-                : [],
-        ]);
+        $product->variant_rows = $product->variants->map(function ($v) {
+
+            $colorGroup  = [];
+            $nonColorMap = [];
+
+            foreach ($v->attributeOptions as $opt) {
+                $attr = $opt->getAttribute('attribute') ?? $opt->getRelation('attribute');
+                $slug = $attr ? $attr->slug : null;
+
+                if ($slug === 'color') {
+                    $colorGroup[] = [
+                        'id'        => $opt->id,
+                        'value'     => $opt->value,
+                        'color_hex' => $opt->color_hex ?? null,
+                    ];
+                } elseif ($slug) {
+                    $nonColorMap[$slug] = [
+                        'id'        => $opt->id,
+                        'value'     => $opt->value,
+                        'color_hex' => $opt->color_hex ?? null,
+                    ];
+                }
+            }
+
+            usort($colorGroup, fn($a, $b) => $a['id'] <=> $b['id']);
+            ksort($nonColorMap);
+
+            $optionMap = [];
+
+            if (!empty($colorGroup)) {
+                $optionMap['color'] = [
+                    'id'        => $colorGroup[0]['id'],
+                    'ids'       => array_column($colorGroup, 'id'),
+                    'value'     => implode('+', array_column($colorGroup, 'value')),
+                    'color_hex' => $colorGroup[0]['color_hex'],
+                ];
+            }
+
+            foreach ($nonColorMap as $slug => $entry) {
+                $optionMap[$slug] = $entry;
+            }
+
+            $labelParts = [];
+            if (isset($optionMap['color'])) {
+                $labelParts[] = $optionMap['color']['value'];
+            }
+            foreach ($optionMap as $slug => $entry) {
+                if ($slug !== 'color') {
+                    $labelParts[] = $entry['value'];
+                }
+            }
+            $label = implode(' / ', array_filter($labelParts));
+
+            $imageUrls = [];
+            if ($v->relationLoaded('images')) {
+                $imageUrls = $v->images
+                    ->map(fn($i) => Storage::url($i->image_path))
+                    ->toArray();
+            }
+
+            return [
+                'id'             => $v->id,
+                'option_ids'     => $v->attributeOptions->pluck('id')->toArray(),
+                'stock'          => $v->stock,
+                'price_override' => $v->price_override !== null ? (string) $v->price_override : '',
+                'sku'            => $v->sku ?? '',
+                'is_active'      => $v->is_active,
+                'label'          => $label,
+                'option_map'     => $optionMap,
+                'image_urls'     => $imageUrls,
+            ];
+        });
 
         return response()->json(['success' => true, 'data' => $product]);
     }
+    private function saveVariantImages(Product $product, Request $request): void
+    {
+        $allFiles = $request->allFiles();
+        if (empty($allFiles['variant_images'])) return;
+ 
+        $variantImagesInput = $allFiles['variant_images'];
+        if (!is_array($variantImagesInput)) return;
+ 
+        // Pre-load all variants for this product to validate ownership.
+        $validVariantIds = $product->variants()->pluck('id')->flip();
+ 
+        $maxOrder = $product->images()->max('order') ?? -1;
+        $orderIdx = 0;
+ 
+        foreach ($variantImagesInput as $variantIdStr => $files) {
+            $variantId = (int) $variantIdStr;
+ 
+            // Security: only accept variant IDs that belong to THIS product.
+            if (!isset($validVariantIds[$variantId])) {
+                Log::warning("[SellerProduct::saveVariantImages] Invalid variant_id: {$variantId} for product {$product->id}");
+                continue;
+            }
+ 
+            foreach ((array) $files as $file) {
+                if (!$file || !method_exists($file, 'isValid') || !$file->isValid()) continue;
+ 
+                $path = $file->store('products', 'public');
+ 
+                ProductImage::create([
+                    'product_id'      => $product->id,
+                    'variant_id'      => $variantId,
+                    'color_option_id' => null,
+                    'image_path'      => $path,
+                    'order'           => $maxOrder + $orderIdx + 1,
+                    'is_primary'      => false,   // variant images are never the product primary
+                ]);
+ 
+                $orderIdx++;
+            }
+        }
+    }
+ 
 
     // ── Stats ──────────────────────────────────────────────────────────────────
 
