@@ -8,6 +8,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Carbon\Carbon;
 
 /**
@@ -602,6 +603,77 @@ PROMPT;
             ->limit(8)
             ->get();
 
+        // ── NEW: Resolve product images in a single batched query ──────────
+        // Collect all product IDs we need images for:
+        // main product + co-purchased products + same-category products.
+        $allProductIds = collect([$mainProduct->id])
+            ->merge($coPurchased->pluck('id'))
+            ->merge($sameCategoryProducts->pluck('id'))
+            ->unique()
+            ->values()
+            ->toArray();
+
+        // Fetch all relevant image rows in ONE query, ordered so the best
+        // image per product comes first when we group by product_id:
+        //   1. is_primary DESC  → primary image wins
+        //   2. order ASC        → lowest display-order next
+        //   3. id ASC           → tie-break by earliest row
+        $rawImages = DB::table('product_images')
+            ->whereIn('product_id', $allProductIds)
+            ->select('product_id', 'variant_id', 'image_path', 'is_primary', 'order', 'id')
+            ->orderByRaw('product_id ASC, is_primary DESC, `order` ASC, id ASC')
+            ->get()
+            ->groupBy('product_id');
+
+        // Build a map of product_id → resolved Storage URL (null if no image).
+        // Image priority per product:
+        //   • Variant product  → primary variant image first, else first variant image
+        //   • Simple product   → primary product-level image first, else first product image
+        //   • No image at all  → null  (frontend renders a placeholder icon)
+        $imageUrlById = [];
+        foreach ($allProductIds as $pid) {
+            $rows = $rawImages->get($pid, collect());
+
+            if ($rows->isEmpty()) {
+                $imageUrlById[$pid] = null;
+                continue;
+            }
+
+            $variantImages = $rows->filter(fn($r) => !is_null($r->variant_id));
+            $productImages = $rows->filter(fn($r) =>  is_null($r->variant_id));
+
+            if ($variantImages->isNotEmpty()) {
+                // Variant product: prefer primary variant image, else lowest-order variant image
+                $best = $variantImages->firstWhere('is_primary', true)
+                     ?? $variantImages->first(); // already sorted by order ASC
+            } else {
+                // Simple product: prefer primary product image, else lowest-order product image
+                $best = $productImages->firstWhere('is_primary', true)
+                     ?? $productImages->first(); // already sorted by order ASC
+            }
+
+            $imageUrlById[$pid] = $best ? Storage::url($best->image_path) : null;
+        }
+
+        // Build the final map keyed by product NAME (not ID).
+        // The AI returns product names as strings in bundle.products[],
+        // so the frontend looks up images by name.
+        $productImagesByName = [];
+
+        // Main product
+        $productImagesByName[$mainProduct->name] = $imageUrlById[$mainProduct->id] ?? null;
+
+        // Co-purchased products
+        foreach ($coPurchased as $p) {
+            $productImagesByName[$p->name] = $imageUrlById[$p->id] ?? null;
+        }
+
+        // Same-category products
+        foreach ($sameCategoryProducts as $p) {
+            $productImagesByName[$p->name] = $imageUrlById[$p->id] ?? null;
+        }
+        // ── END image resolution ───────────────────────────────────────────
+
         $coPurchasedStr = $coPurchased->map(fn($p) => "{$p->name} ({$p->co_count}x co-purchased)")->implode(', ') ?: 'No co-purchase data yet';
         $categoryStr    = $sameCategoryProducts->pluck('name')->implode(', ') ?: 'No other products in category';
         $otherProductsArr = $coPurchased->isNotEmpty() ? $coPurchased->pluck('name') : $sameCategoryProducts->pluck('name');
@@ -725,10 +797,14 @@ PROMPT;
             'data'    => [
                 'ai_result'    => $aiResult,
                 'data_context' => [
-                    'product_name'  => $mainProduct->name,
-                    'co_purchased'  => $coPurchased->take(5)->values(),
-                    'same_category' => $sameCategoryProducts->take(5)->values(),
-                    'mode'          => $mode,
+                    'product_name'   => $mainProduct->name,
+                    'co_purchased'   => $coPurchased->take(5)->values(),
+                    'same_category'  => $sameCategoryProducts->take(5)->values(),
+                    'mode'           => $mode,
+                    // NEW: image map keyed by product name → Storage URL | null
+                    // Used by the frontend to render thumbnails in bundle chips.
+                    // null means no image exists → frontend shows a placeholder icon.
+                    'product_images' => $productImagesByName,
                 ],
             ],
         ]);
