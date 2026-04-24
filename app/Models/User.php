@@ -40,8 +40,24 @@ class User extends Authenticatable
     public function orders()             { return $this->hasMany(Order::class); }
     public function sellerApplication()  { return $this->hasOne(SellerApplication::class)->latest(); }
     public function sellerApplications() { return $this->hasMany(SellerApplication::class); }
+    // In User.php — add to the relationships section
 
-    /**
+    /** Delivery assignments for delivery_guy users */
+    public function deliveryAssignments()
+    {
+        return $this->hasMany(DeliveryAssignment::class, 'delivery_guy_id');
+    }
+
+    /** Orders assigned BY this user (delivery_admin) */
+    public function assignedOrders()
+    {
+        return $this->hasMany(DeliveryAssignment::class, 'assigned_by');
+    }
+
+    // Role helpers — add alongside existing ones
+    public function isDeliveryAdmin() { return $this->role === 'delivery_admin'; }
+    public function isDeliveryGuy()   { return $this->role === 'delivery_guy'; }
+        /**
      * User's saved delivery addresses (address book).
      * Ordered so the default address always comes first.
      */
@@ -76,7 +92,10 @@ class User extends Authenticatable
     public function scopePendingSellers($q)  { return $q->where('role', 'seller')->where('is_approved', false); }
     public function scopeClients($q)         { return $q->where('role', 'client'); }
     public function scopeAdmins($q)          { return $q->where('role', 'admin'); }
-
+    public function scopeDeliveryGuys($q)
+    {
+        return $q->where('role', 'delivery_guy');
+    }
     public static function getAllAdmins()
     {
         return static::where('role', 'admin')

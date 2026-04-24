@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\SellerOrder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use App\Models\Order;
 
 /**
  * SellerOrderController
@@ -146,26 +147,66 @@ class SellerOrderController extends Controller
     }
 
     /* ── PATCH /api/seller/orders/{id}/status ── */
-    public function updateStatus(Request $request, $id)
-    {
-        $request->validate([
-            'status' => 'required|in:pending,processing,completed,delivered,cancelled',
-        ]);
+public function updateStatus(Request $request, $id)
+{
+    $request->validate([
+        'status' => 'required|in:pending,processing,completed,delivered,cancelled',
+    ]);
 
-        $sellerId    = auth()->id();
+    $sellerId    = auth()->id();
+    $sellerOrder = SellerOrder::where('seller_id', $sellerId)->findOrFail($id);
+    $sellerOrder->update(['status' => $request->status]);
 
-        // SECURITY: findOrFail scoped to seller_id — a seller can NEVER update
-        // another seller's sub-order even if they guess the ID.
-        $sellerOrder = SellerOrder::where('seller_id', $sellerId)->findOrFail($id);
-        $sellerOrder->update(['status' => $request->status]);
+    // ── Sync parent orders.status ─────────────────────────────────────────
+    // Re-derive the parent order's aggregate status from ALL its seller_orders.
+    // Rules (in priority order):
+    //   1. Any sub-order still pending/processing → parent = 'processing'
+    //   2. All sub-orders delivered               → parent = 'delivered'
+    //   3. All sub-orders completed or delivered  → parent = 'completed'
+    //   4. All sub-orders cancelled               → parent = 'cancelled'
+    //   5. Mixed otherwise                        → parent = 'processing'
+    $this->syncParentOrderStatus($sellerOrder->order_id);
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Order status updated.',
-            'data'    => $sellerOrder,
-        ]);
-    }
+    return response()->json([
+        'success' => true,
+        'message' => 'Order status updated.',
+        'data'    => $sellerOrder,
+    ]);
+}
 
+/**
+ * Derive and write the correct aggregate status to orders.status
+ * based on the current state of all seller_orders for that order.
+ */
+private function syncParentOrderStatus(int $orderId): void
+{
+    $statuses = SellerOrder::where('order_id', $orderId)
+        ->pluck('status')
+        ->toArray();
+
+    if (empty($statuses)) return;
+
+    $unique = array_unique($statuses);
+
+    $derived = match(true) {
+        // All cancelled
+        $unique === ['cancelled']
+            => 'cancelled',
+
+        // All delivered
+        $unique === ['delivered']
+            => 'delivered',
+
+        // All completed or delivered (mixed is fine — parent = completed)
+        count(array_diff($unique, ['completed', 'delivered'])) === 0
+            => 'completed',
+
+        // Any still active
+        default => 'processing',
+    };
+
+    Order::where('id', $orderId)->update(['status' => $derived]);
+}
     /* ── PATCH /api/seller/orders/{id}/payment ── */
     public function updatePayment(Request $request, $id)
     {

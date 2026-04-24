@@ -39,8 +39,9 @@ use App\Http\Controllers\Api\Seller\BlackPepperController;
 use App\Http\Controllers\Admin\AdminVipRequestController;
 use App\Http\Controllers\Api\Seller\SponsorshipController;
 use App\Http\Controllers\Admin\AdminSponsorshipController;
-
-
+use App\Http\Controllers\Api\Delivery\DeliveryController;
+use App\Http\Controllers\Api\BrandProductController as PublicBrandProductController;
+use App\Http\Controllers\Admin\BrandProductController;
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES
@@ -72,6 +73,11 @@ Route::post('/products/by-ids', [ProductController::class, 'byIds']);
 Route::get('/products',          [ProductController::class, 'index']);
 Route::get('/products/featured', [ProductController::class, 'featured']);
 Route::get('/products/{slug}',   [ProductController::class, 'show']);
+Route::get('/brand-products',          [PublicBrandProductController::class, 'index']);
+Route::get('/brand-products/featured', [PublicBrandProductController::class, 'featured']);
+Route::get('/brand-products/{slug}',   [PublicBrandProductController::class, 'show']);
+
+
 // This must come BEFORE the auth:sanctum group
 Route::post(
     '/payment/stripe/webhook',
@@ -305,7 +311,16 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/products/{id}/reject',  [AdminProductController::class, 'reject']);
         Route::patch('/products/{id}/disable', [AdminProductController::class, 'disable']);
         Route::delete('/products/{id}',        [AdminProductController::class, 'destroy']);
-
+        Route::get('/brand-products/stats',                           [\App\Http\Controllers\Admin\BrandProductController::class, 'stats']);
+        Route::get('/brand-products',                                 [\App\Http\Controllers\Admin\BrandProductController::class, 'index']);
+        Route::post('/brand-products',                                [\App\Http\Controllers\Admin\BrandProductController::class, 'store']);
+        Route::get('/brand-products/{id}',                            [\App\Http\Controllers\Admin\BrandProductController::class, 'show']);
+        Route::put('/brand-products/{id}',                            [\App\Http\Controllers\Admin\BrandProductController::class, 'update']);
+        Route::post('/brand-products/{id}',                           [\App\Http\Controllers\Admin\BrandProductController::class, 'update']);
+        Route::delete('/brand-products/{id}',                         [\App\Http\Controllers\Admin\BrandProductController::class, 'destroy']);
+        Route::delete('/brand-products/{id}/images/{imageId}',        [\App\Http\Controllers\Admin\BrandProductController::class, 'destroyImage']);
+        Route::patch('/brand-products/{id}/images/{imageId}/primary', [\App\Http\Controllers\Admin\BrandProductController::class, 'setPrimaryImage']);
+        
         // ── Product Update Requests ───────────────────────────────────────
         Route::get('/product-update-requests/stats',         [AdminProductUpdateRequestController::class, 'stats']);
         Route::get('/product-update-requests',               [AdminProductUpdateRequestController::class, 'index']);
@@ -318,7 +333,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/orders',               [AdminOrderController::class, 'index']);
         Route::get('/orders/{id}',          [AdminOrderController::class, 'show']);
         Route::patch('/orders/{id}/status', [AdminOrderController::class, 'updateStatus']);
-
+        Route::patch('/orders/{id}/payment-status', [AdminOrderController::class, 'updatePaymentStatus']);
         // ── Admin Notifications ───────────────────────────────────────────
         Route::prefix('notifications')->group(function () {
             Route::get('/',             [AdminNotificationController::class, 'index']);
@@ -366,3 +381,31 @@ Route::post('/payment/stripe/create-intent',    [\App\Http\Controllers\Api\Clien
 // AI proxy — Red/Black Pepper only
 Route::middleware('auth:sanctum')->post('/ai/groq', [AIController::class, 'proxy']);
 }); // ← auth:sanctum group ends HERE
+
+/*
+|--------------------------------------------------------------------------
+| DELIVERY ROUTES — auth handled by DeliveryMiddleware (not sanctum group)
+|--------------------------------------------------------------------------
+*/
+Route::prefix('delivery')
+    ->middleware(['auth:sanctum', 'delivery'])
+    ->group(function () {
+
+        // ── Delivery Admin only ───────────────────────────────────────────
+        Route::middleware('delivery:admin')->group(function () {
+            Route::get('/stats',               [DeliveryController::class, 'stats']);
+            Route::get('/orders',              [DeliveryController::class, 'readyOrders']);
+            Route::get('/orders/active',       [DeliveryController::class, 'activeOrders']); // BEFORE /{id}
+            Route::post('/orders/{id}/assign', [DeliveryController::class, 'assign']);
+            Route::get('/team',                [DeliveryController::class, 'team']);
+        });
+
+        // ── Delivery Guy only ─────────────────────────────────────────────
+        Route::middleware('delivery:guy')->group(function () {
+            Route::get('/my-orders',           [DeliveryController::class, 'myOrders']);
+            Route::put('/orders/{id}/status',  [DeliveryController::class, 'updateStatus']);
+        });
+
+        // ── Shared — LAST so /active is not swallowed by /{id} ───────────
+        Route::get('/orders/{id}',             [DeliveryController::class, 'showOrder']);
+    });

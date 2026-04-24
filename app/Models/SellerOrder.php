@@ -63,4 +63,8 @@ class SellerOrder extends Model
     public function scopeDelivered($q)  { return $q->where('status', 'delivered'); }
     public function scopeCancelled($q)  { return $q->where('status', 'cancelled'); }
     public function scopePaid($q)       { return $q->where('payment_status', 'paid'); }
+    public function deliveryAssignment()
+    {
+        return $this->hasOne(DeliveryAssignment::class, 'seller_order_id');
+    }
 }

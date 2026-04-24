@@ -16,13 +16,14 @@ class Product extends Model
         'seller_id', 'category_id', 'subcategory_id',
         'name', 'slug', 'description', 'short_description',
         'price', 'stock', 'sku',
-        'is_approved', 'is_active', 'featured', 'views',
+        'is_approved', 'is_active',    'is_platform_product', 'featured', 'views',
     ];
 
     protected $casts = [
         'is_approved' => 'boolean',
         'is_active'   => 'boolean',
         'featured'    => 'boolean',
+        'is_platform_product'  => 'boolean',
         'price'       => 'decimal:3',
     ];
 
@@ -126,6 +127,9 @@ class Product extends Model
     public function scopeAvailable($query) { return $query->where('is_approved', true)->where('is_active', true); }
     public function scopeFeatured($query)  { return $query->where('featured', true); }
     public function scopeInStock($query)   { return $query->where('stock', '>', 0); }
+    public function scopePlatform($query)      { return $query->where('is_platform_product', true); }
+    public function scopeSeller($query)        { return $query->where('is_platform_product', false); }
+    public function scopeAvailableBrand($query){ return $query->where('is_platform_product', true)->where('is_active', true); }
 
     /**
      * Filter by a specific attribute value.
