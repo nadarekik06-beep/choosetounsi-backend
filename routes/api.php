@@ -42,6 +42,9 @@ use App\Http\Controllers\Admin\AdminSponsorshipController;
 use App\Http\Controllers\Api\Delivery\DeliveryController;
 use App\Http\Controllers\Api\BrandProductController as PublicBrandProductController;
 use App\Http\Controllers\Admin\BrandProductController;
+use App\Http\Controllers\Api\UserPreferenceController;
+use App\Http\Controllers\Api\ProductRecommendationController;
+
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES
@@ -53,8 +56,16 @@ Route::post('/auth/register', [AuthController::class, 'register']);
 Route::get('/auth/google/redirect', [AuthController::class, 'googleRedirect']);
 Route::get('/auth/google/callback', [AuthController::class, 'googleCallback']);
 
+Route::post('/products/by-ids', [ProductController::class, 'byIds']);
 Route::get('/products',          [ProductController::class, 'index']);
 Route::get('/products/featured', [ProductController::class, 'featured']);
+
+// ── Recommendation routes MUST come BEFORE /products/{slug} ──────────────────
+Route::get('/products/{slug}/similar',       [ProductRecommendationController::class, 'similar']);
+Route::get('/products/{slug}/complementary', [ProductRecommendationController::class, 'complementary']);
+Route::get('/products/{slug}/from-seller',   [ProductRecommendationController::class, 'fromSeller']);
+Route::get('/products/{slug}/recommended',   [ProductRecommendationController::class, 'recommended']);
+
 Route::get('/products/{slug}',   [ProductController::class, 'show']);
 
 Route::get('/categories',                 [CategoryController::class, 'index']);
@@ -69,10 +80,7 @@ Route::post('/ai/chat', [\App\Http\Controllers\Api\AiChatController::class, 'han
 
 Route::post('/search/text',  [\App\Http\Controllers\Api\SearchController::class, 'searchText']);
 Route::post('/search/image', [\App\Http\Controllers\Api\SearchController::class, 'searchImage']);
-Route::post('/products/by-ids', [ProductController::class, 'byIds']);
-Route::get('/products',          [ProductController::class, 'index']);
-Route::get('/products/featured', [ProductController::class, 'featured']);
-Route::get('/products/{slug}',   [ProductController::class, 'show']);
+
 Route::get('/brand-products',          [PublicBrandProductController::class, 'index']);
 Route::get('/brand-products/featured', [PublicBrandProductController::class, 'featured']);
 Route::get('/brand-products/{slug}',   [PublicBrandProductController::class, 'show']);
@@ -107,6 +115,15 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::post('/seller-applications',       [SellerApplicationController::class, 'store']);
     Route::get('/seller-applications/status', [SellerApplicationController::class, 'status']);
+
+    // ── User preferences & onboarding ─────────────────────────────────────────
+    Route::prefix('preferences')->group(function () {
+        Route::get('/onboarding-data', [UserPreferenceController::class, 'onboardingData']);
+        Route::get('/',                [UserPreferenceController::class, 'show']);
+        Route::post('/',               [UserPreferenceController::class, 'store']);
+        Route::post('/skip',           [UserPreferenceController::class, 'skip']);
+        Route::put('/',                [UserPreferenceController::class, 'update']);
+    });
 
     Route::prefix('cart')->group(function () {
         Route::get('/',        [CartController::class, 'index']);

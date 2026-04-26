@@ -24,6 +24,7 @@ class AuthController extends Controller
             'is_approved' => (bool) $user->is_approved,
             'is_active'   => (bool) $user->is_active,
             'avatar'      => $user->avatar ?? null,   // Google photo URL or null
+            'onboarding_completed' => (bool) $user->onboarding_completed,
         ];
     }
 
@@ -81,9 +82,9 @@ public function user(Request $request): \Illuminate\Http\JsonResponse
             'avatar'      => $user->avatar,
 
             // ── THE FIX: surface active plan at the top level ────────────
-            // Read from seller_applications.plan (your current source of truth)
             // 'free' if no application exists yet (safe default)
             'active_plan' => $application?->plan ?? 'free',
+            'onboarding_completed' => (bool) $user->onboarding_completed,
         ],
     ]);
 }

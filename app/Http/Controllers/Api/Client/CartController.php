@@ -6,12 +6,22 @@ use App\Http\Controllers\Controller;
 use App\Models\Cart;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Services\UserPreferenceService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use App\Http\Controllers\Api\UserPreferenceController;
+use App\Http\Controllers\Api\ProductRecommendationController;
 
 class CartController extends Controller
 {
+    private UserPreferenceService $preferenceService;
+
+    public function __construct(UserPreferenceService $preferenceService)
+    {
+        $this->preferenceService = $preferenceService;
+    }
+
     /**
      * GET /api/cart
      */
@@ -137,6 +147,15 @@ class CartController extends Controller
                 'quantity'   => $qty,
             ]);
         }
+
+        // ── Log cart activity ─────────────────────────────────────────────────
+        $this->preferenceService->logActivity(
+            userId:     $user->id,
+            productId:  $productId,
+            categoryId: $product->category_id,
+            action:     'cart',
+            sessionId:  $request->session()->getId()
+        );
 
         return $this->index($request);
     }

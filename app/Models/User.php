@@ -20,6 +20,7 @@ class User extends Authenticatable
         'is_approved',
         'google_id',
         'avatar',
+        'onboarding_completed',
     ];
 
     protected $hidden = [
@@ -31,6 +32,7 @@ class User extends Authenticatable
         'email_verified_at' => 'datetime',
         'is_active'         => 'boolean',
         'is_approved'       => 'boolean',
+        'onboarding_completed'   => 'boolean',
     ];
 
     // ── Relationships ──────────────────────────────────────────────────────
@@ -40,6 +42,10 @@ class User extends Authenticatable
     public function orders()             { return $this->hasMany(Order::class); }
     public function sellerApplication()  { return $this->hasOne(SellerApplication::class)->latest(); }
     public function sellerApplications() { return $this->hasMany(SellerApplication::class); }
+    public function preferences()
+   {
+        return $this->hasOne(\App\Models\UserPreference::class);
+    }
     // In User.php — add to the relationships section
 
     /** Delivery assignments for delivery_guy users */
@@ -55,6 +61,10 @@ class User extends Authenticatable
     }
 
     // Role helpers — add alongside existing ones
+    public function needsOnboarding(): bool
+    {
+       return $this->role === 'client' && !$this->onboarding_completed;
+   }
     public function isDeliveryAdmin() { return $this->role === 'delivery_admin'; }
     public function isDeliveryGuy()   { return $this->role === 'delivery_guy'; }
         /**

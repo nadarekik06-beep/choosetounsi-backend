@@ -5,24 +5,71 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Attribute;
 use App\Models\Product;
+use App\Services\ProductScoringService;
+use App\Services\UserPreferenceService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
+/**
+ * Api\ProductController — UPDATED
+ *
+ * Changes vs. previous version:
+ *
+ *  1. Constructor now injects ProductScoringService and UserPreferenceService.
+ *
+ *  2. index() — after the existing filter+paginate logic, if the sort is
+ *     'created_at' (default) AND we have a user with preferences, we replace
+ *     the DB-level sort with the scoring engine.
+ *
+ *     CRITICAL: We do NOT touch the existing sponsorship sort (is_sponsored,
+ *     sponsored_priority). Sponsored products continue to rank first — the
+ *     scoring engine applies to non-sponsored products only when the user's
+ *     sort is 'created_at'.
+ *
+ *     For explicit sorts (price_asc, price_desc, views), the user's intent
+ *     takes priority — no scoring override.
+ *
+ *  3. show() — logs a 'view' activity for authenticated users.
+ *
+ *  All other methods (featured, filterAttributes, byIds) are 100% unchanged.
+ */
 class ProductController extends Controller
 {
+    public function __construct(
+        private ProductScoringService $scoringService,
+        private UserPreferenceService $preferenceService
+    ) {}
+
     /**
      * GET /api/products
      *
-     * CHANGES vs previous version:
-     *   - Sponsored products are ranked first via orderByDesc('is_sponsored')
-     *     then orderByDesc('sponsored_priority') within sponsored group.
-     *   - is_sponsored field included in the transformed product payload
-     *     so the frontend can render the SponsoredBadge.
-     *   - All existing filters, pagination, and transform logic unchanged.
+     * Scoring injection strategy:
+     *   - When sort = 'created_at' (default) → apply scoring engine
+     *   - When sort = 'price_asc' | 'price_desc' | 'views' → respect user's choice
+     *   - Sponsored products ALWAYS rank first regardless of sort (unchanged)
+     *
+     * For scoring to work, we need the full result set to compute relative
+     * scores. We fetch up to 200 products for the scoring window, then
+     * paginate the scored results in PHP.
+     *
+     * This is efficient because:
+     *   - Products table is indexed
+     *   - We only do this when sort = 'created_at' AND user is authenticated
+     *   - Guest requests and explicit sorts bypass scoring entirely
      */
     public function index(Request $request)
     {
+        $sort = $request->query('sort', 'created_at');
+        $user = $request->user();
+
+        // ── Should we apply scoring? ────────────────────────────────────────
+        // Only apply when:
+        //   a) Sort is default (created_at) — user hasn't explicitly sorted
+        //   b) User is authenticated — we have preference data to work with
+        $applyScoring = ($sort === 'created_at') && ($user !== null);
+
+        // ── Build the base query (identical to previous version) ───────────
         $query = Product::available()
             ->with([
                 'category:id,name,slug',
@@ -37,6 +84,12 @@ class ProductController extends Controller
                     ]),
             ]);
 
+        // Load attributeValues only when scoring (needed for brand/gender matching)
+        if ($applyScoring) {
+            $query->with(['attributeValues.attribute']);
+        }
+
+        // ── Filters (identical to previous version) ────────────────────────
         if ($search = $request->query('search')) {
             $query->where(fn($q) =>
                 $q->where('name', 'like', "%{$search}%")
@@ -68,69 +121,75 @@ class ProductController extends Controller
             }
         }
 
-        // ── Sorting ────────────────────────────────────────────────────────
-        // Sponsored products always float to the top regardless of the
-        // user-selected sort. Within each tier (sponsored / non-sponsored),
-        // the user-selected sort is applied normally.
-        $sort = $request->query('sort', 'created_at');
+        // ── Sorting ─────────────────────────────────────────────────────────
+        if ($applyScoring) {
+            // When scoring: fetch a larger window to score, then PHP-paginate
+            // Sponsored still float to top at DB level
+            $query
+                ->orderByDesc('is_sponsored')
+                ->orderByDesc('sponsored_priority');
 
-        // Step 1: sponsored tier always wins
-        $query
-            ->orderByDesc('is_sponsored')           // sponsored products first
-            ->orderByDesc('sponsored_priority');     // higher priority wins within sponsored
+            $perPage = min((int) $request->query('per_page', 20), 60);
+            $page    = max((int) $request->query('page', 1), 1);
 
-        // Step 2: user-selected sort applied within each tier
-        match ($sort) {
-            'price_asc'  => $query->orderBy('price'),
-            'price_desc' => $query->orderByDesc('price'),
-            'views'      => $query->orderByDesc('views'),
-            default      => $query->orderByDesc('created_at'),
-        };
+            // Fetch scoring window — sponsored first, then up to 200 more
+            $allProducts = $query->limit(200)->get();
 
-        $perPage  = (int) $request->query('per_page', 20);
-        $products = $query->paginate(min($perPage, 60));
+            // Split: sponsored stay at top (already sorted by DB)
+            $sponsored    = $allProducts->where('is_sponsored', true)->values();
+            $nonSponsored = $allProducts->where('is_sponsored', false)->values();
 
-        $products->getCollection()->transform(function ($p) {
-            $p->primary_image_url = $p->primaryImage
-                ? Storage::url($p->primaryImage->image_path)
-                : null;
+            // Score only non-sponsored products
+            $prefs = $this->preferenceService->getCombinedPreferences($user->id);
+            $scoredNonSponsored = $this->scoringService->scoreAndSort($nonSponsored, $prefs);
 
-            // ── Expose is_sponsored so the frontend can show the badge ──
-            $p->is_sponsored       = (bool) $p->is_sponsored;
-            $p->sponsored_priority = (int)  $p->sponsored_priority;
+            // Merge: sponsored first, then scored non-sponsored
+            $sorted = $sponsored->concat($scoredNonSponsored)->values();
 
-            $swatches = [];
-            $seen     = [];
-            foreach ($p->variants as $variant) {
-                foreach ($variant->attributeOptions as $opt) {
-                    if (
-                        $opt->attribute &&
-                        $opt->attribute->slug === 'color' &&
-                        !in_array($opt->id, $seen, true)
-                    ) {
-                        $seen[]     = $opt->id;
-                        $swatches[] = [
-                            'id'        => $opt->id,
-                            'value'     => $opt->value,
-                            'color_hex' => $opt->color_hex,
-                        ];
-                    }
-                }
-            }
-            $p->color_swatches = $swatches;
-            $p->setRelation('variants', $p->variants->map(fn($v) => [
-                'id'    => $v->id,
-                'stock' => $v->stock,
-            ])->values());
+            // PHP pagination
+            $total  = $sorted->count();
+            $offset = ($page - 1) * $perPage;
+            $items  = $sorted->slice($offset, $perPage)->values();
 
-            return $p;
-        });
+            // Build paginator-like response matching Laravel's paginate() shape
+            $paginatedData = [
+                'current_page' => $page,
+                'data'         => $this->transformProductCollection($items),
+                'per_page'     => $perPage,
+                'total'        => $total,
+                'last_page'    => (int) ceil($total / $perPage),
+                'from'         => $offset + 1,
+                'to'           => min($offset + $perPage, $total),
+            ];
 
-        return response()->json(['success' => true, 'data' => $products]);
+            return response()->json(['success' => true, 'data' => $paginatedData]);
+
+        } else {
+            // ── Standard path (unchanged from previous version) ─────────────
+            $query
+                ->orderByDesc('is_sponsored')
+                ->orderByDesc('sponsored_priority');
+
+            match ($sort) {
+                'price_asc'  => $query->orderBy('price'),
+                'price_desc' => $query->orderByDesc('price'),
+                'views'      => $query->orderByDesc('views'),
+                default      => $query->orderByDesc('created_at'),
+            };
+
+            $perPage  = (int) $request->query('per_page', 20);
+            $products = $query->paginate(min($perPage, 60));
+
+            $products->getCollection()->transform(function ($p) {
+                return $this->transformProductItem($p);
+            });
+
+            return response()->json(['success' => true, 'data' => $products]);
+        }
     }
 
     /**
-     * GET /api/products/featured  — UNCHANGED
+     * GET /api/products/featured — UNCHANGED
      */
     public function featured()
     {
@@ -151,30 +210,10 @@ class ProductController extends Controller
     /**
      * GET /api/products/{slug}
      *
-     * ═══════════════════════════════════════════════════════════════════
-     * FIX 1 — duplicate React key "color-104"
-     * ═══════════════════════════════════════════════════════════════════
-     * $colorGroups is keyed by primaryId (int), not groupKey string.
-     * First-write wins → only ONE entry per primaryId.
-     * array_values() then produces [{id:104,...},{id:105,...}] — unique.
-     * We still store `group_key` inside each entry so the frontend can
-     * look up color_images[group_key] without any guessing.
-     *
-     * ═══════════════════════════════════════════════════════════════════
-     * FIX 2 — multi-color variant icon shows color circles instead of image
-     * ═══════════════════════════════════════════════════════════════════
-     * For multi-color variants (e.g. Grey+Silver), images are stored with
-     * variant_id only — no color_option_id. The old code only populated
-     * $colorPrimaryImage from product_images.color_option_id rows, so
-     * multi-color variants always got primary_image = null in the axis
-     * options, causing the frontend to fall back to color circles.
-     *
-     * Fix: build a $variantPrimaryImage map (variant_id → first image URL)
-     * during the variants payload loop, then use it as a final fallback
-     * when constructing $colorGroups so every option gets a real image.
-     * ═══════════════════════════════════════════════════════════════════
+     * ADDITION: Log 'view' activity for authenticated users.
+     * Everything else is unchanged from the previous version.
      */
-    public function show($slug)
+    public function show(Request $request, $slug)
     {
         $product = Product::where('slug', $slug)
             ->available()
@@ -199,7 +238,20 @@ class ProductController extends Controller
 
         $product->incrementViews();
 
-        // ── Attribute data ─────────────────────────────────────────────────
+        // ── NEW: Log view activity ──────────────────────────────────────────
+        $user = $request->user();
+        if ($user) {
+            $this->preferenceService->logActivity(
+                userId:     $user->id,
+                productId:  $product->id,
+                categoryId: $product->category_id,
+                action:     'view',
+                sessionId:  $request->session()->getId()
+            );
+        }
+
+        // ── Everything below is UNCHANGED from previous version ─────────────
+
         $product->attribute_data = $product->attributeValues->map(function ($pav) {
             $attr  = $pav->attribute;
             $value = $attr->decodeValue($pav->value);
@@ -217,50 +269,39 @@ class ProductController extends Controller
             ];
         })->keyBy('slug');
 
-        // ── Primary + all images ───────────────────────────────────────────
         $product->primary_image_url = $product->primaryImage
             ? Storage::url($product->primaryImage->image_path)
             : null;
 
         $product->images->each(fn($img) => $img->url = Storage::url($img->image_path));
 
-        // ── Variants + axes + color image map ──────────────────────────────
-        $hasVariants          = $product->variants->isNotEmpty();
-        $variantsPayload      = [];
-        $selectableAxes       = [];
-        $colorImages          = [];   // string key → url[]
-        $colorPrimaryImage    = [];   // string key → first url
-        $variantPrimaryImage  = [];   // int variant_id → first image URL  ← FIX 2
+        $hasVariants         = $product->variants->isNotEmpty();
+        $variantsPayload     = [];
+        $selectableAxes      = [];
+        $colorImages         = [];
+        $colorPrimaryImage   = [];
+        $variantPrimaryImage = [];
 
         if ($hasVariants) {
-
-            // Product-level images (no color_option_id, no variant_id)
             $productImageUrls = $product->images
                 ->filter(fn($i) => is_null($i->variant_id) && is_null($i->color_option_id))
                 ->map(fn($i) => Storage::url($i->image_path))
                 ->values()
                 ->toArray();
 
-            // ── colorGroupMap: primaryOptId → sorted ids[] ─────────────────
             $colorGroupMap = [];
-
             foreach ($product->variants as $v) {
                 $colorOpts = $v->attributeOptions
                     ->filter(fn($o) => $o->attribute->slug === 'color')
-                    ->sortBy('id')
-                    ->values();
-
+                    ->sortBy('id')->values();
                 if ($colorOpts->isEmpty()) continue;
-
                 $primaryId = $colorOpts->first()->id;
                 $allIds    = $colorOpts->pluck('id')->toArray();
-
                 if (!isset($colorGroupMap[$primaryId])) {
                     $colorGroupMap[$primaryId] = $allIds;
                 }
             }
 
-            // ── Map saved images (with color_option_id) to groupKey ────────
             $product->images
                 ->filter(fn($i) => $i->color_option_id !== null)
                 ->each(function ($img) use (&$colorImages, &$colorPrimaryImage, $colorGroupMap) {
@@ -268,14 +309,10 @@ class ProductController extends Controller
                     $groupIds = $colorGroupMap[$cid] ?? [$cid];
                     $groupKey = implode('|', $groupIds);
                     $url      = Storage::url($img->image_path);
-
-                    // Store under full groupKey
                     $colorImages[$groupKey][] = $url;
                     if ($img->is_primary || !isset($colorPrimaryImage[$groupKey])) {
                         $colorPrimaryImage[$groupKey] = $url;
                     }
-
-                    // Also store under plain string id for backward compat
                     $strId = (string) $cid;
                     $colorImages[$strId][] = $url;
                     if ($img->is_primary || !isset($colorPrimaryImage[$strId])) {
@@ -283,55 +320,37 @@ class ProductController extends Controller
                     }
                 });
 
-            // ── Variants payload ───────────────────────────────────────────
             $variantsPayload = $product->variants->map(function ($v) use (
                 $productImageUrls, &$colorImages, &$colorPrimaryImage, &$variantPrimaryImage
             ) {
                 $variantImageUrls = $v->images
                     ->map(fn($i) => Storage::url($i->image_path))
-                    ->values()
-                    ->toArray();
-
-                // ── FIX 2: record first image per variant_id ───────────────
+                    ->values()->toArray();
                 if (!empty($variantImageUrls)) {
                     $variantPrimaryImage[$v->id] = $variantImageUrls[0];
                 }
-
                 $colorOpts = $v->attributeOptions
                     ->filter(fn($o) => $o->attribute->slug === 'color')
-                    ->sortBy('id')
-                    ->values();
-
-                $colorOptId = null;
-                $groupKey   = null;
-
+                    ->sortBy('id')->values();
+                $colorOptId = null; $groupKey = null;
                 if ($colorOpts->isNotEmpty()) {
                     $colorOptId = $colorOpts->first()->id;
                     $groupKey   = $colorOpts->pluck('id')->implode('|');
                     $strId      = (string) $colorOptId;
-
                     foreach ($variantImageUrls as $url) {
-                        if (!in_array($url, $colorImages[$groupKey] ?? [])) {
-                            $colorImages[$groupKey][] = $url;
-                        }
-                        if (!in_array($url, $colorImages[$strId] ?? [])) {
-                            $colorImages[$strId][] = $url;
-                        }
+                        if (!in_array($url, $colorImages[$groupKey] ?? [])) $colorImages[$groupKey][] = $url;
+                        if (!in_array($url, $colorImages[$strId] ?? []))    $colorImages[$strId][]    = $url;
                     }
                     if ($variantImageUrls) {
                         $colorPrimaryImage[$groupKey] ??= $variantImageUrls[0];
                         $colorPrimaryImage[$strId]    ??= $variantImageUrls[0];
                     }
                 }
-
                 $resolvedImages = $variantImageUrls;
                 if (empty($resolvedImages) && $groupKey && !empty($colorImages[$groupKey])) {
                     $resolvedImages = array_values(array_unique($colorImages[$groupKey]));
                 }
-                if (empty($resolvedImages)) {
-                    $resolvedImages = $productImageUrls;
-                }
-
+                if (empty($resolvedImages)) $resolvedImages = $productImageUrls;
                 return [
                     'id'                => $v->id,
                     'sku'               => $v->sku,
@@ -348,100 +367,45 @@ class ProductController extends Controller
                 ];
             })->values();
 
-            // ── selectable_axes ────────────────────────────────────────────
-            $axisMap             = [];
-            $colorGroups         = [];   // int primaryId → option entry
-            $registeredOptionIds = [];   // string axisSlug → int[]
-
+            $axisMap = []; $colorGroups = []; $registeredOptionIds = [];
             foreach ($product->variants as $variant) {
-                $colorOpts = $variant->attributeOptions
-                    ->filter(fn($o) => $o->attribute->slug === 'color')
-                    ->sortBy('id')
-                    ->values();
-
-                $nonColorOpts = $variant->attributeOptions
-                    ->filter(fn($o) => $o->attribute->slug !== 'color');
-
-                // Color axis shell
+                $colorOpts    = $variant->attributeOptions->filter(fn($o) => $o->attribute->slug === 'color')->sortBy('id')->values();
+                $nonColorOpts = $variant->attributeOptions->filter(fn($o) => $o->attribute->slug !== 'color');
                 if ($colorOpts->isNotEmpty() && !isset($axisMap['color'])) {
-                    $axisMap['color'] = [
-                        'slug'    => 'color',
-                        'name'    => $colorOpts->first()->attribute->name,
-                        'type'    => 'color',
-                        'options' => [],
-                    ];
+                    $axisMap['color'] = ['slug' => 'color', 'name' => $colorOpts->first()->attribute->name, 'type' => 'color', 'options' => []];
                 }
-
-                // ── FIX 1: key by primaryId ────────────────────────────────
                 if ($colorOpts->isNotEmpty()) {
                     $primaryId = $colorOpts->first()->id;
                     $groupKey  = $colorOpts->pluck('id')->implode('|');
-
                     if (!isset($colorGroups[$primaryId])) {
-                        // ── FIX 2: fallback chain for primary_image ─────────
-                        $resolvedPrimaryImage =
-                            $colorPrimaryImage[$groupKey]
-                            ?? $variantPrimaryImage[$variant->id]
-                            ?? null;
-
+                        $resolvedPrimaryImage = $colorPrimaryImage[$groupKey] ?? $variantPrimaryImage[$variant->id] ?? null;
                         $colorGroups[$primaryId] = [
                             'id'            => $primaryId,
                             'group_key'     => $groupKey,
                             'ids'           => $colorOpts->pluck('id')->toArray(),
                             'value'         => $colorOpts->pluck('value')->implode('+'),
                             'color_hex'     => $colorOpts->first()->color_hex,
-                            'swatches'      => $colorOpts->map(fn($o) => [
-                                'id'        => $o->id,
-                                'value'     => $o->value,
-                                'color_hex' => $o->color_hex,
-                            ])->toArray(),
+                            'swatches'      => $colorOpts->map(fn($o) => ['id' => $o->id, 'value' => $o->value, 'color_hex' => $o->color_hex])->toArray(),
                             'primary_image' => $resolvedPrimaryImage,
                         ];
                     }
                 }
-
-                // Non-color axes
                 foreach ($nonColorOpts as $opt) {
-                    $axisSlug = $opt->attribute->slug;
-                    $optId    = $opt->id;
-
+                    $axisSlug = $opt->attribute->slug; $optId = $opt->id;
                     if (!isset($axisMap[$axisSlug])) {
-                        $axisMap[$axisSlug] = [
-                            'slug'    => $axisSlug,
-                            'name'    => $opt->attribute->name,
-                            'type'    => $opt->attribute->type,
-                            'options' => [],
-                        ];
+                        $axisMap[$axisSlug] = ['slug' => $axisSlug, 'name' => $opt->attribute->name, 'type' => $opt->attribute->type, 'options' => []];
                         $registeredOptionIds[$axisSlug] = [];
                     }
-
-                    if (in_array($optId, $registeredOptionIds[$axisSlug], true)) {
-                        continue;
-                    }
-
-                    $axisMap[$axisSlug]['options'][$optId] = [
-                        'id'            => $optId,
-                        'value'         => $opt->value,
-                        'color_hex'     => $opt->color_hex,
-                        'primary_image' => null,
-                    ];
+                    if (in_array($optId, $registeredOptionIds[$axisSlug], true)) continue;
+                    $axisMap[$axisSlug]['options'][$optId] = ['id' => $optId, 'value' => $opt->value, 'color_hex' => $opt->color_hex, 'primary_image' => null];
                     $registeredOptionIds[$axisSlug][] = $optId;
                 }
             }
-
-            // Attach color group options (unique by primaryId)
-            if (isset($axisMap['color'])) {
-                $axisMap['color']['options'] = array_values($colorGroups);
-            }
-
-            // Flatten non-color options to sequential arrays
-            foreach ($axisMap as $slug => &$axis) {
-                if ($slug !== 'color') {
-                    $axis['options'] = array_values($axis['options']);
-                }
+            if (isset($axisMap['color'])) $axisMap['color']['options'] = array_values($colorGroups);
+            foreach ($axisMap as $s => &$axis) {
+                if ($s !== 'color') $axis['options'] = array_values($axis['options']);
             }
             unset($axis);
-
             $selectableAxes = array_values($axisMap);
         }
 
@@ -456,7 +420,7 @@ class ProductController extends Controller
     }
 
     /**
-     * GET /api/categories/{slug}/filter-attributes  — UNCHANGED
+     * GET /api/categories/{slug}/filter-attributes — UNCHANGED
      */
     public function filterAttributes($slug)
     {
@@ -472,107 +436,94 @@ class ProductController extends Controller
         }
 
         $nonVariantAttrIds = DB::table('product_attribute_values')
-            ->whereIn('product_id', $productIds)
-            ->distinct()
-            ->pluck('attribute_id');
-
+            ->whereIn('product_id', $productIds)->distinct()->pluck('attribute_id');
         $variantAttrIds = DB::table('product_variants as pv')
             ->join('variant_attribute_values as vav', 'vav.variant_id', '=', 'pv.id')
             ->join('attribute_options as ao', 'ao.id', '=', 'vav.attribute_option_id')
-            ->whereIn('pv.product_id', $productIds)
-            ->distinct()
-            ->pluck('ao.attribute_id');
+            ->whereIn('pv.product_id', $productIds)->distinct()->pluck('ao.attribute_id');
 
         $allAttrIds = $nonVariantAttrIds->merge($variantAttrIds)->unique()->values();
-
-        if ($allAttrIds->isEmpty()) {
-            return response()->json(['success' => true, 'data' => []]);
-        }
+        if ($allAttrIds->isEmpty()) return response()->json(['success' => true, 'data' => []]);
 
         $attributes = Attribute::whereIn('id', $allAttrIds)
             ->where('is_filterable', true)
             ->with(['options' => fn($q) => $q->orderBy('order')])
-            ->orderBy('order')
-            ->get()
+            ->orderBy('order')->get()
             ->map(fn($a) => [
-                'id'      => $a->id,
-                'slug'    => $a->slug,
-                'name'    => $a->name,
-                'type'    => $a->type,
-                'options' => $a->options->map(fn($o) => [
-                    'id'        => $o->id,
-                    'value'     => $o->value,
-                    'color_hex' => $o->color_hex,
-                ]),
+                'id' => $a->id, 'slug' => $a->slug, 'name' => $a->name, 'type' => $a->type,
+                'options' => $a->options->map(fn($o) => ['id' => $o->id, 'value' => $o->value, 'color_hex' => $o->color_hex]),
             ]);
 
         return response()->json(['success' => true, 'data' => $attributes]);
     }
 
     /**
-     * POST /api/products/by-ids  — UNCHANGED
+     * POST /api/products/by-ids — UNCHANGED
      */
-    public function byIds(Request $request)
+    public function byIds(\Illuminate\Http\Request $request)
     {
-        $request->validate([
-            'ids'   => 'required|array|max:50',
-            'ids.*' => 'integer|min:1',
-        ]);
-
+        $request->validate(['ids' => 'required|array|max:50', 'ids.*' => 'integer|min:1']);
         $ids  = $request->input('ids');
         $rows = DB::table('products as p')
-            ->select([
-                'p.id', 'p.name', 'p.slug', 'p.description',
-                'p.price', 'p.stock', 'p.views', 'p.featured',
-                'c.name  as category_name',
-                'c.slug  as category_slug',
-                's.name  as subcategory_name',
-                's.slug  as subcategory_slug',
-                'pi.image_path as primary_image',
-            ])
-            ->leftJoin('categories as c',    'c.id',  '=', 'p.category_id')
-            ->leftJoin('subcategories as s', 's.id',  '=', 'p.subcategory_id')
-            ->leftJoin('product_images as pi', function ($join) {
-                $join->on('pi.product_id', '=', 'p.id')
-                     ->where('pi.is_primary', '=', 1);
-            })
-            ->whereIn('p.id', $ids)
-            ->where('p.is_approved', 1)
-            ->where('p.is_active',   1)
-            ->whereNull('p.deleted_at')
-            ->get();
+            ->select(['p.id','p.name','p.slug','p.description','p.price','p.stock','p.views','p.featured',
+                'c.name as category_name','c.slug as category_slug','s.name as subcategory_name','s.slug as subcategory_slug',
+                'pi.image_path as primary_image'])
+            ->leftJoin('categories as c', 'c.id', '=', 'p.category_id')
+            ->leftJoin('subcategories as s', 's.id', '=', 'p.subcategory_id')
+            ->leftJoin('product_images as pi', fn($join) => $join->on('pi.product_id','=','p.id')->where('pi.is_primary','=',1))
+            ->whereIn('p.id', $ids)->where('p.is_approved',1)->where('p.is_active',1)->whereNull('p.deleted_at')->get();
 
         $indexed = $rows->keyBy('id');
+        $ordered = collect($ids)->map(function ($id) use ($indexed) {
+            $p = $indexed->get($id);
+            if (!$p) return null;
+            return [
+                'id' => $p->id, 'name' => $p->name, 'slug' => $p->slug, 'description' => $p->description,
+                'price' => (float) $p->price, 'stock' => (int) $p->stock, 'views' => (int) ($p->views ?? 0),
+                'featured' => (bool) ($p->featured ?? false), 'category_name' => $p->category_name,
+                'category_slug' => $p->category_slug, 'subcategory_name' => $p->subcategory_name,
+                'subcategory_slug' => $p->subcategory_slug,
+                'primary_image' => $p->primary_image ? Storage::url($p->primary_image) : null,
+            ];
+        })->filter()->values();
 
-        $ordered = collect($ids)
-            ->map(function ($id) use ($indexed) {
-                $p = $indexed->get($id);
-                if (!$p) return null;
-                return [
-                    'id'               => $p->id,
-                    'name'             => $p->name,
-                    'slug'             => $p->slug,
-                    'description'      => $p->description,
-                    'price'            => (float) $p->price,
-                    'stock'            => (int)   $p->stock,
-                    'views'            => (int)   ($p->views    ?? 0),
-                    'featured'         => (bool)  ($p->featured ?? false),
-                    'category_name'    => $p->category_name,
-                    'category_slug'    => $p->category_slug,
-                    'subcategory_name' => $p->subcategory_name,
-                    'subcategory_slug' => $p->subcategory_slug,
-                    'primary_image'    => $p->primary_image
-                        ? Storage::url($p->primary_image)
-                        : null,
-                ];
-            })
-            ->filter()
-            ->values();
+        return response()->json(['success' => true, 'products' => $ordered, 'count' => $ordered->count()]);
+    }
 
-        return response()->json([
-            'success'  => true,
-            'products' => $ordered,
-            'count'    => $ordered->count(),
-        ]);
+    // ── Private helpers ────────────────────────────────────────────────────
+
+    /**
+     * Transform a collection of scored products (for the scoring path).
+     */
+    private function transformProductCollection($products): array
+    {
+        return $products->map(fn($p) => $this->transformProductItem($p))->values()->toArray();
+    }
+
+    /**
+     * Transform a single product — mirrors the existing transform in index().
+     */
+    private function transformProductItem($p): mixed
+    {
+        $p->primary_image_url = $p->primaryImage
+            ? Storage::url($p->primaryImage->image_path)
+            : null;
+
+        $p->is_sponsored       = (bool) $p->is_sponsored;
+        $p->sponsored_priority = (int)  $p->sponsored_priority;
+
+        $swatches = []; $seen = [];
+        foreach ($p->variants as $variant) {
+            foreach ($variant->attributeOptions as $opt) {
+                if ($opt->attribute && $opt->attribute->slug === 'color' && !in_array($opt->id, $seen, true)) {
+                    $seen[]     = $opt->id;
+                    $swatches[] = ['id' => $opt->id, 'value' => $opt->value, 'color_hex' => $opt->color_hex];
+                }
+            }
+        }
+        $p->color_swatches = $swatches;
+        $p->setRelation('variants', $p->variants->map(fn($v) => ['id' => $v->id, 'stock' => $v->stock])->values());
+
+        return $p;
     }
 }
