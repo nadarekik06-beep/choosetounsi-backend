@@ -4,14 +4,14 @@ namespace App\Http\Controllers\Api\Client;
 
 use App\Http\Controllers\Controller;
 use App\Models\Cart;
+use App\Models\Pack;
+use App\Models\PackItem;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Services\UserPreferenceService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
-use App\Http\Controllers\Api\UserPreferenceController;
-use App\Http\Controllers\Api\ProductRecommendationController;
 
 class CartController extends Controller
 {
@@ -30,15 +30,21 @@ class CartController extends Controller
         $user  = $request->user();
         $items = Cart::where('user_id', $user->id)
             ->with([
+                // Product row relations (only loaded when product_id is set)
                 'product.images',
                 'product.primaryImage',
                 'product.category:id,name',
                 'variant.attributeOptions.attribute',
                 'variant.images',
+                // Pack row relation (only loaded when pack_id is set)
+                'pack',
             ])
             ->get();
 
-        $mapped = $items->map(fn($item) => $this->formatCartItem($item));
+        $mapped = $items->map(fn($item) => $item->isPack()
+            ? $this->formatPackCartItem($item)
+            : $this->formatCartItem($item)
+        );
 
         return response()->json([
             'success' => true,
@@ -53,11 +59,21 @@ class CartController extends Controller
     /**
      * POST /api/cart
      *
-     * FIX: Stock check now compares (existing_cart_qty + incoming_qty) against
-     * actual stock — not just incoming_qty in isolation.
+     * Accepts EITHER:
+     *   A) Regular product:  { product_id, variant_id?, quantity? }
+     *   B) Pack bundle:      { pack_id, pack_selections: [{pack_item_id, variant_id}] }
+     *
+     * Existing product logic is completely unchanged.
+     * Pack logic is a new isolated branch that returns early.
      */
     public function store(Request $request)
     {
+        // ── BRANCH B: Pack ────────────────────────────────────────────────────
+        if ($request->filled('pack_id')) {
+            return $this->storePack($request);
+        }
+
+        // ── BRANCH A: Regular product (original logic, untouched) ─────────────
         $request->validate([
             'product_id' => 'required|exists:products,id',
             'variant_id' => 'nullable|exists:product_variants,id',
@@ -80,19 +96,16 @@ class CartController extends Controller
             ], 422);
         }
 
-        // ── Find existing cart row ──────────────────────────────────────────
         $query = Cart::where('user_id', $user->id)
-                     ->where('product_id', $productId);
+                     ->where('product_id', $productId)
+                     ->whereNull('pack_id');   // ← don't match pack rows
         $query = $variantId
             ? $query->where('variant_id', $variantId)
             : $query->whereNull('variant_id');
 
-        $cartItem = $query->first();
-
-        // How many does the user already have in cart for this exact variant?
+        $cartItem    = $query->first();
         $existingQty = $cartItem ? $cartItem->quantity : 0;
 
-        // ── THE CORE FIX: check cumulative quantity against real stock ──────
         if ($variantId) {
             $variant = ProductVariant::findOrFail($variantId);
 
@@ -104,7 +117,7 @@ class CartController extends Controller
             }
 
             $available = $variant->stock;
-            $requested = $existingQty + $qty;   // ← cumulative, not just incoming
+            $requested = $existingQty + $qty;
 
             if ($requested > $available) {
                 $canAdd = $available - $existingQty;
@@ -136,7 +149,6 @@ class CartController extends Controller
             }
         }
 
-        // ── Upsert ────────────────────────────────────────────────────────────
         if ($cartItem) {
             $cartItem->increment('quantity', $qty);
         } else {
@@ -148,7 +160,6 @@ class CartController extends Controller
             ]);
         }
 
-        // ── Log cart activity ─────────────────────────────────────────────────
         $this->preferenceService->logActivity(
             userId:     $user->id,
             productId:  $productId,
@@ -162,10 +173,6 @@ class CartController extends Controller
 
     /**
      * PUT /api/cart/{id}
-     *
-     * FIX: Now validates requested quantity against real stock.
-     * Clamps to available stock instead of blindly setting whatever
-     * the client sends.
      */
     public function update(Request $request, $id)
     {
@@ -175,23 +182,24 @@ class CartController extends Controller
             ->with(['variant', 'product'])
             ->findOrFail($id);
 
-        // ── Resolve available stock for this specific item ──────────────────
+        // Pack rows: just update quantity directly (no stock check per-item)
+        if ($item->isPack()) {
+            $item->update(['quantity' => (int) $request->quantity]);
+            return $this->index($request);
+        }
+
+        // Product rows: existing stock clamp logic
         $available = $item->variant
             ? $item->variant->stock
             : $item->product->stock;
 
         $requested = (int) $request->quantity;
 
-        // ── Clamp to available stock ────────────────────────────────────────
         if ($requested > $available) {
             if ($available <= 0) {
-                // Item went out of stock since being added — remove it
                 $item->delete();
                 return $this->index($request);
             }
-            // Silently clamp to max available instead of erroring
-            // This handles the race condition where stock sold out
-            // between the user loading the page and updating the cart
             $requested = $available;
         }
 
@@ -221,8 +229,95 @@ class CartController extends Controller
         ]);
     }
 
-    // ── Private helpers ────────────────────────────────────────────────────────
+    // ── Private: Pack store ────────────────────────────────────────────────────
 
+    /**
+     * Handle POST /api/cart when pack_id is present.
+     * Validates selections, checks stock, upserts a single cart row.
+     */
+    private function storePack(Request $request)
+    {
+        $request->validate([
+            'pack_id'                           => 'required|integer|exists:packs,id',
+            'pack_selections'                   => 'required|array',
+            'pack_selections.*.pack_item_id'    => 'required|integer',
+            'pack_selections.*.variant_id'      => 'nullable|integer',
+        ]);
+
+        $user = $request->user();
+
+        $pack = Pack::with(['items.product', 'items.product.variants'])
+            ->where('is_active', true)
+            ->where('is_approved', true)
+            ->findOrFail($request->pack_id);
+
+        $selectionMap = collect($request->pack_selections)->keyBy('pack_item_id');
+
+        // ── Validate each item's variant and stock ────────────────────────────
+        foreach ($pack->items as $item) {
+            $sel       = $selectionMap->get($item->id);
+            $variantId = $sel['variant_id'] ?? null;
+
+            if ($variantId) {
+                $variant = ProductVariant::find($variantId);
+
+                if (!$variant || $variant->product_id !== $item->product_id) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Invalid variant selected for \"{$item->product->name}\".",
+                    ], 422);
+                }
+
+                if ($variant->stock < $item->quantity) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Not enough stock for \"{$item->product->name}\" ({$variant->label}). Only {$variant->stock} available.",
+                    ], 422);
+                }
+            } else {
+                // Product with no variant required
+                if ($item->product->variants()->exists()) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Please select a variant for \"{$item->product->name}\".",
+                    ], 422);
+                }
+
+                if ($item->product->stock < $item->quantity) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Not enough stock for \"{$item->product->name}\".",
+                    ], 422);
+                }
+            }
+        }
+
+        // ── Upsert: one pack = one cart row ───────────────────────────────────
+        // If the user already has this pack in cart, replace the selections.
+        Cart::updateOrCreate(
+            [
+                'user_id' => $user->id,
+                'pack_id' => $pack->id,
+            ],
+            [
+                'product_id'           => null,
+                'variant_id'           => null,
+                'quantity'             => 1,
+                'pack_price_snapshot'  => (float) $pack->pack_price,
+                'pack_name'            => $pack->name,
+                'pack_selections'      => $request->pack_selections,
+            ]
+        );
+
+        return $this->index($request);
+    }
+
+    // ── Private: Formatters ────────────────────────────────────────────────────
+
+    /**
+     * Format a regular product cart row.
+     * Original logic — completely unchanged.
+     */
     private function formatCartItem(Cart $item): array
     {
         $product = $item->product;
@@ -266,6 +361,44 @@ class CartController extends Controller
             'image_url'       => $imageUrl,
             'variant_label'   => $variantLabel,
             'variant_options' => $variantOptions,
+            // Discriminator so the frontend can tell this apart from a pack row
+            'is_pack'         => false,
+        ];
+    }
+
+    /**
+     * Format a pack cart row.
+     * Returns the pack_price_snapshot as the price — not the sum of items.
+     */
+    private function formatPackCartItem(Cart $item): array
+    {
+        $pack     = $item->pack;
+        $imageUrl = null;
+
+        if ($pack) {
+            // Use the pack's image accessor if available
+            $imageUrl = $pack->image_url ?? null;
+        }
+
+        return [
+            'id'              => $item->id,
+            'product_id'      => null,
+            'variant_id'      => null,
+            'pack_id'         => $item->pack_id,
+            'pack_slug'       => $pack?->slug,
+            'pack_selections' => $item->pack_selections ?? [],
+            'name'            => $item->pack_name ?? $pack?->name ?? 'Bundle',
+            'slug'            => $pack?->slug ?? '',
+            'sku'             => null,
+            'category'        => 'Bundle',
+            'price'           => $item->pack_price_snapshot,
+            'quantity'        => 1,           // packs are always qty 1
+            'stock'           => 999,         // no stock limit at pack level
+            'line_total'      => $item->pack_price_snapshot,
+            'image_url'       => $imageUrl,
+            'variant_label'   => null,
+            'variant_options' => [],
+            'is_pack'         => true,        // ← frontend uses this to render PackCartRow
         ];
     }
 
