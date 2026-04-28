@@ -28,7 +28,7 @@ use App\Http\Controllers\Api\Seller\SellerComplaintController;
 use App\Http\Controllers\Admin\AdminComplaintController;
 use App\Http\Controllers\Admin\AdminCategoryController;
 use App\Http\Controllers\Admin\AdminSubcategoryController;
-use App\Http\Controllers\Admin\AdminAttributeController;   // ← ADD THIS LINE
+use App\Http\Controllers\Admin\AdminAttributeController;
 use App\Http\Controllers\Api\Client\AddressController;
 use App\Http\Controllers\Api\SearchController;
 use App\Http\Controllers\Api\Seller\SellerSubscriptionController;
@@ -46,6 +46,8 @@ use App\Http\Controllers\Api\UserPreferenceController;
 use App\Http\Controllers\Api\ProductRecommendationController;
 use App\Http\Controllers\Api\Seller\SellerPackController;
 use App\Http\Controllers\Api\PublicPackController;
+use App\Http\Controllers\Api\Seller\SellerPromotionController;
+use App\Http\Controllers\Api\PublicPromotionController;
 
 /*
 |--------------------------------------------------------------------------
@@ -87,7 +89,6 @@ Route::get('/brand-products',          [PublicBrandProductController::class, 'in
 Route::get('/brand-products/featured', [PublicBrandProductController::class, 'featured']);
 Route::get('/brand-products/{slug}',   [PublicBrandProductController::class, 'show']);
 
-
 // This must come BEFORE the auth:sanctum group
 Route::post(
     '/payment/stripe/webhook',
@@ -99,6 +100,9 @@ Route::post('/sponsorships/{id}/impression', [SponsorshipController::class, 'rec
 Route::post('/sponsorships/{id}/click', [SponsorshipController::class, 'recordClick']);
 Route::get('/packs',        [PublicPackController::class, 'index']);
 Route::get('/packs/{slug}', [PublicPackController::class, 'show']);
+Route::get('/flash-sales', [PublicPromotionController::class, 'flashSales']);
+Route::get('/promotions/product/{productId}', [PublicPromotionController::class, 'forProduct']);
+
 /*
 |--------------------------------------------------------------------------
 | AUTHENTICATED ROUTES
@@ -151,25 +155,19 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/unread-count', [NotificationController::class, 'unreadCount']);
         Route::patch('/read-all',   [NotificationController::class, 'markAllRead']);
         Route::patch('/{id}/read',  [NotificationController::class, 'markRead']);
+    });
 
-        });
-        
     /*
-    |----------------------------------------------------------------------
-    | SELLER ROUTES
-    |----------------------------------------------------------------------
-    */
- /*
     |----------------------------------------------------------------------
     | SELLER ROUTES
     |----------------------------------------------------------------------
     */
     Route::prefix('seller')->group(function () {
 
-        // ── Subscription (Phase 2) ────────────────────────────────────────
+        // ── Subscription ──────────────────────────────────────────────────
         Route::get('/subscription',          [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'show']);
         Route::post('/subscription/upgrade', [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'upgrade']);
-        
+
         // ── Advanced Analytics (Red Pepper +) ─────────────────────────────
         Route::prefix('analytics')
             ->middleware('seller.plan:red')
@@ -179,7 +177,7 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::get('/customers', [SellerAnalyticsController::class, 'customers']);
                 Route::get('/heatmap',   [SellerAnalyticsController::class, 'heatmap']);
             });
- 
+
         // ── AI Business Tools (Red Pepper +) ──────────────────────────────
         Route::prefix('ai')
             ->middleware('seller.plan:red')
@@ -189,27 +187,22 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('/description-generator', [SellerAIController::class, 'descriptionGenerator']);
                 Route::post('/recommender',           [SellerAIController::class, 'recommender']);
             });
+
+        // ── Black Pepper ───────────────────────────────────────────────────
         Route::prefix('black')
-    ->middleware('seller.plan:black')
-    ->group(function () {
-        // AI Hub: trend detection + inventory alerts + market insights
-        Route::get('/ai-hub',          [BlackPepperController::class, 'aiHub']);
- 
-        // Profit Command Center: revenue, margins, 30-day forecast
-        Route::get('/profit-center',   [BlackPepperController::class, 'profitCenter']);
- 
-        // Visibility: sponsored products management
-        Route::get('/sponsored',                   [BlackPepperController::class, 'sponsoredProducts']);
-        Route::post('/sponsor/{id}',               [BlackPepperController::class, 'toggleSponsorship']);
- 
-        // VIP: request reel / promotion / support
-        Route::get('/vip-requests',    [BlackPepperController::class, 'myVipRequests']);
-        Route::post('/vip-request',    [BlackPepperController::class, 'submitVipRequest']);
-    });
- 
- 
+            ->middleware('seller.plan:black')
+            ->group(function () {
+                Route::get('/ai-hub',          [BlackPepperController::class, 'aiHub']);
+                Route::get('/profit-center',   [BlackPepperController::class, 'profitCenter']);
+                Route::get('/sponsored',                   [BlackPepperController::class, 'sponsoredProducts']);
+                Route::post('/sponsor/{id}',               [BlackPepperController::class, 'toggleSponsorship']);
+                Route::get('/vip-requests',    [BlackPepperController::class, 'myVipRequests']);
+                Route::post('/vip-request',    [BlackPepperController::class, 'submitVipRequest']);
+            });
+
         Route::get('/dashboard', [SellerDashboardController::class, 'index']);
 
+        // ── Products ──────────────────────────────────────────────────────
         Route::get('/products/stats',   [SellerProductController::class, 'stats']);
         Route::get('/products',         [SellerProductController::class, 'index']);
         Route::post('/products',        [SellerProductController::class, 'store']);
@@ -218,7 +211,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/products/{id}',   [SellerProductController::class, 'update']);
         Route::delete('/products/{id}', [SellerProductController::class, 'destroy']);
 
-        Route::post('/products/{id}/restock', [RestockController::class, 'restock']); // ← NEW
+        Route::post('/products/{id}/restock', [RestockController::class, 'restock']);
 
         Route::delete('/products/{id}/images/{imageId}',        [SellerProductController::class, 'destroyImage']);
         Route::patch('/products/{id}/images/{imageId}/primary', [SellerProductController::class, 'setPrimaryImage']);
@@ -226,34 +219,49 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/products/{id}/update-requests', [SellerProductUpdateRequestController::class, 'index']);
         Route::post('/products/{id}/request-update', [SellerProductUpdateRequestController::class, 'store']);
 
+        // ── Orders ────────────────────────────────────────────────────────
         Route::get('/orders/stats',          [SellerOrderController::class, 'stats']);
         Route::get('/orders',                [SellerOrderController::class, 'index']);
         Route::get('/orders/{id}',           [SellerOrderController::class, 'show']);
         Route::patch('/orders/{id}/status',  [SellerOrderController::class, 'updateStatus']);
         Route::patch('/orders/{id}/payment', [SellerOrderController::class, 'updatePayment']);
 
+        // ── Complaints ────────────────────────────────────────────────────
         Route::get('/complaints/stats',          [SellerComplaintController::class, 'stats']);
         Route::get('/complaints',                [SellerComplaintController::class, 'index']);
         Route::get('/complaints/{id}',           [SellerComplaintController::class, 'show']);
         Route::patch('/complaints/{id}/note',    [SellerComplaintController::class, 'addNote']);
         Route::patch('/complaints/{id}/approve', [SellerComplaintController::class, 'approve']);
         Route::patch('/complaints/{id}/reject',  [SellerComplaintController::class, 'reject']);
+
+        // ── Sponsorships ──────────────────────────────────────────────────
         Route::prefix('sponsorships')->group(function () {
-        Route::get('/quota',          [SponsorshipController::class, 'quota']);
-        Route::get('/',               [SponsorshipController::class, 'index']);
-        Route::post('/sponsor',       [SponsorshipController::class, 'sponsor']);
-        Route::delete('/{id}/cancel', [SponsorshipController::class, 'cancel']);
-    });
-    // ── Packs ──────────────────────────────────────────────────────────────
-Route::get('/packs/stats',            [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'stats']);
-Route::get('/packs/products',         [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'sellerProducts']);
-Route::get('/packs',                  [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'index']);
-Route::post('/packs',                 [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'store']);
-Route::get('/packs/{id}',             [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'show']);
-Route::put('/packs/{id}',             [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'update']);
-Route::post('/packs/{id}',            [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'update']);
-Route::delete('/packs/{id}',          [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'destroy']);
- });
+            Route::get('/quota',          [SponsorshipController::class, 'quota']);
+            Route::get('/',               [SponsorshipController::class, 'index']);
+            Route::post('/sponsor',       [SponsorshipController::class, 'sponsor']);
+            Route::delete('/{id}/cancel', [SponsorshipController::class, 'cancel']);
+        });
+
+        // ── Packs ─────────────────────────────────────────────────────────
+        Route::get('/packs/stats',    [SellerPackController::class, 'stats']);
+        Route::get('/packs/products', [SellerPackController::class, 'sellerProducts']);
+        Route::get('/packs',          [SellerPackController::class, 'index']);
+        Route::post('/packs',         [SellerPackController::class, 'store']);
+        Route::get('/packs/{id}',     [SellerPackController::class, 'show']);
+        Route::put('/packs/{id}',     [SellerPackController::class, 'update']);
+        Route::post('/packs/{id}',    [SellerPackController::class, 'update']);
+        Route::delete('/packs/{id}',  [SellerPackController::class, 'destroy']);
+
+        // ── Promotions ────────────────────────────────────────────────────
+        // stats MUST come before {id} to avoid being matched as an ID
+        Route::get('/promotions/stats',    [SellerPromotionController::class, 'stats']);
+        Route::get('/promotions',          [SellerPromotionController::class, 'index']);
+        Route::post('/promotions',         [SellerPromotionController::class, 'store']);
+        Route::get('/promotions/{id}',     [SellerPromotionController::class, 'show']);
+        Route::put('/promotions/{id}',     [SellerPromotionController::class, 'update']);
+        Route::delete('/promotions/{id}',  [SellerPromotionController::class, 'destroy']);
+
+    }); // ← seller group ends HERE
 
     /*
     |----------------------------------------------------------------------
@@ -293,10 +301,10 @@ Route::delete('/packs/{id}',          [\App\Http\Controllers\Api\Seller\SellerPa
         Route::delete('/subcategories/{id}/attributes/{attrId}',[AdminAttributeController::class, 'removeAttribute']);
 
         // ── Subcategories ─────────────────────────────────────────────────
-        Route::get('/subcategories',       [AdminSubcategoryController::class, 'index']);
-        Route::get('/subcategories/{id}',  [AdminSubcategoryController::class, 'show']);
-        Route::post('/subcategories',      [AdminSubcategoryController::class, 'store']);
-        Route::put('/subcategories/{id}',  [AdminSubcategoryController::class, 'update']);
+        Route::get('/subcategories',        [AdminSubcategoryController::class, 'index']);
+        Route::get('/subcategories/{id}',   [AdminSubcategoryController::class, 'show']);
+        Route::post('/subcategories',       [AdminSubcategoryController::class, 'store']);
+        Route::put('/subcategories/{id}',   [AdminSubcategoryController::class, 'update']);
         Route::delete('/subcategories/{id}',[AdminSubcategoryController::class, 'destroy']);
 
         // ── Global Attributes ─────────────────────────────────────────────
@@ -331,7 +339,7 @@ Route::delete('/packs/{id}',          [\App\Http\Controllers\Api\Seller\SellerPa
         Route::get('/seller-applications/{id}',                   [SellerApplicationController::class, 'show']);
         Route::post('/seller-applications/{application}/approve', [SellerApplicationController::class, 'approve']);
         Route::post('/seller-applications/{application}/reject',  [SellerApplicationController::class, 'reject']);
-        
+
         // ── Products ──────────────────────────────────────────────────────
         Route::get('/products',                [AdminProductController::class, 'index']);
         Route::get('/products/{id}',           [AdminProductController::class, 'show']);
@@ -340,6 +348,7 @@ Route::delete('/packs/{id}',          [\App\Http\Controllers\Api\Seller\SellerPa
         Route::patch('/products/{id}/reject',  [AdminProductController::class, 'reject']);
         Route::patch('/products/{id}/disable', [AdminProductController::class, 'disable']);
         Route::delete('/products/{id}',        [AdminProductController::class, 'destroy']);
+
         Route::get('/brand-products/stats',                           [\App\Http\Controllers\Admin\BrandProductController::class, 'stats']);
         Route::get('/brand-products',                                 [\App\Http\Controllers\Admin\BrandProductController::class, 'index']);
         Route::post('/brand-products',                                [\App\Http\Controllers\Admin\BrandProductController::class, 'store']);
@@ -349,7 +358,7 @@ Route::delete('/packs/{id}',          [\App\Http\Controllers\Api\Seller\SellerPa
         Route::delete('/brand-products/{id}',                         [\App\Http\Controllers\Admin\BrandProductController::class, 'destroy']);
         Route::delete('/brand-products/{id}/images/{imageId}',        [\App\Http\Controllers\Admin\BrandProductController::class, 'destroyImage']);
         Route::patch('/brand-products/{id}/images/{imageId}/primary', [\App\Http\Controllers\Admin\BrandProductController::class, 'setPrimaryImage']);
-        
+
         // ── Product Update Requests ───────────────────────────────────────
         Route::get('/product-update-requests/stats',         [AdminProductUpdateRequestController::class, 'stats']);
         Route::get('/product-update-requests',               [AdminProductUpdateRequestController::class, 'index']);
@@ -358,11 +367,13 @@ Route::delete('/packs/{id}',          [\App\Http\Controllers\Api\Seller\SellerPa
         Route::post('/product-update-requests/{id}/reject',  [AdminProductUpdateRequestController::class, 'reject']);
 
         // ── Orders ────────────────────────────────────────────────────────
-        Route::get('/orders/stats',         [AdminOrderController::class, 'stats']);
-        Route::get('/orders',               [AdminOrderController::class, 'index']);
-        Route::get('/orders/{id}',          [AdminOrderController::class, 'show']);
-        Route::patch('/orders/{id}/status', [AdminOrderController::class, 'updateStatus']);
-        Route::patch('/orders/{id}/payment-status', [AdminOrderController::class, 'updatePaymentStatus']);
+        Route::get('/orders/stats',                [AdminOrderController::class, 'stats']);
+        Route::get('/orders',                      [AdminOrderController::class, 'index']);
+        Route::get('/orders/{id}',                 [AdminOrderController::class, 'show']);
+        Route::patch('/orders/{id}/status',        [AdminOrderController::class, 'updateStatus']);
+        Route::patch('/orders/{id}/payment-status',[AdminOrderController::class, 'updatePaymentStatus']);
+        Route::patch('/orders/{id}/confirm-payment',  [\App\Http\Controllers\Admin\OrderController::class, 'confirmPayment']);
+
         // ── Admin Notifications ───────────────────────────────────────────
         Route::prefix('notifications')->group(function () {
             Route::get('/',             [AdminNotificationController::class, 'index']);
@@ -380,9 +391,9 @@ Route::delete('/packs/{id}',          [\App\Http\Controllers\Api\Seller\SellerPa
         Route::patch('/complaints/{id}/confirm-rejection', [AdminComplaintController::class, 'confirmRejection']);
         Route::patch('/complaints/{id}/override-approve',  [AdminComplaintController::class, 'overrideToApproved']);
 
-        Route::patch('/orders/{id}/confirm-payment',  [\App\Http\Controllers\Admin\OrderController::class, 'confirmPayment']);
-        Route::patch('/users/{id}/wallet/top-up',     [\App\Http\Controllers\Admin\UserController::class, 'walletTopUp']);
-        // ── VIP Requests (Black Pepper sellers) ──────────────────────────────────
+        Route::patch('/users/{id}/wallet/top-up', [\App\Http\Controllers\Admin\UserController::class, 'walletTopUp']);
+
+        // ── VIP Requests ──────────────────────────────────────────────────
         Route::get('/vip-requests/stats',            [AdminVipRequestController::class, 'stats']);
         Route::get('/vip-requests',                  [AdminVipRequestController::class, 'index']);
         Route::get('/vip-requests/{id}',             [AdminVipRequestController::class, 'show']);
@@ -390,25 +401,31 @@ Route::delete('/packs/{id}',          [\App\Http\Controllers\Api\Seller\SellerPa
         Route::patch('/vip-requests/{id}/complete',  [AdminVipRequestController::class, 'complete']);
         Route::patch('/vip-requests/{id}/reject',    [AdminVipRequestController::class, 'reject']);
         Route::patch('/vip-requests/{id}/note',      [AdminVipRequestController::class, 'addNote']);
+
+        // ── Sponsorships ──────────────────────────────────────────────────
         Route::get('/sponsorships/stats',         [AdminSponsorshipController::class, 'stats']);
         Route::get('/sponsorships',               [AdminSponsorshipController::class, 'index']);
         Route::patch('/sponsorships/{id}/cancel', [AdminSponsorshipController::class, 'cancel']);
         Route::patch('/sponsorships/{id}/boost',  [AdminSponsorshipController::class, 'boost']);
- 
+
     }); // ← admin group ends HERE
+
     // ── Address Book ──────────────────────────────────────────────────────────
-Route::prefix('addresses')->group(function () {
-    Route::get('/',             [AddressController::class, 'index']);
-    Route::post('/',            [AddressController::class, 'store']);
-    Route::put('/{id}',         [AddressController::class, 'update']);
-    Route::delete('/{id}',      [AddressController::class, 'destroy']);
-    Route::patch('/{id}/default',[AddressController::class, 'setDefault']);
-});
-Route::get('/wallet/balance',                   [\App\Http\Controllers\Api\Client\PaymentController::class, 'walletBalance']);
-Route::get('/wallet/transactions',              [\App\Http\Controllers\Api\Client\PaymentController::class, 'walletTransactions']);
-Route::post('/payment/stripe/create-intent',    [\App\Http\Controllers\Api\Client\PaymentController::class, 'createStripeIntent']);
-// AI proxy — Red/Black Pepper only
-Route::middleware('auth:sanctum')->post('/ai/groq', [AIController::class, 'proxy']);
+    Route::prefix('addresses')->group(function () {
+        Route::get('/',              [AddressController::class, 'index']);
+        Route::post('/',             [AddressController::class, 'store']);
+        Route::put('/{id}',          [AddressController::class, 'update']);
+        Route::delete('/{id}',       [AddressController::class, 'destroy']);
+        Route::patch('/{id}/default',[AddressController::class, 'setDefault']);
+    });
+
+    Route::get('/wallet/balance',                [\App\Http\Controllers\Api\Client\PaymentController::class, 'walletBalance']);
+    Route::get('/wallet/transactions',           [\App\Http\Controllers\Api\Client\PaymentController::class, 'walletTransactions']);
+    Route::post('/payment/stripe/create-intent', [\App\Http\Controllers\Api\Client\PaymentController::class, 'createStripeIntent']);
+
+    // AI proxy — Red/Black Pepper only
+    Route::middleware('auth:sanctum')->post('/ai/groq', [AIController::class, 'proxy']);
+
 }); // ← auth:sanctum group ends HERE
 
 /*
