@@ -17,6 +17,7 @@ class Product extends Model
         'name', 'slug', 'description', 'short_description',
         'price', 'stock', 'sku',
         'is_approved', 'is_active',    'is_platform_product', 'featured', 'views',
+        'is_pack',
     ];
 
     protected $casts = [
@@ -25,6 +26,7 @@ class Product extends Model
         'featured'    => 'boolean',
         'is_platform_product'  => 'boolean',
         'price'       => 'decimal:3',
+        'is_pack' => 'boolean',
     ];
 
     protected $appends = ['primary_image_url'];

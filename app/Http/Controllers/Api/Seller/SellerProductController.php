@@ -53,7 +53,7 @@ class SellerProductController extends Controller
         return response()->json(['success' => true, 'data' => $products]);
     }
 
-// ── Show ───────────────────────────────────────────────────────────────────
+    // ── Show ───────────────────────────────────────────────────────────────────
 
     public function show(Request $request, $id)
     {
@@ -160,48 +160,46 @@ class SellerProductController extends Controller
 
         return response()->json(['success' => true, 'data' => $product]);
     }
+
     private function saveVariantImages(Product $product, Request $request): void
     {
         $allFiles = $request->allFiles();
         if (empty($allFiles['variant_images'])) return;
- 
+
         $variantImagesInput = $allFiles['variant_images'];
         if (!is_array($variantImagesInput)) return;
- 
-        // Pre-load all variants for this product to validate ownership.
+
         $validVariantIds = $product->variants()->pluck('id')->flip();
- 
+
         $maxOrder = $product->images()->max('order') ?? -1;
         $orderIdx = 0;
- 
+
         foreach ($variantImagesInput as $variantIdStr => $files) {
             $variantId = (int) $variantIdStr;
- 
-            // Security: only accept variant IDs that belong to THIS product.
+
             if (!isset($validVariantIds[$variantId])) {
                 Log::warning("[SellerProduct::saveVariantImages] Invalid variant_id: {$variantId} for product {$product->id}");
                 continue;
             }
- 
+
             foreach ((array) $files as $file) {
                 if (!$file || !method_exists($file, 'isValid') || !$file->isValid()) continue;
- 
+
                 $path = $file->store('products', 'public');
- 
+
                 ProductImage::create([
                     'product_id'      => $product->id,
                     'variant_id'      => $variantId,
                     'color_option_id' => null,
                     'image_path'      => $path,
                     'order'           => $maxOrder + $orderIdx + 1,
-                    'is_primary'      => false,   // variant images are never the product primary
+                    'is_primary'      => false,
                 ]);
- 
+
                 $orderIdx++;
             }
         }
     }
- 
 
     // ── Stats ──────────────────────────────────────────────────────────────────
 
@@ -281,6 +279,7 @@ class SellerProductController extends Controller
                 'is_approved'       => false,
                 'featured'          => false,
                 'views'             => 0,
+                'is_pack'           => filter_var($request->input('is_pack', false), FILTER_VALIDATE_BOOLEAN) ? 1 : 0,
             ]);
             Log::info('[SellerProduct::store] Product created', ['id' => $product->id]);
         } catch (\Throwable $e) {
@@ -298,11 +297,6 @@ class SellerProductController extends Controller
 
         try {
             $this->saveVariants($product, $request);
-            // FIX: Only sync active status from variants when the request actually
-            // contained variant data. For simple products (no variants submitted),
-            // the seller's chosen is_active is already persisted above — calling
-            // syncActiveStatusFromVariants() with zero variants would force
-            // is_active = false and override the seller's intent.
             if (!empty($request->input('variants', []))) {
                 $product->fresh()->syncActiveStatusFromVariants();
             }
@@ -364,6 +358,9 @@ class SellerProductController extends Controller
                 'category_id'       => $request->category_id      ?? $product->category_id,
                 'subcategory_id'    => $request->subcategory_id    ?? $product->subcategory_id,
                 'is_active'         => $isActive,
+                'is_pack'           => $request->has('is_pack')
+                               ? (filter_var($request->input('is_pack'), FILTER_VALIDATE_BOOLEAN) ? 1 : 0)
+                               : $product->is_pack,
             ]);
             Log::info('[SellerProduct::update] Product updated');
         } catch (\Throwable $e) {
@@ -381,11 +378,6 @@ class SellerProductController extends Controller
 
         try {
             $this->saveVariants($product, $request);
-            // FIX: Only sync active status from variants when the request actually
-            // contained variant data. For simple products (no variants submitted),
-            // the seller's chosen is_active is already persisted above — calling
-            // syncActiveStatusFromVariants() with zero variants would force
-            // is_active = false and override the seller's intent.
             if (!empty($request->input('variants', []))) {
                 $product->fresh()->syncActiveStatusFromVariants();
             }
@@ -499,29 +491,11 @@ class SellerProductController extends Controller
         }
     }
 
-    /**
-     * Save / update / delete variants for a product.
-     *
-     * FIX: When a variant row arrives WITHOUT an id (new variant in edit mode,
-     * or a re-submission after a previous save that lost the id), we now try to
-     * find an EXISTING variant whose option set exactly matches the incoming
-     * option_ids before creating a new one.  This prevents phantom duplicates
-     * being inserted on every "Save Changes" click.
-     *
-     * Match logic:
-     *   1. If row has an id  → find by (product_id, id)  [unchanged]
-     *   2. If row has no id  → find existing variant whose sorted option IDs
-     *                          exactly equal the sorted incoming option IDs
-     *   3. If still nothing  → create new variant  [unchanged]
-     */
     private function saveVariants(Product $product, Request $request): void
     {
         $variantsInput = $request->input('variants', []);
         if (empty($variantsInput) || !is_array($variantsInput)) return;
 
-        // ── Pre-load all existing variants with their options once ──────────
-        // This avoids N+1 queries inside the loop and makes the find-by-option
-        // lookup fast even for products with many variants.
         $existingVariants = $product->variants()
             ->with('attributeOptions:id')
             ->get();
@@ -544,26 +518,22 @@ class SellerProductController extends Controller
                 ? (float) $row['price_override']
                 : null;
 
-            // ── Step 1: try to find by explicit id ─────────────────────────
             $existingId = isset($row['id']) && $row['id'] ? (int) $row['id'] : null;
             $variant    = $existingId
                 ? $existingVariants->firstWhere('id', $existingId)
                 : null;
 
-            // ── Step 2: find by matching option set (no id provided) ────────
             if (!$variant) {
                 $sortedIncoming = $optionIds;
                 sort($sortedIncoming);
                 $count = count($sortedIncoming);
 
                 $variant = $existingVariants->first(function ($v) use ($sortedIncoming, $count) {
-                    // attributeOptions was eager-loaded with only id selected
                     $vIds = $v->attributeOptions->pluck('id')->sort()->values()->toArray();
                     return count($vIds) === $count && $vIds === $sortedIncoming;
                 });
             }
 
-            // ── Step 3: update existing or create new ──────────────────────
             if ($variant) {
                 $variant->update([
                     'stock'          => $stock,
@@ -585,7 +555,6 @@ class SellerProductController extends Controller
             $keepIds[] = $variant->id;
         }
 
-        // Delete variants that were removed by the seller
         if (!empty($keepIds)) {
             $product->variants()->whereNotIn('id', $keepIds)->delete();
         }
@@ -616,14 +585,24 @@ class SellerProductController extends Controller
      * Save color-group images.
      *
      * Frontend sends:  color_images[{groupKey}][j] = File
-     * where groupKey is the sorted color option IDs joined by "|", e.g. "101|102".
+     * groupKey = sorted color option IDs joined by "_", e.g. "104_105_106"
      *
-     * We store each image with color_option_id = primaryColorOptionId (lowest id
-     * in the group).  ProductController::show() rebuilds the group key from the
-     * colorGroupMap and re-exposes images under both keys for backward compat.
+     * THE ROOT PROBLEM (now fully fixed):
+     * When groups share color IDs (all groups contain Black=104, White=105),
+     * per-group deletion caused cross-contamination:
+     *   Group1 [104,105,106]: save rows for 104,105,106
+     *   Group2 [104,105,113]: DELETE whereIn([104,105,113]) → kills group1's 104+105 rows!
+     *   Group3 [104,105,115]: DELETE whereIn([104,105,115]) → kills group2's 104+105 rows!
+     *   Result: only group3 survives.
      *
-     * On UPDATE: we delete all existing images for the primaryColorOptionId before
-     * saving the new batch — so new uploads always replace old ones cleanly.
+     * THE FIX — 3 steps:
+     *   1. Parse ALL groups into memory first
+     *   2. Delete ALL existing color images for the product in ONE atomic query
+     *   3. Save ALL groups — no per-group deletion possible
+     *
+     * Each image file is stored once on disk but gets N DB rows (one per color
+     * ID in the group) so ProductController::show() resolves any single color
+     * ID to its group's images correctly.
      */
     private function saveColorImages(Product $product, Request $request): void
     {
@@ -633,53 +612,106 @@ class SellerProductController extends Controller
         $colorImagesInput = $allFiles['color_images'];
         if (empty($colorImagesInput) || !is_array($colorImagesInput)) return;
 
-        $maxOrder   = $product->images()->max('order') ?? -1;
-        $hasPrimary = $product->images()->where('is_primary', true)->exists();
-        $orderIdx   = 0;
+        // ── STEP 1: Parse ALL groups into memory ───────────────────────────
+        $groups = [];
 
         foreach ($colorImagesInput as $groupKey => $files) {
-            // groupKey is a "|"-joined sorted list of color option IDs, e.g. "101|102"
-            // Parse out all IDs; use the first (lowest) as the storage key.
             $colorOptionIds = array_values(array_filter(
                 array_map('intval', explode('_', (string) $groupKey)),
                 fn($id) => $id > 0
             ));
 
             if (empty($colorOptionIds)) {
-                Log::warning("[SellerProduct::saveColorImages] Invalid groupKey: {$groupKey}");
+                Log::warning("[SellerProduct::saveColorImages] Invalid groupKey skipped: {$groupKey}");
                 continue;
             }
 
-            $primaryColorOptionId = $colorOptionIds[0];   // lowest sorted id
+            sort($colorOptionIds);
 
-            // Delete existing images for this color group before saving new ones
-            // (handles the update scenario — new upload replaces old)
-            $product->images()
-                ->where('color_option_id', $primaryColorOptionId)
-                ->get()
-                ->each(function ($old) {
-                    Storage::disk('public')->delete($old->image_path);
-                    $old->delete();
-                });
+            $validFiles = array_values(array_filter(
+                (array) $files,
+                fn($f) => $f && method_exists($f, 'isValid') && $f->isValid()
+            ));
 
-            foreach ((array) $files as $file) {
-                if (!$file || !method_exists($file, 'isValid') || !$file->isValid()) continue;
+            if (empty($validFiles)) continue;
 
+            $groups[] = [
+                'ids'   => $colorOptionIds,
+                'files' => $validFiles,
+                'key'   => $groupKey,
+            ];
+        }
+
+        if (empty($groups)) return;
+
+        Log::info('[SellerProduct::saveColorImages] Groups to save', [
+            'product_id'  => $product->id,
+            'group_count' => count($groups),
+            'groups'      => array_map(fn($g) => ['key' => $g['key'], 'ids' => $g['ids'], 'files' => count($g['files'])], $groups),
+        ]);
+
+        // ── STEP 2: Delete ALL existing color images atomically ────────────
+        // One query — no cross-group collision possible.
+        // We collect unique image_paths first to avoid deleting a file
+        // that is still referenced by another row (shared path scenario).
+        $existingColorImages = $product->images()
+            ->whereNotNull('color_option_id')
+            ->get();
+
+        // Track paths that have multiple rows so we only delete the file
+        // when the last row referencing it is removed.
+        $pathCounts = [];
+        foreach ($existingColorImages as $img) {
+            $pathCounts[$img->image_path] = ($pathCounts[$img->image_path] ?? 0) + 1;
+        }
+
+        foreach ($existingColorImages as $img) {
+            $pathCounts[$img->image_path]--;
+            if ($pathCounts[$img->image_path] === 0) {
+                Storage::disk('public')->delete($img->image_path);
+            }
+            $img->delete();
+        }
+
+        Log::info('[SellerProduct::saveColorImages] Cleared existing color images', [
+            'product_id' => $product->id,
+            'deleted_rows' => $existingColorImages->count(),
+        ]);
+
+        // ── STEP 3: Save all groups ────────────────────────────────────────
+        $maxOrder   = $product->images()->max('order') ?? -1;
+        $hasPrimary = $product->images()->where('is_primary', true)->exists();
+        $orderIdx   = 0;
+
+        foreach ($groups as $group) {
+            $colorOptionIds = $group['ids'];
+
+            foreach ($group['files'] as $file) {
+                // Store the physical file ONCE on disk
                 $path       = $file->store('products', 'public');
                 $setPrimary = !$hasPrimary && $orderIdx === 0;
 
-                ProductImage::create([
-                    'product_id'      => $product->id,
-                    'variant_id'      => null,                 // group-level, not variant-specific
-                    'color_option_id' => $primaryColorOptionId,
-                    'image_path'      => $path,
-                    'order'           => $maxOrder + $orderIdx + 1,
-                    'is_primary'      => $setPrimary,
-                ]);
+                // Save one DB row per color ID — same image_path, different color_option_id
+                foreach ($colorOptionIds as $colorId) {
+                    ProductImage::create([
+                        'product_id'      => $product->id,
+                        'variant_id'      => null,
+                        'color_option_id' => $colorId,
+                        'image_path'      => $path,
+                        'order'           => $maxOrder + $orderIdx + 1,
+                        'is_primary'      => $setPrimary,
+                    ]);
+                }
 
                 if ($setPrimary) $hasPrimary = true;
                 $orderIdx++;
             }
+
+            Log::info('[SellerProduct::saveColorImages] Group saved', [
+                'key'   => $group['key'],
+                'ids'   => $colorOptionIds,
+                'files' => count($group['files']),
+            ]);
         }
     }
 

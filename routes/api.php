@@ -44,6 +44,8 @@ use App\Http\Controllers\Api\BrandProductController as PublicBrandProductControl
 use App\Http\Controllers\Admin\BrandProductController;
 use App\Http\Controllers\Api\UserPreferenceController;
 use App\Http\Controllers\Api\ProductRecommendationController;
+use App\Http\Controllers\Api\Seller\SellerPackController;
+use App\Http\Controllers\Api\PublicPackController;
 
 /*
 |--------------------------------------------------------------------------
@@ -95,8 +97,8 @@ Route::post(
 Route::get('/sponsored-products', [SponsorshipController::class, 'publicFeed']);
 Route::post('/sponsorships/{id}/impression', [SponsorshipController::class, 'recordImpression']);
 Route::post('/sponsorships/{id}/click', [SponsorshipController::class, 'recordClick']);
-
-
+Route::get('/packs',        [PublicPackController::class, 'index']);
+Route::get('/packs/{slug}', [PublicPackController::class, 'show']);
 /*
 |--------------------------------------------------------------------------
 | AUTHENTICATED ROUTES
@@ -149,8 +151,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/unread-count', [NotificationController::class, 'unreadCount']);
         Route::patch('/read-all',   [NotificationController::class, 'markAllRead']);
         Route::patch('/{id}/read',  [NotificationController::class, 'markRead']);
-    });
 
+        });
+        
     /*
     |----------------------------------------------------------------------
     | SELLER ROUTES
@@ -241,6 +244,15 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/sponsor',       [SponsorshipController::class, 'sponsor']);
         Route::delete('/{id}/cancel', [SponsorshipController::class, 'cancel']);
     });
+    // ── Packs ──────────────────────────────────────────────────────────────
+Route::get('/packs/stats',            [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'stats']);
+Route::get('/packs/products',         [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'sellerProducts']);
+Route::get('/packs',                  [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'index']);
+Route::post('/packs',                 [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'store']);
+Route::get('/packs/{id}',             [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'show']);
+Route::put('/packs/{id}',             [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'update']);
+Route::post('/packs/{id}',            [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'update']);
+Route::delete('/packs/{id}',          [\App\Http\Controllers\Api\Seller\SellerPackController::class, 'destroy']);
  });
 
     /*
