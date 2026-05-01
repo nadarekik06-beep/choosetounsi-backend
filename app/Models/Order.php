@@ -14,6 +14,7 @@ class Order extends Model
         'user_id',
         'order_number',
         'total_amount',
+        'shipping_fee',      // ← ADDED
         'status',
         'payment_status',
         'payment_method',
@@ -26,6 +27,7 @@ class Order extends Model
 
     protected $casts = [
         'total_amount' => 'decimal:3',
+        'shipping_fee' => 'decimal:3',  // ← ADDED
     ];
 
     /* ── Boot: auto-generate order_number ── */

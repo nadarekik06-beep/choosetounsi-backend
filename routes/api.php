@@ -225,6 +225,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/orders/{id}',           [SellerOrderController::class, 'show']);
         Route::patch('/orders/{id}/status',  [SellerOrderController::class, 'updateStatus']);
         Route::patch('/orders/{id}/payment', [SellerOrderController::class, 'updatePayment']);
+        Route::get('orders/{id}/invoice', [\App\Http\Controllers\Api\Seller\SellerInvoiceController::class, 'show']);
 
         // ── Complaints ────────────────────────────────────────────────────
         Route::get('/complaints/stats',          [SellerComplaintController::class, 'stats']);
