@@ -1,4 +1,5 @@
 <?php
+
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
@@ -27,22 +28,31 @@ class PublicPromotionController extends Controller
             ->orderByDesc('priority')
             ->orderBy('ends_at')        // soonest-ending first
             ->get()
-            ->map(fn($promo) => [
-                'id'                    => $promo->id,
-                'name'                  => $promo->name,
-                'discount_label'        => $this->promoService->formatPromotion($promo)['discount_label'],
-                'ends_at'               => $promo->ends_at->toISOString(),
-                'flash_stock_remaining' => $promo->flashStockRemaining(),
-                'products'              => $promo->products->map(fn($p) => [
-                    'id'                => $p->id,
-                    'name'              => $p->name,
-                    'slug'              => $p->slug,
-                    'price'             => (float) $p->price,
-                    'primary_image_url' => $p->primary_image_url,
-                    'seller'            => $p->seller ? ['name' => $p->seller->name] : null,
-                    ...$this->promoService->getEffectivePrice($p),
-                ])->values(),
-            ]);
+            ->map(function ($promo) {
+                return [
+                    'id'                    => $promo->id,
+                    'name'                  => $promo->name,
+                    'discount_label'        => $this->promoService->formatPromotion($promo)['discount_label'],
+                    'ends_at'               => $promo->ends_at->toISOString(),
+                    'flash_stock'           => $promo->flash_stock,
+                    'flash_stock_remaining' => $promo->flashStockRemaining(),
+                    'products'              => $promo->products->map(function ($p) {
+                        $pricing = $this->promoService->getEffectivePrice($p);
+                        return [
+                            'id'                => $p->id,
+                            'name'              => $p->name,
+                            'slug'              => $p->slug,
+                            'price'             => (float) $p->price,
+                            'primary_image_url' => $p->primary_image_url,
+                            'seller'            => $p->seller ? ['name' => $p->seller->name] : null,
+                            'original_price'    => $pricing['original_price'],
+                            'effective_price'   => $pricing['effective_price'],
+                            'discount_amount'   => $pricing['discount_amount'],
+                            'promotion'         => $pricing['promotion'],
+                        ];
+                    })->values(),
+                ];
+            });
 
         return response()->json(['success' => true, 'data' => $flashSales]);
     }

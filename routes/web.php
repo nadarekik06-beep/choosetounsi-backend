@@ -50,5 +50,3 @@ Route::get('/home', function () {
 
 // Include role-specific routes
 require __DIR__.'/admin.php';   // Admin routes
-require __DIR__.'/seller.php';  // Seller routes
-require __DIR__.'/client.php';  // Client routes

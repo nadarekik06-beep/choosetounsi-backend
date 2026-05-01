@@ -9,6 +9,7 @@ use App\Models\PackItem;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Services\UserPreferenceService;
+use App\Services\PromotionService;          // ← already imported, just moved up
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -16,10 +17,14 @@ use Illuminate\Support\Facades\Storage;
 class CartController extends Controller
 {
     private UserPreferenceService $preferenceService;
+    private PromotionService $promotionService;         // ← PROMO FIX: declare property
 
-    public function __construct(UserPreferenceService $preferenceService)
-    {
+    public function __construct(
+        UserPreferenceService $preferenceService,
+        PromotionService $promotionService              // ← PROMO FIX: inject
+    ) {
         $this->preferenceService = $preferenceService;
+        $this->promotionService  = $promotionService;  // ← PROMO FIX: assign
     }
 
     /**
@@ -293,7 +298,6 @@ class CartController extends Controller
         }
 
         // ── Upsert: one pack = one cart row ───────────────────────────────────
-        // If the user already has this pack in cart, replace the selections.
         Cart::updateOrCreate(
             [
                 'user_id' => $user->id,
@@ -316,18 +320,26 @@ class CartController extends Controller
 
     /**
      * Format a regular product cart row.
-     * Original logic — completely unchanged.
+     *
+     * PROMO FIX: base price is now passed through PromotionService so the
+     * cart drawer, subtotal, and checkout summary all reflect the discounted
+     * price when a flash sale or discount is active.
+     * Everything else is identical to the original.
      */
     private function formatCartItem(Cart $item): array
     {
         $product = $item->product;
         $variant = $item->variant;
 
-        $price = $variant
+        // ← PROMO FIX: compute base price exactly as before, then apply promotion
+        $basePrice = $variant
             ? ($variant->price_override !== null
                 ? (float) $variant->price_override
                 : (float) $product->price)
             : (float) $product->price;
+
+        $promoData = $this->promotionService->getEffectivePrice($product, $basePrice);
+        $price     = $promoData['effective_price'];   // discounted (= basePrice when no promo)
 
         $imageUrl = $this->resolveImageUrl($product, $variant);
         $stock    = $variant ? $variant->stock : $product->stock;
@@ -354,14 +366,15 @@ class CartController extends Controller
             'slug'            => $product->slug,
             'sku'             => $variant?->sku ?? $product->sku,
             'category'        => $product->category?->name,
-            'price'           => $price,
+            'price'           => $price,                                   // discounted
+            'original_price'  => $basePrice,                               // ← PROMO FIX: for strikethrough in cart drawer
+            'promotion'       => $promoData['promotion'],                  // ← PROMO FIX: badge data (null when no promo)
             'quantity'        => $item->quantity,
             'stock'           => $stock,
-            'line_total'      => round($price * $item->quantity, 3),
+            'line_total'      => round($price * $item->quantity, 3),       // uses discounted price
             'image_url'       => $imageUrl,
             'variant_label'   => $variantLabel,
             'variant_options' => $variantOptions,
-            // Discriminator so the frontend can tell this apart from a pack row
             'is_pack'         => false,
         ];
     }
@@ -369,6 +382,7 @@ class CartController extends Controller
     /**
      * Format a pack cart row.
      * Returns the pack_price_snapshot as the price — not the sum of items.
+     * Unchanged — promotions don't apply to packs.
      */
     private function formatPackCartItem(Cart $item): array
     {
@@ -376,7 +390,6 @@ class CartController extends Controller
         $imageUrl = null;
 
         if ($pack) {
-            // Use the pack's image accessor if available
             $imageUrl = $pack->image_url ?? null;
         }
 
@@ -392,13 +405,13 @@ class CartController extends Controller
             'sku'             => null,
             'category'        => 'Bundle',
             'price'           => $item->pack_price_snapshot,
-            'quantity'        => 1,           // packs are always qty 1
-            'stock'           => 999,         // no stock limit at pack level
+            'quantity'        => 1,
+            'stock'           => 999,
             'line_total'      => $item->pack_price_snapshot,
             'image_url'       => $imageUrl,
             'variant_label'   => null,
             'variant_options' => [],
-            'is_pack'         => true,        // ← frontend uses this to render PackCartRow
+            'is_pack'         => true,
         ];
     }
 

@@ -1,9 +1,9 @@
 <?php
 
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Seller\SellerDashboardController;
-use App\Http\Controllers\Seller\SellerProductController;
-use App\Http\Controllers\Seller\SellerOrderController;
+use App\Http\Controllers\Api\Seller\SellerDashboardController;
+use App\Http\Controllers\Api\Seller\SellerProductController;
+use App\Http\Controllers\Api\Seller\SellerOrderController;
 
 /*
 |--------------------------------------------------------------------------

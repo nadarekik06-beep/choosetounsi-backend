@@ -21,7 +21,7 @@ class SellerPromotionController extends Controller
         $statusFilter = $request->query('status');
 
         $query = Promotion::where('seller_id', $seller->id)
-            ->with(['products:id,name,slug,price,primary_image_url'])
+            ->with(['products:id,name,slug,price', 'products.primaryImage'])
             ->when($type,         fn($q) => $q->where('type', $type))
             ->when($statusFilter, fn($q) => $q->where('status', $statusFilter))
             ->orderByDesc('created_at');
@@ -40,7 +40,7 @@ class SellerPromotionController extends Controller
     public function show(Request $request, int $id)
     {
         $promo = Promotion::where('seller_id', $request->user()->id)
-            ->with(['products:id,name,slug,price,primary_image_url'])
+            ->with(['products:id,name,slug,price', 'products.primaryImage'])
             ->findOrFail($id);
 
         return response()->json(['success' => true, 'data' => $this->format($promo)]);
@@ -58,7 +58,7 @@ class SellerPromotionController extends Controller
                 'type'           => 'required|in:flash_sale,discount',
                 'discount_type'  => 'required|in:percentage,fixed',
                 'discount_value' => 'required|numeric|min:0.001',
-                'starts_at'      => 'required|date|after_or_equal:now',
+                'starts_at' => 'required|date',
                 'ends_at'        => 'required|date|after:starts_at',
                 'flash_stock'    => 'nullable|integer|min:1',
                 'product_ids'    => 'required|array|min:1',
@@ -125,7 +125,8 @@ class SellerPromotionController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Promotion created successfully.',
-                'data'    => $this->format($promo->load('products:id,name,slug,price')),
+                'data'    => $this->format($promo->load(['products:id,name,slug,price', 'products.primaryImage'])
+),
             ], 201);
 
         } catch (\Throwable $e) {
@@ -168,7 +169,7 @@ class SellerPromotionController extends Controller
             return response()->json([
                 'success' => true,
                 'message' => 'Promotion updated.',
-                'data'    => $this->format($promo->load('products:id,name,slug,price')),
+                'data'    => $this->format($promo->load(['products:id,name,slug,price', 'products.primaryImage'])),
             ]);
 
         } catch (\Throwable $e) {

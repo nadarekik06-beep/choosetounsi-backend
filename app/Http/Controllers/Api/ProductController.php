@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Attribute;
 use App\Models\Product;
 use App\Services\ProductScoringService;
+use App\Services\PromotionService;
 use App\Services\UserPreferenceService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -15,7 +16,8 @@ class ProductController extends Controller
 {
     public function __construct(
         private ProductScoringService $scoringService,
-        private UserPreferenceService $preferenceService
+        private UserPreferenceService $preferenceService,
+        private PromotionService      $promoService,      // ← PROMO FIX: injected
     ) {}
 
     public function index(Request $request)
@@ -199,8 +201,6 @@ class ProductController extends Controller
                 ->map(fn($i) => Storage::url($i->image_path))
                 ->values()->toArray();
 
-            // ── STEP 1: Build exact groupKey for every variant ───────────────
-            // variantGroupKeys[$variantId] = "104|105|106"
             $variantGroupKeys = [];
             foreach ($product->variants as $v) {
                 $colorOpts = $v->attributeOptions
@@ -210,29 +210,8 @@ class ProductController extends Controller
                 $variantGroupKeys[$v->id] = $colorOpts->pluck('id')->implode('|');
             }
 
-            // ── STEP 2: Build imagePath → groupKey map ───────────────────────
-            //
-            // THE CORE FIX:
-            // SellerProductController saves one DB row per color ID in the group,
-            // all pointing to the SAME image_path. So for group [104,105,106]
-            // with image "products/abc.jpg", there are 3 rows:
-            //   (color_option_id=104, image_path="products/abc.jpg")
-            //   (color_option_id=105, image_path="products/abc.jpg")
-            //   (color_option_id=106, image_path="products/abc.jpg")
-            //
-            // The image belongs to exactly ONE group. We determine which group
-            // by finding the variant whose sorted color IDs are a SUPERSET of
-            // all the color IDs that share this image_path.
-            //
-            // Algorithm:
-            //   1. Group all color_option_ids by image_path
-            //   2. For each image_path, the set of colorIds tells us which group
-            //      it belongs to (match against variant groupKeys)
-            //   3. Build imagePathToGroupKey map
-
-            // Group color_option_ids by image_path
-            $imagePathColorIds = [];  // imagePath => [colorId, ...]
-            $imagePathIsPrimary = []; // imagePath => bool
+            $imagePathColorIds  = [];
+            $imagePathIsPrimary = [];
             foreach ($product->images->filter(fn($i) => $i->color_option_id !== null) as $img) {
                 $path = $img->image_path;
                 if (!isset($imagePathColorIds[$path])) {
@@ -245,28 +224,20 @@ class ProductController extends Controller
                 }
             }
 
-            // For each unique image_path, find its exact groupKey
-            // The groupKey is determined by sorting the collected colorIds
-            // and matching against known variant groupKeys
             $imagePathToGroupKey = [];
-            // Build set of known groupKeys from variants
-            $knownGroupKeys = array_unique(array_values($variantGroupKeys));
+            $knownGroupKeys      = array_unique(array_values($variantGroupKeys));
 
             foreach ($imagePathColorIds as $path => $colorIds) {
-                $sortedIds    = array_unique($colorIds);
+                $sortedIds = array_unique($colorIds);
                 sort($sortedIds);
-                $candidate    = implode('|', $sortedIds);
+                $candidate = implode('|', $sortedIds);
 
                 if (in_array($candidate, $knownGroupKeys, true)) {
-                    // Exact match — this image belongs to this group
                     $imagePathToGroupKey[$path] = $candidate;
                 } else {
-                    // Partial match: the image may have fewer rows than expected
-                    // (e.g. only 1 of 3 color IDs saved yet). Find the groupKey
-                    // that contains ALL of this image's colorIds as a subset.
                     $matched = null;
                     foreach ($knownGroupKeys as $gk) {
-                        $gkIds = array_map('intval', explode('|', $gk));
+                        $gkIds        = array_map('intval', explode('|', $gk));
                         $allContained = true;
                         foreach ($sortedIds as $cid) {
                             if (!in_array($cid, $gkIds, true)) {
@@ -283,7 +254,6 @@ class ProductController extends Controller
                 }
             }
 
-            // ── STEP 3: Build colorImages using exact groupKey per image ─────
             foreach ($product->images->filter(fn($i) => $i->color_option_id !== null) as $img) {
                 $path     = $img->image_path;
                 $url      = Storage::url($path);
@@ -291,7 +261,6 @@ class ProductController extends Controller
 
                 if (!$groupKey) continue;
 
-                // Register under the group key
                 if (!in_array($url, $colorImages[$groupKey] ?? [], true)) {
                     $colorImages[$groupKey][] = $url;
                 }
@@ -299,7 +268,6 @@ class ProductController extends Controller
                     $colorPrimaryImage[$groupKey] = $url;
                 }
 
-                // Also register under individual color ID string (fallback for frontend)
                 $strId = (string) $img->color_option_id;
                 if (!in_array($url, $colorImages[$strId] ?? [], true)) {
                     $colorImages[$strId][] = $url;
@@ -309,10 +277,9 @@ class ProductController extends Controller
                 }
             }
 
-            // ── STEP 4: Build variants payload ───────────────────────────────
             $variantsPayload = $product->variants->map(function ($v) use (
                 $productImageUrls, &$colorImages, &$colorPrimaryImage,
-                &$variantPrimaryImage, $variantGroupKeys
+                &$variantPrimaryImage, $variantGroupKeys, $product
             ) {
                 $variantImageUrls = $v->images
                     ->map(fn($i) => Storage::url($i->image_path))
@@ -347,12 +314,17 @@ class ProductController extends Controller
                 }
                 if (empty($resolvedImages)) $resolvedImages = $productImageUrls;
 
+                // ← PROMO FIX: apply promotion discount to variant base price
+                $variantBase       = (float) ($v->price_override ?? $product->price);
+                $variantPromoData  = $this->promoService->getEffectivePrice($product, $variantBase);
+
                 return [
                     'id'                => $v->id,
                     'sku'               => $v->sku,
                     'stock'             => $v->stock,
                     'is_active'         => $v->is_active,
-                    'price'             => $v->effective_price,
+                    'price'             => $variantPromoData['effective_price'], // discounted
+                    'original_price'    => $variantBase,                         // for strikethrough
                     'price_override'    => $v->price_override,
                     'label'             => $v->label,
                     'option_map'        => $v->option_map,
@@ -363,9 +335,8 @@ class ProductController extends Controller
                 ];
             })->values();
 
-            // ── STEP 5: Build selectable_axes ────────────────────────────────
             $axisMap             = [];
-            $colorGroups         = [];   // keyed by groupKey (unique per group)
+            $colorGroups         = [];
             $registeredOptionIds = [];
 
             foreach ($product->variants as $variant) {
@@ -443,12 +414,19 @@ class ProductController extends Controller
             $selectableAxes = array_values($axisMap);
         }
 
+        // ── PROMO FIX: compute promotion data for this product ──────────────
+        $promoData = $this->promoService->getEffectivePrice($product);
+
         $data                    = $product->toArray();
         $data['has_variants']    = $hasVariants;
         $data['variants']        = $variantsPayload;
         $data['selectable_axes'] = $selectableAxes;
         $data['attribute_data']  = $product->attribute_data;
         $data['color_images']    = $colorImages;
+        // ── PROMO FIX: append promotion fields so frontend receives them ────
+        $data['effective_price'] = $promoData['effective_price'];
+        $data['discount_amount'] = $promoData['discount_amount'];
+        $data['promotion']       = $promoData['promotion'];
 
         return response()->json(['success' => true, 'data' => $data]);
     }
@@ -568,6 +546,13 @@ class ProductController extends Controller
         }
         $p->color_swatches = $swatches;
         $p->setRelation('variants', $p->variants->map(fn($v) => ['id' => $v->id, 'stock' => $v->stock])->values());
+
+        // ── PROMO FIX: append promotion data to every product card in listings
+        $promoData             = $this->promoService->getEffectivePrice($p);
+        $p->effective_price    = $promoData['effective_price'];
+        $p->discount_amount    = $promoData['discount_amount'];
+        $p->promotion          = $promoData['promotion'];
+
         return $p;
     }
 }

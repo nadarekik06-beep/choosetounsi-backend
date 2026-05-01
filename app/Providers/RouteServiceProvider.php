@@ -13,11 +13,9 @@ class RouteServiceProvider extends ServiceProvider
     /**
      * The path to the "home" route for your application.
      *
-     * This is used by Laravel authentication to redirect users after login.
-     *
      * @var string
      */
-    public const HOME = '/home'; // This will use our custom redirect logic in web.php
+    public const HOME = '/home';
 
     /**
      * Define your route model bindings, pattern filters, etc.
@@ -29,27 +27,21 @@ class RouteServiceProvider extends ServiceProvider
         $this->configureRateLimiting();
 
         $this->routes(function () {
-            Route::prefix('api')
-                ->middleware('api')
-                ->namespace($this->namespace)
+            // ── API routes (api.php + admin.php) ──────────────────────────
+            // NO ->namespace() call — Laravel 8 uses fully-qualified class names
+            // in route files, so a namespace prefix would corrupt them.
+            Route::middleware('api')
+                ->prefix('api')
                 ->group(base_path('routes/api.php'));
 
+            Route::middleware('api')
+                ->prefix('api')
+                ->group(base_path('routes/admin.php'));
+
+            // ── Web routes ────────────────────────────────────────────────
             Route::middleware('web')
-                ->namespace($this->namespace)
                 ->group(base_path('routes/web.php'));
         });
-        $this->routes(function () {
-    Route::middleware('api')
-        ->prefix('api')
-        ->group(base_path('routes/api.php'));
-
-    Route::middleware('api')
-        ->prefix('api')
-        ->group(base_path('routes/admin.php')); // ← ADD THIS
-
-    Route::middleware('web')
-        ->group(base_path('routes/web.php'));
-});
     }
 
     /**

@@ -12,6 +12,7 @@ use App\Models\ProductVariant;
 use App\Models\SellerOrder;
 use App\Services\WalletService;
 use App\Services\StockAlertService;
+use App\Services\PromotionService;         // ← PROMO FIX: import
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -22,6 +23,7 @@ class CheckoutController extends Controller
     public function __construct(
         private WalletService     $walletService,
         private StockAlertService $stockAlertService,
+        private PromotionService  $promoService,     // ← PROMO FIX: inject
     ) {}
 
     /**
@@ -172,18 +174,21 @@ class CheckoutController extends Controller
             $productRows = $cartItems->filter(fn($i) => !$i->isPack());
             $packRows    = $cartItems->filter(fn($i) =>  $i->isPack());
 
-            // ── A) Process regular product rows (original logic, unchanged) ───
+            // ── A) Process regular product rows ───────────────────────────────
             if ($productRows->isNotEmpty()) {
                 $groupedBySeller = $productRows->groupBy(function ($item) use ($sellerCol) {
                     return $item->product->{$sellerCol};
                 });
 
                 foreach ($groupedBySeller as $sellerId => $sellerItems) {
+
+                    // ← PROMO FIX: use effective (discounted) price for seller subtotal
                     $sellerSubtotal = $sellerItems->sum(function ($item) {
-                        $price = $item->variant
+                        $basePrice = $item->variant
                             ? (float) ($item->variant->price_override ?? $item->product->price)
                             : (float) $item->product->price;
-                        return round($price * $item->quantity, 3);
+                        $priceData = $this->promoService->getEffectivePrice($item->product, $basePrice);
+                        return round($priceData['effective_price'] * $item->quantity, 3);
                     });
 
                     $sellerOrder = SellerOrder::create([
@@ -195,11 +200,15 @@ class CheckoutController extends Controller
                     ]);
 
                     foreach ($sellerItems as $item) {
-                        $product   = $item->product;
-                        $variant   = $item->variant;
-                        $unitPrice = $variant
+                        $product  = $item->product;
+                        $variant  = $item->variant;
+
+                        // ← PROMO FIX: resolve effective price per item
+                        $basePrice = $variant
                             ? (float) ($variant->price_override ?? $product->price)
                             : (float) $product->price;
+                        $priceData = $this->promoService->getEffectivePrice($product, $basePrice);
+                        $unitPrice = $priceData['effective_price'];
 
                         $variantLabel = $variant
                             ? $variant->attributeOptions->pluck('value')->join(' / ')
@@ -233,22 +242,17 @@ class CheckoutController extends Controller
                 }
             }
 
-            // ── B) Process pack rows ──────────────────────────────────────────
+            // ── B) Process pack rows (unchanged — pack uses snapshot price) ───
             foreach ($packRows as $cartRow) {
                 $pack         = $cartRow->pack;
                 $selectionMap = collect($cartRow->pack_selections ?? [])->keyBy('pack_item_id');
                 $packPrice    = (float) $cartRow->pack_price_snapshot;
 
-                // Group this pack's items by seller to create seller_orders
                 $packItemsBySeller = $pack->items->groupBy(
                     fn($pi) => $pi->product->{$sellerCol}
                 );
 
-                $totalSellerCount = $packItemsBySeller->count();
-
                 foreach ($packItemsBySeller as $sellerId => $packItems) {
-                    // Distribute pack price proportionally across sellers
-                    // (by item count — simple and fair)
                     $proportion     = $packItems->count() / $pack->items->count();
                     $sellerSubtotal = round($packPrice * $proportion, 3);
 
@@ -268,7 +272,6 @@ class CheckoutController extends Controller
                             ? $product->variants->firstWhere('id', $variantId)
                             : null;
 
-                        // Store the actual unit price for the order record
                         $unitPrice = $variant
                             ? (float) ($variant->price_override ?? $product->price)
                             : (float) $product->price;
@@ -283,7 +286,6 @@ class CheckoutController extends Controller
                             'product_id'      => $product->id,
                             'variant_id'      => $variantId,
                             'variant_label'   => $variantLabel,
-                            // Mark it clearly as a pack item in order history
                             'product_name'    => $product->name . ' (Bundle: ' . $pack->name . ')',
                             'quantity'        => $packItem->quantity,
                             'unit_price'      => $unitPrice,
@@ -291,7 +293,6 @@ class CheckoutController extends Controller
                             'total'           => round($unitPrice * $packItem->quantity, 3),
                         ]);
 
-                        // Decrement stock for each pack item
                         if ($variant) {
                             ProductVariant::where('id', $variantId)
                                 ->decrement('stock', $packItem->quantity);
@@ -329,10 +330,9 @@ class CheckoutController extends Controller
 
         $this->fireStockAlerts($decrementedVariants, $decrementedProducts);
 
-        // Re-resolve $groupedBySeller for seller_count (may not exist if only packs)
         $sellerCount = $productRows->isNotEmpty()
             ? $productRows->groupBy(fn($i) => $i->product->{$sellerCol})->count()
-                + $packRows->count()    // each pack counts as its own seller group
+                + $packRows->count()
             : $packRows->count();
 
         return response()->json([
@@ -348,7 +348,6 @@ class CheckoutController extends Controller
 
     /**
      * POST /api/checkout/buy-now
-     * (Original logic — completely unchanged, packs use the cart flow)
      */
     public function buyNow(Request $request)
     {
@@ -404,9 +403,13 @@ class CheckoutController extends Controller
             ], 422);
         }
 
-        $unitPrice    = $variant
+        // ← PROMO FIX: apply active promotion to buy-now price
+        $basePrice    = $variant
             ? (float) ($variant->price_override ?? $product->price)
             : (float) $product->price;
+        $priceData    = $this->promoService->getEffectivePrice($product, $basePrice);
+        $unitPrice    = $priceData['effective_price'];
+
         $subtotal     = round($unitPrice * $quantity, 3);
         $total        = round($subtotal + 8, 3);
         $variantLabel = $variant
@@ -505,7 +508,7 @@ class CheckoutController extends Controller
         ], 201);
     }
 
-    // ── Private helpers (original — unchanged) ────────────────────────────────
+    // ── Private helpers ───────────────────────────────────────────────────────
 
     private function fireStockAlerts(array $decrementedVariants, array $decrementedProducts): void
     {
@@ -529,18 +532,22 @@ class CheckoutController extends Controller
         }
     }
 
+    /**
+     * calculateCartTotal — uses effective (post-promotion) price for product rows.
+     * Pack rows use pack_price_snapshot directly (promotions don't apply to packs).
+     */
     private function calculateCartTotal($cartItems): float
     {
         $subtotal = $cartItems->sum(function ($item) {
-            // Pack rows use the snapshot price directly
             if ($item->isPack()) {
                 return (float) $item->pack_price_snapshot;
             }
-            // Product rows use variant/product price × quantity
-            $price = $item->variant
+            // ← PROMO FIX: apply promotion discount to product subtotal
+            $basePrice = $item->variant
                 ? (float) ($item->variant->price_override ?? $item->product->price)
                 : (float) $item->product->price;
-            return round($price * $item->quantity, 3);
+            $priceData = $this->promoService->getEffectivePrice($item->product, $basePrice);
+            return round($priceData['effective_price'] * $item->quantity, 3);
         });
 
         return round($subtotal + 8, 3);
