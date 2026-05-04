@@ -536,9 +536,162 @@ PROMPT;
             ],
         ]);
     }
-
     // ═══════════════════════════════════════════════════════════════════════
-    // 4. RECOMMENDER (Bundle & Related Products)
+// 4. QUICK DESCRIPTION (inline, no product_id required)
+//    POST /api/seller/ai/quick-description
+//    Body: { name, category?, short_description?, tone?, language? }
+//    Used by the Add Product modal before the product is saved.
+// ═══════════════════════════════════════════════════════════════════════
+public function quickDescription(Request $request)
+{
+    $request->validate([
+        'name'              => 'required|string|max:255',
+        'category'          => 'nullable|string|max:100',
+        'price'             => 'nullable|numeric|min:0',
+        'short_description' => 'nullable|string|max:500',
+        'attributes'        => 'nullable|array',
+        'variants'          => 'nullable|array',
+        'image_count'       => 'nullable|integer|min:0',
+        'tone'              => 'nullable|in:professional,casual,exciting,trust-focused',
+        'language'          => 'nullable|in:en,fr,ar',
+    ]);
+
+    $name       = trim($request->name);
+    $category   = trim($request->input('category', 'General')) ?: 'General';
+    $price      = (float) $request->input('price', 0);
+    $shortDesc  = trim($request->input('short_description', ''));
+    $attributes = (array) $request->input('attributes', []);
+    $variants   = array_slice((array) $request->input('variants', []), 0, 10);
+    $imageCount = (int) $request->input('image_count', 0);
+    $tone       = $request->input('tone', 'professional');
+    $language   = $request->input('language', 'fr');
+
+    // ── Price positioning ─────────────────────────────────────────────────
+    $priceLabel = match (true) {
+        $price >= 500 => 'Luxury / Ultra-premium',
+        $price >= 200 => 'Premium / High-end',
+        $price >= 80  => 'Mid-range / Quality',
+        $price >= 30  => 'Value / Accessible',
+        default       => 'Budget-friendly',
+    };
+
+    // ── Attribute string ──────────────────────────────────────────────────
+    $attrParts = [];
+    foreach ($attributes as $slug => $val) {
+        if ($val !== null && $val !== '') {
+            $attrParts[] = ucfirst(str_replace('_', ' ', (string) $slug)) . ': ' . $val;
+        }
+    }
+    $attrStr = implode(' | ', $attrParts);
+
+    // ── Variant string ────────────────────────────────────────────────────
+    $variantStr = !empty($variants) ? implode(', ', $variants) : '';
+
+    // ── Language instruction ───────────────────────────────────────────────
+    $langInstruction = match ($language) {
+        'ar'    => 'Write title, short_description, description, meta_title, meta_description in Arabic (Modern Standard Arabic). Keep keywords in English.',
+        'fr'    => 'Write title, short_description, description, meta_title, meta_description in French.',
+        default => 'Write everything in English. Optimize for Tunisian diaspora and international buyers.',
+    };
+
+    // ── Tone instruction ───────────────────────────────────────────────────
+    $toneInstruction = match ($tone) {
+        'casual'        => 'Friendly, conversational, relatable. Simple sentences, everyday language.',
+        'exciting'      => 'High energy, bold, enthusiastic. Create urgency and strong desire.',
+        'trust-focused' => 'Emphasize reliability, quality guarantees, social proof, and after-sales support.',
+        default         => 'Clear, authoritative, benefits-first. Professional and credible.',
+    };
+
+    // ── Build context ──────────────────────────────────────────────────────
+    $contextLines = array_filter([
+        "PRODUCT NAME: {$name}",
+        "CATEGORY: {$category}",
+        $price > 0    ? "PRICE: {$price} TND  →  Positioning: {$priceLabel}" : null,
+        $imageCount   ? "PRODUCT PHOTOS: {$imageCount} image(s) provided"      : null,
+        $variantStr   ? "AVAILABLE VARIANTS: {$variantStr}"                     : null,
+        $attrStr      ? "PRODUCT ATTRIBUTES: {$attrStr}"                        : null,
+        $shortDesc    ? "SELLER DRAFT (improve this): {$shortDesc}"             : null,
+    ]);
+    $context = implode("\n", $contextLines);
+
+    $systemPrompt = <<<SYSTEM
+You are an expert SEO copywriter for ChooseTounsi, Tunisia's leading multi-vendor e-commerce marketplace.
+{$langInstruction}
+Tone: {$toneInstruction}
+ALWAYS structure the description as: Hook → Value Proposition → Key Features/Benefits → Trust Elements → Call to Action.
+Use the product data provided to write something SPECIFIC, not generic.
+ALWAYS respond with ONLY valid JSON. No markdown fences. No text outside the JSON object.
+SYSTEM;
+
+    $userPrompt = <<<PROMPT
+Generate a high-conversion, SEO-optimized product listing for ChooseTounsi:
+
+{$context}
+
+Requirements:
+- Highlight BENEFITS, not just features
+- Use specific product details (variants, attributes, price positioning)
+- Include Tunisian market context (local relevance, delivery trust, Tunisian buyer habits)
+- Strictly follow the tone and language specified
+- Description must feel written for THIS specific product, not a generic template
+
+Respond with ONLY this JSON (no extra text):
+{
+  "title": "<optimized product title, max 80 chars>",
+  "short_description": "<compelling hook sentence, 1-2 sentences, max 160 chars>",
+  "description": "<full structured description, 180-280 words, paragraphs not bullets>",
+  "keywords": ["<kw1>", "<kw2>", "<kw3>", "<kw4>", "<kw5>", "<kw6>"],
+  "meta_title": "<SEO meta title, max 60 chars>",
+  "meta_description": "<SEO meta description, max 160 chars>",
+  "call_to_action": "<one powerful CTA tailored to Tunisian buyers>"
+}
+PROMPT;
+
+    $aiRaw    = $this->callGroq($systemPrompt, $userPrompt, 800);
+    $aiResult = null;
+
+    if ($aiRaw) {
+        try {
+            $clean = preg_replace('/```json|```/i', '', $aiRaw);
+            $start = strpos($clean, '{');
+            $end   = strrpos($clean, '}');
+            if ($start !== false && $end !== false) {
+                $aiResult = json_decode(substr($clean, $start, $end - $start + 1), true);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[SellerAI::quickDescription] Parse failed: ' . $e->getMessage());
+        }
+    }
+
+    // ── Deterministic fallback ─────────────────────────────────────────────
+    if (!$aiResult) {
+        $variantNote = $variantStr ? " Disponible en: {$variantStr}." : '';
+        $attrNote    = $attrStr    ? " Caractéristiques: {$attrStr}." : '';
+        $aiResult    = [
+            'title'             => "{$name} — {$category} sur ChooseTounsi",
+            'short_description' => $shortDesc
+                ?: "Découvrez {$name}, disponible sur ChooseTounsi. Livraison rapide partout en Tunisie.",
+            'description'       => "Faites confiance à {$name} pour répondre à vos besoins quotidiens. "
+                . "Ce produit de qualité dans la catégorie {$category} est conçu pour les consommateurs tunisiens exigeants."
+                . $variantNote . $attrNote
+                . " Disponible avec livraison express. Commandez maintenant sur ChooseTounsi.",
+            'keywords'          => ['tunisien', strtolower($category), 'choosetounsi', 'livraison', 'qualité', 'authentique'],
+            'meta_title'        => "{$name} | {$category} — ChooseTounsi",
+            'meta_description'  => "Achetez {$name} sur ChooseTounsi. {$priceLabel}. Livraison rapide en Tunisie.",
+            'call_to_action'    => "Commandez maintenant et recevez votre colis sous 24-48h partout en Tunisie!",
+        ];
+    }
+
+    return response()->json([
+        'success' => true,
+        'data'    => [
+            'ai_result'    => $aiResult,
+            'data_context' => compact('name', 'category', 'tone', 'language', 'priceLabel'),
+        ],
+    ]);
+}
+    // ═══════════════════════════════════════════════════════════════════════
+    // 5. RECOMMENDER (Bundle & Related Products)
     //    POST /api/seller/ai/recommender
     //    Body: { product_id: int, mode: 'bundle'|'related' }
     // ═══════════════════════════════════════════════════════════════════════

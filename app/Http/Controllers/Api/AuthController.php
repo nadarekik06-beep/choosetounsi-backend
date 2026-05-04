@@ -3,9 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Mail\WelcomeUserMail;
 use App\Models\User;
+use App\Models\Product;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 use Laravel\Socialite\Facades\Socialite;
 
@@ -23,9 +26,36 @@ class AuthController extends Controller
             'role'        => $user->role,
             'is_approved' => (bool) $user->is_approved,
             'is_active'   => (bool) $user->is_active,
-            'avatar'      => $user->avatar ?? null,   // Google photo URL or null
+            'avatar'      => $user->avatar ?? null,
             'onboarding_completed' => (bool) $user->onboarding_completed,
         ];
+    }
+
+    /**
+     * Pull 4 random active products for the welcome email mini-catalog.
+     */
+    private function featuredProductsForEmail(): array
+    {
+        try {
+            return Product::where('is_active', true)
+                ->where('is_approved', true)
+                ->inRandomOrder()
+                ->limit(4)
+                ->with(['primaryImage'])
+                ->get(['id', 'name', 'slug', 'price'])
+                ->map(fn ($p) => [
+                    'name'  => $p->name,
+                    'slug'  => $p->slug,
+                    'price' => $p->price,
+                    'image' => $p->primaryImage
+                        ? asset('storage/' . $p->primaryImage->image_path)
+                        : null,
+                ])
+                ->toArray();
+        } catch (\Exception $e) {
+            // If products query fails, return empty array — don't break registration
+            return [];
+        }
     }
 
     /* ──────────────────────────────────────────────────────── */
@@ -61,33 +91,30 @@ class AuthController extends Controller
     /* ──────────────────────────────────────────────────────── */
     /*  Get current authenticated user                          */
     /* ──────────────────────────────────────────────────────── */
-public function user(Request $request): \Illuminate\Http\JsonResponse
-{
-    /** @var \App\Models\User $user */
-    $user = $request->user();
+    public function user(Request $request): \Illuminate\Http\JsonResponse
+    {
+        /** @var \App\Models\User $user */
+        $user = $request->user();
 
-    // Eager-load the latest application so we don't N+1 later
-    $user->load('sellerApplication');
+        $user->load('sellerApplication');
 
-    $application = $user->sellerApplication;
+        $application = $user->sellerApplication;
 
-    return response()->json([
-        'user' => [
-            'id'          => $user->id,
-            'name'        => $user->name,
-            'email'       => $user->email,
-            'role'        => $user->role,
-            'is_approved' => $user->is_approved,
-            'is_active'   => $user->is_active,
-            'avatar'      => $user->avatar,
+        return response()->json([
+            'user' => [
+                'id'          => $user->id,
+                'name'        => $user->name,
+                'email'       => $user->email,
+                'role'        => $user->role,
+                'is_approved' => $user->is_approved,
+                'is_active'   => $user->is_active,
+                'avatar'      => $user->avatar,
+                'active_plan' => $application?->plan ?? 'free',
+                'onboarding_completed' => (bool) $user->onboarding_completed,
+            ],
+        ]);
+    }
 
-            // ── THE FIX: surface active plan at the top level ────────────
-            // 'free' if no application exists yet (safe default)
-            'active_plan' => $application?->plan ?? 'free',
-            'onboarding_completed' => (bool) $user->onboarding_completed,
-        ],
-    ]);
-}
     /* ──────────────────────────────────────────────────────── */
     /*  Logout                                                  */
     /* ──────────────────────────────────────────────────────── */
@@ -119,6 +146,17 @@ public function user(Request $request): \Illuminate\Http\JsonResponse
             'is_active'   => true,
             'is_approved' => $role === 'client',
         ]);
+
+        // ── Send welcome email to brand-new users ──────────────────────────
+        try {
+            Mail::to($user->email)->send(
+                new WelcomeUserMail($user, $this->featuredProductsForEmail())
+            );
+        } catch (\Exception $e) {
+            // Don't break registration if email fails
+            \Log::error('Welcome email failed for user #' . $user->id . ': ' . $e->getMessage());
+        }
+        // ──────────────────────────────────────────────────────────────────
 
         $token = $user->createToken('api-token')->plainTextToken;
 
@@ -153,39 +191,51 @@ public function user(Request $request): \Illuminate\Http\JsonResponse
             return redirect(env('FRONTEND_URL', 'http://localhost:3000') . '/auth/login?error=google_failed');
         }
 
-        // Find by google_id first, then by email
         $user = User::where('google_id', $googleUser->getId())
             ->orWhere('email', $googleUser->getEmail())
             ->first();
 
+        $isNewUser = false;
+
         if ($user) {
-            // Update google_id and avatar every login so photo stays fresh
             $user->update([
                 'google_id' => $googleUser->getId(),
-                'avatar'    => $googleUser->getAvatar(),   // always refresh
+                'avatar'    => $googleUser->getAvatar(),
             ]);
 
             if (!$user->is_active) {
                 return redirect(env('FRONTEND_URL', 'http://localhost:3000') . '/auth/login?error=account_deactivated');
             }
         } else {
-            // Brand-new user via Google
+            // Brand-new Google user
             $user = User::create([
                 'name'        => $googleUser->getName(),
                 'email'       => $googleUser->getEmail(),
                 'google_id'   => $googleUser->getId(),
-                'avatar'      => $googleUser->getAvatar(),  // save Google photo
+                'avatar'      => $googleUser->getAvatar(),
                 'password'    => Hash::make(Str::random(32)),
                 'role'        => 'client',
                 'is_active'   => true,
                 'is_approved' => true,
             ]);
+            $isNewUser = true;
         }
+
+        // ── Send welcome email only to brand-new Google users ──────────────
+        if ($isNewUser) {
+            try {
+                Mail::to($user->email)->send(
+                    new WelcomeUserMail($user, $this->featuredProductsForEmail())
+                );
+            } catch (\Exception $e) {
+                \Log::error('Welcome email failed for Google user #' . $user->id . ': ' . $e->getMessage());
+            }
+        }
+        // ──────────────────────────────────────────────────────────────────
 
         $user->tokens()->delete();
         $token = $user->createToken('api-token')->plainTextToken;
 
-        // Pass token + user to frontend via query params (base64 encoded)
         $userData    = base64_encode(json_encode($this->userResponse($user)));
         $frontendUrl = env('FRONTEND_URL', 'http://localhost:3000');
 

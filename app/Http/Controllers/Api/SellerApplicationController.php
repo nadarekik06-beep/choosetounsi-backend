@@ -4,12 +4,15 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Mail\SellerApplicationApprovedMail;
+use App\Mail\SellerApplicationSubmittedMail;
 use App\Models\User;
 use App\Models\SellerApplication;
 use App\Notifications\NewSellerApplicationNotification;
 use App\Notifications\SellerApplicationReviewedNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
 
 class SellerApplicationController extends Controller
@@ -18,11 +21,6 @@ class SellerApplicationController extends Controller
 
     /**
      * POST /api/seller-applications
-     *
-     * What changed vs old version:
-     *   - `subscription_plan` input field renamed to `preferred_plan`
-     *   - We store preferred_plan (user's interest) but ALWAYS set plan = 'free'
-     *     because the active plan is only activated after approval + payment.
      */
     public function store(Request $request)
     {
@@ -53,8 +51,6 @@ class SellerApplicationController extends Controller
             'facebook_url'         => 'nullable|url|max:500',
             'instagram_url'        => 'nullable|url|max:500',
             'website_url'          => 'nullable|url|max:500',
-            // preferred_plan: what the user expressed interest in
-            // Validated as green/red/black to match pricing page options
             'preferred_plan'       => 'nullable|in:green,red,black',
         ]);
 
@@ -86,13 +82,11 @@ class SellerApplicationController extends Controller
             'instagram_url'        => $validated['instagram_url'] ?? null,
             'website_url'          => $validated['website_url'] ?? null,
             'status'               => 'pending',
-            // preferred_plan: what the user expressed interest in (default: green = free)
             'preferred_plan'       => $validated['preferred_plan'] ?? 'green',
-            // plan: ALWAYS 'free' at application time — upgraded after approval + payment
             'plan'                 => 'free',
         ]);
 
-        // Notify all admins
+        // Notify all admins (your existing notification — untouched)
         Notification::send(
             User::getAllAdmins(),
             new NewSellerApplicationNotification(
@@ -102,6 +96,12 @@ class SellerApplicationController extends Controller
                 $user->id
             )
         );
+
+        // ── Send confirmation email to the seller ──────────────────────────
+        Mail::to($user->email)->queue(
+            new SellerApplicationSubmittedMail($user, $application)
+        );
+        // ──────────────────────────────────────────────────────────────────
 
         return response()->json([
             'success' => true,
@@ -113,32 +113,29 @@ class SellerApplicationController extends Controller
     /**
      * GET /api/seller-applications/status
      */
-    // app/Http/Controllers/Api/SellerApplicationController.php
-// Only the status() method — don't touch anything else.
+    public function status(Request $request): \Illuminate\Http\JsonResponse
+    {
+        $application = \App\Models\SellerApplication::where('user_id', $request->user()->id)
+            ->latest()
+            ->first();
 
-public function status(Request $request): \Illuminate\Http\JsonResponse
-{
-    $application = \App\Models\SellerApplication::where('user_id', $request->user()->id)
-        ->latest()
-        ->first();
+        if (! $application) {
+            return response()->json(['success' => true, 'data' => null]);
+        }
 
-    if (! $application) {
-        return response()->json(['success' => true, 'data' => null]);
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'id'               => $application->id,
+                'status'           => $application->status,
+                'plan'             => $application->plan,
+                'preferred_plan'   => $application->preferred_plan,
+                'rejection_reason' => $application->rejection_reason,
+                'reviewed_at'      => $application->reviewed_at,
+                'created_at'       => $application->created_at->format('Y-m-d\TH:i:s\Z'),
+            ],
+        ]);
     }
-
-    return response()->json([
-        'success' => true,
-        'data' => [
-            'id'              => $application->id,
-            'status'          => $application->status,
-            'plan'            => $application->plan,           // ← ensure this is here
-            'preferred_plan'  => $application->preferred_plan,
-            'rejection_reason'=> $application->rejection_reason,
-            'reviewed_at'     => $application->reviewed_at,
-            'created_at'      => $application->created_at->format('Y-m-d\TH:i:s\Z'),
-        ],
-    ]);
-}
 
     // ── Admin methods ──────────────────────────────────────────────────────
 
@@ -180,19 +177,12 @@ public function status(Request $request): \Illuminate\Http\JsonResponse
 
     /**
      * POST /api/admin/seller-applications/{application}/approve
-     *
-     * What changed vs old version:
-     *   - Explicitly sets plan = 'free' on approval (not the preferred_plan)
-     *   - preferred_plan is preserved so the seller dashboard can later
-     *     show "You selected Red Pepper — upgrade now"
      */
     public function approve(Request $request, SellerApplication $application)
     {
         $application->update([
             'status'      => 'approved',
-            'plan'        => 'free',   // Active plan is ALWAYS free at approval
-            // preferred_plan intentionally NOT changed — it stays as the seller's
-            // expressed interest so the dashboard can show upgrade prompts.
+            'plan'        => 'free',
             'reviewed_at' => now(),
         ]);
 
@@ -202,12 +192,19 @@ public function status(Request $request): \Illuminate\Http\JsonResponse
             'is_active'   => true,
         ]);
 
+        // Your existing notification — untouched
         $application->user->notify(
             new SellerApplicationReviewedNotification(
                 'approved',
                 $application->business_name
             )
         );
+
+        // ── Send approval email to the seller ──────────────────────────────
+        Mail::to($application->user->email)->queue(
+            new SellerApplicationApprovedMail($application->user, $application)
+        );
+        // ──────────────────────────────────────────────────────────────────
 
         return response()->json([
             'success' => true,
