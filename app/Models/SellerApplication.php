@@ -17,11 +17,13 @@ class SellerApplication extends Model
         'phone_number',
         'business_name',
         'business_category',
+        'business_categories',  
         'business_description',
         'wilaya',
         'city',
         'profile_picture',
         'sample_images',
+        'sample_captions',  
         'facebook_url',
         'instagram_url',
         'website_url',
@@ -29,6 +31,7 @@ class SellerApplication extends Model
         // ── Plan columns (separate concerns) ────────────────────────────────
         'preferred_plan',   // What the user expressed interest in (green/red/black)
         'plan',             // Active subscription (free/red/black) — always 'free' at start
+        'pricing_range',        
         // ── Review metadata ──────────────────────────────────────────────────
         'rejection_reason',
         'reviewed_at',
@@ -37,6 +40,8 @@ class SellerApplication extends Model
 
     protected $casts = [
         'sample_images' => 'array',
+        'sample_captions'     => 'array',      // ← NEW
+        'business_categories' => 'array',      // ← NEW
         'reviewed_at'   => 'datetime',
     ];
 
