@@ -48,7 +48,7 @@ use App\Http\Controllers\Api\Seller\SellerPackController;
 use App\Http\Controllers\Api\PublicPackController;
 use App\Http\Controllers\Api\Seller\SellerPromotionController;
 use App\Http\Controllers\Api\PublicPromotionController;
-
+use App\Http\Controllers\Api\Seller\CommissionController;
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES
@@ -169,6 +169,8 @@ Route::middleware('auth:sanctum')->group(function () {
         // ── Subscription ──────────────────────────────────────────────────
         Route::get('/subscription',          [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'show']);
         Route::post('/subscription/upgrade', [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'upgrade']);
+        //----─ Commission Calculation (for frontend preview) ─────────────────────────
+        Route::post('/commission/calculate', [CommissionController::class, 'calculate']);
 
         // ── Advanced Analytics (Red Pepper +) ─────────────────────────────
         Route::prefix('analytics')

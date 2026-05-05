@@ -296,7 +296,9 @@ public function updatePaymentStatus(Request $request, $id)
             'completed'       => (clone $base)->where('status', 'completed')->count(),
             'delivered'       => (clone $base)->where('status', 'delivered')->count(),
             'cancelled'       => (clone $base)->where('status', 'cancelled')->count(),
-            'revenue'         => (clone $base)->where('payment_status', 'paid')->sum('total_amount'),
+            'revenue'             => (clone $base)->where('payment_status', 'paid')->sum('total_amount'),
+            'platform_commission' => \App\Models\OrderItem::whereHas('order', fn($q) => $q->where('payment_status', 'paid'))->sum('commission_amount'),
+            'seller_payouts'      => \App\Models\OrderItem::whereHas('order', fn($q) => $q->where('payment_status', 'paid'))->sum('seller_amount'),
             'platform_orders' => $platformOrdersCount,
         ]]);
     }

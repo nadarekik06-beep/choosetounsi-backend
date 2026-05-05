@@ -14,7 +14,7 @@ class OrderItem extends Model
 
     protected $fillable = [
         'order_id',
-        'seller_order_id',   // ← links item to its seller's sub-order
+        'seller_order_id',
         'product_id',
         'variant_id',
         'variant_label',
@@ -23,15 +23,21 @@ class OrderItem extends Model
         'unit_price',
         'price',
         'total',
-        'image_url',         // optional snapshot stored at order time
+        'image_url',
+        // ── Commission columns (populated at checkout) ─────────────────────
+        'commission_percentage',
+        'commission_amount',
+        'seller_amount',
+        'plan_used',
     ];
 
-    protected $casts = ['quantity' => 'integer'];
+    protected $casts = [
+        'quantity'              => 'integer',
+        'commission_percentage' => 'decimal:2',
+        'commission_amount'     => 'decimal:3',
+        'seller_amount'         => 'decimal:3',
+    ];
 
-    /**
-     * Append resolved_image_url to toArray() / JSON output so the controller's
-     * setAttribute() call is always serialized correctly.
-     */
     protected $appends = ['resolved_image_url'];
 
     // ── Accessors ──────────────────────────────────────────────────────────
@@ -59,19 +65,10 @@ class OrderItem extends Model
      *
      * Priority:
      *   0. Controller pre-resolved value (set via setAttribute in ClientOrderApiController)
-     *      — this always wins over the stale stored snapshot.
      *   1. Stored snapshot (image_url column set at checkout time)
-     *      — kept as fallback for items not going through the controller.
      *   2. Variant's first image (live lookup — only if relations are loaded)
      *   3. Product primary image
      *   4. null
-     *
-     * WHY THE array_key_exists CHECK:
-     * ClientOrderApiController calls $item->setAttribute('resolved_image_url', ...)
-     * which puts the variant-aware URL into $this->attributes[].
-     * Without this check, toArray() would call this accessor which previously
-     * read image_url (the wrong product-level snapshot) and returned too early,
-     * overwriting the correct value set by the controller.
      */
     public function getResolvedImageUrlAttribute(): ?string
     {
@@ -86,7 +83,7 @@ class OrderItem extends Model
             return str_starts_with($stored, 'http') ? $stored : url($stored);
         }
 
-        // 2. Variant's first image (live lookup — only if relations are loaded)
+        // 2. Variant's first image
         if ($this->relationLoaded('variant') && $this->variant) {
             $v = $this->variant;
             if ($v->relationLoaded('images') && $v->images->isNotEmpty()) {
@@ -112,10 +109,6 @@ class OrderItem extends Model
         return $this->belongsTo(Order::class);
     }
 
-    /**
-     * The seller's sub-order this item belongs to.
-     * Null for items created before the seller_orders migration.
-     */
     public function sellerOrder()
     {
         return $this->belongsTo(SellerOrder::class, 'seller_order_id');

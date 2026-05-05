@@ -9,10 +9,12 @@ use App\Models\OrderItem;
 use App\Models\Pack;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Models\SellerApplication;
 use App\Models\SellerOrder;
+use App\Services\CommissionService;
 use App\Services\WalletService;
 use App\Services\StockAlertService;
-use App\Services\PromotionService;         // ← PROMO FIX: import
+use App\Services\PromotionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -23,7 +25,8 @@ class CheckoutController extends Controller
     public function __construct(
         private WalletService     $walletService,
         private StockAlertService $stockAlertService,
-        private PromotionService  $promoService,     // ← PROMO FIX: inject
+        private PromotionService  $promoService,
+        private CommissionService $commissionService,
     ) {}
 
     /**
@@ -34,6 +37,7 @@ class CheckoutController extends Controller
      *   B) Pack bundle rows      (pack_id set, product_id null)  — new branch
      *
      * Both types flow through the same Order / SellerOrder / OrderItem system.
+     * Commission is calculated and stored per OrderItem at creation time.
      */
     public function store(Request $request)
     {
@@ -48,10 +52,8 @@ class CheckoutController extends Controller
         $user = $request->user();
 
         $cartItems = Cart::with([
-            // Product row relations
             'product',
             'variant.attributeOptions.attribute',
-            // Pack row relation
             'pack.items.product',
             'pack.items.product.variants.attributeOptions.attribute',
         ])->where('user_id', $user->id)->get();
@@ -69,7 +71,6 @@ class CheckoutController extends Controller
         foreach ($cartItems as $item) {
 
             if ($item->isPack()) {
-                // ── Pack row validation ───────────────────────────────────────
                 $pack = $item->pack;
 
                 if (!$pack || !$pack->is_active || !$pack->is_approved) {
@@ -106,7 +107,6 @@ class CheckoutController extends Controller
                 }
 
             } else {
-                // ── Product row validation (original logic, unchanged) ─────────
                 $product = $item->product;
 
                 if (!$product || !$product->is_approved || !$product->is_active) {
@@ -155,6 +155,10 @@ class CheckoutController extends Controller
         $decrementedVariants = [];
         $decrementedProducts = [];
 
+        // ── Cache seller plans once per checkout — avoids N+1 on SellerApplication ──
+        // Shared between product rows (A) and pack rows (B).
+        $sellerPlanCache = [];
+
         DB::beginTransaction();
         try {
             $order = Order::create([
@@ -182,7 +186,13 @@ class CheckoutController extends Controller
 
                 foreach ($groupedBySeller as $sellerId => $sellerItems) {
 
-                    // ← PROMO FIX: use effective (discounted) price for seller subtotal
+                    // Resolve and cache this seller's active plan
+                    if (!isset($sellerPlanCache[$sellerId])) {
+                        $app = SellerApplication::where('user_id', $sellerId)->first();
+                        $sellerPlanCache[$sellerId] = $app?->plan ?? 'free';
+                    }
+                    $sellerPlan = $sellerPlanCache[$sellerId];
+
                     $sellerSubtotal = $sellerItems->sum(function ($item) {
                         $basePrice = $item->variant
                             ? (float) ($item->variant->price_override ?? $item->product->price)
@@ -200,31 +210,40 @@ class CheckoutController extends Controller
                     ]);
 
                     foreach ($sellerItems as $item) {
-                        $product  = $item->product;
-                        $variant  = $item->variant;
+                        $product = $item->product;
+                        $variant = $item->variant;
 
-                        // ← PROMO FIX: resolve effective price per item
                         $basePrice = $variant
                             ? (float) ($variant->price_override ?? $product->price)
                             : (float) $product->price;
                         $priceData = $this->promoService->getEffectivePrice($product, $basePrice);
                         $unitPrice = $priceData['effective_price'];
 
+                        $qty = (int) $item->quantity;
+
+                        // ── Calculate commission for this line item ───────────
+                        $commission = $this->commissionService->calculate($unitPrice, $sellerPlan, $qty);
+
                         $variantLabel = $variant
                             ? $variant->attributeOptions->pluck('value')->join(' / ')
                             : null;
 
                         OrderItem::create([
-                            'order_id'        => $order->id,
-                            'seller_order_id' => $sellerOrder->id,
-                            'product_id'      => $product->id,
-                            'variant_id'      => $variant?->id,
-                            'variant_label'   => $variantLabel,
-                            'product_name'    => $product->name,
-                            'quantity'        => $item->quantity,
-                            'unit_price'      => $unitPrice,
-                            'price'           => $unitPrice,
-                            'total'           => round($unitPrice * $item->quantity, 3),
+                            'order_id'               => $order->id,
+                            'seller_order_id'        => $sellerOrder->id,
+                            'product_id'             => $product->id,
+                            'variant_id'             => $variant?->id,
+                            'variant_label'          => $variantLabel,
+                            'product_name'           => $product->name,
+                            'quantity'               => $qty,
+                            'unit_price'             => $unitPrice,
+                            'price'                  => $unitPrice,
+                            'total'                  => $commission['total_price'],
+                            // ── Commission snapshot ───────────────────────────
+                            'commission_percentage'  => $commission['commission_percentage'],
+                            'commission_amount'      => $commission['commission_amount'],
+                            'seller_amount'          => $commission['seller_amount'],
+                            'plan_used'              => $commission['plan_used'],
                         ]);
 
                         if ($variant) {
@@ -242,7 +261,7 @@ class CheckoutController extends Controller
                 }
             }
 
-            // ── B) Process pack rows (unchanged — pack uses snapshot price) ───
+            // ── B) Process pack rows ──────────────────────────────────────────
             foreach ($packRows as $cartRow) {
                 $pack         = $cartRow->pack;
                 $selectionMap = collect($cartRow->pack_selections ?? [])->keyBy('pack_item_id');
@@ -255,6 +274,13 @@ class CheckoutController extends Controller
                 foreach ($packItemsBySeller as $sellerId => $packItems) {
                     $proportion     = $packItems->count() / $pack->items->count();
                     $sellerSubtotal = round($packPrice * $proportion, 3);
+
+                    // Resolve and cache this seller's active plan
+                    if (!isset($sellerPlanCache[$sellerId])) {
+                        $app = SellerApplication::where('user_id', $sellerId)->first();
+                        $sellerPlanCache[$sellerId] = $app?->plan ?? 'free';
+                    }
+                    $sellerPlan = $sellerPlanCache[$sellerId];
 
                     $sellerOrder = SellerOrder::create([
                         'order_id'       => $order->id,
@@ -276,21 +302,33 @@ class CheckoutController extends Controller
                             ? (float) ($variant->price_override ?? $product->price)
                             : (float) $product->price;
 
+                        $qty = (int) $packItem->quantity;
+
+                        // ── Commission on pack item — uses total pack price proportioned per item ──
+                        // For packs we commission on the individual product's unit price
+                        // (the pack discount is the seller's marketing cost, not ours).
+                        $commission = $this->commissionService->calculate($unitPrice, $sellerPlan, $qty);
+
                         $variantLabel = $variant
                             ? $variant->attributeOptions->pluck('value')->join(' / ')
                             : null;
 
                         OrderItem::create([
-                            'order_id'        => $order->id,
-                            'seller_order_id' => $sellerOrder->id,
-                            'product_id'      => $product->id,
-                            'variant_id'      => $variantId,
-                            'variant_label'   => $variantLabel,
-                            'product_name'    => $product->name . ' (Bundle: ' . $pack->name . ')',
-                            'quantity'        => $packItem->quantity,
-                            'unit_price'      => $unitPrice,
-                            'price'           => $unitPrice,
-                            'total'           => round($unitPrice * $packItem->quantity, 3),
+                            'order_id'               => $order->id,
+                            'seller_order_id'        => $sellerOrder->id,
+                            'product_id'             => $product->id,
+                            'variant_id'             => $variantId,
+                            'variant_label'          => $variantLabel,
+                            'product_name'           => $product->name . ' (Bundle: ' . $pack->name . ')',
+                            'quantity'               => $qty,
+                            'unit_price'             => $unitPrice,
+                            'price'                  => $unitPrice,
+                            'total'                  => $commission['total_price'],
+                            // ── Commission snapshot ───────────────────────────
+                            'commission_percentage'  => $commission['commission_percentage'],
+                            'commission_amount'      => $commission['commission_amount'],
+                            'seller_amount'          => $commission['seller_amount'],
+                            'plan_used'              => $commission['plan_used'],
                         ]);
 
                         if ($variant) {
@@ -403,20 +441,26 @@ class CheckoutController extends Controller
             ], 422);
         }
 
-        // ← PROMO FIX: apply active promotion to buy-now price
-        $basePrice    = $variant
+        $basePrice = $variant
             ? (float) ($variant->price_override ?? $product->price)
             : (float) $product->price;
-        $priceData    = $this->promoService->getEffectivePrice($product, $basePrice);
-        $unitPrice    = $priceData['effective_price'];
+        $priceData = $this->promoService->getEffectivePrice($product, $basePrice);
+        $unitPrice = $priceData['effective_price'];
 
-        $subtotal     = round($unitPrice * $quantity, 3);
+        // ── Resolve seller plan for commission ────────────────────────────────
+        $sellerCol  = $this->getSellerCol();
+        $sellerId   = $product->{$sellerCol};
+        $app        = SellerApplication::where('user_id', $sellerId)->first();
+        $sellerPlan = $app?->plan ?? 'free';
+
+        // ── Calculate commission ──────────────────────────────────────────────
+        $commission = $this->commissionService->calculate($unitPrice, $sellerPlan, $quantity);
+
+        $subtotal     = $commission['total_price'];
         $total        = round($subtotal + 8, 3);
         $variantLabel = $variant
             ? $variant->attributeOptions->pluck('value')->join(' / ')
             : null;
-        $sellerCol    = $this->getSellerCol();
-        $sellerId     = $product->{$sellerCol};
 
         if ($paymentMethod === 'wallet') {
             if ((float) $user->wallet_balance < $total) {
@@ -458,16 +502,21 @@ class CheckoutController extends Controller
             ]);
 
             OrderItem::create([
-                'order_id'        => $order->id,
-                'seller_order_id' => $sellerOrder->id,
-                'product_id'      => $product->id,
-                'variant_id'      => $variant?->id,
-                'variant_label'   => $variantLabel,
-                'product_name'    => $product->name,
-                'quantity'        => $quantity,
-                'unit_price'      => $unitPrice,
-                'price'           => $unitPrice,
-                'total'           => $subtotal,
+                'order_id'               => $order->id,
+                'seller_order_id'        => $sellerOrder->id,
+                'product_id'             => $product->id,
+                'variant_id'             => $variant?->id,
+                'variant_label'          => $variantLabel,
+                'product_name'           => $product->name,
+                'quantity'               => $quantity,
+                'unit_price'             => $unitPrice,
+                'price'                  => $unitPrice,
+                'total'                  => $commission['total_price'],
+                // ── Commission snapshot ───────────────────────────────────────
+                'commission_percentage'  => $commission['commission_percentage'],
+                'commission_amount'      => $commission['commission_amount'],
+                'seller_amount'          => $commission['seller_amount'],
+                'plan_used'              => $commission['plan_used'],
             ]);
 
             if ($variant) {
@@ -534,7 +583,7 @@ class CheckoutController extends Controller
 
     /**
      * calculateCartTotal — uses effective (post-promotion) price for product rows.
-     * Pack rows use pack_price_snapshot directly (promotions don't apply to packs).
+     * Pack rows use pack_price_snapshot directly.
      */
     private function calculateCartTotal($cartItems): float
     {
@@ -542,7 +591,6 @@ class CheckoutController extends Controller
             if ($item->isPack()) {
                 return (float) $item->pack_price_snapshot;
             }
-            // ← PROMO FIX: apply promotion discount to product subtotal
             $basePrice = $item->variant
                 ? (float) ($item->variant->price_override ?? $item->product->price)
                 : (float) $item->product->price;
@@ -563,5 +611,14 @@ class CheckoutController extends Controller
         $col      = in_array('seller_id', $colNames) ? 'seller_id' : 'user_id';
 
         return $col;
+    }
+
+protected function ensureNotProductOwner(Request $request, Product $product): void
+
+    {
+        $sellerCol = $this->getSellerCol();
+        if ($product->{$sellerCol} === $request->user()->id) {
+            abort(422, 'You cannot purchase your own product.');
+        }
     }
 }

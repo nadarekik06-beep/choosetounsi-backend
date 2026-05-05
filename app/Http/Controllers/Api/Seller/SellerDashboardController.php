@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Seller;
 use App\Http\Controllers\Controller;
 use App\Models\Order;
 use App\Models\Product;
+use App\Models\SellerApplication;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 
@@ -20,34 +21,49 @@ class SellerDashboardController extends Controller
         $now      = Carbon::now();
         $sellerId = $this->sellerId();
 
-        // ── Detect seller column (no static cache — fresh every request) ──────
-        $productCols = DB::select("SHOW COLUMNS FROM products");
+        // ── Detect seller column ───────────────────────────────────────────────
+        $productCols     = DB::select("SHOW COLUMNS FROM products");
         $productColNames = array_map(fn($c) => $c->Field, $productCols);
-        $sellerCol = in_array('seller_id', $productColNames) ? 'seller_id' : 'user_id';
+        $sellerCol       = in_array('seller_id', $productColNames) ? 'seller_id' : 'user_id';
 
-        // ── Detect order_items total column ───────────────────────────────────
-        $itemCols = DB::select("SHOW COLUMNS FROM order_items");
+        // ── Detect order_items columns ─────────────────────────────────────────
+        $itemCols     = DB::select("SHOW COLUMNS FROM order_items");
         $itemColNames = array_map(fn($c) => $c->Field, $itemCols);
 
-        // Build the safest possible total expression from actual columns
-        $totalExpr = 'COALESCE(';
-        $parts = [];
-        if (in_array('total', $itemColNames))      $parts[] = 'oi.total';
-        if (in_array('subtotal', $itemColNames))   $parts[] = 'oi.subtotal';
-        if (in_array('line_total', $itemColNames)) $parts[] = 'oi.line_total';
-        // Always add price*quantity as ultimate fallback
+        // ── Seller's active subscription plan ─────────────────────────────────
+        $application = SellerApplication::where('user_id', $sellerId)->first();
+        $sellerPlan  = $application?->plan ?? 'free';
+
+        // ── Gross total expression (fallback for pre-commission orders) ────────
+        $grossParts = [];
+        if (in_array('total', $itemColNames))      $grossParts[] = 'oi.total';
+        if (in_array('subtotal', $itemColNames))   $grossParts[] = 'oi.subtotal';
+        if (in_array('line_total', $itemColNames)) $grossParts[] = 'oi.line_total';
         if (in_array('price', $itemColNames) && in_array('quantity', $itemColNames)) {
-            $parts[] = 'oi.price * oi.quantity';
+            $grossParts[] = 'oi.price * oi.quantity';
         } elseif (in_array('unit_price', $itemColNames) && in_array('quantity', $itemColNames)) {
-            $parts[] = 'oi.unit_price * oi.quantity';
+            $grossParts[] = 'oi.unit_price * oi.quantity';
         }
-        $parts[] = '0';
-        $totalExpr .= implode(', ', $parts) . ')';
+        $grossParts[] = '0';
+        $grossExpr    = 'COALESCE(' . implode(', ', $grossParts) . ')';
+
+        // ── NET revenue expression — seller's actual earnings after commission ─
+        //
+        // seller_amount is stored per order_item by CommissionService at checkout.
+        // For orders placed before the commission system, seller_amount = 0,
+        // so we fall back to the gross total for those legacy rows.
+        //
+        // COALESCE(NULLIF(seller_amount, 0), gross_fallback):
+        //   → uses seller_amount when > 0  (new commission-aware orders)
+        //   → falls back to gross total    (pre-commission legacy orders)
+        $revenueExpr = in_array('seller_amount', $itemColNames)
+            ? "COALESCE(NULLIF(oi.seller_amount, 0), {$grossExpr})"
+            : $grossExpr;
 
         // ── Check if users table has state column ─────────────────────────────
-        $userCols = DB::select("SHOW COLUMNS FROM users");
+        $userCols     = DB::select("SHOW COLUMNS FROM users");
         $userColNames = array_map(fn($c) => $c->Field, $userCols);
-        $hasStateCol = in_array('state', $userColNames);
+        $hasStateCol  = in_array('state', $userColNames);
 
         // ── Seller's order IDs ─────────────────────────────────────────────────
         $sellerOrderIds = DB::table('order_items as oi')
@@ -78,13 +94,10 @@ class SellerDashboardController extends Controller
             ->where('is_approved', false)
             ->count();
 
-        // ── Revenue (NO payment_status filter — count all completed/delivered) ─
-        // This is intentional: COD orders are often delivered before payment
-        // is confirmed. Sellers should see revenue for fulfilled orders.
-
-        $totalRevenue      = 0;
-        $revenueThisMonth  = 0;
-        $revenueLastMonth  = 0;
+        // ── Revenue — NET earnings after platform commission ───────────────────
+        $totalRevenue     = 0;
+        $revenueThisMonth = 0;
+        $revenueLastMonth = 0;
 
         if ($sellerOrderIds->isNotEmpty()) {
             try {
@@ -94,7 +107,7 @@ class SellerDashboardController extends Controller
                     ->where("p.{$sellerCol}", $sellerId)
                     ->whereNull('p.deleted_at')
                     ->whereIn('o.status', ['completed', 'delivered'])
-                    ->sum(DB::raw($totalExpr));
+                    ->sum(DB::raw($revenueExpr));
             } catch (\Exception $e) {
                 $totalRevenue = 0;
             }
@@ -110,7 +123,7 @@ class SellerDashboardController extends Controller
                         $now->copy()->startOfMonth(),
                         $now->copy()->endOfMonth(),
                     ])
-                    ->sum(DB::raw($totalExpr));
+                    ->sum(DB::raw($revenueExpr));
             } catch (\Exception $e) {
                 $revenueThisMonth = 0;
             }
@@ -126,7 +139,7 @@ class SellerDashboardController extends Controller
                         $now->copy()->subMonth()->startOfMonth(),
                         $now->copy()->subMonth()->endOfMonth(),
                     ])
-                    ->sum(DB::raw($totalExpr));
+                    ->sum(DB::raw($revenueExpr));
             } catch (\Exception $e) {
                 $revenueLastMonth = 0;
             }
@@ -150,8 +163,8 @@ class SellerDashboardController extends Controller
             }
         }
 
-        // ── Monthly revenue — last 12 months ───────────────────────────────────
-        $monthlyRevenue = [];
+        // ── Monthly revenue — last 12 months (net) ────────────────────────────
+        $monthlyRevenue = collect();
         if ($sellerOrderIds->isNotEmpty()) {
             try {
                 $rawMonthly = DB::table('order_items as oi')
@@ -163,7 +176,7 @@ class SellerDashboardController extends Controller
                     ->where('o.created_at', '>=', $now->copy()->subMonths(11)->startOfMonth())
                     ->select(
                         DB::raw("DATE_FORMAT(o.created_at, '%Y-%m') as month"),
-                        DB::raw("SUM({$totalExpr}) as revenue"),
+                        DB::raw("SUM({$revenueExpr}) as revenue"),
                         DB::raw('COUNT(DISTINCT oi.order_id) as orders')
                     )
                     ->groupBy('month')
@@ -171,7 +184,6 @@ class SellerDashboardController extends Controller
                     ->get()
                     ->keyBy('month');
 
-                $monthlyRevenue = collect();
                 for ($i = 11; $i >= 0; $i--) {
                     $key   = $now->copy()->subMonths($i)->format('Y-m');
                     $label = $now->copy()->subMonths($i)->format('M Y');
@@ -182,11 +194,15 @@ class SellerDashboardController extends Controller
                     ]);
                 }
             } catch (\Exception $e) {
-                $monthlyRevenue = [];
+                for ($i = 11; $i >= 0; $i--) {
+                    $monthlyRevenue->push([
+                        'month'   => $now->copy()->subMonths($i)->format('M Y'),
+                        'revenue' => 0,
+                        'orders'  => 0,
+                    ]);
+                }
             }
         } else {
-            // Return empty 12-month skeleton so chart renders cleanly
-            $monthlyRevenue = collect();
             for ($i = 11; $i >= 0; $i--) {
                 $monthlyRevenue->push([
                     'month'   => $now->copy()->subMonths($i)->format('M Y'),
@@ -196,7 +212,7 @@ class SellerDashboardController extends Controller
             }
         }
 
-        // ── Top 5 clients ──────────────────────────────────────────────────────
+        // ── Top 5 clients (by net seller earnings) ────────────────────────────
         $topClients = [];
         if ($sellerOrderIds->isNotEmpty()) {
             try {
@@ -204,7 +220,7 @@ class SellerDashboardController extends Controller
                     'u.id',
                     'u.name',
                     'u.email',
-                    DB::raw("SUM({$totalExpr}) as total_revenue"),
+                    DB::raw("SUM({$revenueExpr}) as total_revenue"),
                     DB::raw('COUNT(DISTINCT oi.order_id) as total_orders'),
                 ];
                 $clientGroup = ['u.id', 'u.name', 'u.email'];
@@ -239,12 +255,12 @@ class SellerDashboardController extends Controller
             }
         }
 
-        // ── Top 5 wilayas ──────────────────────────────────────────────────────
+        // ── Top 5 wilayas (by net seller earnings) ────────────────────────────
         $topWilayas = [];
         if ($sellerOrderIds->isNotEmpty()) {
             try {
                 if ($hasStateCol) {
-                    $wilayaExpr = 'COALESCE(NULLIF(o.wilaya, ""), u.state, "Unknown")';
+                    $wilayaExpr      = 'COALESCE(NULLIF(o.wilaya, ""), u.state, "Unknown")';
                     $topWilayasQuery = DB::table('order_items as oi')
                         ->join('products as p', 'p.id', '=', 'oi.product_id')
                         ->join('orders as o',   'o.id', '=', 'oi.order_id')
@@ -253,7 +269,7 @@ class SellerDashboardController extends Controller
                         ->whereNull('p.deleted_at')
                         ->whereIn('o.status', ['completed', 'delivered']);
                 } else {
-                    $wilayaExpr = 'COALESCE(NULLIF(o.wilaya, ""), "Unknown")';
+                    $wilayaExpr      = 'COALESCE(NULLIF(o.wilaya, ""), "Unknown")';
                     $topWilayasQuery = DB::table('order_items as oi')
                         ->join('products as p', 'p.id', '=', 'oi.product_id')
                         ->join('orders as o',   'o.id', '=', 'oi.order_id')
@@ -265,7 +281,7 @@ class SellerDashboardController extends Controller
                 $topWilayas = $topWilayasQuery
                     ->select(
                         DB::raw("{$wilayaExpr} as wilaya"),
-                        DB::raw("SUM({$totalExpr}) as revenue"),
+                        DB::raw("SUM({$revenueExpr}) as revenue"),
                         DB::raw('COUNT(DISTINCT oi.order_id) as orders')
                     )
                     ->groupBy('wilaya')
@@ -296,6 +312,57 @@ class SellerDashboardController extends Controller
             }
         }
 
+        // ── Top products (by net seller earnings) ─────────────────────────────
+        $topProducts = [];
+        try {
+            $topProducts = DB::table('order_items as oi')
+                ->join('products as p',       'p.id', '=', 'oi.product_id')
+                ->join('orders as o',         'o.id', '=', 'oi.order_id')
+                ->leftJoin('categories as c', 'c.id', '=', 'p.category_id')
+                ->leftJoin('product_images as pi', function ($join) {
+                    $join->on('pi.product_id', '=', 'p.id')
+                         ->where('pi.is_primary', '=', 1);
+                })
+                ->where("p.{$sellerCol}", $sellerId)
+                ->whereNull('p.deleted_at')
+                ->whereIn('o.status', ['completed', 'delivered'])
+                ->select(
+                    'p.id',
+                    'p.name',
+                    'p.price',
+                    'p.stock',
+                    'p.is_active',
+                    'p.views',
+                    'c.name as category_name',
+                    'pi.image_path as primary_image_path',
+                    DB::raw('SUM(oi.quantity) as total_sales'),
+                    DB::raw("SUM({$revenueExpr}) as total_revenue")
+                )
+                ->groupBy(
+                    'p.id', 'p.name', 'p.price', 'p.stock',
+                    'p.is_active', 'p.views', 'c.name', 'pi.image_path'
+                )
+                ->orderByDesc('total_sales')
+                ->limit(6)
+                ->get()
+                ->map(fn($r) => [
+                    'id'                => $r->id,
+                    'name'              => $r->name,
+                    'price'             => (float) $r->price,
+                    'stock'             => (int) $r->stock,
+                    'is_active'         => (bool) $r->is_active,
+                    'views'             => (int) $r->views,
+                    'category_name'     => $r->category_name,
+                    'primary_image_url' => $r->primary_image_path
+                        ? \Illuminate\Support\Facades\Storage::url($r->primary_image_path)
+                        : null,
+                    'total_sales'       => (int) $r->total_sales,
+                    'total_revenue'     => round((float) $r->total_revenue, 3),
+                ]);
+        } catch (\Exception $e) {
+            $topProducts = [];
+        }
+
         // ── Response ───────────────────────────────────────────────────────────
         return response()->json([
             'success' => true,
@@ -310,6 +377,7 @@ class SellerDashboardController extends Controller
                     'revenue_this_month'        => round((float) $revenueThisMonth, 3),
                     'revenue_last_month'        => round((float) $revenueLastMonth, 3),
                     'revenue_growth'            => $revenueGrowth,
+                    'seller_plan'               => $sellerPlan,
                 ],
                 'charts' => [
                     'monthly_revenue' => $monthlyRevenue,
@@ -317,6 +385,7 @@ class SellerDashboardController extends Controller
                 'order_status_distribution' => $orderStatusDistribution,
                 'top_clients'               => $topClients,
                 'top_wilayas'               => $topWilayas,
+                'top_products'              => $topProducts,
                 'recent_orders'             => $recentOrders,
             ],
         ]);
