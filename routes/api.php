@@ -59,6 +59,8 @@ Route::post('/auth/login',    [AuthController::class, 'login']);
 Route::post('/auth/register', [AuthController::class, 'register']);
 Route::get('/auth/google/redirect', [AuthController::class, 'googleRedirect']);
 Route::get('/auth/google/callback', [AuthController::class, 'googleCallback']);
+Route::post('/auth/verify-email',        [AuthController::class, 'verifyEmail']);
+Route::post('/auth/resend-verification', [AuthController::class, 'resendVerification']);
 
 Route::post('/products/by-ids', [ProductController::class, 'byIds']);
 Route::get('/products',          [ProductController::class, 'index']);
@@ -113,7 +115,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/auth/user',    [AuthController::class, 'user']);
-
+   
     Route::get('/profile',                 [ProfileApiController::class, 'show']);
     Route::put('/profile',                 [ProfileApiController::class, 'update']);
     Route::put('/profile/password',        [ProfileApiController::class, 'updatePassword']);

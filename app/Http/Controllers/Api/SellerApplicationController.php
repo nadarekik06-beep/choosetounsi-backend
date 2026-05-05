@@ -23,9 +23,10 @@ class SellerApplicationController extends Controller
      * POST /api/seller-applications
      */
     public function store(Request $request)
-    {
-        $user = Auth::user();
+{
+    $user = Auth::user();
 
+<<<<<<< HEAD
         $existing = SellerApplication::where('user_id', $user->id)
             ->where('status', 'pending')
             ->first();
@@ -103,12 +104,103 @@ class SellerApplicationController extends Controller
         );
         // ──────────────────────────────────────────────────────────────────
 
+=======
+    $existing = SellerApplication::where('user_id', $user->id)
+        ->where('status', 'pending')
+        ->first();
+
+    if ($existing) {
+>>>>>>> b225dab3254a25c9f39047f94c7f7f4f6ca3c249
         return response()->json([
-            'success' => true,
-            'message' => 'Your application has been submitted successfully.',
-            'data'    => $application,
-        ], 201);
+            'success' => false,
+            'message' => 'You already have a pending application.',
+        ], 422);
     }
+
+    $validated = $request->validate([
+        'full_name'             => 'required|string|max:255',
+        'phone_number'          => 'required|string|max:30',
+        'business_name'         => 'required|string|max:255',
+        // business_category kept for backward compat — still required as fallback
+        'business_category'     => 'required|string|max:255',
+        // NEW: multi-select from DB categories (1–5 items)
+        'business_categories'   => 'nullable|array|max:5',
+        'business_categories.*' => 'string|max:255',
+        'business_description'  => 'required|string|max:2000',
+        'wilaya'                => 'required|string|max:100',
+        'city'                  => 'required|string|max:100',
+        'profile_picture'       => 'nullable|image|mimes:jpg,jpeg,png,webp|max:4096',
+        'sample_images'         => 'nullable|array|max:5',
+        'sample_images.*'       => 'image|mimes:jpg,jpeg,png,webp|max:4096',
+        // NEW: captions are optional, index-matched to sample_images
+        'sample_captions'       => 'nullable|array|max:5',
+        'sample_captions.*'     => 'nullable|string|max:200',
+        'facebook_url'          => 'nullable|url|max:500',
+        'instagram_url'         => 'nullable|url|max:500',
+        'website_url'           => 'nullable|url|max:500',
+        'preferred_plan'        => 'nullable|in:green,red,black',
+        // NEW: optional pricing range
+        'pricing_range'         => 'nullable|in:budget,mid,premium',
+    ]);
+
+    $profilePicturePath = null;
+    if ($request->hasFile('profile_picture')) {
+        $profilePicturePath = $request->file('profile_picture')
+            ->store('seller-applications/profiles', 'public');
+    }
+
+    $sampleImagePaths = [];
+    if ($request->hasFile('sample_images')) {
+        foreach ($request->file('sample_images') as $image) {
+            $sampleImagePaths[] = $image->store('seller-applications/samples', 'public');
+        }
+    }
+
+    // business_categories: if sent, use as-is; otherwise wrap the single category.
+    $businessCategories = $validated['business_categories']
+        ?? [$validated['business_category']];
+
+    // business_category (legacy): always the first selected category.
+    $primaryCategory = $businessCategories[0] ?? $validated['business_category'];
+
+    $application = SellerApplication::create([
+        'user_id'               => $user->id,
+        'full_name'             => $validated['full_name'],
+        'phone_number'          => $validated['phone_number'],
+        'business_name'         => $validated['business_name'],
+        'business_category'     => $primaryCategory,       // legacy compat
+        'business_categories'   => $businessCategories,    // full multi-select
+        'business_description'  => $validated['business_description'],
+        'wilaya'                => $validated['wilaya'],
+        'city'                  => $validated['city'],
+        'profile_picture'       => $profilePicturePath,
+        'sample_images'         => $sampleImagePaths ?: null,
+        'sample_captions'       => $validated['sample_captions'] ?? null,
+        'facebook_url'          => $validated['facebook_url']  ?? null,
+        'instagram_url'         => $validated['instagram_url'] ?? null,
+        'website_url'           => $validated['website_url']   ?? null,
+        'status'                => 'pending',
+        'preferred_plan'        => $validated['preferred_plan'] ?? 'green',
+        'plan'                  => 'free',
+        'pricing_range'         => $validated['pricing_range'] ?? null,
+    ]);
+
+    Notification::send(
+        User::getAllAdmins(),
+        new NewSellerApplicationNotification(
+            $application->id,
+            $validated['full_name'],
+            $validated['business_name'],
+            $user->id
+        )
+    );
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Your application has been submitted successfully.',
+        'data'    => $application,
+    ], 201);
+}
 
     /**
      * GET /api/seller-applications/status

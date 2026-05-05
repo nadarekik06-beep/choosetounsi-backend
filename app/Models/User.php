@@ -21,18 +21,26 @@ class User extends Authenticatable
         'google_id',
         'avatar',
         'onboarding_completed',
+        // ── Email verification ─────────────────────────────────────────────
+        'email_verified_at',
+        'email_verification_code',
+        'email_verification_expires_at',
+        'email_verification_attempts',
     ];
 
     protected $hidden = [
         'password',
         'remember_token',
+        'email_verification_code',  // Never leak the OTP in JSON responses
     ];
 
     protected $casts = [
-        'email_verified_at' => 'datetime',
-        'is_active'         => 'boolean',
-        'is_approved'       => 'boolean',
-        'onboarding_completed'   => 'boolean',
+        'email_verified_at'             => 'datetime',
+        'email_verification_expires_at' => 'datetime',
+        'email_verification_attempts'   => 'integer',
+        'is_active'                     => 'boolean',
+        'is_approved'                   => 'boolean',
+        'onboarding_completed'          => 'boolean',
     ];
 
     // ── Relationships ──────────────────────────────────────────────────────
@@ -43,34 +51,20 @@ class User extends Authenticatable
     public function sellerApplication()  { return $this->hasOne(SellerApplication::class)->latest(); }
     public function sellerApplications() { return $this->hasMany(SellerApplication::class); }
     public function preferences()
-   {
+    {
         return $this->hasOne(\App\Models\UserPreference::class);
     }
-    // In User.php — add to the relationships section
 
-    /** Delivery assignments for delivery_guy users */
     public function deliveryAssignments()
     {
         return $this->hasMany(DeliveryAssignment::class, 'delivery_guy_id');
     }
 
-    /** Orders assigned BY this user (delivery_admin) */
     public function assignedOrders()
     {
         return $this->hasMany(DeliveryAssignment::class, 'assigned_by');
     }
 
-    // Role helpers — add alongside existing ones
-    public function needsOnboarding(): bool
-    {
-       return $this->role === 'client' && !$this->onboarding_completed;
-   }
-    public function isDeliveryAdmin() { return $this->role === 'delivery_admin'; }
-    public function isDeliveryGuy()   { return $this->role === 'delivery_guy'; }
-        /**
-     * User's saved delivery addresses (address book).
-     * Ordered so the default address always comes first.
-     */
     public function addresses()
     {
         return $this->hasMany(UserAddress::class)
@@ -78,9 +72,6 @@ class User extends Authenticatable
                     ->orderByDesc('created_at');
     }
 
-    /**
-     * Convenience: returns the user's default address or null.
-     */
     public function defaultAddress()
     {
         return $this->hasOne(UserAddress::class)->where('is_default', true);
@@ -93,6 +84,14 @@ class User extends Authenticatable
     public function isClient()         { return $this->role === 'client'; }
     public function isApprovedSeller() { return $this->isSeller() && $this->is_approved; }
     public function isActiveUser()     { return $this->is_active; }
+    public function isEmailVerified()  { return (bool) $this->email_verified_at; }
+    public function isDeliveryAdmin()  { return $this->role === 'delivery_admin'; }
+    public function isDeliveryGuy()    { return $this->role === 'delivery_guy'; }
+
+    public function needsOnboarding(): bool
+    {
+        return $this->role === 'client' && !$this->onboarding_completed;
+    }
 
     // ── Scopes ─────────────────────────────────────────────────────────────
 
@@ -102,10 +101,9 @@ class User extends Authenticatable
     public function scopePendingSellers($q)  { return $q->where('role', 'seller')->where('is_approved', false); }
     public function scopeClients($q)         { return $q->where('role', 'client'); }
     public function scopeAdmins($q)          { return $q->where('role', 'admin'); }
-    public function scopeDeliveryGuys($q)
-    {
-        return $q->where('role', 'delivery_guy');
-    }
+    public function scopeDeliveryGuys($q)    { return $q->where('role', 'delivery_guy'); }
+    public function scopeVerified($q)        { return $q->whereNotNull('email_verified_at'); }
+
     public static function getAllAdmins()
     {
         return static::where('role', 'admin')

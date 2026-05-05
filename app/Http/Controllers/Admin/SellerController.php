@@ -65,17 +65,21 @@ $paginated = $query->orderByDesc('created_at')->paginate($request->query('per_pa
             'full_name'            => $app ? $app->full_name : null,
             'phone_number'         => $app ? $app->phone_number : null,
             'business_name'        => $app ? $app->business_name : null,
+            
             'business_category'    => $app ? $app->business_category : null,
+            'business_categories'  => $app?->business_categories ?? [],  
             'business_description' => $app ? $app->business_description : null,
             'wilaya'               => $app ? $app->wilaya : null,
             'city'                 => $app ? $app->city : null,
             'profile_picture'      => ($app && $app->profile_picture) ? asset('storage/' . $app->profile_picture) : null,
+            'sample_captions'      => $app?->sample_captions ?? [],
             'facebook_url'         => $app ? $app->facebook_url : null,
             'instagram_url'        => $app ? $app->instagram_url : null,
             'website_url'          => $app ? $app->website_url : null,
             'app_status'           => $app ? $app->status       : null,
             'active_plan'          => $app ? $app->plan         : 'free',
             'preferred_plan'       => $app ? $app->preferred_plan : 'green',
+            'pricing_range'        => $app?->pricing_range,
         ]]);
     }
 
