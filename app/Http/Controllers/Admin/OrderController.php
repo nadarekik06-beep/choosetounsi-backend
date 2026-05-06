@@ -14,18 +14,11 @@ class OrderController extends Controller
 {
     /**
      * GET /api/admin/orders
-     *
-     * Lists all orders with optional filters.
-     *
-     * NEW FILTER: ?seller_type=platform  → orders containing brand products
-     *             ?seller_type=sellers   → orders containing only seller products
-     *             (omit for all orders)
      */
     public function index(Request $request)
     {
         $query = Order::with(['user:id,name,email']);
 
-        // ── Existing filters ──────────────────────────────────────────────
         if ($s = $request->query('status')) {
             $query->where('status', $s);
         }
@@ -48,19 +41,14 @@ class OrderController extends Controller
             $query->where('payment_method', $m);
         }
 
-        // ── NEW: seller_type filter ────────────────────────────────────────
-        // platform → orders that have at least one brand product item
-        // sellers  → orders that have NO brand product items
-        $sellerType    = $request->query('seller_type');
+        $sellerType     = $request->query('seller_type');
         $platformUserId = PlatformUser::id();
 
         if ($sellerType === 'platform' && $platformUserId) {
-            // Orders where at least one seller_order belongs to the platform user
             $query->whereHas('sellerOrders', fn($q) =>
                 $q->where('seller_id', $platformUserId)
             );
         } elseif ($sellerType === 'sellers' && $platformUserId) {
-            // Orders that have NO seller_orders belonging to the platform user
             $query->whereDoesntHave('sellerOrders', fn($q) =>
                 $q->where('seller_id', $platformUserId)
             );
@@ -69,7 +57,6 @@ class OrderController extends Controller
         $orders = $query->orderByDesc('created_at')
             ->paginate((int) $request->query('per_page', 15));
 
-        // Annotate each order with has_platform_items flag for the frontend
         if ($platformUserId) {
             $orders->getCollection()->transform(function ($order) use ($platformUserId) {
                 $order->has_platform_items = $order->sellerOrders()
@@ -99,7 +86,6 @@ class OrderController extends Controller
             'sellerOrders.seller:id,name,email',
         ])->findOrFail($id);
 
-        // Annotate items with image URL and variant options
         $order->items->each(function ($item) {
             $item->resolved_image_url = $this->resolveItemImage($item);
 
@@ -115,11 +101,9 @@ class OrderController extends Controller
                 $item->variant_options = [];
             }
 
-            // Flag if this item is a brand product
             $item->is_platform_item = (bool) optional($item->product)->is_platform_product;
         });
 
-        // Flag if order contains any brand product items
         $platformUserId = PlatformUser::id();
         $order->has_platform_items = $platformUserId
             ? $order->sellerOrders->contains('seller_id', $platformUserId)
@@ -130,12 +114,6 @@ class OrderController extends Controller
 
     /**
      * PATCH /api/admin/orders/{id}/status
-     *
-     * Updates status on seller_orders rows for the given order.
-     * Admin can target:
-     *   - all seller_orders (default)
-     *   - only platform seller_order (?scope=platform)
-     *   - only third-party seller_orders (?scope=sellers)
      */
     public function updateStatus(Request $request, $id)
     {
@@ -155,14 +133,12 @@ class OrderController extends Controller
             } elseif ($scope === 'sellers' && $platformUserId) {
                 $sellerOrderQuery->where('seller_id', '!=', $platformUserId);
             }
-            // 'all' → no additional filter, updates all seller_orders for this order
 
             $sellerOrderQuery->update([
                 'status'     => $request->status,
                 'updated_at' => now(),
             ]);
 
-            // Also update the parent order's status (top-level view)
             DB::table('orders')
                 ->where('id', $id)
                 ->update(['status' => $request->status, 'updated_at' => now()]);
@@ -186,45 +162,45 @@ class OrderController extends Controller
             ], 500);
         }
     }
+
     /**
- * PATCH /api/admin/orders/{id}/payment-status
- */
-public function updatePaymentStatus(Request $request, $id)
-{
-    $request->validate([
-        'payment_status' => 'required|string|in:unpaid,paid,refunded',
-    ]);
-
-    try {
-        DB::table('orders')
-            ->where('id', $id)
-            ->update([
-                'payment_status' => $request->payment_status,
-                'updated_at'     => now(),
-            ]);
-
-        // Cascade to all seller sub-orders
-        DB::table('seller_orders')
-            ->where('order_id', $id)
-            ->update([
-                'payment_status' => $request->payment_status,
-                'updated_at'     => now(),
-            ]);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Payment status updated.',
-            'data'    => Order::findOrFail($id),
+     * PATCH /api/admin/orders/{id}/payment-status
+     */
+    public function updatePaymentStatus(Request $request, $id)
+    {
+        $request->validate([
+            'payment_status' => 'required|string|in:unpaid,paid,refunded',
         ]);
 
-    } catch (\Throwable $e) {
-        Log::error('[AdminOrder::updatePaymentStatus] ' . $e->getMessage(), ['order_id' => $id]);
-        return response()->json([
-            'success' => false,
-            'message' => 'Failed to update payment status: ' . $e->getMessage(),
-        ], 500);
+        try {
+            DB::table('orders')
+                ->where('id', $id)
+                ->update([
+                    'payment_status' => $request->payment_status,
+                    'updated_at'     => now(),
+                ]);
+
+            DB::table('seller_orders')
+                ->where('order_id', $id)
+                ->update([
+                    'payment_status' => $request->payment_status,
+                    'updated_at'     => now(),
+                ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Payment status updated.',
+                'data'    => Order::findOrFail($id),
+            ]);
+
+        } catch (\Throwable $e) {
+            Log::error('[AdminOrder::updatePaymentStatus] ' . $e->getMessage(), ['order_id' => $id]);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update payment status: ' . $e->getMessage(),
+            ], 500);
+        }
     }
-}
 
     /**
      * PATCH /api/admin/orders/{id}/confirm-payment
@@ -275,31 +251,68 @@ public function updatePaymentStatus(Request $request, $id)
 
     /**
      * GET /api/admin/orders/stats
+     *
+     * UPDATED: 'revenue' is now platform commission from paid orders only.
+     * Added 'platform_commission' and 'seller_payouts' for the admin dashboard.
      */
     public function stats(Request $request)
     {
         $platformUserId = PlatformUser::id();
+        $base           = Order::query();
 
-        $base = Order::query();
-
-        // Platform orders count (orders with brand products)
         $platformOrdersCount = $platformUserId
             ? Order::whereHas('sellerOrders', fn($q) =>
                 $q->where('seller_id', $platformUserId)
               )->count()
             : 0;
 
+        // ── Check if commission columns exist ─────────────────────────────────
+        try {
+            $itemCols      = DB::select("SHOW COLUMNS FROM order_items");
+            $itemColNames  = array_map(fn($c) => $c->Field, $itemCols);
+            $hasCommission = in_array('commission_amount', $itemColNames);
+        } catch (\Exception $e) {
+            $hasCommission = false;
+        }
+
+        // ── Platform commission = what admin earns from paid orders ───────────
+        $platformCommission = 0;
+        $sellerPayouts      = 0;
+
+        if ($hasCommission) {
+            try {
+                $platformCommission = DB::table('order_items as oi')
+                    ->join('orders as o', 'o.id', '=', 'oi.order_id')
+                    ->where('o.payment_status', 'paid')
+                    ->sum('oi.commission_amount');
+
+                $sellerPayouts = DB::table('order_items as oi')
+                    ->join('orders as o', 'o.id', '=', 'oi.order_id')
+                    ->where('o.payment_status', 'paid')
+                    ->sum('oi.seller_amount');
+            } catch (\Exception $e) {
+                $platformCommission = 0;
+                $sellerPayouts      = 0;
+            }
+        }
+
+        // Gross revenue (full order totals for paid orders — kept for reference)
+        $grossRevenue = (clone $base)->where('payment_status', 'paid')->sum('total_amount');
+
         return response()->json(['success' => true, 'data' => [
-            'total'           => Order::count(),
-            'pending'         => (clone $base)->where('status', 'pending')->count(),
-            'processing'      => (clone $base)->where('status', 'processing')->count(),
-            'completed'       => (clone $base)->where('status', 'completed')->count(),
-            'delivered'       => (clone $base)->where('status', 'delivered')->count(),
-            'cancelled'       => (clone $base)->where('status', 'cancelled')->count(),
-            'revenue'             => (clone $base)->where('payment_status', 'paid')->sum('total_amount'),
-            'platform_commission' => \App\Models\OrderItem::whereHas('order', fn($q) => $q->where('payment_status', 'paid'))->sum('commission_amount'),
-            'seller_payouts'      => \App\Models\OrderItem::whereHas('order', fn($q) => $q->where('payment_status', 'paid'))->sum('seller_amount'),
-            'platform_orders' => $platformOrdersCount,
+            'total'               => Order::count(),
+            'pending'             => (clone $base)->where('status', 'pending')->count(),
+            'processing'          => (clone $base)->where('status', 'processing')->count(),
+            'completed'           => (clone $base)->where('status', 'completed')->count(),
+            'delivered'           => (clone $base)->where('status', 'delivered')->count(),
+            'cancelled'           => (clone $base)->where('status', 'cancelled')->count(),
+            // ── Revenue split ─────────────────────────────────────────────────
+            'revenue'             => round((float) $platformCommission, 3), // ← admin's actual earnings
+            'gross_revenue'       => round((float) $grossRevenue, 3),       // ← full order totals (for reference)
+            'platform_commission' => round((float) $platformCommission, 3), // ← same as revenue, explicit
+            'seller_payouts'      => round((float) $sellerPayouts, 3),      // ← what sellers receive
+            // ── Other ─────────────────────────────────────────────────────────
+            'platform_orders'     => $platformOrdersCount,
         ]]);
     }
 

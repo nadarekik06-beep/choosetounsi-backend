@@ -40,6 +40,16 @@ class StatisticsController extends Controller
 
     // ── Helpers ───────────────────────────────────────────────────────
 
+    /**
+     * Monthly revenue chart — shows platform COMMISSION earned, not gross order totals.
+     *
+     * FIX: Previously summed orders.total_amount (the full customer payment).
+     * Now sums order_items.commission_amount (what the platform actually keeps).
+     * Only paid orders are counted — pending/unpaid orders are not yet income.
+     *
+     * For orders placed before the commission system was implemented,
+     * commission_amount = 0, so they correctly contribute $0 to admin revenue.
+     */
     private function getRevenueData(): array
     {
         try {
@@ -47,20 +57,42 @@ class StatisticsController extends Controller
                 fn($i) => Carbon::now()->subMonths($i)->format('Y-m')
             );
 
-            $revenue = Order::whereIn('status', ['completed', 'delivered'])
+            // Check if commission_amount column exists (migration may not be run yet)
+            $itemCols    = DB::select("SHOW COLUMNS FROM order_items");
+            $itemColNames = array_map(fn($c) => $c->Field, $itemCols);
+            $hasCommission = in_array('commission_amount', $itemColNames);
 
-                ->where('created_at', '>=', Carbon::now()->subMonths(12))
-                ->select(
-                    DB::raw("DATE_FORMAT(created_at, '%Y-%m') as month"),
-                    DB::raw('SUM(total_amount) as total')
-                )
-                ->groupBy('month')
-                ->pluck('total', 'month');
+            if ($hasCommission) {
+                // ── NEW: sum platform commission from order_items ─────────────
+                $revenue = DB::table('order_items as oi')
+                    ->join('orders as o', 'o.id', '=', 'oi.order_id')
+                    ->whereIn('o.status', ['completed', 'delivered'])
+                    ->where('o.payment_status', 'paid')
+                    ->where('o.created_at', '>=', Carbon::now()->subMonths(12))
+                    ->select(
+                        DB::raw("DATE_FORMAT(o.created_at, '%Y-%m') as month"),
+                        DB::raw('SUM(COALESCE(oi.commission_amount, 0)) as total')
+                    )
+                    ->groupBy('month')
+                    ->pluck('total', 'month');
+            } else {
+                // ── FALLBACK: use gross total if migration not yet run ────────
+                $revenue = Order::whereIn('status', ['completed', 'delivered'])
+                    ->where('payment_status', 'paid')
+                    ->where('created_at', '>=', Carbon::now()->subMonths(12))
+                    ->select(
+                        DB::raw("DATE_FORMAT(created_at, '%Y-%m') as month"),
+                        DB::raw('SUM(total_amount) as total')
+                    )
+                    ->groupBy('month')
+                    ->pluck('total', 'month');
+            }
 
             return $months->map(fn($m) => [
                 'month'   => $m,
-                'revenue' => round((float)($revenue->get($m, 0)), 2),
+                'revenue' => round((float) ($revenue->get($m, 0)), 3),
             ])->values()->toArray();
+
         } catch (\Exception $e) {
             return [];
         }
@@ -86,10 +118,10 @@ class StatisticsController extends Controller
                 $mo = $orders->where('month', $m);
                 return [
                     'month'      => $m,
-                    'pending'    => (int)$mo->where('status', 'pending')->sum('count'),
-                    'processing' => (int)$mo->where('status', 'processing')->sum('count'),
-                    'delivered'  => (int)$mo->where('status', 'delivered')->sum('count'),
-                    'canceled'   => (int)$mo->where('status', 'canceled')->sum('count'),
+                    'pending'    => (int) $mo->where('status', 'pending')->sum('count'),
+                    'processing' => (int) $mo->where('status', 'processing')->sum('count'),
+                    'delivered'  => (int) $mo->where('status', 'delivered')->sum('count'),
+                    'canceled'   => (int) $mo->where('status', 'canceled')->sum('count'),
                 ];
             })->values()->toArray();
         } catch (\Exception $e) {
@@ -100,7 +132,6 @@ class StatisticsController extends Controller
     private function getCategoryData(): array
     {
         try {
-            // Check if categories table/relationship exists
             return Product::join('categories', 'products.category_id', '=', 'categories.id')
                 ->select('categories.name', DB::raw('count(products.id) as count'))
                 ->groupBy('categories.name')
@@ -108,7 +139,6 @@ class StatisticsController extends Controller
                 ->get()
                 ->toArray();
         } catch (\Exception $e) {
-            // Fallback: group by category_id if join fails
             try {
                 return Product::select('category_id', DB::raw('count(*) as count'))
                     ->groupBy('category_id')
@@ -142,7 +172,7 @@ class StatisticsController extends Controller
 
             return $months->map(fn($m) => [
                 'month' => $m,
-                'users' => (int)($users->get($m, 0)),
+                'users' => (int) ($users->get($m, 0)),
             ])->values()->toArray();
         } catch (\Exception $e) {
             return [];
