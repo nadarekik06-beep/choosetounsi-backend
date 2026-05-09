@@ -15,39 +15,32 @@ use App\Models\Order;
  * ── KEY ARCHITECTURAL CHANGE ──
  * All operations now target the `seller_orders` table instead of `orders`.
  *
- * Previously: sellers queried `orders` using a list of order_ids derived from
- * their products — which meant they shared and could overwrite the same
- * `orders.status` field that other sellers' items also depended on.
- *
- * Now: each seller has their own `seller_orders` rows. Status and payment
- * updates are scoped exclusively to the authenticated seller's sub-orders.
- * Other sellers' sub-orders are completely unaffected.
+ * ── COMMISSION UPDATE ──
+ * show() now returns per-item commission snapshot fields
+ * (commission_percentage, commission_amount, seller_amount, plan_used, has_commission)
+ * plus an aggregated `commission` block at the response root.
+ * Legacy orders (commission_amount = 0) return has_commission = false
+ * and all commission fields as null — UI hides gracefully.
  *
  * ── VARIANT FIX ──
- * show() now includes full variant details (label, attributes, image) for
- * each order item so the seller knows exactly what was ordered.
+ * show() includes full variant details (label, attributes, image).
  *
  * ── PRIVACY FIX ──
- * Customer email is removed from all seller-facing API responses.
- * Sellers have no legitimate need for email — only name + wilaya for shipping.
+ * Customer email removed from all seller-facing responses.
  */
 class SellerOrderController extends Controller
 {
     /**
      * Base query: only this seller's sub-orders.
-     *
-     * CHANGE: added 'items.variant.images' to the eager load so the
-     * resolved_image_url accessor on OrderItem can use the variant's own
-     * images (each variant stores its own images per your architecture).
      */
     private function sellerOrderQuery(int $sellerId)
     {
         return SellerOrder::where('seller_id', $sellerId)
             ->with([
-                'order.user:id,name',          // ← email removed from select
-                'items.product.images',        // ← product-level fallback images
+                'order.user:id,name',
+                'items.product.images',
                 'items.variant.attributeOptions.attribute',
-                'items.variant.images',        // ← variant_id-linked images
+                'items.variant.images',
             ]);
     }
 
@@ -75,7 +68,6 @@ class SellerOrderController extends Controller
         $sellerId = auth()->id();
         $query    = $this->sellerOrderQuery($sellerId);
 
-        // ── Filters ────────────────────────────────────────────────────────
         if ($request->filled('status')) {
             $query->where('status', $request->status);
         }
@@ -91,8 +83,6 @@ class SellerOrderController extends Controller
         if ($request->filled('search')) {
             $search = $request->search;
             $query->whereHas('order', function ($q) use ($search) {
-                // Internal server-side search by email is fine — email is
-                // never returned in the response, only used for matching.
                 $q->where('order_number', 'like', "%{$search}%")
                   ->orWhereHas('user', fn($u) =>
                       $u->where('name', 'like', "%{$search}%")
@@ -102,7 +92,6 @@ class SellerOrderController extends Controller
         }
 
         $sellerOrders = $query->latest()->paginate((int) $request->query('per_page', 12));
-
         $sellerOrders->getCollection()->transform(fn($so) => $this->formatSellerOrder($so));
 
         return response()->json(['success' => true, 'data' => $sellerOrders]);
@@ -114,7 +103,7 @@ class SellerOrderController extends Controller
         $sellerId    = auth()->id();
         $sellerOrder = $this->sellerOrderQuery($sellerId)->findOrFail($id);
 
-        // ── Map items with full variant details ───────────────────────────
+        // ── Map items with full variant + commission details ───────────────
         $mappedItems = $sellerOrder->items->map(function ($item) {
 
             $productName = $item->product_name
@@ -122,9 +111,6 @@ class SellerOrderController extends Controller
                 ?? "Product #{$item->product_id}";
 
             // ── Variant attributes ────────────────────────────────────────
-            // Build a clean array of { label, value } pairs from the loaded
-            // variant relationship. Example output:
-            //   [{ label: 'Color', value: 'Red' }, { label: 'Size', value: 'M' }]
             $variantAttributes = [];
             $variantLabel      = $item->variant_label ?? null;
 
@@ -135,14 +121,12 @@ class SellerOrderController extends Controller
 
                     $variantAttributes[] = [
                         'slug'      => $attr->slug,
-                        'label'     => $attr->name,         // human name, e.g. "Color"
-                        'value'     => $opt->value,         // e.g. "Red"
+                        'label'     => $attr->name,
+                        'value'     => $opt->value,
                         'color_hex' => $opt->color_hex ?? null,
                     ];
                 }
 
-                // If no snapshot label was stored at checkout time, build one
-                // from live data so the seller always sees something meaningful.
                 if (!$variantLabel && !empty($variantAttributes)) {
                     $variantLabel = collect($variantAttributes)
                         ->pluck('value')
@@ -151,14 +135,8 @@ class SellerOrderController extends Controller
                 }
             }
 
-            // ── Variant image ─────────────────────────────────────────────
-            // Priority:
-            //   1. Variant's own images linked by variant_id
-            //   2. Color-group images linked by color_option_id
-            //      (multi-color variants store images this way — e.g. Black+Red+Pink)
-            //   3. Stored checkout snapshot (image_url column)
-            //   4. Product primary image (last resort)
-            //   5. null — frontend shows a placeholder
+            // ── Variant image resolution ──────────────────────────────────
+            // Priority: variant images → color-option images → checkout snapshot → product primary
             $resolvedImage = null;
 
             // 1. Direct variant_id images
@@ -169,10 +147,9 @@ class SellerOrderController extends Controller
                 );
             }
 
-            // 2. Color-option images — look up via the primary color option ID
-            //    for this variant (the lowest color option ID in the group).
+            // 2. Color-option images
             if (!$resolvedImage && $item->variant) {
-                $colorOptionId = $item->variant->color_option_id; // accessor on ProductVariant
+                $colorOptionId = $item->variant->color_option_id;
                 if ($colorOptionId) {
                     $colorImage = \App\Models\ProductImage::where('product_id', $item->product_id)
                         ->where('color_option_id', $colorOptionId)
@@ -204,31 +181,54 @@ class SellerOrderController extends Controller
                 }
             }
 
-            return [
-                'id'                 => $item->id,
-                'product_id'         => $item->product_id,
-                'product_name'       => $productName,
-                'quantity'           => (int) $item->quantity,
-                'unit_price'         => (float) $item->unit_price,
-                'total'              => (float) $item->total,
+            // ── Commission snapshot fields ────────────────────────────────
+            // NEVER recalculate — always read stored values.
+            // commission_amount = 0 means legacy order → has_commission = false.
+            $commissionAmount = (float) ($item->commission_amount ?? 0);
+            $hasCommission    = $commissionAmount > 0;
 
-                // ── NEW: variant fields ────────────────────────────────────
-                'variant_id'         => $item->variant_id,
-                'variant_label'      => $variantLabel,
-                'variant_attributes' => $variantAttributes,  // [{ slug, label, value, color_hex }]
-                'variant_image_url'  => $resolvedImage,
+            return [
+                // ── Core fields ───────────────────────────────────────────
+                'id'                    => $item->id,
+                'product_id'            => $item->product_id,
+                'product_name'          => $productName,
+                'quantity'              => (int)   $item->quantity,
+                'unit_price'            => (float) $item->unit_price,
+                'total'                 => (float) $item->total,
+
+                // ── Variant fields ────────────────────────────────────────
+                'variant_id'            => $item->variant_id,
+                'variant_label'         => $variantLabel,
+                'variant_attributes'    => $variantAttributes,
+                'variant_image_url'     => $resolvedImage,
+
+                // ── Commission fields (null for legacy orders) ────────────
+                'has_commission'        => $hasCommission,
+                'commission_percentage' => $hasCommission ? (float) $item->commission_percentage : null,
+                'commission_amount'     => $hasCommission ? round($commissionAmount, 3)            : null,
+                'seller_amount'         => $hasCommission ? round((float) $item->seller_amount, 3) : null,
+                'plan_used'             => $hasCommission ? $item->plan_used                       : null,
             ];
         });
 
-        $order = $sellerOrder->order;
+        // ── Commission order-level totals ─────────────────────────────────
+        // Aggregate only from items that have commission data.
+        // For legacy orders: has_commission = false, amounts = null.
+        $commissionItems  = $sellerOrder->items->filter(
+            fn($i) => (float) ($i->commission_amount ?? 0) > 0
+        );
+        $hasAnyCommission = $commissionItems->isNotEmpty();
 
-        // ── PRIVACY FIX: email is intentionally excluded ───────────────────
-        // Sellers only need the customer's name for order preparation and
-        // the wilaya for shipping. Email is private customer data.
-        $customer = $order->user ? [
-            'name' => $order->user->name,
-            // 'email' => INTENTIONALLY OMITTED — privacy policy
-        ] : null;
+        $totalGross            = round((float) $sellerOrder->subtotal, 3);
+        $totalCommissionAmount = $hasAnyCommission
+            ? round($commissionItems->sum(fn($i) => (float) $i->commission_amount), 3)
+            : null;
+        $totalSellerNet        = $hasAnyCommission
+            ? round($commissionItems->sum(fn($i) => (float) $i->seller_amount), 3)
+            : null;
+
+        $order    = $sellerOrder->order;
+        $customer = $order->user ? ['name' => $order->user->name] : null;
 
         return response()->json([
             'success' => true,
@@ -242,7 +242,17 @@ class SellerOrderController extends Controller
                     'seller_order_id' => $sellerOrder->id,
                 ]),
                 'items'           => $mappedItems->values(),
-                'seller_subtotal' => round((float) $sellerOrder->subtotal, 3),
+                'seller_subtotal' => $totalGross,
+
+                // ── Commission summary block ───────────────────────────────
+                // Frontend reads detail.commission.has_commission to decide
+                // whether to render the CommissionSummaryCard.
+                'commission' => [
+                    'has_commission'          => $hasAnyCommission,
+                    'total_gross'             => $totalGross,
+                    'total_commission_amount' => $totalCommissionAmount,
+                    'total_seller_net'        => $totalSellerNet,
+                ],
             ],
         ]);
     }
@@ -315,27 +325,24 @@ class SellerOrderController extends Controller
     // ── Private helpers ──────────────────────────────────────────────────────
 
     /**
-     * Transform a SellerOrder into the flat shape the seller orders TABLE
-     * (list view) expects.
-     *
-     * PRIVACY FIX: email intentionally omitted.
-     * The list view shows customer name + wilaya — enough for the seller.
+     * Transform a SellerOrder into the flat shape the seller orders list expects.
+     * PRIVACY: email intentionally omitted.
      */
     private function formatSellerOrder(SellerOrder $so): array
     {
         $order = $so->order;
         return [
-            'id'             => $so->id,
-            'order_number'   => $order?->order_number,
-            'status'         => $so->status,
-            'payment_status' => $so->payment_status,
-            'payment_method' => $order?->payment_method,
-            'total_amount'   => (float) $so->subtotal,
-            'wilaya'         => $order?->wilaya ?? $order?->shipping_address ?? null,
-            'created_at'     => $so->created_at,
-            'updated_at'     => $so->updated_at,
-            'user_id'        => $order?->user_id,
-            'user'           => $order?->user ? [
+            'id'              => $so->id,
+            'order_number'    => $order?->order_number,
+            'status'          => $so->status,
+            'payment_status'  => $so->payment_status,
+            'payment_method'  => $order?->payment_method,
+            'total_amount'    => (float) $so->subtotal,
+            'wilaya'          => $order?->wilaya ?? $order?->shipping_address ?? null,
+            'created_at'      => $so->created_at,
+            'updated_at'      => $so->updated_at,
+            'user_id'         => $order?->user_id,
+            'user'            => $order?->user ? [
                 'id'   => $order->user->id,
                 'name' => $order->user->name,
                 // 'email' => INTENTIONALLY OMITTED — privacy policy
