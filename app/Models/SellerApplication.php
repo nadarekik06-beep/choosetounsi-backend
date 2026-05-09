@@ -1,4 +1,5 @@
 <?php
+// app/Models/SellerApplication.php
 
 namespace App\Models;
 
@@ -17,32 +18,32 @@ class SellerApplication extends Model
         'phone_number',
         'business_name',
         'business_category',
-        'business_categories',  
+        'business_categories',
+        'business_subcategories',   // ← NEW
         'business_description',
         'wilaya',
         'city',
         'profile_picture',
         'sample_images',
-        'sample_captions',  
+        'sample_captions',
         'facebook_url',
         'instagram_url',
         'website_url',
         'status',
-        // ── Plan columns (separate concerns) ────────────────────────────────
-        'preferred_plan',   // What the user expressed interest in (green/red/black)
-        'plan',             // Active subscription (free/red/black) — always 'free' at start
-        'pricing_range',        
-        // ── Review metadata ──────────────────────────────────────────────────
+        'preferred_plan',
+        'plan',
+        'pricing_range',
         'rejection_reason',
         'reviewed_at',
         'reviewed_by',
     ];
 
     protected $casts = [
-        'sample_images' => 'array',
-        'sample_captions'     => 'array',      // ← NEW
-        'business_categories' => 'array',      // ← NEW
-        'reviewed_at'   => 'datetime',
+        'sample_images'           => 'array',
+        'sample_captions'         => 'array',
+        'business_categories'     => 'array',
+        'business_subcategories'  => 'array',   // ← NEW
+        'reviewed_at'             => 'datetime',
     ];
 
     // ── Relationships ──────────────────────────────────────────────────────
@@ -59,27 +60,12 @@ class SellerApplication extends Model
 
     // ── Scopes ─────────────────────────────────────────────────────────────
 
-    public function scopePending($query)
-    {
-        return $query->where('status', 'pending');
-    }
-
-    public function scopeApproved($query)
-    {
-        return $query->where('status', 'approved');
-    }
-
-    public function scopeRejected($query)
-    {
-        return $query->where('status', 'rejected');
-    }
+    public function scopePending($query)  { return $query->where('status', 'pending'); }
+    public function scopeApproved($query) { return $query->where('status', 'approved'); }
+    public function scopeRejected($query) { return $query->where('status', 'rejected'); }
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    /**
-     * Human-readable label for preferred_plan.
-     * Used in admin notifications and UI.
-     */
     public function getPreferredPlanLabelAttribute(): string
     {
         return match ($this->preferred_plan) {
@@ -89,9 +75,6 @@ class SellerApplication extends Model
         };
     }
 
-    /**
-     * True when the user expressed interest in a paid plan.
-     */
     public function wantsPaidPlan(): bool
     {
         return in_array($this->preferred_plan, ['red', 'black']);

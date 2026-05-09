@@ -125,8 +125,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/profile/password',        [ProfileApiController::class, 'updatePassword']);
     Route::post('/profile/request-seller', [ProfileApiController::class, 'requestSellerRole']);
 
-    Route::post('/seller-applications',       [SellerApplicationController::class, 'store']);
-    Route::get('/seller-applications/status', [SellerApplicationController::class, 'status']);
+    Route::post('/seller-applications',          [SellerApplicationController::class, 'store']);
+    Route::get('/seller-applications/status',    [SellerApplicationController::class, 'status']);
+    Route::get('/seller-applications/mine',      [SellerApplicationController::class, 'mine']);   // ← NEW
+    Route::put('/seller-applications/{id}',      [SellerApplicationController::class, 'update']); // ← NEW
 
     // ── User preferences & onboarding ─────────────────────────────────────────
     Route::prefix('preferences')->group(function () {
