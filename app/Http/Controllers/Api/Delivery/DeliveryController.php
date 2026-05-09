@@ -19,11 +19,6 @@ class DeliveryController extends Controller
      * GET /api/delivery/orders
      * Returns seller_orders ready for delivery (processing OR completed),
      * not yet assigned to a delivery guy.
-     *
-     * WHY both statuses:
-     *   'completed'  = seller explicitly marked ready for pickup
-     *   'processing' = seller confirmed they're working on it / packing
-     * Both are valid states for the delivery admin to see and assign.
      */
     public function readyOrders(Request $request)
     {
@@ -33,6 +28,8 @@ class DeliveryController extends Controller
                 'order.user:id,name,email',
                 'items.product:id,name',
                 'seller:id,name,email',
+                // Load seller's approved application for pickup address & phone
+                'seller.sellerApplication:id,user_id,phone_number,wilaya,city,business_name',
             ])
             ->latest()
             ->paginate((int) $request->query('per_page', 15));
@@ -55,7 +52,8 @@ class DeliveryController extends Controller
             ->with([
                 'order.user:id,name,email',
                 'items.product:id,name',
-                'seller:id,name',
+                'seller:id,name,email',
+                'seller.sellerApplication:id,user_id,phone_number,wilaya,city,business_name',
                 'deliveryAssignment.deliveryGuy:id,name,email',
             ])
             ->latest()
@@ -101,7 +99,6 @@ class DeliveryController extends Controller
 
         $sellerOrder = SellerOrder::findOrFail($id);
 
-        // Accept processing OR completed for assignment
         if (!in_array($sellerOrder->status, ['processing', 'completed'])) {
             return response()->json([
                 'success' => false,
@@ -171,6 +168,7 @@ class DeliveryController extends Controller
 
     /**
      * GET /api/delivery/my-orders
+     * Delivery guy sees seller info so he knows where to PICK UP the order.
      */
     public function myOrders(Request $request)
     {
@@ -178,12 +176,14 @@ class DeliveryController extends Controller
 
         $orders = SellerOrder::whereHas('deliveryAssignment', function ($q) use ($deliveryGuyId) {
                 $q->where('delivery_guy_id', $deliveryGuyId)
-                  ->whereNotIn('status', ['delivered', 'canceled']); // only active ones
+                  ->whereNotIn('status', ['delivered', 'canceled']);
             })
             ->with([
                 'order.user:id,name,email',
                 'order'       => fn($q) => $q->select('id', 'order_number', 'wilaya', 'address', 'phone', 'notes', 'user_id'),
                 'items.product:id,name',
+                'seller:id,name,email',
+                'seller.sellerApplication:id,user_id,phone_number,wilaya,city,business_name',
                 'deliveryAssignment',
             ])
             ->latest()
@@ -263,6 +263,7 @@ class DeliveryController extends Controller
             'order'  => fn($q) => $q->select('id', 'order_number', 'wilaya', 'address', 'phone', 'notes', 'user_id', 'payment_method'),
             'items.product:id,name',
             'seller:id,name,email',
+            'seller.sellerApplication:id,user_id,phone_number,wilaya,city,business_name',
             'deliveryAssignment.deliveryGuy:id,name,email',
         ])->findOrFail($id);
 
@@ -278,7 +279,11 @@ class DeliveryController extends Controller
 
     private function formatOrder(SellerOrder $so, bool $withAssignment = false): array
     {
-        $order = $so->order;
+        $order       = $so->order;
+        $seller      = $so->relationLoaded('seller') ? $so->seller : null;
+        $application = $seller?->relationLoaded('sellerApplication')
+            ? $seller->sellerApplication
+            : null;
 
         $data = [
             'id'             => $so->id,
@@ -287,6 +292,8 @@ class DeliveryController extends Controller
             'payment_method' => $order?->payment_method,
             'subtotal'       => (float) $so->subtotal,
             'created_at'     => $so->created_at,
+
+            // ── Delivery destination (CLIENT) ──────────────────────────────
             'wilaya'         => $order?->wilaya,
             'address'        => $order?->address,
             'phone'          => $order?->phone,
@@ -296,11 +303,24 @@ class DeliveryController extends Controller
                 'name'  => $order->user->name,
                 'email' => $order->user->email,
             ] : null,
-            'seller'         => $so->relationLoaded('seller') ? [
-                'id'   => $so->seller->id,
-                'name' => $so->seller->name,
+
+            // ── Pickup origin (SELLER) ─────────────────────────────────────
+            // business_name : the shop/brand name from the seller application
+            // name          : the seller's account name (User.name)
+            // email         : the seller's login email (User.email)
+            // phone         : the contact number from the seller application
+            // wilaya + city : the seller's registered location (pickup address)
+            'seller'         => $seller ? [
+                'id'            => $seller->id,
+                'name'          => $seller->name,
+                'email'         => $seller->email,
+                'phone'         => $application?->phone_number,
+                'wilaya'        => $application?->wilaya,
+                'city'          => $application?->city,
+                'business_name' => $application?->business_name,
             ] : null,
-            'items'          => $so->relationLoaded('items')
+
+            'items' => $so->relationLoaded('items')
                 ? $so->items->map(fn($i) => [
                     'id'           => $i->id,
                     'product_name' => $i->product_name ?? $i->product?->name,

@@ -6,7 +6,8 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Laravel\Sanctum\HasApiTokens;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
-
+use App\Models\DeliveryCompanyProfile;
+use App\Models\DeliveryGuyProfile;
 class User extends Authenticatable
 {
     use HasFactory, Notifiable, HasApiTokens;
@@ -110,4 +111,14 @@ class User extends Authenticatable
                      ->where('is_active', true)
                      ->get();
     }
+
+    public function deliveryCompanyProfile(): \Illuminate\Database\Eloquent\Relations\HasOne
+{
+    return $this->hasOne(DeliveryCompanyProfile::class);
+}
+
+public function deliveryGuyProfile(): \Illuminate\Database\Eloquent\Relations\HasOne
+{
+    return $this->hasOne(DeliveryGuyProfile::class);
+}
 }

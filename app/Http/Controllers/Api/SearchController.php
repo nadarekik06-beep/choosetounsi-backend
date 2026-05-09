@@ -213,6 +213,7 @@ class SearchController extends Controller
      * Fetch full product data for a list of product IDs.
      * Preserves the AI ranking order.
      * Applies optional business filters.
+     * Featured products get a slight positional boost within AI ranking.
      *
      * @param  array $productIds  Ordered list of product IDs from AI service
      * @param  array $filters     Optional: category_id, min_price, max_price
@@ -271,15 +272,26 @@ class SearchController extends Controller
         }
 
         // Re-sort by AI ranking order (MySQL IN clause doesn't guarantee order)
-        $indexed  = $products->keyBy('id');
-        $ordered  = [];
+        $indexed = $products->keyBy('id');
+        $ordered = [];
 
         foreach ($productIds as $id) {
             if ($indexed->has($id)) {
-                $product = $indexed->get($id);
+                $product   = $indexed->get($id);
                 $ordered[] = $this->formatProduct($product);
             }
         }
+
+        // Boost featured products within AI ranking
+        // (slight nudge only — don't break semantic order)
+        usort($ordered, function ($a, $b) use ($productIds) {
+            $posA = array_search($a['id'], $productIds);
+            $posB = array_search($b['id'], $productIds);
+            // Featured products get a 3-position boost
+            $scoreA = $posA - ($a['featured'] ? 3 : 0);
+            $scoreB = $posB - ($b['featured'] ? 3 : 0);
+            return $scoreA - $scoreB;
+        });
 
         return array_slice($ordered, 0, $limit);
     }
@@ -314,20 +326,36 @@ class SearchController extends Controller
 
     /**
      * Fallback MySQL LIKE search when the AI service is unavailable.
-     * Less intelligent (exact keyword matching only) but always available.
+     * Scores results by name match, description match, term spread,
+     * views, and featured flag — then sorts by that score descending.
      */
     private function fallbackTextSearch(string $query, array $filters, int $limit): array
     {
-        $terms   = array_filter(explode(' ', $query));
+        $terms = array_filter(
+            explode(' ', $query),
+            fn($t) => strlen($t) >= 2
+        );
+
         $dbQuery = DB::table('products as p')
             ->select([
                 'p.id', 'p.name', 'p.slug', 'p.description',
                 'p.price', 'p.stock', 'p.views', 'p.featured',
-                'c.name as category_name',    'c.slug as category_slug',
-                'sub.name as subcategory_name','sub.slug as subcategory_slug',
+                'c.name as category_name',      'c.slug as category_slug',
+                'sub.name as subcategory_name', 'sub.slug as subcategory_slug',
                 'pi.image_path as primary_image',
+                // Relevance score: name match > description match, boosted by views + featured
+                DB::raw("
+                    (
+                        CASE WHEN p.name        LIKE ? THEN 60 ELSE 0 END +
+                        CASE WHEN p.description LIKE ? THEN 20 ELSE 0 END +
+                        CASE WHEN p.name        LIKE ? THEN 30 ELSE 0 END +
+                        (LEAST(p.views, 500) / 500 * 15) +
+                        CASE WHEN p.featured = 1 THEN 10 ELSE 0 END
+                    ) as relevance_score
+                "),
             ])
-            ->leftJoin('categories as c',     'c.id',   '=', 'p.category_id')
+            ->addBinding(["%{$query}%", "%{$query}%", "%" . implode("%", $terms) . "%"], 'select')
+            ->leftJoin('categories as c',      'c.id',   '=', 'p.category_id')
             ->leftJoin('subcategories as sub', 'sub.id', '=', 'p.subcategory_id')
             ->leftJoin('product_images as pi', function ($join) {
                 $join->on('pi.product_id', '=', 'p.id')
@@ -337,13 +365,10 @@ class SearchController extends Controller
             ->where('p.is_active',   1)
             ->whereNull('p.deleted_at')
             ->where(function ($q) use ($terms, $query) {
-                // Match on full query or individual terms
                 $q->where('p.name',        'LIKE', "%{$query}%")
-                  ->orWhere('p.description','LIKE', "%{$query}%");
+                  ->orWhere('p.description', 'LIKE', "%{$query}%");
                 foreach ($terms as $term) {
-                    if (strlen($term) >= 3) {
-                        $q->orWhere('p.name', 'LIKE', "%{$term}%");
-                    }
+                    $q->orWhere('p.name', 'LIKE', "%{$term}%");
                 }
             });
 
@@ -357,7 +382,12 @@ class SearchController extends Controller
             $dbQuery->where('p.price', '<=', $filters['max_price']);
         }
 
-        $products = $dbQuery->orderByDesc('p.views')->limit($limit)->get();
+        $products = $dbQuery
+            ->orderByDesc('relevance_score')
+            ->orderByDesc('p.featured')
+            ->orderByDesc('p.views')
+            ->limit($limit)
+            ->get();
 
         return $products->map(fn($p) => $this->formatProduct($p))->toArray();
     }

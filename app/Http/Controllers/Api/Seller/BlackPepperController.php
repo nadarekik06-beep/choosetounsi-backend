@@ -148,16 +148,21 @@ class BlackPepperController extends Controller
             ->get()
             ->keyBy('product_id');
 
-        // Products data for context
-        $products = DB::table('products as p')
-            ->leftJoin('categories as c', 'c.id', '=', 'p.category_id')
-            ->where("p.{$sellerCol}", $sellerId)
-            ->whereNull('p.deleted_at')
-            ->where('p.is_approved', true)
-            ->selectRaw("p.id, p.name, p.price, p.stock, c.name as category_name")
-            ->get()
-            ->keyBy('id');
-
+            // Products data for context — with primary image
+            $products = DB::table('products as p')
+                ->leftJoin('categories as c', 'c.id', '=', 'p.category_id')
+                ->leftJoin('product_images as pi', function ($join) {
+                    $join->on('pi.product_id', '=', 'p.id')
+                        ->where('pi.is_primary', true)
+                        ->whereNull('pi.variant_id'); // product-level image only
+                })
+                ->where("p.{$sellerCol}", $sellerId)
+                ->whereNull('p.deleted_at')
+                ->where('p.is_approved', true)
+                ->selectRaw("p.id, p.name, p.price, p.stock, c.name as category_name, MIN(pi.image_path) as image_path")
+                ->groupBy('p.id', 'p.name', 'p.price', 'p.stock', 'c.name')
+                ->get()
+                ->keyBy('id');
         // Calculate trending products
         $trendingProducts = [];
         foreach ($sevenDaySales as $productId => $sevenDay) {
@@ -185,6 +190,9 @@ class BlackPepperController extends Controller
                     'trend_signal'         => $velocityMultiplier >= 2.5 ? 'hot' : ($velocityMultiplier >= 1.8 ? 'rising' : 'warm'),
                     'insight'              => "Sales velocity is {$velocityMultiplier}× above your 30-day average. " .
                                               ($daysToTrend < 3 ? "Trending NOW — stock up immediately." : "Trending in ~{$daysToTrend} days."),
+                    'image_url' => $product->image_path
+                                    ? url(\Storage::url($product->image_path))
+                                    : null,                          
                 ];
             }
         }
@@ -233,7 +241,9 @@ class BlackPepperController extends Controller
                         'critical' => "⚠️ Only {$daysRemaining} days of stock left. Restock NOW to avoid losing " . number_format($revenueAtRisk, 3) . " TND.",
                         'high'     => "Stock runs out in {$daysRemaining} days. Order restocking within 48h.",
                         default    => "Plan a restock this week — {$daysRemaining} days of stock remaining.",
-                    },
+                    },'image_url' => $product->image_path
+                        ? url(\Storage::url($product->image_path))
+                        : null,
                 ];
             }
         }
@@ -255,6 +265,8 @@ class BlackPepperController extends Controller
         }
 
         if (!$insights) {
+            $trendCount    = count($trendingProducts);
+            $criticalCount = count(array_filter($inventoryAlerts, fn($a) => $a['urgency'] === 'critical'));
             $trendingNames = collect($trendingProducts)->pluck('product_name')->take(3)->implode(', ') ?: 'none';
             $alertNames    = collect($inventoryAlerts)->pluck('product_name')->take(3)->implode(', ') ?: 'none';
             $totalRevenue7d = round(collect($trendingProducts)->sum('seven_day_revenue'), 3);
@@ -285,15 +297,6 @@ Respond ONLY with this JSON:
 }
 PROMPT;
 
-            // Fill the variables that were referenced in the HEREDOC
-            $trendCount    = count($trendingProducts);
-            $criticalCount = count(array_filter($inventoryAlerts, fn($a) => $a['urgency'] === 'critical'));
-
-            $userPrompt = str_replace(
-                ['{$trendCount}', '{$criticalCount}'],
-                [$trendCount, $criticalCount],
-                $userPrompt
-            );
 
             $raw = $this->callGroq($system, $userPrompt, 400);
             if ($raw) {
@@ -602,8 +605,11 @@ PROMPT;
                 p.id, p.name, p.price, p.stock, p.is_sponsored,
                 p.sponsored_priority, p.sponsored_at, p.is_active, p.is_approved,
                 c.name as category_name,
-                pi.image_path
+                MIN(pi.image_path) as image_path
             ")
+            ->groupBy('p.id', 'p.name', 'p.price', 'p.stock', 'p.is_sponsored',
+                    'p.sponsored_priority', 'p.sponsored_at', 'p.is_active', 'p.is_approved',
+                    'c.name')
             ->orderByDesc('p.is_sponsored')
             ->orderByDesc('p.sponsored_priority')
             ->get()

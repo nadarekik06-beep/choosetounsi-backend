@@ -49,6 +49,8 @@ use App\Http\Controllers\Api\PublicPackController;
 use App\Http\Controllers\Api\Seller\SellerPromotionController;
 use App\Http\Controllers\Api\PublicPromotionController;
 use App\Http\Controllers\Api\Seller\CommissionController;
+use App\Http\Controllers\Api\Delivery\DeliveryAuthController;
+
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES
@@ -104,6 +106,8 @@ Route::get('/packs',        [PublicPackController::class, 'index']);
 Route::get('/packs/{slug}', [PublicPackController::class, 'show']);
 Route::get('/flash-sales', [PublicPromotionController::class, 'flashSales']);
 Route::get('/promotions/product/{productId}', [PublicPromotionController::class, 'forProduct']);
+Route::post('/delivery/register', [DeliveryAuthController::class, 'register']);
+
 
 /*
 |--------------------------------------------------------------------------
