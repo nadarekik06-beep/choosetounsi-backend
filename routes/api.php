@@ -107,7 +107,8 @@ Route::get('/packs/{slug}', [PublicPackController::class, 'show']);
 Route::get('/flash-sales', [PublicPromotionController::class, 'flashSales']);
 Route::get('/promotions/product/{productId}', [PublicPromotionController::class, 'forProduct']);
 Route::post('/delivery/register', [DeliveryAuthController::class, 'register']);
-
+Route::post('/auth/forgot-password', [AuthController::class, 'forgotPassword']);
+Route::post('/auth/reset-password',  [AuthController::class, 'resetPassword']);
 
 /*
 |--------------------------------------------------------------------------

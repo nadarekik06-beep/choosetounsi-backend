@@ -8,6 +8,7 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use App\Models\DeliveryCompanyProfile;
 use App\Models\DeliveryGuyProfile;
+
 class User extends Authenticatable
 {
     use HasFactory, Notifiable, HasApiTokens;
@@ -22,26 +23,22 @@ class User extends Authenticatable
         'google_id',
         'avatar',
         'onboarding_completed',
-        // ── Email verification ─────────────────────────────────────────────
+        // email_verified_at is set only at creation time via verifyEmail()
+        // or immediately for Google OAuth users. It is intentionally NOT
+        // in fillable for bulk-assignment safety.
         'email_verified_at',
-        'email_verification_code',
-        'email_verification_expires_at',
-        'email_verification_attempts',
     ];
 
     protected $hidden = [
         'password',
         'remember_token',
-        'email_verification_code',  // Never leak the OTP in JSON responses
     ];
 
     protected $casts = [
-        'email_verified_at'             => 'datetime',
-        'email_verification_expires_at' => 'datetime',
-        'email_verification_attempts'   => 'integer',
-        'is_active'                     => 'boolean',
-        'is_approved'                   => 'boolean',
-        'onboarding_completed'          => 'boolean',
+        'email_verified_at'   => 'datetime',
+        'is_active'           => 'boolean',
+        'is_approved'         => 'boolean',
+        'onboarding_completed' => 'boolean',
     ];
 
     // ── Relationships ──────────────────────────────────────────────────────
@@ -51,6 +48,7 @@ class User extends Authenticatable
     public function orders()             { return $this->hasMany(Order::class); }
     public function sellerApplication()  { return $this->hasOne(SellerApplication::class)->latest(); }
     public function sellerApplications() { return $this->hasMany(SellerApplication::class); }
+
     public function preferences()
     {
         return $this->hasOne(\App\Models\UserPreference::class);
@@ -113,12 +111,12 @@ class User extends Authenticatable
     }
 
     public function deliveryCompanyProfile(): \Illuminate\Database\Eloquent\Relations\HasOne
-{
-    return $this->hasOne(DeliveryCompanyProfile::class);
-}
+    {
+        return $this->hasOne(DeliveryCompanyProfile::class);
+    }
 
-public function deliveryGuyProfile(): \Illuminate\Database\Eloquent\Relations\HasOne
-{
-    return $this->hasOne(DeliveryGuyProfile::class);
-}
+    public function deliveryGuyProfile(): \Illuminate\Database\Eloquent\Relations\HasOne
+    {
+        return $this->hasOne(DeliveryGuyProfile::class);
+    }
 }

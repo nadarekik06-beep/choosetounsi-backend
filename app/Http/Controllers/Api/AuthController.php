@@ -8,27 +8,43 @@ use App\Mail\WelcomeUserMail;
 use App\Models\User;
 use App\Models\Product;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Str;
 use Laravel\Socialite\Facades\Socialite;
-
+use Illuminate\Support\Facades\Password;
+use App\Mail\PasswordResetMail;
 class AuthController extends Controller
 {
+    // ─────────────────────────────────────────────────────────────────────
+    //  CONSTANTS
+    // ─────────────────────────────────────────────────────────────────────
+
+    /** Minutes before a pending registration expires. */
+    private const PENDING_TTL_MINUTES = 15;
+
+    /** Maximum wrong-code attempts before the code is invalidated. */
+    private const MAX_ATTEMPTS = 5;
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  PRIVATE HELPERS
+    // ─────────────────────────────────────────────────────────────────────
+
     /**
      * Shared user response shape — always includes avatar.
      */
     private function userResponse(User $user): array
     {
         return [
-            'id'          => $user->id,
-            'name'        => $user->name,
-            'email'       => $user->email,
-            'role'        => $user->role,
-            'is_approved' => (bool) $user->is_approved,
-            'is_active'   => (bool) $user->is_active,
-            'avatar'      => $user->avatar ?? null,
+            'id'                   => $user->id,
+            'name'                 => $user->name,
+            'email'                => $user->email,
+            'role'                 => $user->role,
+            'is_approved'          => (bool) $user->is_approved,
+            'is_active'            => (bool) $user->is_active,
+            'avatar'               => $user->avatar ?? null,
             'onboarding_completed' => (bool) $user->onboarding_completed,
         ];
     }
@@ -45,7 +61,7 @@ class AuthController extends Controller
                 ->limit(4)
                 ->with(['primaryImage'])
                 ->get(['id', 'name', 'slug', 'price'])
-                ->map(fn ($p) => [
+                ->map(fn($p) => [
                     'name'  => $p->name,
                     'slug'  => $p->slug,
                     'price' => $p->price,
@@ -60,65 +76,100 @@ class AuthController extends Controller
     }
 
     /**
-     * Generate a secure 6-digit code and return it as a zero-padded string.
+     * Generate a secure 6-digit code, zero-padded.
      */
     private function generateVerificationCode(): string
     {
         return str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
     }
 
-    /* ──────────────────────────────────────────────────────── */
-    /*  Register                                                */
-    /* ──────────────────────────────────────────────────────── */
+    /**
+     * Cache key for a pending (pre-DB) registration.
+     */
+    private function pendingCacheKey(string $email): string
+    {
+        return 'pending_reg:' . strtolower(trim($email));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  REGISTER  — stores data in Cache, NOT in the users table
+    // ─────────────────────────────────────────────────────────────────────
     public function register(Request $request)
     {
         $validated = $request->validate([
             'name'     => 'required|string|max:255',
-            'email'    => 'required|email|unique:users',
+            'email'    => 'required|email|unique:users,email',
             'password' => 'required|min:8|confirmed',
             'role'     => 'sometimes|in:client,seller',
         ]);
 
-        $role = $validated['role'] ?? 'client';
-        $code = $this->generateVerificationCode();
+        $email = strtolower(trim($validated['email']));
+        $role  = $validated['role'] ?? 'client';
 
-        $user = User::create([
-            'name'                          => $validated['name'],
-            'email'                         => $validated['email'],
-            'password'                      => Hash::make($validated['password']),
-            'role'                          => $role,
-            'is_active'                     => true,
-            'is_approved'                   => $role === 'client',
-            // Verification fields — email_verified_at stays null until confirmed
-            'email_verification_code'       => $code,
-            'email_verification_expires_at' => now()->addMinutes(10),
-            'email_verification_attempts'   => 0,
-        ]);
-
-        // Send ONLY the verification code email at registration
-        try {
-            Mail::to($user->email)->send(new VerificationCodeMail($user, $code));
-        } catch (\Exception $e) {
-            \Log::error('VerificationCodeMail failed for user #' . $user->id . ': ' . $e->getMessage());
+        // ── Guard: block re-registration while a pending attempt is active ──
+        if (Cache::has($this->pendingCacheKey($email))) {
+            return response()->json([
+                'message'            => 'A verification code was already sent to this email. Please check your inbox or request a new code.',
+                'needs_verification' => true,
+                'email'              => $email,
+            ], 409);
         }
 
-        // Do NOT issue a token yet — user must verify first
+        $code = $this->generateVerificationCode();
+
+        // ── Store everything in cache — NO database write yet ──────────────
+        Cache::put(
+            $this->pendingCacheKey($email),
+            [
+                'name'         => $validated['name'],
+                'email'        => $email,
+                'password'     => Hash::make($validated['password']),
+                'role'         => $role,
+                'code'         => $code,
+                'expires_at'   => now()->addMinutes(self::PENDING_TTL_MINUTES)->toISOString(),
+                'attempts'     => 0,
+            ],
+            now()->addMinutes(self::PENDING_TTL_MINUTES)
+        );
+
+        // ── Send verification email ────────────────────────────────────────
+        // We need a temporary object that VerificationCodeMail can use.
+        // We pass a plain stdClass so the Mailable can access ->name and ->email
+        // without touching the DB.
+        $tempUser        = new \stdClass();
+        $tempUser->name  = $validated['name'];
+        $tempUser->email = $email;
+
+        try {
+            Mail::to($email)->send(new VerificationCodeMail($tempUser, $code));
+        } catch (\Exception $e) {
+            // If mail fails, remove the cache entry so the user can retry cleanly
+            Cache::forget($this->pendingCacheKey($email));
+            \Log::error('VerificationCodeMail failed (register): ' . $e->getMessage());
+
+            return response()->json([
+                'message' => 'Failed to send verification email. Please try again.',
+            ], 500);
+        }
+
         return response()->json([
-            'message'            => 'Registration successful. Please check your email for the verification code.',
+            'message'            => 'Registration initiated. Please check your email for the 6-digit verification code.',
             'needs_verification' => true,
-            'email'              => $user->email,
+            'email'              => $email,
         ], 201);
     }
 
-    /* ──────────────────────────────────────────────────────── */
-    /*  Verify Email                                            */
-    /* ──────────────────────────────────────────────────────── */
+    // ─────────────────────────────────────────────────────────────────────
+    //  VERIFY EMAIL  — creates the user in DB only after successful verify
+    // ─────────────────────────────────────────────────────────────────────
     public function verifyEmail(Request $request)
     {
         $request->validate([
             'email' => 'required|email',
             'code'  => 'required|string|size:6',
         ]);
+
+        $email = strtolower(trim($request->email));
 
         // ── IP-based rate limit: 10 attempts per minute ────────────────────
         $ipKey = 'verify-email-ip:' . $request->ip();
@@ -130,83 +181,97 @@ class AuthController extends Controller
         }
         RateLimiter::hit($ipKey, 60);
 
-        $user = User::where('email', $request->email)->first();
-
-        if (!$user) {
-            return response()->json(['message' => 'No account found with this email.'], 404);
-        }
-
-        // Already verified — issue token (idempotent, safe for double-tap)
-        if ($user->email_verified_at) {
+        // ── Case A: user already exists and is verified (e.g. double-tap) ──
+        $existingUser = User::where('email', $email)->first();
+        if ($existingUser && $existingUser->email_verified_at) {
             RateLimiter::clear($ipKey);
-            $user->tokens()->delete();
-            $token = $user->createToken('api-token')->plainTextToken;
+            $existingUser->tokens()->delete();
+            $token = $existingUser->createToken('api-token')->plainTextToken;
             return response()->json([
                 'message' => 'Email already verified.',
                 'token'   => $token,
-                'user'    => $this->userResponse($user),
+                'user'    => $this->userResponse($existingUser),
             ]);
         }
 
-        // Code was invalidated (too many wrong attempts) — force resend
-        if (!$user->email_verification_code) {
+        // ── Case B: look up pending registration in cache ──────────────────
+        $cacheKey = $this->pendingCacheKey($email);
+        $pending  = Cache::get($cacheKey);
+
+        if (!$pending) {
             return response()->json([
-                'message'      => 'No active verification code. Please request a new one.',
+                'message'      => 'No pending registration found for this email. Please register again.',
+                'needs_resend' => true,
+            ], 404);
+        }
+
+        // ── Code expired? ──────────────────────────────────────────────────
+        if (now()->isAfter($pending['expires_at'])) {
+            Cache::forget($cacheKey);
+            return response()->json([
+                'message'      => 'Verification code has expired. Please register again.',
                 'needs_resend' => true,
             ], 422);
         }
 
-        // Code expired
-        if ($user->email_verification_expires_at < now()) {
+        // ── Too many wrong attempts — code invalidated ─────────────────────
+        if ($pending['attempts'] >= self::MAX_ATTEMPTS) {
+            Cache::forget($cacheKey);
             return response()->json([
-                'message'      => 'Verification code has expired. Please request a new one.',
+                'message'      => 'Too many incorrect attempts. Please register again.',
                 'needs_resend' => true,
             ], 422);
         }
 
-        // Wrong code — increment attempt counter
-        if ($user->email_verification_code !== $request->code) {
-            $user->increment('email_verification_attempts');
+        // ── Wrong code — increment attempt counter in cache ────────────────
+        if ($pending['code'] !== $request->code) {
+            $pending['attempts']++;
 
-            // After 5 wrong attempts: wipe the code to force a resend
-            if ($user->email_verification_attempts >= 5) {
-                $user->update([
-                    'email_verification_code'       => null,
-                    'email_verification_expires_at' => null,
-                ]);
+            if ($pending['attempts'] >= self::MAX_ATTEMPTS) {
+                Cache::forget($cacheKey);
                 return response()->json([
-                    'message'      => 'Too many incorrect attempts. Please request a new verification code.',
+                    'message'      => 'Too many incorrect attempts. Please register again.',
                     'needs_resend' => true,
                 ], 422);
             }
 
-            $remaining = 5 - $user->email_verification_attempts;
+            // Update attempts in cache (keep same TTL relative to expires_at)
+            $remainingSeconds = max(0, now()->diffInSeconds($pending['expires_at'], false));
+            Cache::put($cacheKey, $pending, $remainingSeconds);
+
+            $remaining = self::MAX_ATTEMPTS - $pending['attempts'];
             return response()->json([
                 'message' => "Incorrect code. {$remaining} attempt(s) remaining.",
             ], 422);
         }
 
         // ── Code is correct ────────────────────────────────────────────────
-        $user->update([
-            'email_verified_at'             => now(),
-            'email_verification_code'       => null,
-            'email_verification_expires_at' => null,
-            'email_verification_attempts'   => 0,
+        // NOW we create the user in the database for the first time
+        $user = User::create([
+            'name'             => $pending['name'],
+            'email'            => $pending['email'],
+            'password'         => $pending['password'],   // already hashed
+            'role'             => $pending['role'],
+            'is_active'        => true,
+            'is_approved'      => $pending['role'] === 'client',
+            'email_verified_at' => now(),
         ]);
 
-        // Clear IP rate limiter on success
+        // ── Clean up cache — pending registration no longer needed ─────────
+        Cache::forget($cacheKey);
         RateLimiter::clear($ipKey);
 
-        // NOW send the welcome email (with featured products mini-catalog)
+        // ── Send welcome email (with featured products mini-catalog) ───────
         try {
             Mail::to($user->email)->send(
                 new WelcomeUserMail($user, $this->featuredProductsForEmail())
             );
         } catch (\Exception $e) {
             \Log::error('WelcomeUserMail failed for user #' . $user->id . ': ' . $e->getMessage());
+            // Non-fatal — user is already created, just log it
         }
 
-        $user->tokens()->delete();
+        // ── Issue Sanctum token ────────────────────────────────────────────
         $token = $user->createToken('api-token')->plainTextToken;
 
         return response()->json([
@@ -216,15 +281,17 @@ class AuthController extends Controller
         ]);
     }
 
-    /* ──────────────────────────────────────────────────────── */
-    /*  Resend Verification Code                                */
-    /* ──────────────────────────────────────────────────────── */
+    // ─────────────────────────────────────────────────────────────────────
+    //  RESEND VERIFICATION CODE
+    // ─────────────────────────────────────────────────────────────────────
     public function resendVerification(Request $request)
     {
         $request->validate(['email' => 'required|email']);
 
+        $email = strtolower(trim($request->email));
+
         // ── Per-email rate limit: 3 resends per hour ───────────────────────
-        $emailKey = 'resend-verification:' . strtolower($request->email);
+        $emailKey = 'resend-verification:' . $email;
         if (RateLimiter::tooManyAttempts($emailKey, 3)) {
             $seconds = RateLimiter::availableIn($emailKey);
             $minutes = (int) ceil($seconds / 60);
@@ -233,34 +300,44 @@ class AuthController extends Controller
             ], 429);
         }
 
-        $user = User::where('email', $request->email)->first();
+        // ── If user already exists and is verified, no need to resend ──────
+        $existingUser = User::where('email', $email)->first();
+        if ($existingUser && $existingUser->email_verified_at) {
+            return response()->json([
+                'message' => 'This email address is already verified.',
+            ], 400);
+        }
 
-        // Don't leak whether the email exists in the system
-        if (!$user) {
+        // ── Load pending registration from cache ───────────────────────────
+        $cacheKey = $this->pendingCacheKey($email);
+        $pending  = Cache::get($cacheKey);
+
+        if (!$pending) {
+            // Don't leak whether email is registered — always consume a rate-limit hit
             RateLimiter::hit($emailKey, 3600);
             return response()->json([
-                'message' => 'If this email is registered, a new code has been sent.',
-            ]);
+                'message' => 'No pending registration found. Please register again.',
+            ], 404);
         }
 
-        if ($user->email_verified_at) {
-            return response()->json(['message' => 'This email address is already verified.'], 400);
-        }
+        // ── Generate fresh code, reset attempts, extend TTL ───────────────
+        $code                  = $this->generateVerificationCode();
+        $pending['code']       = $code;
+        $pending['attempts']   = 0;
+        $pending['expires_at'] = now()->addMinutes(self::PENDING_TTL_MINUTES)->toISOString();
 
-        $code = $this->generateVerificationCode();
-
-        $user->update([
-            'email_verification_code'       => $code,
-            'email_verification_expires_at' => now()->addMinutes(10),
-            'email_verification_attempts'   => 0,
-        ]);
-
+        Cache::put($cacheKey, $pending, now()->addMinutes(self::PENDING_TTL_MINUTES));
         RateLimiter::hit($emailKey, 3600);
 
+        // ── Resend email ───────────────────────────────────────────────────
+        $tempUser        = new \stdClass();
+        $tempUser->name  = $pending['name'];
+        $tempUser->email = $email;
+
         try {
-            Mail::to($user->email)->send(new VerificationCodeMail($user, $code));
+            Mail::to($email)->send(new VerificationCodeMail($tempUser, $code));
         } catch (\Exception $e) {
-            \Log::error('VerificationCodeMail (resend) failed for user #' . $user->id . ': ' . $e->getMessage());
+            \Log::error('VerificationCodeMail (resend) failed: ' . $e->getMessage());
             return response()->json([
                 'message' => 'Failed to send the verification email. Please try again.',
             ], 500);
@@ -271,9 +348,9 @@ class AuthController extends Controller
         ]);
     }
 
-    /* ──────────────────────────────────────────────────────── */
-    /*  Email / password login                                  */
-    /* ──────────────────────────────────────────────────────── */
+    // ─────────────────────────────────────────────────────────────────────
+    //  LOGIN  — unchanged
+    // ─────────────────────────────────────────────────────────────────────
     public function login(Request $request)
     {
         $request->validate([
@@ -310,9 +387,9 @@ class AuthController extends Controller
         ]);
     }
 
-    /* ──────────────────────────────────────────────────────── */
-    /*  Get current authenticated user                          */
-    /* ──────────────────────────────────────────────────────── */
+    // ─────────────────────────────────────────────────────────────────────
+    //  GET CURRENT AUTHENTICATED USER  — unchanged
+    // ─────────────────────────────────────────────────────────────────────
     public function user(Request $request): \Illuminate\Http\JsonResponse
     {
         /** @var \App\Models\User $user */
@@ -322,31 +399,31 @@ class AuthController extends Controller
 
         return response()->json([
             'user' => [
-                'id'          => $user->id,
-                'name'        => $user->name,
-                'email'       => $user->email,
-                'role'        => $user->role,
-                'is_approved' => $user->is_approved,
-                'is_active'   => $user->is_active,
-                'avatar'      => $user->avatar,
-                'active_plan' => $application?->plan ?? 'free',
+                'id'                   => $user->id,
+                'name'                 => $user->name,
+                'email'                => $user->email,
+                'role'                 => $user->role,
+                'is_approved'          => $user->is_approved,
+                'is_active'            => $user->is_active,
+                'avatar'               => $user->avatar,
+                'active_plan'          => $application?->plan ?? 'free',
                 'onboarding_completed' => (bool) $user->onboarding_completed,
             ],
         ]);
     }
 
-    /* ──────────────────────────────────────────────────────── */
-    /*  Logout                                                  */
-    /* ──────────────────────────────────────────────────────── */
+    // ─────────────────────────────────────────────────────────────────────
+    //  LOGOUT  — unchanged
+    // ─────────────────────────────────────────────────────────────────────
     public function logout(Request $request)
     {
         $request->user()->tokens()->delete();
         return response()->json(['message' => 'Logged out successfully']);
     }
 
-    /* ──────────────────────────────────────────────────────── */
-    /*  Google OAuth – Step 1: return redirect URL              */
-    /* ──────────────────────────────────────────────────────── */
+    // ─────────────────────────────────────────────────────────────────────
+    //  GOOGLE OAUTH  — unchanged
+    // ─────────────────────────────────────────────────────────────────────
     public function googleRedirect()
     {
         $url = Socialite::driver('google')
@@ -357,9 +434,6 @@ class AuthController extends Controller
         return response()->json(['url' => $url]);
     }
 
-    /* ──────────────────────────────────────────────────────── */
-    /*  Google OAuth – Step 2: handle callback                  */
-    /* ──────────────────────────────────────────────────────── */
     public function googleCallback(Request $request)
     {
         try {
@@ -376,9 +450,8 @@ class AuthController extends Controller
 
         if ($user) {
             $user->update([
-                'google_id'        => $googleUser->getId(),
-                'avatar'           => $googleUser->getAvatar(),
-                // Google guarantees email ownership — auto-verify if not already
+                'google_id'         => $googleUser->getId(),
+                'avatar'            => $googleUser->getAvatar(),
                 'email_verified_at' => $user->email_verified_at ?? now(),
             ]);
 
@@ -386,22 +459,20 @@ class AuthController extends Controller
                 return redirect(env('FRONTEND_URL', 'http://localhost:3000') . '/auth/login?error=account_deactivated');
             }
         } else {
-            // Brand-new Google user — already verified by Google
             $user = User::create([
-                'name'             => $googleUser->getName(),
-                'email'            => $googleUser->getEmail(),
-                'google_id'        => $googleUser->getId(),
-                'avatar'           => $googleUser->getAvatar(),
-                'password'         => Hash::make(Str::random(32)),
-                'role'             => 'client',
-                'is_active'        => true,
-                'is_approved'      => true,
-                'email_verified_at' => now(),  // Google-verified — no OTP needed
+                'name'              => $googleUser->getName(),
+                'email'             => $googleUser->getEmail(),
+                'google_id'         => $googleUser->getId(),
+                'avatar'            => $googleUser->getAvatar(),
+                'password'          => Hash::make(Str::random(32)),
+                'role'              => 'client',
+                'is_active'         => true,
+                'is_approved'       => true,
+                'email_verified_at' => now(),
             ]);
             $isNewUser = true;
         }
 
-        // Send welcome email only to brand-new Google users (already verified)
         if ($isNewUser) {
             try {
                 Mail::to($user->email)->send(
@@ -419,5 +490,104 @@ class AuthController extends Controller
         $frontendUrl = env('FRONTEND_URL', 'http://localhost:3000');
 
         return redirect("{$frontendUrl}/auth/google/callback?token={$token}&user={$userData}");
+    }
+    // ─────────────────────────────────────────────────────────────────────
+    //  FORGOT PASSWORD — sends a reset link to the user's email
+    // ─────────────────────────────────────────────────────────────────────
+    public function forgotPassword(Request $request)
+    {
+        $request->validate([
+            'email' => 'required|email',
+        ]);
+ 
+        // ── Rate limit: 3 requests per hour per email ──────────────────────
+        $rateLimitKey = 'forgot-password:' . strtolower($request->email);
+        if (RateLimiter::tooManyAttempts($rateLimitKey, 3)) {
+            $seconds = RateLimiter::availableIn($rateLimitKey);
+            $minutes = (int) ceil($seconds / 60);
+            return response()->json([
+                'message' => "Too many requests. Please try again in {$minutes} minute(s).",
+            ], 429);
+        }
+        RateLimiter::hit($rateLimitKey, 3600);
+ 
+        $user = User::where('email', $request->email)->first();
+ 
+        // ── Always return success to prevent email enumeration ─────────────
+        // Even if the email doesn't exist, we return the same response.
+        // This is a security best practice.
+        if (!$user) {
+            return response()->json([
+                'message' => 'If this email is registered, you will receive a password reset link shortly.',
+            ]);
+        }
+ 
+        // ── Block Google-only accounts (no password set) ───────────────────
+        if ($user->google_id && !$user->password) {
+            return response()->json([
+                'message' => 'This account uses Google sign-in. Please continue with Google.',
+            ], 400);
+        }
+ 
+        // ── Generate token via Laravel's Password broker ───────────────────
+        // This stores a hashed token in the password_resets table automatically.
+        $token = Password::broker()->createToken($user);
+ 
+        // ── Send reset email ───────────────────────────────────────────────
+        try {
+            Mail::to($user->email)->send(new \App\Mail\PasswordResetMail($user, $token));
+        } catch (\Exception $e) {
+            \Log::error('PasswordResetMail failed for user #' . $user->id . ': ' . $e->getMessage());
+            return response()->json([
+                'message' => 'Failed to send reset email. Please try again.',
+            ], 500);
+        }
+ 
+        return response()->json([
+            'message' => 'If this email is registered, you will receive a password reset link shortly.',
+        ]);
+    }
+ 
+    // ─────────────────────────────────────────────────────────────────────
+    //  RESET PASSWORD — validates token and updates the password
+    // ─────────────────────────────────────────────────────────────────────
+    public function resetPassword(Request $request)
+    {
+        $request->validate([
+            'token'                 => 'required|string',
+            'email'                 => 'required|email',
+            'password'              => 'required|min:8|confirmed',
+        ]);
+ 
+        // ── Use Laravel's Password broker to validate token + reset ────────
+        $status = Password::broker()->reset(
+            $request->only('email', 'password', 'password_confirmation', 'token'),
+            function (User $user, string $password) {
+                $user->forceFill([
+                    'password' => Hash::make($password),
+                ])->save();
+ 
+                // Revoke all existing tokens — force re-login after reset
+                $user->tokens()->delete();
+            }
+        );
+ 
+        // ── Handle broker response ─────────────────────────────────────────
+        if ($status === Password::PASSWORD_RESET) {
+            return response()->json([
+                'message' => 'Password reset successfully. You can now log in with your new password.',
+            ]);
+        }
+ 
+        // Map Laravel broker status to human-readable errors
+        $errors = [
+            Password::INVALID_TOKEN => 'This reset link is invalid or has already been used.',
+            Password::INVALID_USER  => 'No account found with this email address.',
+            Password::RESET_THROTTLED => 'Too many reset attempts. Please wait before trying again.',
+        ];
+ 
+        return response()->json([
+            'message' => $errors[$status] ?? 'Failed to reset password. Please request a new link.',
+        ], 422);
     }
 }

@@ -1,15 +1,22 @@
 <?php
-// app/Mail/WelcomeUserMail.php
 
 namespace App\Mail;
 
 use App\Models\User;
 use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Mail\Mailable;
 use Illuminate\Queue\SerializesModels;
 
-class WelcomeUserMail extends Mailable implements ShouldQueue
+// ── NOTE: ShouldQueue intentionally removed ────────────────────────────────
+// With QUEUE_CONNECTION=sync and no queue worker running on XAMPP,
+// using ShouldQueue + a named queue ('emails') causes the mail to be
+// dispatched to a non-existent queue and silently dropped.
+// We send synchronously, exactly like VerificationCodeMail.
+// If you later add Redis + a queue worker, you can re-add ShouldQueue
+// and remove the named queue line.
+// ──────────────────────────────────────────────────────────────────────────
+
+class WelcomeUserMail extends Mailable
 {
     use Queueable, SerializesModels;
 
@@ -20,7 +27,7 @@ class WelcomeUserMail extends Mailable implements ShouldQueue
     {
         $this->user             = $user;
         $this->featuredProducts = $featuredProducts;
-        $this->queue            = 'emails';
+        // $this->queue = 'emails'; ← REMOVED: caused silent drop on sync driver
     }
 
     public function build(): self
