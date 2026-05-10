@@ -78,6 +78,9 @@ class ProductController extends Controller
         if ($request->filled('is_pack')) {
             $query->where('is_pack', (int) $request->query('is_pack'));
         }
+        if ($request->filled('is_platform_product')) {
+    $query->where('is_platform_product', (bool) $request->boolean('is_platform_product'));
+}
 
         if ($applyScoring) {
             $query->orderByDesc('is_sponsored')->orderByDesc('sponsored_priority');
