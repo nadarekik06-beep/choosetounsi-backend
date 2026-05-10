@@ -38,6 +38,9 @@ class CheckoutController extends Controller
      *
      * Both types flow through the same Order / SellerOrder / OrderItem system.
      * Commission is calculated and stored per OrderItem at creation time.
+     *
+     * Platform products (is_platform_product = true, seller_id = null) are
+     * grouped under the key 'platform' and create a SellerOrder with seller_id = null.
      */
     public function store(Request $request)
     {
@@ -156,7 +159,6 @@ class CheckoutController extends Controller
         $decrementedProducts = [];
 
         // ── Cache seller plans once per checkout — avoids N+1 on SellerApplication ──
-        // Shared between product rows (A) and pack rows (B).
         $sellerPlanCache = [];
 
         DB::beginTransaction();
@@ -180,18 +182,26 @@ class CheckoutController extends Controller
 
             // ── A) Process regular product rows ───────────────────────────────
             if ($productRows->isNotEmpty()) {
+
+                // Group by seller_id — platform products (seller_id = null)
+                // are grouped under the string key 'platform' to avoid null key issues.
                 $groupedBySeller = $productRows->groupBy(function ($item) use ($sellerCol) {
-                    return $item->product->{$sellerCol};
+                    $sid = $item->product->{$sellerCol};
+                    return $sid !== null ? $sid : 'platform';
                 });
 
-                foreach ($groupedBySeller as $sellerId => $sellerItems) {
+                foreach ($groupedBySeller as $groupKey => $sellerItems) {
 
-                    // Resolve and cache this seller's active plan
-                    if (!isset($sellerPlanCache[$sellerId])) {
-                        $app = SellerApplication::where('user_id', $sellerId)->first();
-                        $sellerPlanCache[$sellerId] = $app?->plan ?? 'free';
+                    // Normalize: 'platform' group → seller_id = null in DB
+                    $sellerIdForDb = ($groupKey === 'platform') ? null : $groupKey;
+
+                    // Platform products have no seller plan — no commission taken
+                    if (!isset($sellerPlanCache[$groupKey])) {
+                        $sellerPlanCache[$groupKey] = ($sellerIdForDb === null)
+                            ? 'free'
+                            : (SellerApplication::where('user_id', $sellerIdForDb)->first()?->plan ?? 'free');
                     }
-                    $sellerPlan = $sellerPlanCache[$sellerId];
+                    $sellerPlan = $sellerPlanCache[$groupKey];
 
                     $sellerSubtotal = $sellerItems->sum(function ($item) {
                         $basePrice = $item->variant
@@ -203,7 +213,7 @@ class CheckoutController extends Controller
 
                     $sellerOrder = SellerOrder::create([
                         'order_id'       => $order->id,
-                        'seller_id'      => $sellerId,
+                        'seller_id'      => $sellerIdForDb,  // null for platform products
                         'status'         => 'pending',
                         'payment_status' => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
                         'subtotal'       => $sellerSubtotal,
@@ -221,7 +231,6 @@ class CheckoutController extends Controller
 
                         $qty = (int) $item->quantity;
 
-                        // ── Calculate commission for this line item ───────────
                         $commission = $this->commissionService->calculate($unitPrice, $sellerPlan, $qty);
 
                         $variantLabel = $variant
@@ -229,21 +238,20 @@ class CheckoutController extends Controller
                             : null;
 
                         OrderItem::create([
-                            'order_id'               => $order->id,
-                            'seller_order_id'        => $sellerOrder->id,
-                            'product_id'             => $product->id,
-                            'variant_id'             => $variant?->id,
-                            'variant_label'          => $variantLabel,
-                            'product_name'           => $product->name,
-                            'quantity'               => $qty,
-                            'unit_price'             => $unitPrice,
-                            'price'                  => $unitPrice,
-                            'total'                  => $commission['total_price'],
-                            // ── Commission snapshot ───────────────────────────
-                            'commission_percentage'  => $commission['commission_percentage'],
-                            'commission_amount'      => $commission['commission_amount'],
-                            'seller_amount'          => $commission['seller_amount'],
-                            'plan_used'              => $commission['plan_used'],
+                            'order_id'              => $order->id,
+                            'seller_order_id'       => $sellerOrder->id,
+                            'product_id'            => $product->id,
+                            'variant_id'            => $variant?->id,
+                            'variant_label'         => $variantLabel,
+                            'product_name'          => $product->name,
+                            'quantity'              => $qty,
+                            'unit_price'            => $unitPrice,
+                            'price'                 => $unitPrice,
+                            'total'                 => $commission['total_price'],
+                            'commission_percentage' => $commission['commission_percentage'],
+                            'commission_amount'     => $commission['commission_amount'],
+                            'seller_amount'         => $commission['seller_amount'],
+                            'plan_used'             => $commission['plan_used'],
                         ]);
 
                         if ($variant) {
@@ -267,24 +275,27 @@ class CheckoutController extends Controller
                 $selectionMap = collect($cartRow->pack_selections ?? [])->keyBy('pack_item_id');
                 $packPrice    = (float) $cartRow->pack_price_snapshot;
 
-                $packItemsBySeller = $pack->items->groupBy(
-                    fn($pi) => $pi->product->{$sellerCol}
-                );
+                $packItemsBySeller = $pack->items->groupBy(function ($pi) use ($sellerCol) {
+                    $sid = $pi->product->{$sellerCol};
+                    return $sid !== null ? $sid : 'platform';
+                });
 
-                foreach ($packItemsBySeller as $sellerId => $packItems) {
+                foreach ($packItemsBySeller as $groupKey => $packItems) {
                     $proportion     = $packItems->count() / $pack->items->count();
                     $sellerSubtotal = round($packPrice * $proportion, 3);
 
-                    // Resolve and cache this seller's active plan
-                    if (!isset($sellerPlanCache[$sellerId])) {
-                        $app = SellerApplication::where('user_id', $sellerId)->first();
-                        $sellerPlanCache[$sellerId] = $app?->plan ?? 'free';
+                    $sellerIdForDb = ($groupKey === 'platform') ? null : $groupKey;
+
+                    if (!isset($sellerPlanCache[$groupKey])) {
+                        $sellerPlanCache[$groupKey] = ($sellerIdForDb === null)
+                            ? 'free'
+                            : (SellerApplication::where('user_id', $sellerIdForDb)->first()?->plan ?? 'free');
                     }
-                    $sellerPlan = $sellerPlanCache[$sellerId];
+                    $sellerPlan = $sellerPlanCache[$groupKey];
 
                     $sellerOrder = SellerOrder::create([
                         'order_id'       => $order->id,
-                        'seller_id'      => $sellerId,
+                        'seller_id'      => $sellerIdForDb,  // null for platform products
                         'status'         => 'pending',
                         'payment_status' => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
                         'subtotal'       => $sellerSubtotal,
@@ -304,9 +315,6 @@ class CheckoutController extends Controller
 
                         $qty = (int) $packItem->quantity;
 
-                        // ── Commission on pack item — uses total pack price proportioned per item ──
-                        // For packs we commission on the individual product's unit price
-                        // (the pack discount is the seller's marketing cost, not ours).
                         $commission = $this->commissionService->calculate($unitPrice, $sellerPlan, $qty);
 
                         $variantLabel = $variant
@@ -314,21 +322,20 @@ class CheckoutController extends Controller
                             : null;
 
                         OrderItem::create([
-                            'order_id'               => $order->id,
-                            'seller_order_id'        => $sellerOrder->id,
-                            'product_id'             => $product->id,
-                            'variant_id'             => $variantId,
-                            'variant_label'          => $variantLabel,
-                            'product_name'           => $product->name . ' (Bundle: ' . $pack->name . ')',
-                            'quantity'               => $qty,
-                            'unit_price'             => $unitPrice,
-                            'price'                  => $unitPrice,
-                            'total'                  => $commission['total_price'],
-                            // ── Commission snapshot ───────────────────────────
-                            'commission_percentage'  => $commission['commission_percentage'],
-                            'commission_amount'      => $commission['commission_amount'],
-                            'seller_amount'          => $commission['seller_amount'],
-                            'plan_used'              => $commission['plan_used'],
+                            'order_id'              => $order->id,
+                            'seller_order_id'       => $sellerOrder->id,
+                            'product_id'            => $product->id,
+                            'variant_id'            => $variantId,
+                            'variant_label'         => $variantLabel,
+                            'product_name'          => $product->name . ' (Bundle: ' . $pack->name . ')',
+                            'quantity'              => $qty,
+                            'unit_price'            => $unitPrice,
+                            'price'                 => $unitPrice,
+                            'total'                 => $commission['total_price'],
+                            'commission_percentage' => $commission['commission_percentage'],
+                            'commission_amount'     => $commission['commission_amount'],
+                            'seller_amount'         => $commission['seller_amount'],
+                            'plan_used'             => $commission['plan_used'],
                         ]);
 
                         if ($variant) {
@@ -369,23 +376,29 @@ class CheckoutController extends Controller
         $this->fireStockAlerts($decrementedVariants, $decrementedProducts);
 
         $sellerCount = $productRows->isNotEmpty()
-            ? $productRows->groupBy(fn($i) => $i->product->{$sellerCol})->count()
-                + $packRows->count()
+            ? $productRows->groupBy(function ($i) use ($sellerCol) {
+                $sid = $i->product->{$sellerCol};
+                return $sid !== null ? $sid : 'platform';
+            })->count() + $packRows->count()
             : $packRows->count();
 
         return response()->json([
-            'success'        => true,
-            'message'        => 'Order placed successfully!',
-            'order_number'   => $order->order_number,
-            'order_id'       => $order->id,
-            'total'          => $total,
-            'seller_count'   => $sellerCount,
-            'needs_payment'  => $paymentMethod === 'card',
+            'success'       => true,
+            'message'       => 'Order placed successfully!',
+            'order_number'  => $order->order_number,
+            'order_id'      => $order->id,
+            'total'         => $total,
+            'seller_count'  => $sellerCount,
+            'needs_payment' => $paymentMethod === 'card',
         ], 201);
     }
 
     /**
      * POST /api/checkout/buy-now
+     *
+     * Supports platform products (seller_id = null, is_platform_product = true).
+     * SellerOrder is created with seller_id = null — requires seller_orders.seller_id
+     * to be nullable (migration: make_seller_orders_seller_id_nullable).
      */
     public function buyNow(Request $request)
     {
@@ -447,11 +460,16 @@ class CheckoutController extends Controller
         $priceData = $this->promoService->getEffectivePrice($product, $basePrice);
         $unitPrice = $priceData['effective_price'];
 
-        // ── Resolve seller plan for commission ────────────────────────────────
+        // ── Resolve seller ID and plan ─────────────────────────────────────────
+        // Platform products have seller_id = null → no commission, 'free' plan.
         $sellerCol  = $this->getSellerCol();
-        $sellerId   = $product->{$sellerCol};
-        $app        = SellerApplication::where('user_id', $sellerId)->first();
-        $sellerPlan = $app?->plan ?? 'free';
+        $sellerId   = $product->{$sellerCol}; // null for platform products
+
+        $sellerPlan = 'free';
+        if ($sellerId !== null) {
+            $app        = SellerApplication::where('user_id', $sellerId)->first();
+            $sellerPlan = $app?->plan ?? 'free';
+        }
 
         // ── Calculate commission ──────────────────────────────────────────────
         $commission = $this->commissionService->calculate($unitPrice, $sellerPlan, $quantity);
@@ -493,30 +511,30 @@ class CheckoutController extends Controller
                 'notes'          => $request->notes ?? null,
             ]);
 
+            // seller_id = null is now allowed (migration: make_seller_orders_seller_id_nullable)
             $sellerOrder = SellerOrder::create([
                 'order_id'       => $order->id,
-                'seller_id'      => $sellerId,
+                'seller_id'      => $sellerId,  // null for platform products ✓
                 'status'         => 'pending',
                 'payment_status' => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
                 'subtotal'       => $subtotal,
             ]);
 
             OrderItem::create([
-                'order_id'               => $order->id,
-                'seller_order_id'        => $sellerOrder->id,
-                'product_id'             => $product->id,
-                'variant_id'             => $variant?->id,
-                'variant_label'          => $variantLabel,
-                'product_name'           => $product->name,
-                'quantity'               => $quantity,
-                'unit_price'             => $unitPrice,
-                'price'                  => $unitPrice,
-                'total'                  => $commission['total_price'],
-                // ── Commission snapshot ───────────────────────────────────────
-                'commission_percentage'  => $commission['commission_percentage'],
-                'commission_amount'      => $commission['commission_amount'],
-                'seller_amount'          => $commission['seller_amount'],
-                'plan_used'              => $commission['plan_used'],
+                'order_id'              => $order->id,
+                'seller_order_id'       => $sellerOrder->id,
+                'product_id'            => $product->id,
+                'variant_id'            => $variant?->id,
+                'variant_label'         => $variantLabel,
+                'product_name'          => $product->name,
+                'quantity'              => $quantity,
+                'unit_price'            => $unitPrice,
+                'price'                 => $unitPrice,
+                'total'                 => $commission['total_price'],
+                'commission_percentage' => $commission['commission_percentage'],
+                'commission_amount'     => $commission['commission_amount'],
+                'seller_amount'         => $commission['seller_amount'],
+                'plan_used'             => $commission['plan_used'],
             ]);
 
             if ($variant) {
@@ -613,11 +631,19 @@ class CheckoutController extends Controller
         return $col;
     }
 
-protected function ensureNotProductOwner(Request $request, Product $product): void
-
+    /**
+     * Prevent sellers from buying their own products.
+     * Platform products (seller_id = null) are always purchasable by anyone.
+     */
+    protected function ensureNotProductOwner(Request $request, Product $product): void
     {
         $sellerCol = $this->getSellerCol();
-        if ($product->{$sellerCol} === $request->user()->id) {
+        $sellerId  = $product->{$sellerCol};
+
+        // Platform products have no seller — anyone can buy them
+        if ($sellerId === null) return;
+
+        if ($sellerId === $request->user()->id) {
             abort(422, 'You cannot purchase your own product.');
         }
     }

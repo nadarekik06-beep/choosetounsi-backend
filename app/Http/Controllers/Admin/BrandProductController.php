@@ -214,21 +214,22 @@ class BrandProductController extends Controller
         DB::beginTransaction();
         try {
             $product = Product::create([
-                'seller_id'            => PlatformUser::id(), // platform seller owns this product                'is_platform_product'  => true,
-                'is_approved'          => true,           // no approval flow
-                'is_active'            => filter_var($request->input('is_active', true), FILTER_VALIDATE_BOOLEAN),
-                'featured'             => filter_var($request->input('featured', false), FILTER_VALIDATE_BOOLEAN),
-                'name'                 => $request->name,
-                'slug'                 => $this->uniqueSlug($request->slug ?: $request->name),
-                'sku'                  => $request->sku ?: null,
-                'description'          => $request->description ?? null,
-                'short_description'    => $request->short_description ?? null,
-                'price'                => $request->price,
-                'stock'                => $request->stock,
-                'category_id'          => $request->category_id,
-                'subcategory_id'       => $request->subcategory_id ?: null,
-                'views'                => 0,
-            ]);
+    'seller_id'           => null,
+    'is_platform_product' => true,
+    'is_approved'         => true,
+    'is_active'           => filter_var($request->input('is_active', true),  FILTER_VALIDATE_BOOLEAN),
+    'featured'            => filter_var($request->input('featured', false), FILTER_VALIDATE_BOOLEAN),
+    'name'                => $request->name,
+    'slug'                => $this->uniqueSlug($request->slug ?: $request->name),
+    'sku'                 => $request->sku ?: null,
+    'description'         => $request->description         ?? null,
+    'short_description'   => $request->short_description   ?? null,
+    'price'               => $request->price,
+    'stock'               => $request->stock,
+    'category_id'         => $request->category_id,
+    'subcategory_id'      => $request->subcategory_id ?: null,
+    'views'               => 0,
+]);
 
             $this->saveAttributes($product, $request);
             $this->saveVariants($product, $request);
