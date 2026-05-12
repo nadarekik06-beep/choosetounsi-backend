@@ -18,41 +18,60 @@ class SellerProductController extends Controller
 {
     // ── Index ──────────────────────────────────────────────────────────────────
 
-    public function index(Request $request)
-    {
-        $seller = $request->user();
-        $query  = $seller->products()->with([
-            'category:id,name,slug',
-            'subcategory:id,name,slug',
-            'primaryImage',
-        ]);
+   public function index(Request $request)
+{
+    $seller = $request->user();
+    $query  = $seller->products()->with([
+        'category:id,name,slug',
+        'subcategory:id,name,slug',
+        'primaryImage',
+    ]);
 
-        if ($request->filled('search')) {
-            $s = $request->search;
-            $query->where(fn($q) => $q->where('name', 'like', "%$s%")->orWhere('sku', 'like', "%$s%"));
-        }
-        if ($request->filled('is_active')) {
-            $query->where('is_active', filter_var($request->is_active, FILTER_VALIDATE_BOOLEAN));
-        }
-        if ($request->filled('is_approved')) {
-            $query->where('is_approved', filter_var($request->is_approved, FILTER_VALIDATE_BOOLEAN));
-        }
-
-        $products = $query->orderByDesc('created_at')
-            ->paginate((int) $request->input('per_page', 12));
-
-        $products->getCollection()->transform(function ($p) {
-            $p->primary_image_url = $p->primaryImage
-                ? Storage::url($p->primaryImage->image_path)
-                : null;
-            $p->has_variants  = $p->variants()->exists();
-            $p->variant_stock = $p->variants()->sum('stock');
-            return $p;
-        });
-
-        return response()->json(['success' => true, 'data' => $products]);
+    if ($request->filled('search')) {
+        $s = $request->search;
+        $query->where(fn($q) => $q->where('name', 'like', "%$s%")->orWhere('sku', 'like', "%$s%"));
+    }
+    if ($request->filled('is_active')) {
+        $query->where('is_active', filter_var($request->is_active, FILTER_VALIDATE_BOOLEAN));
+    }
+    if ($request->filled('is_approved')) {
+        $query->where('is_approved', filter_var($request->is_approved, FILTER_VALIDATE_BOOLEAN));
     }
 
+    $products = $query->orderByDesc('created_at')
+        ->paginate((int) $request->input('per_page', 12));
+
+    // ── Detect order_items columns once ───────────────────────────────────
+    $itemColNames = array_map(
+        fn($c) => $c->Field,
+        DB::select('SHOW COLUMNS FROM order_items')
+    );
+
+    // ── Debug mode: lower all thresholds to expose alerts during testing ──
+    $debugMode = (bool)config('alerts.debug_mode')
+        || $request->boolean('alert_debug');
+
+    $alertService = new \App\Services\ProductAlertService($debugMode);
+
+    $products->getCollection()->transform(function ($p) use ($alertService) {
+        $p->primary_image_url = $p->primaryImage
+            ? Storage::url($p->primaryImage->image_path)
+            : null;
+        $p->has_variants  = $p->variants()->exists();
+        $p->variant_stock = $p->variants()->sum('stock');
+        return $p;
+    });
+
+    // ── Attach alert metadata (single batch query) ────────────────────────
+    $withAlerts = $alertService->attachAlerts(
+        $products->getCollection(),
+        $seller->id,
+        $itemColNames
+    );
+    $products->getCollection()->replace($withAlerts);
+
+    return response()->json(['success' => true, 'data' => $products]);
+}
     // ── Show ───────────────────────────────────────────────────────────────────
 
     public function show(Request $request, $id)
@@ -323,7 +342,8 @@ class SellerProductController extends Controller
         }
 
         $this->notifyAdmins('created', $product, $seller);
-
+        if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class, 'clearSellerCache')) {
+       \App\Http\Controllers\Api\Seller\BlackPepperController::clearSellerCache($seller->id);   }
         Log::info('[SellerProduct::store] DONE', ['id' => $product->id]);
 
         return response()->json([
@@ -411,7 +431,9 @@ class SellerProductController extends Controller
         }
 
         $this->notifyAdmins('updated', $product, $seller);
-
+if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class, 'clearSellerCache')) {
+       \App\Http\Controllers\Api\Seller\BlackPepperController::clearSellerCache($seller->id);
+  }
         return response()->json([
             'success' => true,
             'message' => 'Product updated.',

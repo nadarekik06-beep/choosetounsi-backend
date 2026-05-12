@@ -86,292 +86,334 @@ class SellerAIController extends Controller
     // ═══════════════════════════════════════════════════════════════════════
     // 1. PRICE OPTIMIZER — UNCHANGED
     // ═══════════════════════════════════════════════════════════════════════
-    public function priceOptimizer(Request $request)
-    {
-        $request->validate(['product_id' => 'required|integer']);
+   public function priceOptimizer(Request $request)
+{
+    $request->validate(['product_id' => 'required|integer']);
 
-        $sellerId  = auth()->id();
-        $sellerCol = $this->sellerCol();
-        $totalExpr = $this->totalExpr();
+    $sellerId  = auth()->id();
+    $sellerCol = $this->sellerCol();
+    $totalExpr = $this->totalExpr();
 
-        $product = DB::table('products as p')
-            ->leftJoin('categories as c', 'c.id', '=', 'p.category_id')
-            ->where("p.{$sellerCol}", $sellerId)
-            ->where('p.id', $request->product_id)
-            ->whereNull('p.deleted_at')
-            ->selectRaw("p.id, p.name, p.price, p.stock, p.views, p.category_id, c.name as category_name, c.slug as category_slug")
-            ->first();
+    $product = DB::table('products as p')
+        ->leftJoin('categories as c', 'c.id', '=', 'p.category_id')
+        ->where("p.{$sellerCol}", $sellerId)
+        ->where('p.id', $request->product_id)
+        ->whereNull('p.deleted_at')
+        ->selectRaw("p.id, p.name, p.price, p.stock, p.views, p.category_id, c.name as category_name")
+        ->first();
 
-        if (!$product) {
-            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
-        }
-
-        $salesHistory = DB::table('order_items as oi')
-            ->join('orders as o', 'o.id', '=', 'oi.order_id')
-            ->where('oi.product_id', $request->product_id)
-            ->whereIn('o.status', ['completed', 'delivered'])
-            ->selectRaw("
-                COUNT(DISTINCT oi.order_id) as total_orders,
-                SUM(oi.quantity)            as total_units,
-                SUM({$totalExpr})           as total_revenue,
-                AVG(oi.unit_price)          as avg_sold_price,
-                MIN(o.created_at)           as first_sale,
-                MAX(o.created_at)           as last_sale
-            ")
-            ->first();
-
-        $productPrice = (float)$product->price;
-        $priceLow     = $productPrice * 0.25;
-        $priceHigh    = $productPrice * 4.0;
-
-        $priceStdDevRow = DB::table('products as p')
-            ->where('p.category_id', $product->category_id)
-            ->where('p.id', '!=', $request->product_id)
-            ->where('p.is_approved', true)
-            ->where('p.is_active', true)
-            ->whereNull('p.deleted_at')
-            ->where('p.price', '>=', $priceLow)
-            ->where('p.price', '<=', $priceHigh)
-            ->selectRaw("AVG(p.price) as avg_price, STDDEV(p.price) as std_price, COUNT(*) as count")
-            ->first();
-
-        $catAvgRaw  = (float)($priceStdDevRow->avg_price ?? 0);
-        $catStd     = (float)($priceStdDevRow->std_price ?? 0);
-        $lowerBound = $catStd > 0 ? max($priceLow, $catAvgRaw - 2.0 * $catStd) : $priceLow;
-        $upperBound = $catStd > 0 ? min($priceHigh, $catAvgRaw + 2.0 * $catStd) : $priceHigh;
-
-        $similarProducts = DB::table('products as p')
-            ->where('p.category_id', $product->category_id)
-            ->where('p.id', '!=', $request->product_id)
-            ->where('p.is_approved', true)
-            ->where('p.is_active', true)
-            ->whereNull('p.deleted_at')
-            ->where('p.price', '>=', $lowerBound)
-            ->where('p.price', '<=', $upperBound)
-            ->selectRaw("AVG(p.price) as avg_price, MIN(p.price) as min_price, MAX(p.price) as max_price, COUNT(*) as count")
-            ->first();
-
-        $monthlySales = DB::table('order_items as oi')
-            ->join('orders as o', 'o.id', '=', 'oi.order_id')
-            ->where('oi.product_id', $request->product_id)
-            ->whereIn('o.status', ['completed', 'delivered'])
-            ->where('o.created_at', '>=', Carbon::now()->subMonths(6))
-            ->selectRaw("DATE_FORMAT(o.created_at, '%Y-%m') as month, SUM(oi.quantity) as units")
-            ->groupBy('month')
-            ->orderBy('month')
-            ->get();
-
-        $conversionRate = 0;
-        if (($product->views ?? 0) > 0 && ($salesHistory->total_orders ?? 0) > 0) {
-            $conversionRate = round(($salesHistory->total_orders / $product->views) * 100, 2);
-        }
-
-        $totalUnits      = (int)($salesHistory->total_units ?? 0);
-        $totalRevenue    = round((float)($salesHistory->total_revenue ?? 0), 3);
-        $avgSoldPrice    = round((float)($salesHistory->avg_sold_price ?? $product->price), 3);
-        $competitorCount = (int)($similarProducts->count ?? 0);
-        $trendStr        = $monthlySales->map(fn($r) => "{$r->month}: {$r->units} units")->implode(', ') ?: 'No sales history';
-        $catAvgPrice     = round((float)($similarProducts->avg_price ?? 0), 3);
-        $catMinPrice     = round((float)($similarProducts->min_price ?? 0), 3);
-        $catMaxPrice     = round((float)($similarProducts->max_price ?? 0), 3);
-
-        $marketReport = ['has_data' => false];
-        try {
-            $marketSvc    = new MarketIntelligenceService(new PriceNormalizationService());
-            $marketReport = $marketSvc->analyze($product->name, $product->category_name ?? 'General', (float)$product->price);
-        } catch (\Throwable $e) {
-            Log::warning("[SellerAI::priceOptimizer] Market intelligence failed: " . $e->getMessage());
-        }
-
-        $hasMarketData = (bool)($marketReport['has_data'] ?? false);
-        $safeMarketAvg = $hasMarketData ? (float)$marketReport['market_avg'] : 0.0;
-        $safeCatAvg    = ($catAvgPrice > 0) ? $catAvgPrice : 0.0;
-        $bestRef       = $safeMarketAvg > 0 ? $safeMarketAvg : ($safeCatAvg > 0 ? $safeCatAvg : $productPrice);
-
-        $psycho = static function (float $n): float {
-            if ($n <= 1) return $n;
-            return floor($n) - 0.100;
-        };
-
-        if ($hasMarketData) {
-            $marketSection = "\nREAL TUNISIAN MARKET DATA (collected from {$marketReport['sources_count']} sources, {$marketReport['data_points']} data points):\n"
-                . "- Market average price: {$marketReport['market_avg']} TND\n"
-                . "- Market median price:  {$marketReport['market_median']} TND\n"
-                . "- Market price range:   {$marketReport['market_min']} – {$marketReport['market_max']} TND\n"
-                . "- Market confidence:    {$marketReport['confidence']} ({$marketReport['confidence_score']}/100)\n"
-                . "- Seller positioning:   {$marketReport['positioning']} ({$marketReport['positioning_pct']}% vs market avg)\n"
-                . "- Psychological price:  {$marketReport['psycho_price']} TND (charm pricing suggestion)";
-            if (!empty($marketReport['by_source'])) {
-                foreach ($marketReport['by_source'] as $src) {
-                    $marketSection .= "\n  • {$src['source']}: {$src['count']} products, avg {$src['avg']} TND (range {$src['min']}–{$src['max']} TND)";
-                }
-            }
-        } else {
-            $catContext    = $safeCatAvg > 0
-                ? "Platform competitors (outlier-filtered): avg {$safeCatAvg} TND, range {$catMinPrice}–{$catMaxPrice} TND ({$competitorCount} products)."
-                : "No platform competitor data for this category.";
-            $marketSection = "\nTUNISIAN MARKET DATA: External scraping returned no results.\n"
-                . "{$catContext}\n"
-                . "COLD-START: Use your knowledge of Tunisian e-commerce to fill all price fields.\n"
-                . "- Category: {$product->category_name} | Current price: {$productPrice} TND\n"
-                . "- Tunisian avg salary 900-1200 TND/month — price sensitivity HIGH above 200 TND.\n"
-                . "- Typical Tunisian e-commerce margins: 15-35% above cost.\n"
-                . "- All 4 price fields MUST be specific numbers near {$productPrice} TND (within ±40%). NO zeros.";
-        }
-
-        $systemPrompt = "You are a senior Tunisian e-commerce pricing strategist for ChooseTounsi.\n"
-            . "You know Tunisian market prices, purchasing power (avg salary 900-1200 TND/month), and e-commerce margins.\n"
-            . "RULES: NEVER return 0 or null for any price field. All prices in TND. "
-            . "suggested_price must be within ±40% of the seller current price unless there is a very strong reason. "
-            . "Always respond with ONLY valid JSON. No markdown. No text outside the JSON object.";
-
-        $userPrompt = "Generate a complete pricing recommendation for this ChooseTounsi product.\n\n"
-            . "PRODUCT:\n"
-            . "- Name: {$product->name}\n"
-            . "- Category: {$product->category_name}\n"
-            . "- Current price: {$productPrice} TND\n"
-            . "- Stock: {$product->stock} | Views: {$product->views} | Conversion: {$conversionRate}%\n\n"
-            . "SALES: {$totalUnits} units sold, {$totalRevenue} TND revenue, avg sold price {$avgSoldPrice} TND\n"
-            . "Trend (6 months): {$trendStr}\n"
-            . $marketSection . "\n\n"
-            . "Return ONLY this JSON — no zeros, no nulls:\n"
-            . "{\n"
-            . "  \"suggested_price\": <number close to {$productPrice}>,\n"
-            . "  \"competitive_price\": <number — matches market/platform avg>,\n"
-            . "  \"premium_price\": <number — justified premium ceiling>,\n"
-            . "  \"min_profitable_price\": <number — floor, ~85% of current price>,\n"
-            . "  \"market_avg_price\": <number — best estimate of Tunisian market avg>,\n"
-            . "  \"confidence\": \"high\"|\"medium\"|\"low\",\n"
-            . "  \"risk\": \"low\"|\"medium\"|\"high\",\n"
-            . "  \"strategy\": \"<name>\",\n"
-            . "  \"reasoning\": \"<2-3 sentences specific to this product and its price>\",\n"
-            . "  \"expected_impact\": \"<one sentence>\",\n"
-            . "  \"market_positioning\": \"underpriced\"|\"competitive\"|\"overpriced\",\n"
-            . "  \"competitor_summary\": \"<one sentence naming the actual Tunisian platforms compared e.g. Mytek, Tunisianet, Tayara.tn and the price ranges found>\",\n"
-            . "  \"overpriced_warning\": <string or null>,\n"
-            . "  \"opportunity_note\": <string or null>,\n"
-            . "  \"psychological_tip\": \"<specific e.g. use 128.900 TND instead of 129 TND>\",\n"
-            . "  \"platforms_compared\": [\"<platform1>\", \"<platform2>\"],\n"
-            . "  \"min_price\": <number>,\n"
-            . "  \"max_price\": <number>\n"
-            . "}";
-
-        $aiRaw    = $this->callGroq($systemPrompt, $userPrompt, 750);
-        $aiResult = null;
-
-        if ($aiRaw) {
-            try {
-                $clean  = preg_replace('/```json|```/i', '', $aiRaw);
-                $start  = strpos($clean, '{');
-                $end    = strrpos($clean, '}');
-                if ($start !== false && $end !== false) {
-                    $parsed = json_decode(substr($clean, $start, $end - $start + 1), true);
-                    if ($parsed) {
-                        $priceFields = ['suggested_price','competitive_price','premium_price','min_profitable_price','market_avg_price','min_price','max_price'];
-                        $valid = true;
-                        foreach ($priceFields as $f) {
-                            if (empty($parsed[$f]) || (float)$parsed[$f] <= 0) { $valid = false; break; }
-                        }
-                        if ($valid) $aiResult = $parsed;
-                        else Log::warning('[SellerAI] Groq returned zero price fields — math fallback.');
-                    }
-                }
-            } catch (\Throwable $e) {
-                Log::warning('[SellerAI::priceOptimizer] JSON parse failed: ' . $e->getMessage());
-            }
-        }
-
-        if (!$aiResult) {
-            $demandBoost  = $totalUnits > 50 ? 1.06 : ($totalUnits > 10 ? 1.03 : 1.0);
-            $rawSuggested = $bestRef * $demandBoost;
-            $suggested    = round(max($productPrice * 0.80, min($productPrice * 1.20, $rawSuggested)), 3);
-            $competitive  = round($bestRef, 3);
-            $premium      = round($suggested * 1.15, 3);
-            $minProfit    = round($productPrice * 0.85, 3);
-            $minPrice     = round($productPrice * 0.80, 3);
-            $maxPrice     = round($productPrice * 1.25, 3);
-
-            $positioningPct = $hasMarketData ? (float)($marketReport['positioning_pct'] ?? 0) : 0;
-            $positioning    = $hasMarketData ? ($marketReport['positioning'] ?? 'competitive') : 'competitive';
-            $psychoTip      = $psycho($suggested);
-
-            if ($hasMarketData) {
-                $reasonBase = "Based on {$marketReport['data_points']} real Tunisian market data points (avg: {$marketReport['market_avg']} TND)";
-            } elseif ($safeCatAvg > 0) {
-                $reasonBase = "Based on {$competitorCount} platform competitors in this category (avg: {$safeCatAvg} TND)";
-            } else {
-                $reasonBase = "Based on general Tunisian market knowledge for the {$product->category_name} category";
-            }
-
-            $salesNote = $totalUnits === 0
-                ? "This product has no sales yet — a competitive entry price will help attract first buyers."
-                : "With {$totalUnits} units sold, current pricing shows " . ($totalUnits > 20 ? 'solid' : 'early') . " market validation.";
-
-            $aiResult = [
-                'suggested_price'      => $suggested,
-                'competitive_price'    => $competitive,
-                'premium_price'        => $premium,
-                'min_profitable_price' => $minProfit,
-                'market_avg_price'     => round($bestRef, 3),
-                'confidence'           => $hasMarketData ? ($marketReport['confidence'] ?? 'medium') : 'low',
-                'risk'                 => 'low',
-                'strategy'             => $totalUnits === 0 ? 'Competitive entry pricing' : 'Market-aligned pricing',
-                'reasoning'            => "{$reasonBase}, your current price of {$productPrice} TND appears {$positioning} for the Tunisian market. {$salesNote}",
-                'expected_impact'      => $totalUnits === 0
-                    ? "A competitive entry price should generate your first sales and reviews on ChooseTounsi."
-                    : "Aligning with market pricing maintains conversion while optimizing revenue per unit.",
-                'market_positioning'   => $positioning,
-                'competitor_summary'   => $hasMarketData
-                    ? "Tunisian market shows {$marketReport['data_points']} products ranging {$marketReport['market_min']}–{$marketReport['market_max']} TND."
-                    : ($safeCatAvg > 0
-                        ? "Platform shows {$competitorCount} competitors (avg {$safeCatAvg} TND, range {$catMinPrice}–{$catMaxPrice} TND)."
-                        : "No competitor data found. Your price of {$productPrice} TND is your current market anchor."),
-                'overpriced_warning'   => $positioningPct > 15
-                    ? "Your price is {$positioningPct}% above market average — consider reducing to improve conversion."
-                    : null,
-                'opportunity_note'     => ($positioningPct < -10)
-                    ? "Your price is " . abs($positioningPct) . "% below market average — you may have room to increase without losing buyers."
-                    : ($totalUnits === 0
-                        ? "No sales yet — ensure your listing has complete images and description to maximize conversion."
-                        : null),
-                'psychological_tip'    => "Use {$psychoTip} TND instead of {$suggested} TND — charm pricing ending in .900 consistently converts better with Tunisian buyers.",
-                'min_price'            => $minPrice,
-                'max_price'            => $maxPrice,
-            ];
-        }
-
-        return response()->json([
-            'success' => true,
-            'data'    => [
-                'ai_result'    => $aiResult,
-                'data_context' => [
-                    'product_name'    => $product->name,
-                    'current_price'   => $productPrice,
-                    'total_units'     => $totalUnits,
-                    'total_revenue'   => $totalRevenue,
-                    'conversion_rate' => $conversionRate,
-                    'category_avg'    => $safeCatAvg,
-                    'monthly_trend'   => $monthlySales,
-                    'market_report'   => [
-                        'has_data'         => $hasMarketData,
-                        'data_points'      => $marketReport['data_points']      ?? 0,
-                        'sources_count'    => $marketReport['sources_count']    ?? 0,
-                        'market_avg'       => $marketReport['market_avg']       ?? 0,
-                        'market_min'       => $marketReport['market_min']       ?? 0,
-                        'market_max'       => $marketReport['market_max']       ?? 0,
-                        'confidence'       => $marketReport['confidence']       ?? 'low',
-                        'confidence_score' => $marketReport['confidence_score'] ?? 0,
-                        'positioning'      => $marketReport['positioning']      ?? 'unknown',
-                        'positioning_pct'  => $marketReport['positioning_pct'] ?? 0,
-                        'by_source'        => $marketReport['by_source']        ?? [],
-                        'scrapers_meta'    => $marketReport['scrapers_meta']    ?? [],
-                        'data_source'      => $marketReport['data_source']      ?? 'unknown',
-                    ],
-                ],
-            ],
-        ]);
+    if (!$product) {
+        return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
     }
 
+    $salesHistory = DB::table('order_items as oi')
+        ->join('orders as o', 'o.id', '=', 'oi.order_id')
+        ->where('oi.product_id', $request->product_id)
+        ->whereIn('o.status', ['completed', 'delivered'])
+        ->selectRaw("
+            COUNT(DISTINCT oi.order_id) as total_orders,
+            SUM(oi.quantity)            as total_units,
+            SUM({$totalExpr})           as total_revenue,
+            AVG(oi.unit_price)          as avg_sold_price
+        ")
+        ->first();
+
+    $productPrice = (float)$product->price;
+    $priceLow     = $productPrice * 0.25;
+    $priceHigh    = $productPrice * 4.0;
+
+    // ── Internal platform competitors (always runs) ───────────────────────
+    $priceStdDevRow = DB::table('products as p')
+        ->where('p.category_id', $product->category_id)
+        ->where('p.id', '!=', $request->product_id)
+        ->where('p.is_approved', true)
+        ->where('p.is_active', true)
+        ->whereNull('p.deleted_at')
+        ->where('p.price', '>=', $priceLow)
+        ->where('p.price', '<=', $priceHigh)
+        ->selectRaw("AVG(p.price) as avg_price, STDDEV(p.price) as std_price, COUNT(*) as count")
+        ->first();
+
+    $catAvgRaw   = (float)($priceStdDevRow->avg_price ?? 0);
+    $catStd      = (float)($priceStdDevRow->std_price ?? 0);
+    $lowerBound  = $catStd > 0 ? max($priceLow, $catAvgRaw - 2.0 * $catStd) : $priceLow;
+    $upperBound  = $catStd > 0 ? min($priceHigh, $catAvgRaw + 2.0 * $catStd) : $priceHigh;
+
+    $similarProducts = DB::table('products as p')
+        ->where('p.category_id', $product->category_id)
+        ->where('p.id', '!=', $request->product_id)
+        ->where('p.is_approved', true)
+        ->where('p.is_active', true)
+        ->whereNull('p.deleted_at')
+        ->where('p.price', '>=', $lowerBound)
+        ->where('p.price', '<=', $upperBound)
+        ->selectRaw("AVG(p.price) as avg_price, MIN(p.price) as min_price, MAX(p.price) as max_price, COUNT(*) as count")
+        ->first();
+
+    $monthlySales = DB::table('order_items as oi')
+        ->join('orders as o', 'o.id', '=', 'oi.order_id')
+        ->where('oi.product_id', $request->product_id)
+        ->whereIn('o.status', ['completed', 'delivered'])
+        ->where('o.created_at', '>=', \Carbon\Carbon::now()->subMonths(6))
+        ->selectRaw("DATE_FORMAT(o.created_at, '%Y-%m') as month, SUM(oi.quantity) as units")
+        ->groupBy('month')
+        ->orderBy('month')
+        ->get();
+
+    $conversionRate  = 0;
+    if (($product->views ?? 0) > 0 && ($salesHistory->total_orders ?? 0) > 0) {
+        $conversionRate = round(($salesHistory->total_orders / $product->views) * 100, 2);
+    }
+
+    $totalUnits      = (int)($salesHistory->total_units    ?? 0);
+    $totalRevenue    = round((float)($salesHistory->total_revenue ?? 0), 3);
+    $competitorCount = (int)($similarProducts->count       ?? 0);
+    $catAvgPrice     = round((float)($similarProducts->avg_price ?? 0), 3);
+    $catMinPrice     = round((float)($similarProducts->min_price ?? 0), 3);
+    $catMaxPrice     = round((float)($similarProducts->max_price ?? 0), 3);
+    $trendStr        = $monthlySales->map(fn($r) => "{$r->month}: {$r->units} units")->implode(', ') ?: 'No sales yet';
+
+    // ── Tier 2: Serper market data ────────────────────────────────────────
+    $marketReport = ['has_data' => false];
+    try {
+        $marketSvc    = new \App\Services\MarketIntelligenceService(new \App\Services\PriceNormalizationService());
+        $marketReport = $marketSvc->analyze($product->name, $product->category_name ?? 'General', $productPrice);
+    } catch (\Throwable $e) {
+        Log::warning("[SellerAI::priceOptimizer] Market intelligence failed: " . $e->getMessage());
+    }
+
+    $hasMarketData  = (bool)($marketReport['has_data'] ?? false);
+    $safeMarketAvg  = $hasMarketData ? (float)$marketReport['market_avg']  : 0.0;
+    $safeCatAvg     = $catAvgPrice > 0 ? $catAvgPrice : 0.0;
+
+    // The best reference price: Serper real data > platform avg > current price
+    $bestRef = $safeMarketAvg > 0 ? $safeMarketAvg
+             : ($safeCatAvg > 0   ? $safeCatAvg
+             : $productPrice);
+
+    $psycho = static function (float $n): float {
+        if ($n <= 1) return $n;
+        return floor($n) - 0.100;
+    };
+
+    // ── Build Groq prompt — REAL DATA ONLY ────────────────────────────────
+    // KEY RULE: Groq receives real prices. It ANALYZES. It does NOT invent.
+
+    if ($hasMarketData) {
+        $dataPoints    = $marketReport['data_points'];
+        $sourcesCount  = $marketReport['sources_count'];
+        $sourcesDetail = $marketReport['sources_detail'] ?? $marketReport['by_source'] ?? [];
+
+        $bySourceStr = '';
+        foreach ($sourcesDetail as $src) {
+            $bySourceStr .= "\n    • {$src['source']}: {$src['count']} listings, avg {$src['avg']} TND (range {$src['min']}–{$src['max']} TND)";
+        }
+
+        $marketSection = <<<EOT
+
+REAL TUNISIAN MARKET DATA — collected from {$sourcesCount} sources, {$dataPoints} actual search results:
+- Market average price:  {$marketReport['market_avg']} TND
+- Market median price:   {$marketReport['market_median']} TND
+- Market price range:    {$marketReport['market_min']} – {$marketReport['market_max']} TND
+- Confidence level:      {$marketReport['confidence']} ({$marketReport['confidence_score']}/100)
+- Seller positioning:    {$marketReport['positioning']} ({$marketReport['positioning_pct']}% vs market avg)
+- Psychological price:   {$marketReport['psycho_price']} TND
+By source:{$bySourceStr}
+
+CONSTRAINT: Use the market_avg ({$marketReport['market_avg']} TND) as the anchor for ALL price fields.
+suggested_price must be close to this market avg unless the seller's data strongly justifies deviation.
+EOT;
+
+    } elseif ($safeCatAvg > 0) {
+        $marketSection = <<<EOT
+
+TUNISIAN MARKET DATA — External search returned 0 results (Serper key may be unconfigured).
+INTERNAL PLATFORM DATA (real, from ChooseTounsi database):
+- Platform competitors in this category: {$competitorCount} products
+- Platform avg price:  {$safeCatAvg} TND
+- Platform price range: {$catMinPrice} – {$catMaxPrice} TND
+
+CONSTRAINT: Use platform avg ({$safeCatAvg} TND) as the pricing anchor.
+DO NOT invent external market prices. State clearly this is platform-only data.
+EOT;
+
+    } else {
+        $marketSection = <<<EOT
+
+TUNISIAN MARKET DATA: No external or internal competitor data available.
+CONSTRAINT: Base ALL price recommendations on the current price ({$productPrice} TND) ±30%.
+DO NOT invent competitor prices or claim to know market rates.
+Be explicit in reasoning that this is based on general Tunisian market knowledge, not real data.
+EOT;
+    }
+
+    $systemPrompt = <<<EOT
+You are a Tunisian e-commerce pricing strategist for ChooseTounsi.
+You receive REAL market data collected from Tunisian websites (Tayara, Mytek, Tunisianet).
+
+ABSOLUTE RULES:
+1. NEVER invent prices. All price fields must derive from the real data provided.
+2. suggested_price must be within the market range provided (or ±30% of current price if no data).
+3. If market data exists, market_avg_price = the provided market_avg exactly.
+4. If no market data, state this clearly in reasoning. Do not fabricate market knowledge.
+5. platforms_compared must list only platforms from the data — never add platforms not in the data.
+6. All prices in TND. No zeros. No nulls.
+7. Respond with ONLY valid JSON. No markdown. No text outside JSON.
+EOT;
+
+    $userPrompt = <<<EOT
+Generate a pricing recommendation for this ChooseTounsi product.
+
+PRODUCT:
+- Name: {$product->name}
+- Category: {$product->category_name}
+- Current price: {$productPrice} TND
+- Stock: {$product->stock} | Views: {$product->views} | Conversion: {$conversionRate}%
+- Units sold: {$totalUnits} | Revenue: {$totalRevenue} TND
+- 6-month trend: {$trendStr}
+{$marketSection}
+
+Return ONLY this JSON:
+{
+  "suggested_price": <number — from real market data or ±30% of current>,
+  "competitive_price": <number — matches market/platform avg exactly>,
+  "premium_price": <number — justified premium ceiling>,
+  "min_profitable_price": <number — floor, ~85% of current price>,
+  "market_avg_price": <number — copy the provided market_avg if available, else estimate clearly>,
+  "confidence": "high"|"medium"|"low",
+  "risk": "low"|"medium"|"high",
+  "strategy": "<strategy name>",
+  "reasoning": "<2-3 sentences. State what data you used. Never claim real-time data you don't have>",
+  "expected_impact": "<one sentence>",
+  "market_positioning": "underpriced"|"competitive"|"overpriced",
+  "competitor_summary": "<one sentence. Name only platforms from the provided data>",
+  "overpriced_warning": <string or null>,
+  "opportunity_note": <string or null>,
+  "psychological_tip": "<specific charm pricing suggestion>",
+  "platforms_compared": [<only platforms from the actual data provided>],
+  "min_price": <number>,
+  "max_price": <number>
+}
+EOT;
+
+    $aiRaw    = $this->callGroq($systemPrompt, $userPrompt, 750);
+    $aiResult = null;
+
+    if ($aiRaw) {
+        try {
+            $clean = preg_replace('/```json|```/i', '', $aiRaw);
+            $start = strpos($clean, '{');
+            $end   = strrpos($clean, '}');
+            if ($start !== false && $end !== false) {
+                $parsed = json_decode(substr($clean, $start, $end - $start + 1), true);
+                if ($parsed) {
+                    $priceFields = ['suggested_price','competitive_price','premium_price',
+                                   'min_profitable_price','market_avg_price','min_price','max_price'];
+                    $valid = true;
+                    foreach ($priceFields as $f) {
+                        if (empty($parsed[$f]) || (float)$parsed[$f] <= 0) { $valid = false; break; }
+                    }
+                    if ($valid) $aiResult = $parsed;
+                    else Log::warning('[SellerAI] Groq returned zero price fields — math fallback.');
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[SellerAI::priceOptimizer] JSON parse: ' . $e->getMessage());
+        }
+    }
+
+    // ── Math fallback (no Groq or parse failure) ──────────────────────────
+    if (!$aiResult) {
+        $demandBoost  = $totalUnits > 50 ? 1.06 : ($totalUnits > 10 ? 1.03 : 1.0);
+        $rawSuggested = $bestRef * $demandBoost;
+        $suggested    = round(max($productPrice * 0.80, min($productPrice * 1.20, $rawSuggested)), 3);
+        $competitive  = round($bestRef, 3);
+        $premium      = round($suggested * 1.15, 3);
+        $minProfit    = round($productPrice * 0.85, 3);
+        $minPrice     = round($productPrice * 0.80, 3);
+        $maxPrice     = round($productPrice * 1.25, 3);
+
+        $positioningPct = $hasMarketData ? (float)($marketReport['positioning_pct'] ?? 0) : 0;
+        $positioning    = $hasMarketData ? ($marketReport['positioning'] ?? 'competitive') : 'competitive';
+        $psychoTip      = $psycho($suggested);
+
+        $platformsUsed = [];
+        if ($hasMarketData) {
+            foreach (($marketReport['sources_detail'] ?? $marketReport['by_source'] ?? []) as $src) {
+                $platformsUsed[] = $src['source'];
+            }
+        }
+
+        if ($hasMarketData) {
+            $reasonBase = "Based on {$marketReport['data_points']} real Tunisian market data points from " . implode(', ', $platformsUsed) . " (avg: {$marketReport['market_avg']} TND)";
+        } elseif ($safeCatAvg > 0) {
+            $reasonBase = "Based on {$competitorCount} ChooseTounsi platform listings in this category (avg: {$safeCatAvg} TND)";
+        } else {
+            $reasonBase = "No market data available — recommendation based on general Tunisian market knowledge for {$product->category_name}";
+        }
+
+        $aiResult = [
+            'suggested_price'      => $suggested,
+            'competitive_price'    => $competitive,
+            'premium_price'        => $premium,
+            'min_profitable_price' => $minProfit,
+            'market_avg_price'     => round($bestRef, 3),
+            'confidence'           => $hasMarketData ? ($marketReport['confidence'] ?? 'medium') : ($safeCatAvg > 0 ? 'medium' : 'low'),
+            'risk'                 => 'low',
+            'strategy'             => $totalUnits === 0 ? 'Competitive entry pricing' : 'Market-aligned pricing',
+            'reasoning'            => "{$reasonBase}. Your current price of {$productPrice} TND is {$positioning}.",
+            'expected_impact'      => $totalUnits === 0
+                ? "A competitive entry price should attract first buyers on ChooseTounsi."
+                : "Aligning with market pricing maintains conversion while optimizing revenue.",
+            'market_positioning'   => $positioning,
+            'competitor_summary'   => $hasMarketData
+                ? implode(', ', $platformsUsed) . " show {$marketReport['data_points']} listings ranging {$marketReport['market_min']}–{$marketReport['market_max']} TND."
+                : ($safeCatAvg > 0
+                    ? "ChooseTounsi shows {$competitorCount} competitors (avg {$safeCatAvg} TND)."
+                    : "No competitor data found."),
+            'overpriced_warning'   => $positioningPct > 15
+                ? "Your price is {$positioningPct}% above market average — consider reducing to improve conversion."
+                : null,
+            'opportunity_note'     => $positioningPct < -10
+                ? "Your price is " . abs($positioningPct) . "% below market — you may have room to increase."
+                : ($totalUnits === 0 ? "No sales yet — ensure listing has complete images." : null),
+            'psychological_tip'    => "Use {$psychoTip} TND instead of {$suggested} TND — charm pricing converts better.",
+            'platforms_compared'   => $platformsUsed,
+            'min_price'            => $minPrice,
+            'max_price'            => $maxPrice,
+        ];
+    }
+
+    return response()->json([
+        'success' => true,
+        'data'    => [
+            'ai_result'    => $aiResult,
+            'data_context' => [
+                'product_name'    => $product->name,
+                'current_price'   => $productPrice,
+                'total_units'     => $totalUnits,
+                'total_revenue'   => $totalRevenue,
+                'conversion_rate' => $conversionRate,
+                'category_avg'    => $safeCatAvg,
+                'monthly_trend'   => $monthlySales,
+                'market_report'   => [
+                    'has_data'         => $hasMarketData,
+                    'data_points'      => $marketReport['data_points']      ?? 0,
+                    'sources_count'    => $marketReport['sources_count']    ?? 0,
+                    'market_avg'       => $marketReport['market_avg']       ?? 0,
+                    'market_min'       => $marketReport['market_min']       ?? 0,
+                    'market_max'       => $marketReport['market_max']       ?? 0,
+                    'confidence'       => $marketReport['confidence']       ?? 'low',
+                    'confidence_score' => $marketReport['confidence_score'] ?? 0,
+                    'positioning'      => $marketReport['positioning']      ?? 'unknown',
+                    'positioning_pct'  => $marketReport['positioning_pct'] ?? 0,
+                    'by_source'        => $marketReport['sources_detail']   ?? $marketReport['by_source'] ?? [],
+                    'data_source'      => $marketReport['data_source']      ?? 'none',
+                ],
+            ],
+        ],
+    ]);
+}
     // ═══════════════════════════════════════════════════════════════════════
     // 2. SALES PREDICTOR — ENRICHED WITH FULL PRODUCT DNA
     //    Now fetches: subcategory, variant count, price range,

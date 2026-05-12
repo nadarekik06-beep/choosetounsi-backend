@@ -210,7 +210,11 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('/sponsor/{id}',               [BlackPepperController::class, 'toggleSponsorship']);
                 Route::get('/vip-requests',    [BlackPepperController::class, 'myVipRequests']);
                 Route::post('/vip-request',    [BlackPepperController::class, 'submitVipRequest']);
-            });
+                Route::get('/daily-brief', [BlackPepperController::class, 'dailyBrief']);
+                Route::get('/funnel-insights', [BlackPepperController::class, 'funnelInsights']);
+                Route::get('/quality-audit',   [BlackPepperController::class, 'qualityAudit']);
+                Route::get('/auto-promote-suggestions', [BlackPepperController::class, 'autoPromote']);
+                });
 
         Route::get('/dashboard', [SellerDashboardController::class, 'index']);
 

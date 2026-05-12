@@ -48,4 +48,7 @@ return [
     'key'   => env('GROQ_API_KEY'),
     'model' => env('GROQ_MODEL', 'llama3-8b-8192'),
 ],
+'serper' => [
+    'key' => env('SERPER_API_KEY', ''),
+],
 ];
