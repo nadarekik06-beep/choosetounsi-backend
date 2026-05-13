@@ -12,7 +12,7 @@ class AiRouter
 
     private const GEMINI_URL     = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
     private const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
-    private const DEEPSEEK_MODEL = 'deepseek/deepseek-chat-v3-0324:free';
+    private const DEEPSEEK_MODEL = 'deepseek/deepseek-chat:free';
     private const GROQ_URL       = 'https://api.groq.com/openai/v1/chat/completions';
 
     public function __construct(

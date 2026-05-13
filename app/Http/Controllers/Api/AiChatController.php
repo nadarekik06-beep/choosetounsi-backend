@@ -127,30 +127,29 @@ class AiChatController extends Controller
      */
     private function classifyIntent(string $message, array $history): array
     {
-        // ── 0. Context carry-forward — if last bot turn was about seller onboarding,
-        //       short affirmative replies continue that intent ─────────────────────
-        $affirmatives = ['oui', 'yes', 'yeah', 'yep', 'ok', 'okay', 'bahi', 'ey', 'ayeh', 'na3m', 'نعم', 'أيوه', 'باهي'];
-        $isAffirmative = in_array(trim($lower), $affirmatives, true);
+        // These MUST be first — everything else depends on them
+    $lower         = mb_strtolower($message);
+    $resolvedQuery = $this->resolveContextualReference($message, $history);
 
-        if ($isAffirmative && !empty($history)) {
-            // Look at last assistant message for seller context
-            for ($i = count($history) - 1; $i >= 0; $i--) {
-                if ($history[$i]['role'] === 'assistant') {
-                    $lastBot = mb_strtolower($history[$i]['content']);
-                    if (preg_match('/vendeur|seller|vendor|بائع|تاجر|become-a-vendor|sell/u', $lastBot)) {
-                        return [
-                            'type'        => 'seller_onboarding',
-                            'query'       => $message,
-                            'raw_message' => $message,
-                        ];
-                    }
-                    break;
+    // ── 0. Context carry-forward ──────────────────────────────────────
+    $affirmatives  = ['oui', 'yes', 'yeah', 'yep', 'ok', 'okay', 'bahi', 'ey', 'ayeh', 'na3m', 'نعم', 'أيوه', 'باهي'];
+    $isAffirmative = in_array(trim($lower), $affirmatives, true);
+
+    if ($isAffirmative && !empty($history)) {
+        for ($i = count($history) - 1; $i >= 0; $i--) {
+            if ($history[$i]['role'] === 'assistant') {
+                $lastBot = mb_strtolower($history[$i]['content']);
+                if (preg_match('/vendeur|seller|vendor|بائع|تاجر|become-a-vendor|sell/u', $lastBot)) {
+                    return [
+                        'type'        => 'seller_onboarding',
+                        'query'       => $message,
+                        'raw_message' => $message,
+                    ];
                 }
+                break;
             }
         }
-        $lower        = mb_strtolower($message);
-        $resolvedQuery = $this->resolveContextualReference($message, $history);
-
+    }
         // ── 1. Comparison — routes to DeepSeek ───────────────────────────
         if (preg_match('/compar|vs\.?|versus|difference|quel est le meilleur|which is better|قارن|مقارنة/u', $lower)) {
             return [
@@ -264,13 +263,170 @@ class AiChatController extends Controller
     private function resolveContextualReference(string $message, array $history): string
     {
         $lower = mb_strtolower($message);
+$contextSignals = [
 
-        $contextSignals = [
-            'cheaper', 'more expensive', 'same', 'similar', 'show more', 'show me more',
-            'moins cher', 'plus cher', 'autre', 'encore', 'more of',
-            'ones', 'these', 'those', 'them', 'it',
-            'أرخص', 'أغلى', 'مشابه', 'المزيد', 'تلقاها', 'نفس',
-        ];
+    /*
+    |--------------------------------------------------------------------------
+    | ENGLISH
+    |--------------------------------------------------------------------------
+    */
+
+    'cheaper',
+    'more expensive',
+    'similar',
+    'same',
+    'same thing',
+    'same one',
+    'another',
+    'other',
+    'others',
+    'alternative',
+    'alternatives',
+    'show more',
+    'show me more',
+    'more like this',
+    'more of these',
+    'like this',
+    'something similar',
+    'something else',
+    'different one',
+    'different',
+    'better',
+    'best one',
+    'newer',
+    'older',
+    'bigger',
+    'smaller',
+    'another one',
+    'these',
+    'those',
+    'them',
+    'it',
+    'this',
+    'that',
+    'same brand',
+    'same style',
+    'same price',
+    'same category',
+
+    /*
+    |--------------------------------------------------------------------------
+    | FRENCH
+    |--------------------------------------------------------------------------
+    */
+
+    'moins cher',
+    'plus cher',
+    'similaire',
+    'pareil',
+    'même',
+    'meme',
+    'autre',
+    'autres',
+    'encore',
+    'montre plus',
+    'plus comme ça',
+    'comme ça',
+    'quelque chose de similaire',
+    'un autre',
+    'une autre',
+    'différent',
+    'meilleur',
+    'plus grand',
+    'plus petit',
+    'ceux là',
+    'cela',
+    'ça',
+    'ca',
+    'les mêmes',
+    'même marque',
+    'même style',
+    'même prix',
+
+    /*
+    |--------------------------------------------------------------------------
+    | ARABIC
+    |--------------------------------------------------------------------------
+    */
+
+    'أرخص',
+    'اغلى',
+    'أغلى',
+    'مشابه',
+    'مشابهة',
+    'نفس',
+    'مثل هذا',
+    'زي هذا',
+    'غيره',
+    'غيرها',
+    'واحد آخر',
+    'واحدة أخرى',
+    'المزيد',
+    'زيد',
+    'أكثر',
+    'أفضل',
+    'أكبر',
+    'أصغر',
+    'مثلهم',
+    'مثلها',
+    'هذا',
+    'هذه',
+    'هذوما',
+    'نفس الماركة',
+    'نفس السعر',
+
+    /*
+    |--------------------------------------------------------------------------
+    | TUNISIAN DARIJA
+    |--------------------------------------------------------------------------
+    */
+
+    'zid',
+    'zidni',
+    'zid akther',
+    'warini akther',
+    'warini haja okhra',
+    'haja okhra',
+    'nafsou',
+    'nafs',
+    'kima heka',
+    'kifou',
+    'kifhom',
+    'mrigel akther',
+    'arkhes',
+    'aghla',
+    'a7sen',
+    'akber',
+    'asgher',
+    'okhra',
+    'okhrin',
+    'hedha',
+    'hedhi',
+    'hedhom',
+    'hathika',
+    'kima hedha',
+    'nafs soum',
+    'nafs marque',
+    'same style',
+
+    /*
+    |--------------------------------------------------------------------------
+    | SHORT / FUZZY / COMMON CHAT FORMS
+    |--------------------------------------------------------------------------
+    */
+
+    'encore',
+    'more',
+    'again',
+    'else',
+    'another',
+    'similar',
+    'same',
+    'okhra',
+    'zidni',
+    'plus',
+    'autres',
+];
 
         $isContextual = false;
         foreach ($contextSignals as $signal) {
@@ -391,89 +547,184 @@ class AiChatController extends Controller
     }
 
     private function toolPacks(array $intent): array
-    {
-        $packs = \App\Models\Pack::available()
-            ->with(['items.product.primaryImage'])
-            ->orderByDesc('created_at')
-            ->take(6)
-            ->get();
+{
+    $q = \App\Models\Pack::available()
+        ->with(['items.product.primaryImage'])
+        ->orderByDesc('created_at');
 
-        if ($packs->isEmpty()) {
-            return ['products' => [], 'context' => 'no_packs'];
-        }
-
-        $formatted = $packs->map(fn($pack) => [
-            'id'                => $pack->id,
-            'name'              => $pack->name,
-            'slug'              => $pack->slug,
-            'price'             => (float) $pack->pack_price,
-            'stock'             => 999,
-            'short_description' => $pack->short_description ?? '',
-            'category'          => 'Bundle Pack',
-            'category_slug'     => 'packs',
-            'primary_image_url' => $pack->image_url,
-            'is_pack'           => true,
-            'original_price'    => (float) $pack->original_price,
-            'savings'           => (float) $pack->savings,
-        ])->toArray();
-
-        return ['products' => $formatted, 'context' => 'packs'];
+    // FIX — apply price filter
+    if (!empty($intent['price_max'])) {
+        $q->where('pack_price', '<=', $intent['price_max']);
+    }
+    if (!empty($intent['price_min'])) {
+        $q->where('pack_price', '>=', $intent['price_min']);
     }
 
-    private function toolProductSearch(array $intent): array
-    {
-        $baseQuery = function () use ($intent) {
-            $q = Product::available()->with(['category:id,name,slug', 'primaryImage']);
+    $packs = $q->take(6)->get();
 
-            if (!empty($intent['price_min'])) $q->where('price', '>=', $intent['price_min']);
-            if (!empty($intent['price_max'])) $q->where('price', '<=', $intent['price_max']);
+    if ($packs->isEmpty()) {
+        return ['products' => [], 'context' => 'no_packs'];
+    }
 
-            match ($intent['sort'] ?? 'created_at') {
-                'price_asc'  => $q->orderBy('price'),
-                'price_desc' => $q->orderByDesc('price'),
-                'views'      => $q->orderByDesc('views'),
-                default      => $q->orderByDesc('created_at'),
-            };
+    $formatted = $packs->map(fn($pack) => [
+        'id'                => $pack->id,
+        'name'              => $pack->name,
+        'slug'              => $pack->slug,
+        'price'             => (float) $pack->pack_price,
+        'stock'             => 999,
+        'short_description' => $pack->short_description ?? '',
+        'category'          => 'Bundle Pack',
+        'category_slug'     => 'packs',
+        'primary_image_url' => $pack->image_url,
+        'is_pack'           => true,
+        'original_price'    => (float) $pack->original_price,
+        'savings'           => (float) $pack->savings,
+    ])->toArray();
 
-            return $q;
+    return ['products' => $formatted, 'context' => 'packs'];
+}
+
+private function toolProductSearch(array $intent): array
+{
+    $baseQuery = function () use ($intent) {
+        $q = Product::available()->with(['category:id,name,slug', 'primaryImage']);
+
+        if (!empty($intent['price_min'])) $q->where('price', '>=', $intent['price_min']);
+        if (!empty($intent['price_max'])) $q->where('price', '<=', $intent['price_max']);
+
+        match ($intent['sort'] ?? 'created_at') {
+            'price_asc'  => $q->orderBy('price'),
+            'price_desc' => $q->orderByDesc('price'),
+            'views'      => $q->orderByDesc('views'),
+            default      => $q->orderByDesc('created_at'),
         };
 
-        if (!empty($intent['query'])) {
-            $search = $intent['query'];
-            $terms  = array_filter(explode(' ', $search), fn($t) => mb_strlen($t) >= 2);
+        return $q;
+    };
 
-            $results = $baseQuery()->where(function ($q) use ($search, $terms) {
-                $q->where('name', 'like', "%{$search}%")
-                  ->orWhere('short_description', 'like', "%{$search}%");
-                foreach ($terms as $term) {
-                    $q->orWhere('name', 'like', "%{$term}%");
-                }
-            })->take(self::MAX_PRODUCTS)->get();
+    if (!empty($intent['query'])) {
+        $search   = $intent['query'];
+        $synonyms = $this->expandQuerySynonyms($search);
 
-            if ($results->isNotEmpty()) {
-                return ['products' => $this->formatProducts($results), 'context' => 'product_results'];
+        $results = $baseQuery()->where(function ($q) use ($search, $synonyms) {
+            $q->where('name', 'like', "%{$search}%")
+              ->orWhere('short_description', 'like', "%{$search}%");
+
+            foreach ($synonyms as $syn) {
+                $q->orWhere('name', 'like', "%{$syn}%")
+                  ->orWhere('short_description', 'like', "%{$syn}%");
             }
+        })->take(self::MAX_PRODUCTS)->get();
 
-            $category = Category::where('name', 'like', "%{$search}%")
-                ->orWhere('name_ar', 'like', "%{$search}%")
+        if ($results->isNotEmpty()) {
+            return ['products' => $this->formatProducts($results), 'context' => 'product_results'];
+        }
+
+        // Category fallback
+        $allTerms = array_merge([$search], $synonyms);
+        foreach ($allTerms as $term) {
+            if (mb_strlen($term) < 2) continue;
+            $category = Category::where('name', 'like', "%{$term}%")
+                ->orWhere('name_ar', 'like', "%{$term}%")
                 ->first();
 
             if ($category) {
-                $results = $baseQuery()->where('category_id', $category->id)->take(self::MAX_PRODUCTS)->get();
+                $results = $baseQuery()
+                    ->where('category_id', $category->id)
+                    ->take(self::MAX_PRODUCTS)
+                    ->get();
+
                 if ($results->isNotEmpty()) {
-                    return ['products' => $this->formatProducts($results), 'context' => 'product_results', 'category' => $category->name];
+                    return [
+                        'products' => $this->formatProducts($results),
+                        'context'  => 'product_results',
+                        'category' => $category->name,
+                    ];
                 }
             }
         }
 
-        $results = $baseQuery()->take(self::MAX_PRODUCTS)->get();
-
-        return [
-            'products' => $this->formatProducts($results),
-            'context'  => $results->isEmpty() ? 'no_results' : 'product_fallback',
-        ];
+        // No results found for this specific query
+        // DO NOT fall through to generic products
+        return ['products' => [], 'context' => 'no_results'];  // ← KEY FIX
     }
 
+    // Only show generic fallback when there is truly no query at all
+    $results = $baseQuery()->take(self::MAX_PRODUCTS)->get();
+
+    return [
+        'products' => $this->formatProducts($results),
+        'context'  => $results->isEmpty() ? 'no_results' : 'product_fallback',
+    ];
+}
+    private function expandQuerySynonyms(string $query): array
+{
+    $lower = mb_strtolower(trim($query));
+
+    $synonymMap = [
+        // Clothing — tops
+        'hoodie'      => ['sweatshirt', 'pullover', 'zip hoodie', 'hooded', 'winter top', 'fleece'],
+        'hoodies'     => ['sweatshirt', 'pullover', 'hoodie', 'hooded', 'fleece', 'winter top'],
+        'sweatshirt'  => ['hoodie', 'pullover', 'fleece', 'winter top'],
+        'pullover'    => ['hoodie', 'sweatshirt', 'winter top'],
+        't-shirt'     => ['tshirt', 'tee', 'shirt', 'top'],
+        'shirt'       => ['chemise', 't-shirt', 'top', 'blouse'],
+        'chemise'     => ['shirt', 'blouse', 'top'],
+        'veste'       => ['jacket', 'manteau', 'coat', 'blazer'],
+        'jacket'      => ['veste', 'manteau', 'coat', 'blouson'],
+
+        // Clothing — bottoms
+        'pantalon'    => ['pants', 'trousers', 'jeans', 'jean'],
+        'pants'       => ['pantalon', 'trousers', 'jeans'],
+        'jeans'       => ['jean', 'denim', 'pantalon'],
+        'short'       => ['shorts', 'bermuda'],
+        'pyjama'      => ['pajama', 'sleepwear', 'nightwear', 'pj'],
+
+        // Shoes
+        'shoes'       => ['chaussures', 'sneakers', 'baskets', 'running', 'sport shoes'],
+        'chaussures'  => ['shoes', 'sneakers', 'baskets', 'sandales'],
+        'sneakers'    => ['shoes', 'baskets', 'sport shoes', 'running'],
+        'sandales'    => ['sandals', 'chaussures', 'claquettes'],
+
+        // Electronics
+        'phone'       => ['smartphone', 'mobile', 'iphone', 'android', 'téléphone', 'هاتف'],
+        'laptop'      => ['ordinateur', 'pc portable', 'notebook', 'computer', 'macbook'],
+        'ordinateur'  => ['laptop', 'pc', 'computer', 'notebook'],
+        'écouteurs'   => ['earphones', 'headphones', 'earbuds', 'airpods', 'casque'],
+        'headphones'  => ['écouteurs', 'earphones', 'casque', 'earbuds'],
+
+        // Sports & fitness
+        'protein'     => ['whey', 'supplement', 'nutrition', 'protéine', 'mass gainer'],
+        'whey'        => ['protein', 'supplement', 'protéine', 'nutrition'],
+        'dumbbell'    => ['haltère', 'weights', 'poids', 'dumball'],
+        'dumball'     => ['dumbbell', 'haltère', 'weights', 'poids'],
+
+        // Sets
+        'set'         => ['ensemble', 'tenue', 'outfit', 'kit', 'combo'],
+        'ensemble'    => ['set', 'tenue', 'outfit'],
+        'tenue'       => ['set', 'ensemble', 'outfit'],
+
+        // Arabic / Darija mappings
+        'هاتف'        => ['phone', 'smartphone', 'mobile'],
+        'حذاء'        => ['shoes', 'chaussures', 'sneakers'],
+        'لابتوب'      => ['laptop', 'ordinateur', 'pc'],
+    ];
+
+    // Direct match
+    if (isset($synonymMap[$lower])) {
+        return $synonymMap[$lower];
+    }
+
+    // Partial match — if query contains a known key
+    $found = [];
+    foreach ($synonymMap as $key => $synonyms) {
+        if (mb_strpos($lower, $key) !== false || mb_strpos($key, $lower) !== false) {
+            $found = array_merge($found, $synonyms);
+        }
+    }
+
+    return array_unique($found);
+}
     private function toolTrendingProducts(array $intent): array
     {
         $q = Product::available()->with(['category:id,name,slug', 'primaryImage'])->orderByDesc('views');
@@ -555,27 +806,64 @@ class AiChatController extends Controller
             default             => $this->promptGeneral(),
         };
 
-        return <<<SYSTEM
-You are a smart, friendly shopping assistant for {$platform}
+return <<<SYSTEM
+You are a shopping assistant for {$platform}
 {$greeting}
 
-ABSOLUTE RULES — never break these:
-1. NEVER invent products. Only reference products from AVAILABLE PRODUCTS below.
-2. NEVER place orders, confirm purchases, or execute checkout. Only guide users to the checkout UI.
-3. Respond in the SAME LANGUAGE as the user (Arabic, French, English, Tunisian Darija — auto-detect).
-4. Be warm and helpful. When the user writes in Darija, respond in simple Darija. When in French, respond in French. When in English, respond in English. Never mix languages unprompted.
-5. Do NOT list product names in your text — product cards are shown separately in the UI.
-6. Keep responses concise: 1-3 sentences for simple queries, up to 5 for complex explanations.
-7. If the user's message is ambiguous, ask ONE clarifying question.
-8. For Tunisian Darija: respond warmly but use SIMPLE common words only. NEVER invent or use obscure slang. Stick to universally understood Tunisian phrases like "barcha", "bahi", "yezzi". Do NOT use words you are uncertain about.
+== LANGUAGE RULE (HIGHEST PRIORITY) ==
+Detect the user's language from their message and reply ONLY in that language.
+- English message → English reply ONLY
+- French message → French reply ONLY  
+- Arabic message → Arabic reply ONLY
+- Tunisian Darija → Tunisian Darija reply ONLY
+- NEVER mix languages. NEVER reply in Darija to an English message.
+
+== TUNISIAN DARIJA GUIDE ==
+Use ONLY these words with their correct meanings:
+
+WORD → MEANING → EXAMPLE USE
+- "bahi" → ok/good → "Bahi, 3andna hoodies."
+- "barcha" → many/a lot → "3andna barcha hoodies."
+- "warini" → show me → user says "warini", you say "ha hoodies!"
+- "chnia" → what → "Chnia t7eb tachri?"
+- "nheb" → I want/I like → "Chnia nheb?"
+- "9adeh" → how much → "9adeh el prix?"
+- "mrigla" → cheap → "3andna des options mrigla."
+- "taw" → now/right now → "Taw nchouflk."
+- "yezzi" → enough/that's it → "Yezzi, mafamach autres."
+- "3andna" → we have → "3andna hoodies."
+- "mafamach" → there isn't/we don't have → "Mafamach d'autres hoodies."
+- "emchi" → go → "Emchi l /become-a-vendor."
+- "zid" → more/again → "Zidni warini."
+- "ken" → only → "3andna ken hedha."
+- "w" → and → simple connector
+- "besh" → to/in order to → "Besh tachri, zid l cart."
+
+NEVER USE: habibi, ya3ni, ma3lesh, tafadhal, tkamel, khedmet, inshallah (as filler), nahawli, kifek as greeting
+
+GOOD Darija response: "Bahi! 3andna barcha hoodies. Chnia t7eb — rkhis wella premium?"
+BAD Darija response: "Bahi, tkamel selection, khedmet Add to cart, tkamel checkout." ← WRONG, "tkamel/khedmet" misused
+
+== ABSOLUTE RULES ==
+1. NEVER invent products, prices, stock, or delivery times.
+2. NEVER place orders. Only guide to checkout UI.
+3. Do NOT list product names in text — cards show automatically.
+4. Keep replies SHORT: 1-2 sentences for simple queries, max 4 for complex.
+5. If unclear, ask ONE short question.
+6. For "show more" or "zid warini" → acknowledge you're showing more of the SAME category, don't switch categories.
+
+== CHECKOUT SAFETY ==
+Never say "order confirmed" or "I ordered for you".
+Darija: "Besh tkamel commande, emchi l cart w clicki checkout."
+French: "Pour finaliser, va dans le panier et clique sur Checkout."
+English: "To complete your order, go to your cart and click Checkout."
 
 {$productBlock}
 
 {$cartBlock}
 
 {$intentInstructions}
-SYSTEM;
-    }
+SYSTEM;    }
 
     // ── Intent-specific prompt fragments ──────────────────────────────────
 
@@ -626,29 +914,80 @@ SYSTEM;
 
     private function promptSellerOnboarding(): string
     {
-        return <<<PROMPT
-SITUATION: User wants to become a seller on ChooseTounsi.
-Explain the seller onboarding process:
-1. Go to /become-a-vendor and fill out the application form
-2. Choose a plan: Free (basic), Red Pepper (49 TND/month, analytics + AI tools), or Black Pepper (129 TND/month, full AI suite + sponsored products)
-3. Submit business information and sample products for admin review
-4. Once approved, access the seller dashboard at /seller to start listing products
-5. All products require admin approval before going live
-Be encouraging and mention that local Tunisian sellers are the heart of ChooseTounsi.
+       return <<<PROMPT
+SITUATION: User wants to sell products on ChooseTounsi.
+
+GOAL:
+Explain the onboarding process clearly and encourage local Tunisian sellers.
+
+IMPORTANT RULES:
+- Keep explanation short and motivating.
+- Sound encouraging, not corporate.
+- Never overload with details.
+- Mention that Tunisian sellers are important to the platform.
+- Adapt response language to the user.
+
+INFORMATION TO EXPLAIN:
+1. Go to /become-a-vendor
+2. Fill the seller application form
+3. Choose a subscription plan:
+   - Free → basic selling tools
+   - Red Pepper → 49 TND/month with analytics and AI tools
+   - Black Pepper → 129 TND/month with full AI tools and sponsored products
+4. Submit business info and sample products for admin review
+5. After approval, access /seller dashboard
+6. Products require admin approval before publication
+
+GOOD RESPONSE STYLE:
+- Friendly
+- Short
+- Motivating
+- Clear steps
+
+BAD STYLE:
+- Long paragraphs
+- Formal business language
+- Too much technical explanation
 PROMPT;
     }
 
     private function promptCheckoutGuidance(): string
     {
-        return <<<PROMPT
+     return <<<PROMPT
 SITUATION: User needs help with checkout or payment.
-Explain the checkout process:
-- Add products to cart, then click the cart icon
-- Review items in the cart drawer
-- Click "Checkout" to enter delivery details (wilaya, address, phone)
-- Choose payment: Cash on Delivery (COD), or Wallet
-- Confirm the order — you'll receive an order confirmation
-CRITICAL: NEVER offer to place the order yourself. Always direct to the checkout UI.
+
+GOAL:
+Guide the user through checkout clearly and simply.
+
+IMPORTANT:
+- NEVER offer to place the order yourself.
+- NEVER say the order is confirmed.
+- Only explain the steps.
+
+CHECKOUT FLOW:
+1. Add products to cart
+2. Open the cart
+3. Click Checkout
+4. Enter:
+   - wilaya
+   - address
+   - phone number
+5. Choose payment method:
+   - Cash on Delivery (COD)
+   - Wallet
+6. Confirm the order from the checkout page
+
+STYLE:
+- Keep response short
+- Avoid repeating UI details
+- Be reassuring and clear
+- Match user language
+
+GOOD:
+"Bahi, zid produit l panier w ba3d emchi l checkout."
+
+BAD:
+"Dear customer, I will now help you complete your secure payment process step by step."
 PROMPT;
     }
 
@@ -748,15 +1087,83 @@ PROMPT;
     private function extractSearchQuery(string $message): string
     {
         $query = $message;
+$fillerWords = [
+    'give me the cheapest',
+'cheapest',
+'least expensive',
+'most affordable',
+'give the cheapest',
+'le moins cher',
+'rkhis',
 
-        $fillerWords = [
-            'i need', 'i want', 'i am looking for', "i'm looking for", 'show me', 'find me',
-            'can you find', 'looking for', 'search for', 'do you have', 'please', 'can i get',
-            'give me', 'list all', 'show all', 'show', 'find', 'get me', 'recommend',
-            'je cherche', 'je veux', 'trouver', 'montrez moi', 'affiche moi', 'avez vous',
-            'أريد', 'اريد', 'ابحث عن', 'أبحث عن', 'عندك', 'نحتاج', 'هل عندكم', 'اعطني',
-            'warini', 'orini', 'arini', 'nheb', 'nchri', 'besh nchri',
-        ];
+
+    // ENGLISH
+    'i need',
+    'i want',
+    'looking for',
+    'search for',
+    'show me',
+    'find me',
+    'recommend',
+    'can you find',
+    'do you have',
+    'can i get',
+    'give me',
+    'show',
+    'find',
+    'get me',
+
+    // FRENCH
+    'je cherche',
+    'je veux',
+    'montre moi',
+    'montrez moi',
+    'affiche moi',
+    'trouve moi',
+    'avez vous',
+    'est ce que vous avez',
+    'je besoin de',
+    'donne moi',
+
+    // ARABIC
+    'اريد',
+    'أريد',
+    'ابحث عن',
+    'أبحث عن',
+    'عندك',
+    'عندكم',
+    'هل عندكم',
+    'اعطني',
+    'وريني',
+    'نحب',
+    'نحب نشري',
+
+    // TUNISIAN DARIJA
+    'warini',
+    'orini',
+    'arini',
+    'nheb',
+    'nchri',
+    'besh nchri',
+    '3andek',
+    '3andkom',
+    'famma',
+    'lawajt 3la',
+    'hebb',
+    'nlawwej',
+    'nlawj',
+    '9adeh',
+    'mrigla',
+    'soum',
+    'prix',
+
+    // COMMON TYPOS / SHORT FORMS
+    'cherch',
+    'recherche',
+    'need',
+    'want',
+    'show',
+];
 
         foreach ($fillerWords as $filler) {
             $query = trim(str_ireplace($filler, '', $query));
