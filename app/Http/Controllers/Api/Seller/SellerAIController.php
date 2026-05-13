@@ -420,477 +420,549 @@ EOT;
     //    top-selling variant combos, info attributes (brand/material/gender)
     //    and injects all of it into the Groq prompt for a precise prediction.
     // ═══════════════════════════════════════════════════════════════════════
-    public function salesPredictor(Request $request)
-    {
-        $request->validate([
-            'product_id' => 'required|integer',
-            'season'     => 'required|string|max:50',
-        ]);
+    // ═══════════════════════════════════════════════════════════════════════
+// 2. SALES PREDICTOR — DATA-DRIVEN, DETERMINISTIC
+//    Season is read from the product's own DB column (seller declared it
+//    at product creation). Groq never guesses anything numeric.
+//    All numbers are pre-computed server-side. AI only writes sentences.
+// ═══════════════════════════════════════════════════════════════════════
+public function salesPredictor(Request $request)
+{
+    $request->validate(['product_id' => 'required|integer']);
 
-        $sellerId  = auth()->id();
-        $sellerCol = $this->sellerCol();
-        $totalExpr = $this->totalExpr();
+    $sellerId  = auth()->id();
+    $sellerCol = $this->sellerCol();
+    $totalExpr = $this->totalExpr();
 
-        // ── 1. Core product row (now includes subcategory) ────────────────
-        $product = DB::table('products as p')
-            ->leftJoin('categories as c',    'c.id', '=', 'p.category_id')
-            ->leftJoin('subcategories as s', 's.id', '=', 'p.subcategory_id')
-            ->where("p.{$sellerCol}", $sellerId)
-            ->where('p.id', $request->product_id)
-            ->whereNull('p.deleted_at')
-            ->selectRaw("
-                p.id, p.name, p.price, p.stock, p.views,
-                p.subcategory_id,
-                c.name  as category_name,
-                s.name  as subcategory_name,
-                s.name_ar as subcategory_name_ar
-            ")
+    // ── 1. Core product row — season comes from DB, not from request ──────
+    $product = DB::table('products as p')
+        ->leftJoin('categories as c',    'c.id', '=', 'p.category_id')
+        ->leftJoin('subcategories as s', 's.id', '=', 'p.subcategory_id')
+        ->where("p.{$sellerCol}", $sellerId)
+        ->where('p.id', $request->product_id)
+        ->whereNull('p.deleted_at')
+        ->selectRaw("
+            p.id, p.name, p.price, p.stock, p.views,
+            p.subcategory_id,
+            COALESCE(p.season, 'all_seasons') as season,
+            c.name  as category_name,
+            s.name  as subcategory_name
+        ")
+        ->first();
+
+    if (!$product) {
+        return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
+    }
+
+    $season = $product->season;
+
+    // ── 2. Historical monthly sales — 18 months for better trend detection ─
+    $monthlySales = DB::table('order_items as oi')
+        ->join('orders as o', 'o.id', '=', 'oi.order_id')
+        ->where('oi.product_id', $request->product_id)
+        ->whereIn('o.status', ['completed', 'delivered'])
+        ->where('o.created_at', '>=', Carbon::now()->subMonths(18))
+        ->selectRaw("
+            DATE_FORMAT(o.created_at, '%Y-%m') as month,
+            MONTH(o.created_at) as month_num,
+            SUM(oi.quantity) as units,
+            COUNT(DISTINCT oi.order_id) as orders,
+            SUM({$totalExpr}) as revenue
+        ")
+        ->groupBy('month', 'month_num')
+        ->orderBy('month')
+        ->get();
+
+    // ── 3. Lifetime stats ──────────────────────────────────────────────────
+    $lifetimeStats = DB::table('order_items as oi')
+        ->join('orders as o', 'o.id', '=', 'oi.order_id')
+        ->where('oi.product_id', $request->product_id)
+        ->whereIn('o.status', ['completed', 'delivered'])
+        ->selectRaw("
+            SUM(oi.quantity)             as total_units,
+            SUM({$totalExpr})            as total_revenue,
+            COUNT(DISTINCT oi.order_id)  as total_orders
+        ")
+        ->first();
+
+    // ── 4. Category-level seasonal intelligence ────────────────────────────
+    // For THIS season, how did all products in the same category perform
+    // vs. their own average? This gives us a real market-wide multiplier.
+    $categoryId = DB::table('products')->where('id', $request->product_id)->value('category_id');
+
+    // Map season slug → calendar month numbers it covers
+    $seasonMonths = [
+        'summer'         => [6, 7, 8],
+        'winter'         => [12, 1, 2],
+        'spring'         => [3, 4, 5],
+        'autumn'         => [9, 10, 11],
+        'ramadan'        => [],   // Variable — use label only
+        'eid_al_fitr'    => [],
+        'eid_al_adha'    => [],
+        'back_to_school' => [8, 9],
+        'new_year'       => [12, 1],
+        'all_seasons'    => [],
+    ];
+
+    $seasonMonthNums = $seasonMonths[$season] ?? [];
+    $categorySeasonMultiplier = 1.0;
+    $categorySeasonDataPoints = 0;
+
+    if (!empty($seasonMonthNums) && $categoryId) {
+        // Average monthly units for same-category products IN season months
+        $seasonAvg = DB::table('order_items as oi')
+            ->join('orders as o',    'o.id',  '=', 'oi.order_id')
+            ->join('products as p',  'p.id',  '=', 'oi.product_id')
+            ->where('p.category_id', $categoryId)
+            ->whereIn('o.status', ['completed', 'delivered'])
+            ->whereIn(DB::raw('MONTH(o.created_at)'), $seasonMonthNums)
+            ->where('o.created_at', '>=', Carbon::now()->subMonths(24))
+            ->selectRaw("AVG(oi.quantity) as avg_qty, COUNT(*) as cnt")
             ->first();
 
-        if (!$product) {
-            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
+        // Average monthly units for same-category products OUT of season
+        $offAvg = DB::table('order_items as oi')
+            ->join('orders as o',    'o.id',  '=', 'oi.order_id')
+            ->join('products as p',  'p.id',  '=', 'oi.product_id')
+            ->where('p.category_id', $categoryId)
+            ->whereIn('o.status', ['completed', 'delivered'])
+            ->whereNotIn(DB::raw('MONTH(o.created_at)'), $seasonMonthNums)
+            ->where('o.created_at', '>=', Carbon::now()->subMonths(24))
+            ->selectRaw("AVG(oi.quantity) as avg_qty, COUNT(*) as cnt")
+            ->first();
+
+        $seasonQty = (float)($seasonAvg->avg_qty ?? 0);
+        $offQty    = (float)($offAvg->avg_qty    ?? 0);
+        $categorySeasonDataPoints = (int)($seasonAvg->cnt ?? 0);
+
+        if ($offQty > 0 && $seasonQty > 0) {
+            $categorySeasonMultiplier = round($seasonQty / $offQty, 3);
         }
+    }
 
-        $season = $request->season;
+    // ── 5. Same-season products in category — how do they sell? ───────────
+    // Find products in the same category declared with the same season,
+    // and compute their average monthly sales. This is the strongest signal.
+    $sameSeasonCategoryStats = DB::table('order_items as oi')
+        ->join('orders as o',   'o.id',  '=', 'oi.order_id')
+        ->join('products as p', 'p.id',  '=', 'oi.product_id')
+        ->where('p.category_id', $categoryId)
+        ->where('p.season', $season)
+        ->where('p.id', '!=', $request->product_id)
+        ->whereIn('o.status', ['completed', 'delivered'])
+        ->where('o.created_at', '>=', Carbon::now()->subMonths(12))
+        ->selectRaw("
+            COUNT(DISTINCT p.id) as product_count,
+            AVG(oi.quantity)     as avg_qty_per_item,
+            SUM(oi.quantity)     as total_qty,
+            COUNT(DISTINCT DATE_FORMAT(o.created_at, '%Y-%m')) as active_months
+        ")
+        ->first();
 
-        // ── 2. Historical monthly sales (12 months) ───────────────────────
-        $monthlySales = DB::table('order_items as oi')
-            ->join('orders as o', 'o.id', '=', 'oi.order_id')
+    $sameSeasonProducts    = (int)($sameSeasonCategoryStats->product_count ?? 0);
+    $sameSeasonAvgMonthly  = 0.0;
+    if ($sameSeasonCategoryStats && (int)$sameSeasonCategoryStats->active_months > 0) {
+        $sameSeasonAvgMonthly = round(
+            (float)$sameSeasonCategoryStats->total_qty / (int)$sameSeasonCategoryStats->active_months,
+            1
+        );
+    }
+
+    // ── 6. Variant intelligence ────────────────────────────────────────────
+    $variantSummary = DB::table('product_variants as pv')
+        ->where('pv.product_id', $request->product_id)
+        ->selectRaw("
+            COUNT(*)                                                  as total_variants,
+            SUM(CASE WHEN pv.is_active = 1 THEN 1 ELSE 0 END)        as active_variants,
+            SUM(pv.stock)                                             as total_variant_stock,
+            MIN(COALESCE(pv.price_override, {$product->price}))       as price_min,
+            MAX(COALESCE(pv.price_override, {$product->price}))       as price_max
+        ")
+        ->first();
+
+    $hasVariants   = (int)($variantSummary->total_variants ?? 0) > 0;
+    $activeVarCnt  = (int)($variantSummary->active_variants ?? 0);
+    $totalVarCnt   = (int)($variantSummary->total_variants ?? 0);
+    $varStockTotal = (int)($variantSummary->total_variant_stock ?? 0);
+    $varPriceMin   = round((float)($variantSummary->price_min ?? $product->price), 3);
+    $varPriceMax   = round((float)($variantSummary->price_max ?? $product->price), 3);
+
+    // Top-selling variant combos
+    $topVariantSales = collect();
+    if ($hasVariants) {
+        $topVariantSales = DB::table('order_items as oi')
+            ->join('orders as o',    'o.id',  '=', 'oi.order_id')
+            ->join('product_variants as pv', 'pv.id', '=', 'oi.variant_id')
+            ->join('variant_attribute_values as vav', 'vav.variant_id', '=', 'pv.id')
+            ->join('attribute_options as ao', 'ao.id', '=', 'vav.attribute_option_id')
+            ->join('attributes as a', 'a.id', '=', 'ao.attribute_id')
             ->where('oi.product_id', $request->product_id)
             ->whereIn('o.status', ['completed', 'delivered'])
-            ->where('o.created_at', '>=', Carbon::now()->subMonths(12))
             ->selectRaw("
-                DATE_FORMAT(o.created_at, '%Y-%m') as month,
-                SUM(oi.quantity) as units,
-                COUNT(DISTINCT oi.order_id) as orders,
-                SUM({$totalExpr}) as revenue
+                oi.variant_id,
+                GROUP_CONCAT(DISTINCT CONCAT(a.slug, ':', ao.value) ORDER BY a.order SEPARATOR ' | ') as combo_label,
+                SUM(oi.quantity) as units_sold,
+                pv.stock as current_stock
             ")
-            ->groupBy('month')
-            ->orderBy('month')
+            ->groupBy('oi.variant_id', 'pv.stock')
+            ->orderByDesc('units_sold')
+            ->limit(5)
             ->get();
+    }
 
-        // ── 3. Lifetime stats ─────────────────────────────────────────────
-        $lifetimeStats = DB::table('order_items as oi')
-            ->join('orders as o', 'o.id', '=', 'oi.order_id')
-            ->where('oi.product_id', $request->product_id)
-            ->whereIn('o.status', ['completed', 'delivered'])
-            ->selectRaw("
-                SUM(oi.quantity)             as total_units,
-                SUM({$totalExpr})            as total_revenue,
-                COUNT(DISTINCT oi.order_id)  as total_orders
-            ")
-            ->first();
-
-        // ── 4. Variant intelligence ───────────────────────────────────────
-        // 4a. Summary: count, active count, price range across all variants
-        $variantSummary = DB::table('product_variants as pv')
+    // Stock by axis for stockout risk detection
+    $variantStockByAxis = collect();
+    if ($hasVariants) {
+        $variantStockByAxis = DB::table('product_variants as pv')
+            ->join('variant_attribute_values as vav', 'vav.variant_id', '=', 'pv.id')
+            ->join('attribute_options as ao', 'ao.id', '=', 'vav.attribute_option_id')
+            ->join('attributes as a', 'a.id', '=', 'ao.attribute_id')
             ->where('pv.product_id', $request->product_id)
+            ->where('pv.is_active', true)
             ->selectRaw("
-                COUNT(*)                                     as total_variants,
-                SUM(CASE WHEN pv.is_active = 1 THEN 1 ELSE 0 END) as active_variants,
-                SUM(pv.stock)                                as total_variant_stock,
-                MIN(COALESCE(pv.price_override, {$product->price})) as price_min,
-                MAX(COALESCE(pv.price_override, {$product->price})) as price_max,
-                AVG(COALESCE(pv.price_override, {$product->price})) as price_avg
+                a.slug as attr_slug, a.name as attr_name,
+                ao.value as option_value, SUM(pv.stock) as stock_for_option
             ")
-            ->first();
-
-        $hasVariants   = (int)($variantSummary->total_variants ?? 0) > 0;
-        $activeVarCnt  = (int)($variantSummary->active_variants ?? 0);
-        $totalVarCnt   = (int)($variantSummary->total_variants ?? 0);
-        $varStockTotal = (int)($variantSummary->total_variant_stock ?? 0);
-        $varPriceMin   = round((float)($variantSummary->price_min ?? $product->price), 3);
-        $varPriceMax   = round((float)($variantSummary->price_max ?? $product->price), 3);
-
-        // 4b. Top-selling variant combos (color+size that move the most)
-        //     Joins: order_items → variant_attribute_values → attribute_options → attributes
-        $topVariantSales = collect();
-        if ($hasVariants) {
-            $topVariantSales = DB::table('order_items as oi')
-                ->join('orders as o',    'o.id',  '=', 'oi.order_id')
-                ->join('product_variants as pv', 'pv.id', '=', 'oi.variant_id')
-                ->join('variant_attribute_values as vav', 'vav.variant_id', '=', 'pv.id')
-                ->join('attribute_options as ao', 'ao.id', '=', 'vav.attribute_option_id')
-                ->join('attributes as a', 'a.id', '=', 'ao.attribute_id')
-                ->where('oi.product_id', $request->product_id)
-                ->whereIn('o.status', ['completed', 'delivered'])
-                ->selectRaw("
-                    oi.variant_id,
-                    GROUP_CONCAT(DISTINCT CONCAT(a.slug, ':', ao.value) ORDER BY a.order SEPARATOR ' | ') as combo_label,
-                    SUM(oi.quantity) as units_sold,
-                    COALESCE(pv.price_override, {$product->price}) as effective_price
-                ")
-                ->groupBy('oi.variant_id', 'pv.price_override')
-                ->orderByDesc('units_sold')
-                ->limit(5)
-                ->get();
-        }
-
-        // 4c. Current stock distribution across variant axes
-        //     e.g. which colors/sizes still have stock vs are sold out
-        $variantStockByAxis = collect();
-        if ($hasVariants) {
-            $variantStockByAxis = DB::table('product_variants as pv')
-                ->join('variant_attribute_values as vav', 'vav.variant_id', '=', 'pv.id')
-                ->join('attribute_options as ao', 'ao.id', '=', 'vav.attribute_option_id')
-                ->join('attributes as a', 'a.id', '=', 'ao.attribute_id')
-                ->where('pv.product_id', $request->product_id)
-                ->where('pv.is_active', true)
-                ->selectRaw("
-                    a.slug  as attr_slug,
-                    a.name  as attr_name,
-                    ao.value as option_value,
-                    SUM(pv.stock) as stock_for_option
-                ")
-                ->groupBy('a.slug', 'a.name', 'ao.value')
-                ->orderBy('a.order')
-                ->orderByDesc('stock_for_option')
-                ->get();
-        }
-
-        // 4d. Variant attribute axes (what dimensions exist: color, size, storage…)
-        $variantAxes = collect();
-        if ($hasVariants) {
-            $variantAxes = DB::table('subcategory_attributes as sa')
-                ->join('attributes as a', 'a.id', '=', 'sa.attribute_id')
-                ->where('sa.subcategory_id', $product->subcategory_id)
-                ->where('sa.is_variant', true)
-                ->selectRaw("a.slug, a.name")
-                ->orderBy('sa.order')
-                ->get();
-        }
-
-        // ── 5. Info-level product attributes (brand, material, gender…) ───
-        //      These live in product_attribute_values (not in variants)
-        $infoAttributes = DB::table('product_attribute_values as pav')
-            ->join('attributes as a', 'a.id', '=', 'pav.attribute_id')
-            ->join('subcategory_attributes as sa', function ($join) use ($product) {
-                $join->on('sa.attribute_id', '=', 'pav.attribute_id')
-                     ->where('sa.subcategory_id', '=', $product->subcategory_id)
-                     ->where('sa.is_variant', '=', false); // info-only attributes
-            })
-            ->where('pav.product_id', $request->product_id)
-            ->selectRaw("a.slug, a.name, a.type, pav.value")
-            ->orderBy('sa.order')
+            ->groupBy('a.slug', 'a.name', 'ao.value')
+            ->orderBy('a.order')
+            ->orderByDesc('stock_for_option')
             ->get();
+    }
 
-        // Resolve select/multiselect option IDs → human-readable labels
-        // Collect all option IDs first for a single batch query
-        $allOptionIds = [];
-        foreach ($infoAttributes as $attr) {
-            if (in_array($attr->type, ['select', 'multiselect', 'color'])) {
-                $decoded = json_decode($attr->value, true);
-                if (is_array($decoded)) {
-                    $allOptionIds = array_merge($allOptionIds, $decoded);
-                } elseif (is_numeric($attr->value)) {
-                    $allOptionIds[] = (int)$attr->value;
-                }
+    // ── 7. INFO ATTRIBUTES (brand, material, gender…) ─────────────────────
+    $infoAttributes = DB::table('product_attribute_values as pav')
+        ->join('attributes as a', 'a.id', '=', 'pav.attribute_id')
+        ->where('pav.product_id', $request->product_id)
+        ->selectRaw("a.slug, a.name, a.type, pav.value")
+        ->get();
+
+    $allOptionIds = [];
+    foreach ($infoAttributes as $attr) {
+        if (in_array($attr->type, ['select', 'multiselect', 'color'])) {
+            $decoded = json_decode($attr->value, true);
+            if (is_array($decoded)) $allOptionIds = array_merge($allOptionIds, $decoded);
+            elseif (is_numeric($attr->value)) $allOptionIds[] = (int)$attr->value;
+        }
+    }
+    $optionLabels = [];
+    if (!empty($allOptionIds)) {
+        $optionLabels = DB::table('attribute_options')
+            ->whereIn('id', array_unique($allOptionIds))
+            ->pluck('value', 'id')->toArray();
+    }
+    $infoAttrLines = [];
+    foreach ($infoAttributes as $attr) {
+        if (in_array($attr->type, ['select', 'multiselect', 'color'])) {
+            $decoded = json_decode($attr->value, true);
+            $ids     = is_array($decoded) ? $decoded : (is_numeric($attr->value) ? [(int)$attr->value] : []);
+            $labels  = array_filter(array_map(fn($id) => $optionLabels[$id] ?? null, $ids));
+            if (!empty($labels)) $infoAttrLines[$attr->slug] = implode(', ', $labels);
+        } elseif (!empty($attr->value)) {
+            $infoAttrLines[$attr->slug] = $attr->value;
+        }
+    }
+
+    // ── 8. STATISTICAL ENGINE — all numbers computed here, never by AI ────
+
+    // 8a. Basic monthly metrics
+    $avgMonthlySales  = $monthlySales->isNotEmpty()
+        ? round($monthlySales->avg('units'), 1)
+        : 0.0;
+    $lastMonthSales   = (int)($monthlySales->last()?->units   ?? 0);
+    $lastMonthRevenue = round((float)($monthlySales->last()?->revenue ?? 0), 3);
+    $totalUnits       = (int)($lifetimeStats->total_units   ?? 0);
+    $totalRevenue     = round((float)($lifetimeStats->total_revenue ?? 0), 3);
+    $totalOrders      = (int)($lifetimeStats->total_orders  ?? 0);
+    $convRate         = ($product->views > 0 && $totalOrders > 0)
+        ? round(($totalOrders / $product->views) * 100, 2)
+        : 0.0;
+
+    // 8b. Momentum: slope of last 3 months
+    $recentMonths = $monthlySales->take(-3)->values();
+    $momentum = 'stable';
+    if ($recentMonths->count() >= 2) {
+        $first = (int)$recentMonths->first()->units;
+        $last  = (int)$recentMonths->last()->units;
+        $delta = $last - $first;
+        if ($delta > max(1, $first * 0.10)) $momentum = 'growing';
+        elseif ($delta < -max(1, $first * 0.10)) $momentum = 'declining';
+    }
+
+    // 8c. Determine the BASE for prediction:
+    // Priority: same-season category avg → own avg → 1
+    $baseForPrediction = match(true) {
+        $avgMonthlySales > 0  => $avgMonthlySales,
+        $sameSeasonAvgMonthly > 0 => $sameSeasonAvgMonthly,
+        default => 1.0,
+    };
+
+    // 8d. Season multiplier — real data first, fallback to curated Tunisia table
+    $seasonMultiplierTable = [
+        'ramadan'        => 1.40,
+        'eid_al_fitr'    => 1.35,
+        'eid_al_adha'    => 1.28,
+        'back_to_school' => 1.22,
+        'new_year'       => 1.18,
+        'summer'         => 1.08,
+        'winter'         => 1.10,
+        'spring'         => 1.05,
+        'autumn'         => 1.03,
+        'all_seasons'    => 1.0,
+    ];
+
+    // Use real category data if we have enough samples (≥10 data points)
+    $seasonMultiplier = ($categorySeasonDataPoints >= 10 && $categorySeasonMultiplier > 0)
+        ? $categorySeasonMultiplier
+        : ($seasonMultiplierTable[$season] ?? 1.0);
+
+    // 8e. Momentum adjustment (±10%)
+    $momentumFactor = match($momentum) {
+        'growing'  => 1.10,
+        'declining'=> 0.90,
+        default    => 1.0,
+    };
+
+    // 8f. Stock constraint — never predict more than stock can fulfil
+    $currentStock = $hasVariants ? $varStockTotal : (int)$product->stock;
+
+    // 8g. PREDICTED UNITS — fully deterministic
+    $rawPrediction  = $baseForPrediction * $seasonMultiplier * $momentumFactor;
+    $predictedUnits = (int)round(max(1, $rawPrediction));
+    $predictedUnits = min($predictedUnits, $currentStock > 0 ? (int)round($currentStock * 1.5) : PHP_INT_MAX);
+
+    // 8h. Growth % vs own average
+    $growthPct = $avgMonthlySales > 0
+        ? round((($predictedUnits - $avgMonthlySales) / $avgMonthlySales) * 100, 1)
+        : round(($seasonMultiplier - 1) * 100, 1);
+
+    // 8i. Trend direction
+    $trend = match(true) {
+        $growthPct > 5  => 'up',
+        $growthPct < -5 => 'down',
+        default         => 'stable',
+    };
+
+    // 8j. Confidence — based on data richness
+    $confidence = match(true) {
+        $totalOrders >= 20 && $categorySeasonDataPoints >= 10 => 'high',
+        $totalOrders >= 5  || $categorySeasonDataPoints >= 5  => 'medium',
+        default                                                => 'low',
+    };
+
+    // 8k. Stock recommendation
+    $safetyBuffer   = 1.30;
+    $stockRec       = (int)round($predictedUnits * $safetyBuffer);
+    $stockShortfall = max(0, $stockRec - $currentStock);
+
+    // 8l. Weekly breakdown (real distribution pattern)
+    // Seasonal demand curve: builds up in week 2, peaks week 3 for most seasons
+    $weeklyWeights = match($season) {
+        'ramadan'        => [0.18, 0.30, 0.32, 0.20],
+        'eid_al_fitr'    => [0.15, 0.35, 0.35, 0.15],
+        'eid_al_adha'    => [0.20, 0.30, 0.30, 0.20],
+        'back_to_school' => [0.25, 0.30, 0.28, 0.17],
+        default          => [0.23, 0.27, 0.27, 0.23],
+    };
+    $weeklyBreakdown = [];
+    $baselineWeekly  = max(1, (int)round($avgMonthlySales / 4));
+    foreach ($weeklyWeights as $i => $w) {
+        $weeklyBreakdown[] = [
+            'week'      => 'Week ' . ($i + 1),
+            'predicted' => max(1, (int)round($predictedUnits * $w)),
+            'baseline'  => $baselineWeekly,
+        ];
+    }
+    $bestSellingWeek = $weeklyBreakdown[
+        array_search(max(array_column($weeklyBreakdown, 'predicted')), array_column($weeklyBreakdown, 'predicted'))
+    ]['week'];
+
+    // 8m. Risk factors — stockout detection
+    $riskFactors = [];
+    if ($stockShortfall > 0) {
+        $riskFactors[] = "Stock shortfall: you need {$stockRec} units but have {$currentStock} — restock {$stockShortfall} units before {$season} starts.";
+    }
+    if ($topVariantSales->isNotEmpty()) {
+        $topVariant = $topVariantSales->first();
+        if ((int)$topVariant->current_stock < (int)round($predictedUnits * 0.3)) {
+            $riskFactors[] = "Top variant '{$topVariant->combo_label}' has only {$topVariant->current_stock} units — likely stockout in week 2 given {$predictedUnits} predicted orders.";
+        }
+    }
+    if (empty($riskFactors)) {
+        $riskFactors[] = $currentStock >= $stockRec
+            ? "Stock level ({$currentStock} units) is sufficient for predicted demand."
+            : "Monitor stock weekly — demand may spike unexpectedly during peak.";
+    }
+
+    // 8n. Promotion ideas — variant-aware
+    $promotionIdeas = [];
+    if ($topVariantSales->isNotEmpty()) {
+        $bottomVariant = $topVariantSales->last();
+        $promotionIdeas[] = "Run a {$season} flash sale on '{$bottomVariant->combo_label}' — it has low sales but likely adequate stock.";
+    } else {
+        $promotionIdeas[] = "Launch a {$season} promo with 8-12% discount in week 2 when demand peaks.";
+    }
+    $promotionIdeas[] = "Boost your ChooseTounsi sponsorship placement 5 days before {$season} starts.";
+    $promotionIdeas[] = $sameSeasonProducts > 0
+        ? "Bundle with other {$season}-season products in your store — {$sameSeasonProducts} similar products exist."
+        : "Cross-sell with complementary products from your store to increase basket size.";
+
+    // ── 9. AI NARRATION — Groq only writes human sentences, no numbers ────
+    // We send all pre-computed values. Groq fills in natural language only.
+    $subLabel      = $product->subcategory_name ?? $product->category_name;
+    $genderLabel   = $infoAttrLines['gender']   ?? null;
+    $brandLabel    = $infoAttrLines['brand']     ?? null;
+    $materialLabel = $infoAttrLines['material']  ?? null;
+    $attrContext   = implode(', ', array_filter([$genderLabel, $brandLabel, $materialLabel]));
+
+    $topVariantStr = $topVariantSales->isNotEmpty()
+        ? $topVariantSales->map(fn($v) => "'{$v->combo_label}' ({$v->units_sold} sold, {$v->current_stock} in stock)")->implode('; ')
+        : 'no variant sales data';
+
+    $dataSourceLabel = $categorySeasonDataPoints >= 10
+        ? "real category data ({$categorySeasonDataPoints} order samples)"
+        : "Tunisia market baseline";
+
+    $systemPrompt =
+        "You are a Tunisian e-commerce analyst writing brief, precise insights for sellers.\n"
+        . "ALL numeric predictions are already computed. Your ONLY job is:\n"
+        . "  1. Write key_factor: 1-2 sentences explaining WHY this specific product/season combination predicts {$predictedUnits} units.\n"
+        . "  2. Write advice: 1 concrete sentence with the single most important action.\n"
+        . "  3. Write opportunity: 1 sentence about the best untapped upside.\n"
+        . "RULES:\n"
+        . "  - Do NOT invent or change any numbers. Use only what's given.\n"
+        . "  - Reference subcategory '{$subLabel}' and season '{$season}' explicitly.\n"
+        . "  - If attrContext is set, weave it in naturally.\n"
+        . "  - Respond ONLY with valid JSON. No markdown. No extra fields.";
+
+    $historyStr = $monthlySales->isNotEmpty()
+        ? $monthlySales->take(-6)->map(fn($r) => "{$r->month}: {$r->units} units")->implode(', ')
+        : 'no sales history';
+
+    $userPrompt  = "Product: {$product->name}\n"
+        . "Subcategory: {$subLabel}" . ($attrContext ? " ({$attrContext})" : '') . "\n"
+        . "Declared season: {$season}\n"
+        . "Season multiplier source: {$dataSourceLabel} → ×{$seasonMultiplier}\n"
+        . "Momentum: {$momentum} (factor: ×{$momentumFactor})\n"
+        . "Own avg monthly sales: {$avgMonthlySales} units\n"
+        . "PREDICTED: {$predictedUnits} units | Growth: {$growthPct}% | Trend: {$trend}\n"
+        . "Top variants: {$topVariantStr}\n"
+        . "Last 6 months: {$historyStr}\n\n"
+        . "Return ONLY this JSON:\n"
+        . "{\n"
+        . "  \"key_factor\": \"<1-2 sentences>\",\n"
+        . "  \"advice\": \"<1 concrete action>\",\n"
+        . "  \"opportunity\": \"<1 sentence>\"\n"
+        . "}";
+
+    $aiNarration = ['key_factor' => null, 'advice' => null, 'opportunity' => null];
+
+    $aiRaw = $this->callGroq($systemPrompt, $userPrompt, 300);
+    if ($aiRaw) {
+        try {
+            $clean = preg_replace('/```json|```/i', '', $aiRaw);
+            $start = strpos($clean, '{');
+            $end   = strrpos($clean, '}');
+            if ($start !== false && $end !== false) {
+                $parsed = json_decode(substr($clean, $start, $end - $start + 1), true);
+                if ($parsed) $aiNarration = $parsed;
             }
+        } catch (\Throwable $e) {
+            Log::warning('[SellerAI::salesPredictor] Narration parse failed: ' . $e->getMessage());
         }
+    }
 
-        $optionLabels = [];
-        if (!empty($allOptionIds)) {
-            $optionLabels = DB::table('attribute_options')
-                ->whereIn('id', array_unique($allOptionIds))
-                ->pluck('value', 'id')
-                ->toArray();
+    // Fallback narration if Groq fails
+    if (empty($aiNarration['key_factor'])) {
+        $aiNarration['key_factor'] = "{$season} drives a {$seasonMultiplier}× multiplier for {$subLabel}"
+            . ($attrContext ? " ({$attrContext})" : '')
+            . " based on {$dataSourceLabel}. Momentum is {$momentum}.";
+    }
+    if (empty($aiNarration['advice'])) {
+        $aiNarration['advice'] = $stockShortfall > 0
+            ? "Restock {$stockShortfall} units before {$season} begins — current stock cannot meet predicted demand."
+            : "Maintain current stock and activate your ChooseTounsi sponsored listing 5 days before {$season} starts.";
+    }
+    if (empty($aiNarration['opportunity'])) {
+        $aiNarration['opportunity'] = $topVariantSales->isNotEmpty()
+            ? "Your top variant drives most sales — ensure it has priority restock before {$season}."
+            : "First {$season} with this product — a competitive introductory price will build sales history fast.";
+    }
+
+    // ── 10. Assemble final result ──────────────────────────────────────────
+    $aiResult = [
+        // Deterministic numbers — never from AI
+        'predicted_units'     => $predictedUnits,
+        'growth_pct'          => $growthPct,
+        'trend'               => $trend,
+        'confidence'          => $confidence,
+        'stock_recommendation'=> (string)$stockRec,
+        'best_selling_week'   => $bestSellingWeek,
+        'weekly_breakdown'    => $weeklyBreakdown,
+        'risk_factors'        => $riskFactors,
+        'promotion_ideas'     => $promotionIdeas,
+
+        // AI narration — sentences only, no numbers invented
+        'key_factor'          => $aiNarration['key_factor'],
+        'advice'              => $aiNarration['advice'],
+        'opportunity'         => $aiNarration['opportunity'],
+    ];
+
+    // Stock by axis for frontend
+    $stockByAxisForFrontend = [];
+    if ($variantStockByAxis->isNotEmpty()) {
+        foreach ($variantStockByAxis->groupBy('attr_slug') as $slug => $options) {
+            $stockByAxisForFrontend[$options->first()->attr_name] = $options
+                ->map(fn($o) => ['value' => $o->option_value, 'stock' => (int)$o->stock_for_option])
+                ->values()->toArray();
         }
+    }
 
-        // Build human-readable info attribute map: slug => "Label: Value"
-        $infoAttrLines = [];
-        foreach ($infoAttributes as $attr) {
-            if (in_array($attr->type, ['select', 'multiselect', 'color'])) {
-                $decoded = json_decode($attr->value, true);
-                $ids     = is_array($decoded) ? $decoded : (is_numeric($attr->value) ? [(int)$attr->value] : []);
-                $labels  = array_filter(array_map(fn($id) => $optionLabels[$id] ?? null, $ids));
-                if (!empty($labels)) {
-                    $infoAttrLines[$attr->slug] = $attr->name . ': ' . implode(', ', $labels);
-                }
-            } elseif ($attr->type === 'boolean') {
-                $infoAttrLines[$attr->slug] = $attr->name . ': ' . ($attr->value ? 'Yes' : 'No');
-            } elseif (!empty($attr->value)) {
-                $infoAttrLines[$attr->slug] = $attr->name . ': ' . $attr->value;
-            }
-        }
-
-        // ── 6. Compute derived metrics ────────────────────────────────────
-        $bestMonth  = $monthlySales->sortByDesc('units')->first();
-        $recentMonths  = $monthlySales->take(-3);
-        $recentUnits   = (int)$recentMonths->sum('units');
-
-        $avgMonthlySales  = $monthlySales->isNotEmpty() ? round($monthlySales->avg('units'), 1) : 0;
-        $lastMonthSales   = (int)($monthlySales->last()?->units   ?? 0);
-        $lastMonthRevenue = round((float)($monthlySales->last()?->revenue ?? 0), 3);
-        $historyStr       = $monthlySales->map(fn($r) => "{$r->month}: {$r->units} units ({$r->orders} orders)")->implode(', ') ?: 'No sales yet';
-        $totalUnits       = (int)($lifetimeStats->total_units   ?? 0);
-        $totalRevenue     = round((float)($lifetimeStats->total_revenue ?? 0), 3);
-        $convRate         = ($product->views > 0 && $totalUnits > 0)
-            ? round(($lifetimeStats->total_orders / $product->views) * 100, 2)
-            : 0;
-
-        // Growth momentum (last 2 months)
-        $last2    = $monthlySales->take(-2)->values();
-        $momentum = 'stable';
-        if ($last2->count() === 2) {
-            $diff = (int)$last2[1]->units - (int)$last2[0]->units;
-            if ($diff > 0) $momentum = 'growing';
-            elseif ($diff < 0) $momentum = 'declining';
-        }
-
-        // ── 7. Build product DNA strings for prompt ───────────────────────
-        $subcategoryStr = $product->subcategory_name
-            ? "{$product->subcategory_name}" . ($product->subcategory_name_ar ? " ({$product->subcategory_name_ar})" : '')
-            : 'Not specified';
-
-        // Variant axes e.g. "Color × Size"
-        $axesStr = $variantAxes->isNotEmpty()
-            ? $variantAxes->map(fn($a) => $a->name)->implode(' × ')
-            : 'Simple product (no variants)';
-
-        // Price range string
-        $priceRangeStr = ($hasVariants && $varPriceMin !== $varPriceMax)
-            ? "{$varPriceMin} – {$varPriceMax} TND across variants"
-            : "{$product->price} TND (fixed)";
-
-        // Stock summary
-        $stockStr = $hasVariants
-            ? "{$varStockTotal} units total across {$activeVarCnt}/{$totalVarCnt} active variants"
-            : "{$product->stock} units";
-
-        // Top-selling combos e.g. "color:Red | size:M → 23 units"
-        $topVariantStr = $topVariantSales->isNotEmpty()
-            ? $topVariantSales->map(fn($v) => "  • {$v->combo_label} → {$v->units_sold} units sold")->implode("\n")
-            : ($hasVariants ? '  • No variant sales data yet' : '  • N/A (simple product)');
-
-        // Stock by axis e.g. "color: Red=12, Blue=3, Black=0 | size: M=8, L=7"
-        $stockByAxisStr = '';
-        if ($variantStockByAxis->isNotEmpty()) {
-            $grouped = $variantStockByAxis->groupBy('attr_slug');
-            $parts   = [];
-            foreach ($grouped as $slug => $options) {
-                $optParts = $options->map(fn($o) => "{$o->option_value}={$o->stock_for_option}")->implode(', ');
-                $attrName = $options->first()->attr_name;
-                $parts[]  = "{$attrName}: {$optParts}";
-            }
-            $stockByAxisStr = implode(' | ', $parts);
-        }
-
-        // Info attributes e.g. "Brand: Nike | Material: Cotton | Gender: Men"
-        $infoAttrStr = !empty($infoAttrLines)
-            ? implode(' | ', $infoAttrLines)
-            : 'No additional attributes';
-
-        // ── 8. Build enriched Groq prompt ─────────────────────────────────
-        $systemPrompt = "You are an expert Tunisian e-commerce sales analyst for ChooseTounsi marketplace.\n"
-            . "You provide highly accurate, product-specific sales predictions for Tunisian sellers.\n"
-            . "You understand Tunisian seasons deeply:\n"
-            . "  - Ramadan: fashion/food/gifts peak weeks 2-3, electronics slow\n"
-            . "  - Eid al-Fitr: impulse gift buying spike, clothing & accessories up 30-50%\n"
-            . "  - Eid al-Adha: home goods, food, family purchases surge\n"
-            . "  - Back-to-school (Aug-Sep): stationery, kids clothing, electronics strong\n"
-            . "  - Summer: beach/sports/kids toys up, formal clothing down\n"
-            . "  - Winter: warm clothing, home living, electronics steady\n"
-            . "CRITICAL RULES:\n"
-            . "  1. Use the SUBCATEGORY (not just category) to calibrate seasonality — a Dress behaves differently from a Jeans or a Sneaker even inside Fashion.\n"
-            . "  2. Use VARIANT data: if top-selling combos show 'color:Red | size:M', predict that color/size awareness will affect demand.\n"
-            . "  3. Use INFO ATTRIBUTES: Gender (Men/Women/Kids), Material (Leather/Cotton), Brand all affect seasonal demand curves.\n"
-            . "  4. If stockouts are visible in variant stock data, flag that as a risk and factor it into predicted_units.\n"
-            . "  5. All numeric fields required. ALWAYS respond with ONLY valid JSON. No markdown. No text outside JSON.";
-
-        $userPrompt = "Predict next-month sales for this ChooseTounsi product. Use ALL product details below.\n\n"
-
-            // ── Product identity
-            . "═══ PRODUCT IDENTITY ═══\n"
-            . "Name:        {$product->name}\n"
-            . "Category:    {$product->category_name}\n"
-            . "Subcategory: {$subcategoryStr}\n"
-            . "Base price:  {$product->price} TND\n"
-            . "Price range: {$priceRangeStr}\n"
-            . "Stock:       {$stockStr}\n"
-            . "Views:       {$product->views} | Conversion: {$convRate}%\n\n"
-
-            // ── Product attributes (brand, material, gender…)
-            . "═══ PRODUCT ATTRIBUTES ═══\n"
-            . "{$infoAttrStr}\n\n"
-
-            // ── Variant structure
-            . ($hasVariants
-                ? "═══ VARIANT STRUCTURE ═══\n"
-                . "Axes:        {$axesStr}\n"
-                . "Variants:    {$activeVarCnt} active / {$totalVarCnt} total\n"
-                . ($stockByAxisStr ? "Stock split: {$stockByAxisStr}\n" : '')
-                . "Top sellers:\n{$topVariantStr}\n\n"
-                : "═══ PRODUCT TYPE: SIMPLE (no variants) ═══\n\n"
-            )
-
-            // ── Sales history
-            . "═══ SALES HISTORY (12 months) ═══\n"
-            . "{$historyStr}\n"
-            . "Avg monthly: {$avgMonthlySales} units | Last month: {$lastMonthSales} units ({$lastMonthRevenue} TND)\n"
-            . "Lifetime:    {$totalUnits} units sold | {$totalRevenue} TND revenue\n"
-            . "Momentum:    {$momentum}\n\n"
-
-            // ── Season
-            . "═══ SEASON TO PREDICT ═══\n"
-            . "Season: {$season}\n\n"
-
-            // ── JSON schema
-            . "Return ONLY this JSON (all fields required, no nulls):\n"
-            . "{\n"
-            . "  \"predicted_units\": <integer>,\n"
-            . "  \"growth_pct\": <number vs avg monthly>,\n"
-            . "  \"trend\": \"up\"|\"down\"|\"stable\",\n"
-            . "  \"confidence\": \"high\"|\"medium\"|\"low\",\n"
-            . "  \"key_factor\": \"<SPECIFIC reason referencing subcategory+attributes+season, 1-2 sentences>\",\n"
-            . "  \"advice\": \"<concrete action — exact qty, variant, timing e.g. 'Restock Red/M and Red/L by 20 units before Eid week 2'>\",\n"
-            . "  \"stock_recommendation\": \"<exact total units to stock>\",\n"
-            . "  \"promotion_ideas\": [\n"
-            . "    \"<idea1 referencing specific variant/attribute e.g. 'Flash sale on Black color — highest stock but low sales'>\",\n"
-            . "    \"<idea2>\",\n"
-            . "    \"<idea3>\"\n"
-            . "  ],\n"
-            . "  \"best_selling_week\": \"Week 1\"|\"Week 2\"|\"Week 3\"|\"Week 4\",\n"
-            . "  \"weekly_breakdown\": [\n"
-            . "    {\"week\": \"Week 1\", \"predicted\": <int>, \"baseline\": <int>},\n"
-            . "    {\"week\": \"Week 2\", \"predicted\": <int>, \"baseline\": <int>},\n"
-            . "    {\"week\": \"Week 3\", \"predicted\": <int>, \"baseline\": <int>},\n"
-            . "    {\"week\": \"Week 4\", \"predicted\": <int>, \"baseline\": <int>}\n"
-            . "  ],\n"
-            . "  \"risk_factors\": [\n"
-            . "    \"<risk1 e.g. 'Red/M stock at 2 units — likely stockout by week 2'>\",\n"
-            . "    \"<risk2>\"\n"
-            . "  ],\n"
-            . "  \"opportunity\": \"<specific untapped opportunity referencing variant/attribute/season e.g. 'Women M/L sizes have high stock but no promotion — bundle with accessories for Eid'>\"\n"
-            . "}";
-
-        $aiRaw    = $this->callGroq($systemPrompt, $userPrompt, 900);
-        $aiResult = null;
-
-        if ($aiRaw) {
-            try {
-                $clean = preg_replace('/```json|```/i', '', $aiRaw);
-                $start = strpos($clean, '{');
-                $end   = strrpos($clean, '}');
-                if ($start !== false && $end !== false) {
-                    $aiResult = json_decode(substr($clean, $start, $end - $start + 1), true);
-                }
-            } catch (\Throwable $e) {
-                Log::warning('[SellerAI::salesPredictor] JSON parse failed: ' . $e->getMessage());
-            }
-        }
-
-        // ── Math fallback ─────────────────────────────────────────────────
-        if (!$aiResult) {
-            $seasonMultipliers = [
-                'Ramadan'      => 1.35, 'Eid al-Fitr'  => 1.30, 'Eid al-Adha'    => 1.25,
-                'Summer'       => 0.92, 'Back to school'=> 1.18, 'Winter'         => 1.10,
-                'Spring'       => 1.05, 'Normal'        => 1.0,
-            ];
-            $mult     = $seasonMultipliers[$season] ?? 1.05;
-            $base     = max(1, $avgMonthlySales > 0 ? $avgMonthlySales : 1);
-            $pred     = max(1, (int)round($base * $mult));
-            $pct      = round(($mult - 1) * 100, 1);
-            $weekly   = max(1, (int)round($pred / 4));
-            $stockRec = $hasVariants
-                ? max($varStockTotal, (int)round($pred * 1.3))
-                : max((int)$product->stock, (int)round($pred * 1.3));
-
-            // Build subcategory-aware key_factor
-            $subLabel  = $product->subcategory_name ?? $product->category_name;
-            $genderStr = $infoAttrLines['gender'] ?? '';
-            $brandStr  = $infoAttrLines['brand']  ?? '';
-            $matStr    = $infoAttrLines['material'] ?? '';
-            $extraCtx  = array_filter([$genderStr, $brandStr, $matStr]);
-            $ctxStr    = !empty($extraCtx) ? ' (' . implode(', ', $extraCtx) . ')' : '';
-
-            $aiResult = [
-                'predicted_units'     => $pred,
-                'growth_pct'          => $pct,
-                'trend'               => $mult > 1.02 ? 'up' : ($mult < 0.98 ? 'down' : 'stable'),
-                'confidence'          => $avgMonthlySales > 0 ? 'medium' : 'low',
-                'key_factor'          => "{$season} typically creates a " . abs($pct) . "% " . ($pct >= 0 ? 'boost' : 'dip') . " for {$subLabel}{$ctxStr} in Tunisia.",
-                'advice'              => $pct > 0
-                    ? "Increase stock to at least {$stockRec} units before {$season} starts. Consider a 5-10% promotional discount in week 2."
-                    : "Offer bundle deals and free shipping to offset the expected " . abs($pct) . "% slowdown. Focus on loyalty buyers.",
-                'stock_recommendation'=> (string)$stockRec,
-                'promotion_ideas'     => [
-                    $pct > 0
-                        ? "Launch a {$season} flash sale in week 2 with 10% off" . ($topVariantSales->isNotEmpty() ? " — prioritise your best-selling variant combo" : '')
-                        : "Bundle with complementary products for added value",
-                    "Boost your ChooseTounsi sponsored placement during peak week",
-                    "Prepare stock 2 weeks before {$season} to avoid stockouts",
-                ],
-                'best_selling_week'   => 'Week 2',
-                'weekly_breakdown'    => [
-                    ['week' => 'Week 1', 'predicted' => (int)round($weekly * 0.90), 'baseline' => (int)round($base * 0.24)],
-                    ['week' => 'Week 2', 'predicted' => (int)round($weekly * 1.10), 'baseline' => (int)round($base * 0.25)],
-                    ['week' => 'Week 3', 'predicted' => (int)round($weekly * 1.05), 'baseline' => (int)round($base * 0.26)],
-                    ['week' => 'Week 4', 'predicted' => (int)round($weekly * 0.95), 'baseline' => (int)round($base * 0.25)],
-                ],
-                'risk_factors'  => [
-                    $hasVariants && $varStockTotal < $pred
-                        ? "Total variant stock ({$varStockTotal} units) may be insufficient for predicted demand ({$pred} units) — restock urgently"
-                        : 'Low stock may cause missed sales — restock early',
-                    'Competitor promotions during peak season may reduce conversion',
-                ],
-                'opportunity' => $avgMonthlySales === 0
-                    ? "This {$subLabel} has no sales yet — {$season} is a great time to launch with a competitive introductory price."
-                    : ($topVariantSales->isNotEmpty()
-                        ? "Your top variant ({$topVariantSales->first()->combo_label}) drives most sales — ensure it stays in stock throughout {$season}."
-                        : "Cross-sell with complementary products in your store to increase basket size during {$season}."),
-            ];
-        }
-
-        // ── Build enriched data_context for frontend ──────────────────────
-        // Group stock-by-axis for the frontend DNA strip
-        $stockByAxisForFrontend = [];
-        if ($variantStockByAxis->isNotEmpty()) {
-            foreach ($variantStockByAxis->groupBy('attr_slug') as $slug => $options) {
-                $stockByAxisForFrontend[$options->first()->attr_name] = $options
-                    ->map(fn($o) => ['value' => $o->option_value, 'stock' => (int)$o->stock_for_option])
-                    ->values()
-                    ->toArray();
-            }
-        }
-
-        return response()->json([
-            'success' => true,
-            'data'    => [
-                'ai_result'    => $aiResult,
-                'data_context' => [
-                    // ── existing fields (unchanged) ──
-                    'product_name'       => $product->name,
-                    'avg_monthly_sales'  => $avgMonthlySales,
-                    'last_month_sales'   => $lastMonthSales,
-                    'last_month_revenue' => $lastMonthRevenue,
-                    'monthly_history'    => $monthlySales,
-                    'current_stock'      => $hasVariants ? $varStockTotal : (int)$product->stock,
-                    'total_units'        => $totalUnits,
-                    'total_revenue'      => $totalRevenue,
-                    'momentum'           => $momentum,
-                    'best_month'         => $bestMonth,
-                    'views'              => (int)$product->views,
-                    'conversion_rate'    => $convRate,
-
-                    // ── NEW: product DNA fields ──
-                    'subcategory'        => $product->subcategory_name,
-                    'has_variants'       => $hasVariants,
-                    'variant_axes'       => $variantAxes->map(fn($a) => $a->name)->values()->toArray(),
-                    'active_variants'    => $activeVarCnt,
-                    'total_variants'     => $totalVarCnt,
-                    'variant_price_min'  => $hasVariants ? $varPriceMin : null,
-                    'variant_price_max'  => $hasVariants ? $varPriceMax : null,
-                    'top_variant_sales'  => $topVariantSales->map(fn($v) => [
-                        'combo'       => $v->combo_label,
-                        'units_sold'  => (int)$v->units_sold,
-                        'price'       => round((float)$v->effective_price, 3),
-                    ])->values()->toArray(),
-                    'stock_by_axis'      => $stockByAxisForFrontend,
-                    'info_attributes'    => $infoAttrLines,
+    return response()->json([
+        'success' => true,
+        'data'    => [
+            'ai_result'    => $aiResult,
+            'data_context' => [
+                'product_name'              => $product->name,
+                'season'                    => $season,
+                'season_label'              => \App\Models\Product::SEASONS[$season] ?? $season,
+                'avg_monthly_sales'         => $avgMonthlySales,
+                'last_month_sales'          => $lastMonthSales,
+                'last_month_revenue'        => $lastMonthRevenue,
+                'monthly_history'           => $monthlySales,
+                'current_stock'             => $currentStock,
+                'stock_shortfall'           => $stockShortfall,
+                'total_units'               => $totalUnits,
+                'total_revenue'             => $totalRevenue,
+                'momentum'                  => $momentum,
+                'views'                     => (int)$product->views,
+                'conversion_rate'           => $convRate,
+                'subcategory'               => $product->subcategory_name,
+                'has_variants'              => $hasVariants,
+                'active_variants'           => $activeVarCnt,
+                'total_variants'            => $totalVarCnt,
+                'variant_price_min'         => $hasVariants ? $varPriceMin : null,
+                'variant_price_max'         => $hasVariants ? $varPriceMax : null,
+                'top_variant_sales'         => $topVariantSales->map(fn($v) => [
+                    'combo'        => $v->combo_label,
+                    'units_sold'   => (int)$v->units_sold,
+                    'current_stock'=> (int)$v->current_stock,
+                ])->values()->toArray(),
+                'stock_by_axis'             => $stockByAxisForFrontend,
+                'info_attributes'           => $infoAttrLines,
+                // Algorithm transparency
+                'algorithm'                 => [
+                    'base_monthly'              => $baseForPrediction,
+                    'season_multiplier'         => $seasonMultiplier,
+                    'season_multiplier_source'  => $categorySeasonDataPoints >= 10 ? 'real_data' : 'baseline_table',
+                    'category_season_samples'   => $categorySeasonDataPoints,
+                    'same_season_products'      => $sameSeasonProducts,
+                    'momentum_factor'           => $momentumFactor,
+                    'formula'                   => "{$baseForPrediction} × {$seasonMultiplier} × {$momentumFactor} = {$predictedUnits}",
                 ],
             ],
-        ]);
-    }
+        ],
+    ]);
+}
 
     // ═══════════════════════════════════════════════════════════════════════
     // 3. DESCRIPTION GENERATOR — UNCHANGED

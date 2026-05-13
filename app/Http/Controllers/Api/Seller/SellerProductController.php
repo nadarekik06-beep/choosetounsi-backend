@@ -298,6 +298,7 @@ class SellerProductController extends Controller
                 'is_approved'       => false,
                 'featured'          => false,
                 'views'             => 0,
+                'season'            => $request->input('season', 'all_seasons'),
                 'is_pack'           => filter_var($request->input('is_pack', false), FILTER_VALIDATE_BOOLEAN) ? 1 : 0,
             ]);
             Log::info('[SellerProduct::store] Product created', ['id' => $product->id]);
@@ -381,6 +382,8 @@ class SellerProductController extends Controller
                 'is_pack'           => $request->has('is_pack')
                                ? (filter_var($request->input('is_pack'), FILTER_VALIDATE_BOOLEAN) ? 1 : 0)
                                : $product->is_pack,
+                'season'            => $request->input('season', $product->season),  // ← ADD
+
             ]);
             Log::info('[SellerProduct::update] Product updated');
         } catch (\Throwable $e) {

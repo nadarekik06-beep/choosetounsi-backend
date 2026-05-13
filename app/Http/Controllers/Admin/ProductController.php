@@ -130,12 +130,14 @@ class ProductController extends Controller
             'is_active'         => 'sometimes|boolean',
             'is_approved'       => 'sometimes|boolean',
             'featured'          => 'sometimes|boolean',
+            'season'            => 'sometimes|nullable|string|max:30',  // ← ADD
+
         ]);
 
         // ── Scalar fields ──────────────────────────────────────────────────
         $fieldsToUpdate = [];
         foreach (['name', 'description', 'short_description', 'price', 'stock',
-                  'category_id', 'subcategory_id', 'is_approved', 'featured'] as $field) {
+                  'category_id', 'subcategory_id', 'is_approved', 'featured' , 'season'] as $field) {
             if ($request->has($field)) {
                 $fieldsToUpdate[$field] = $request->input($field);
             }

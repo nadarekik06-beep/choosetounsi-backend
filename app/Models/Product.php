@@ -17,7 +17,7 @@ class Product extends Model
         'name', 'slug', 'description', 'short_description',
         'price', 'stock', 'sku',
         'is_approved', 'is_active',    'is_platform_product', 'featured', 'views',
-        'is_pack',
+        'is_pack', 'season',
     ];
 
     protected $casts = [
@@ -28,6 +28,19 @@ class Product extends Model
         'price'       => 'decimal:3',
         'is_pack' => 'boolean',
     ];
+    // Add as a public constant on the model for reuse everywhere
+public const SEASONS = [
+    'all_seasons'    => 'All Seasons',
+    'summer'         => 'Summer',
+    'winter'         => 'Winter',
+    'spring'         => 'Spring',
+    'autumn'         => 'Autumn',
+    'ramadan'        => 'Ramadan',
+    'eid_al_fitr'    => 'Eid al-Fitr',
+    'eid_al_adha'    => 'Eid al-Adha',
+    'back_to_school' => 'Back to School',
+    'new_year'       => 'New Year',
+];
 
     protected $appends = ['primary_image_url'];
 
