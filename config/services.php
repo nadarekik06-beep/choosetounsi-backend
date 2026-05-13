@@ -51,4 +51,7 @@ return [
 'serper' => [
     'key' => env('SERPER_API_KEY', ''),
 ],
+'openrouter' => [
+    'key' => env('OPENROUTER_API_KEY'),
+],
 ];
