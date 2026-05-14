@@ -7,64 +7,49 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * ForecastEngine
+ * ForecastEngine — FIXED VERSION
  *
- * Core deterministic forecasting engine for ChooseTounsi.
+ * KEY FIX: All order queries now include 'pending' and 'processing' statuses.
+ * Previously only 'completed' and 'delivered' were counted, which meant
+ * new orders were INVISIBLE to the forecast and regional heatmap.
  *
- * Approach:
- *   1. Collect real order history (6–18 months)
- *   2. Decompose into: trend + seasonality + event signals
- *   3. Project forward N months
- *   4. Blend with category peer data when own history is sparse
- *
- * This is a "Prophet-lite" implementation in pure PHP:
- *   - Linear trend extrapolation from last 3 months
- *   - Multiplicative seasonality (Tunisia-calibrated)
- *   - Event overlay (from product_event_signals table)
- *   - Category peer smoothing for new products
- *
- * When FastAPI + Prophet is enabled (AI_SERVICE_URL configured),
- * this service delegates to it instead — the interface is identical.
+ * Orders are excluded only when cancelled or refunded.
  */
 class ForecastEngine
 {
+    // Statuses that count as real demand signal
+    // 'pending' and 'processing' are included — they represent real purchases.
+    // 'cancelled' and 'refunded' are excluded — demand never materialised.
+    private const COUNTED_STATUSES = ['pending', 'processing', 'completed', 'delivered'];
+
     // ── Tunisia seasonality multipliers (month 1–12) ────────────────────
-    // Calibrated from observed Tunisian e-commerce patterns.
-    // Index 0 = January, 11 = December
     private const TUNISIA_MONTHLY_INDEX = [
-        1  => 1.05,  // January  — post-Eid recovery, soldes
-        2  => 0.98,  // February — quiet
-        3  => 1.35,  // March    — Ramadan (varies by year; boosted by events)
-        4  => 1.20,  // April    — Post-Ramadan, spring
-        5  => 1.08,  // May      — steady
-        6  => 1.12,  // June     — early summer, school finish
-        7  => 1.18,  // July     — summer peak, tourism
-        8  => 1.25,  // August   — summer + back-to-school prep
-        9  => 1.22,  // September— school start, highest conversion
-        10 => 1.05,  // October  — post-back-to-school plateau
-        11 => 0.95,  // November — quiet (before December)
-        12 => 1.15,  // December — New Year, soldes
+        1  => 1.05,
+        2  => 0.98,
+        3  => 1.35,
+        4  => 1.20,
+        5  => 1.08,
+        6  => 1.12,
+        7  => 1.18,
+        8  => 1.25,
+        9  => 1.22,
+        10 => 1.05,
+        11 => 0.95,
+        12 => 1.15,
     ];
 
-    // Confidence thresholds
-    private const CONF_HIGH   = 20; // ≥20 real orders
-    private const CONF_MEDIUM = 5;  // ≥5 real orders
+    private const CONF_HIGH   = 20;
+    private const CONF_MEDIUM = 5;
     private const FORECAST_MONTHS = 6;
 
     /**
      * Generate a 6-month forward forecast for a product.
-     *
-     * @param  int   $productId   Must belong to $sellerId
-     * @param  int   $sellerId
-     * @param  array $options     ['months' => 6, 'include_events' => true]
-     * @return array              The full forecast payload
      */
     public function forecast(int $productId, int $sellerId, array $options = []): array
     {
         $months        = $options['months']         ?? self::FORECAST_MONTHS;
         $includeEvents = $options['include_events'] ?? true;
 
-        // ── 1. Product info ────────────────────────────────────────────────
         $sellerCol = $this->sellerCol();
         $totalExpr = $this->totalExpr();
 
@@ -86,11 +71,12 @@ class ForecastEngine
             return ['error' => 'Product not found'];
         }
 
-        // ── 2. Historical monthly sales (18 months) ────────────────────────
+        // ── Historical monthly sales (18 months) ──────────────────────────
+        // FIX: include pending + processing, not just completed/delivered
         $history = DB::table('order_items as oi')
             ->join('orders as o', 'o.id', '=', 'oi.order_id')
             ->where('oi.product_id', $productId)
-            ->whereIn('o.status', ['completed', 'delivered'])
+            ->whereIn('o.status', self::COUNTED_STATUSES)
             ->where('o.created_at', '>=', Carbon::now()->subMonths(18))
             ->selectRaw("
                 DATE_FORMAT(o.created_at, '%Y-%m') as month,
@@ -109,39 +95,35 @@ class ForecastEngine
             ? round($history->avg('units'), 2)
             : 0.0;
 
-        // ── 3. Trend component ─────────────────────────────────────────────
-        // Linear regression on last 6 months to get a monthly trend slope
-        $trendSlope = $this->computeTrendSlope($history->take(-6)->values());
-
-        // ── 4. Category peer baseline (used when own history < 6 months) ──
+        $trendSlope   = $this->computeTrendSlope($history->take(-6)->values());
         $peerBaseline = $this->computeCategoryPeerBaseline(
             (int) $product->category_id,
             $productId,
             $totalExpr
         );
 
-        // If we have less than 3 months of own data, blend with peers
         $ownMonths  = $history->count();
         $baseUnit   = $avgMonthly;
         $blendNote  = '';
 
         if ($ownMonths < 3 && $peerBaseline['avg'] > 0) {
-            $ownWeight   = max(0.1, $ownMonths / 6);
-            $peerWeight  = 1.0 - $ownWeight;
-            $baseUnit    = round($avgMonthly * $ownWeight + $peerBaseline['avg'] * $peerWeight, 2);
-            $blendNote   = "Blended with {$peerBaseline['count']} category peers (own data: {$ownMonths} months).";
+            $ownWeight  = max(0.1, $ownMonths / 6);
+            $peerWeight = 1.0 - $ownWeight;
+            $baseUnit   = round($avgMonthly * $ownWeight + $peerBaseline['avg'] * $peerWeight, 2);
+            $blendNote  = "Blended with {$peerBaseline['count']} category peers (own data: {$ownMonths} months).";
         }
 
         if ($baseUnit <= 0) {
             $baseUnit = max(1.0, $peerBaseline['avg']);
         }
 
-        // ── 5. Load upcoming event signals ────────────────────────────────
-        $upcomingEvents = $includeEvents ? $this->loadUpcomingEvents($product->category_slug) : collect();
+        $upcomingEvents = $includeEvents
+            ? $this->loadUpcomingEvents($product->category_slug)
+            : collect();
 
-        // ── 6. Project forward N months ────────────────────────────────────
+        // ── Project forward N months ──────────────────────────────────────
         $projections = [];
-        $startMonth  = Carbon::now()->startOfMonth()->addMonth(); // start from next month
+        $startMonth  = Carbon::now()->startOfMonth()->addMonth();
 
         for ($i = 0; $i < $months; $i++) {
             $targetDate  = $startMonth->copy()->addMonths($i);
@@ -149,15 +131,11 @@ class ForecastEngine
             $yearMonth   = $targetDate->format('Y-m');
             $label       = $targetDate->format('M Y');
 
-            // a) Base = smooth of own avg + trend slope extrapolation
             $trendedBase = max(0, $baseUnit + $trendSlope * ($i + 1));
+            $seasonIdx   = self::TUNISIA_MONTHLY_INDEX[$monthNum] ?? 1.0;
 
-            // b) Tunisia monthly seasonality index
-            $seasonIdx = self::TUNISIA_MONTHLY_INDEX[$monthNum] ?? 1.0;
-
-            // c) Event overlay
-            $eventBoost  = 1.0;
-            $eventName   = null;
+            $eventBoost = 1.0;
+            $eventName  = null;
             $matchedEvent = $upcomingEvents->first(function ($ev) use ($targetDate) {
                 $start = Carbon::parse($ev->starts_at);
                 $end   = Carbon::parse($ev->ends_at);
@@ -168,15 +146,9 @@ class ForecastEngine
                 $eventName  = $matchedEvent->event_name;
             }
 
-            // d) Compute predicted units
-            $predicted = max(1, (int) round($trendedBase * $seasonIdx * $eventBoost));
-
-            // e) Revenue estimate
-            $priceRef        = (float) $product->price;
-            $predictedRevenue = round($predicted * $priceRef, 3);
-
-            // f) Confidence per month (degrades further out)
-            $monthConfidence = $this->monthConfidence($totalHistoryOrders, $i);
+            $predicted        = max(1, (int) round($trendedBase * $seasonIdx * $eventBoost));
+            $predictedRevenue = round($predicted * (float) $product->price, 3);
+            $monthConfidence  = $this->monthConfidence($totalHistoryOrders, $i);
 
             $projections[] = [
                 'month'             => $yearMonth,
@@ -191,7 +163,6 @@ class ForecastEngine
             ];
         }
 
-        // ── 7. Summary metrics ─────────────────────────────────────────────
         $totalPredictedUnits   = array_sum(array_column($projections, 'predicted_units'));
         $totalPredictedRevenue = array_sum(array_column($projections, 'predicted_revenue'));
         $peakMonth             = collect($projections)->sortByDesc('predicted_units')->first();
@@ -202,77 +173,64 @@ class ForecastEngine
         if ($trendSlope < -0.5) $overallTrend = 'down';
 
         $globalConfidence = $this->globalConfidence($totalHistoryOrders);
-
-        // ── 8. Demand score (0–100) ────────────────────────────────────────
-        $demandScore = $this->computeDemandScore(
-            avgMonthly:     $avgMonthly,
-            trendSlope:     $trendSlope,
-            views:          (int) $product->views,
-            totalOrders:    $totalHistoryOrders,
-            peerAvg:        $peerBaseline['avg']
+        $demandScore      = $this->computeDemandScore(
+            avgMonthly:  $avgMonthly,
+            trendSlope:  $trendSlope,
+            views:       (int) $product->views,
+            totalOrders: $totalHistoryOrders,
+            peerAvg:     $peerBaseline['avg']
         );
 
-        // ── 9. Stock recommendation ────────────────────────────────────────
         $next3MonthsUnits = array_sum(
             array_column(array_slice($projections, 0, 3), 'predicted_units')
         );
-        $stockRec = (int) round($next3MonthsUnits * 1.30); // 30% safety buffer
+        $stockRec = (int) round($next3MonthsUnits * 1.30);
 
         return [
-            // Core result
-            'product_id'          => $productId,
-            'product_name'        => $product->name,
-            'category_name'       => $product->category_name,
-            'subcategory_name'    => $product->subcategory_name,
-            'current_price'       => (float) $product->price,
-            'current_stock'       => (int) $product->stock,
-
-            // Projections array (6 months)
-            'projections'         => $projections,
-
-            // Summary
+            'product_id'              => $productId,
+            'product_name'            => $product->name,
+            'category_name'           => $product->category_name,
+            'category_slug'           => $product->category_slug,
+            'subcategory_name'        => $product->subcategory_name,
+            'current_price'           => (float) $product->price,
+            'current_stock'           => (int) $product->stock,
+            'projections'             => $projections,
             'total_predicted_units'   => $totalPredictedUnits,
             'total_predicted_revenue' => round($totalPredictedRevenue, 3),
             'peak_month'              => $peakMonth,
             'lowest_month'            => $lowestMonth,
             'overall_trend'           => $overallTrend,
             'trend_slope'             => round($trendSlope, 3),
-
-            // Scores
-            'demand_score'        => $demandScore,
-            'confidence'          => $globalConfidence,
-            'confidence_label'    => $this->confidenceLabel($totalHistoryOrders),
-            'data_points'         => $totalHistoryOrders,
-
-            // History (for chart baseline)
-            'history'             => $history->map(fn($r) => [
+            'demand_score'            => $demandScore,
+            'confidence'              => $globalConfidence,
+            'confidence_label'        => $this->confidenceLabel($totalHistoryOrders),
+            'data_points'             => $totalHistoryOrders,
+            'history'                 => $history->map(fn($r) => [
                 'month'   => $r->month,
                 'label'   => Carbon::createFromFormat('Y-m', $r->month)->format('M Y'),
                 'units'   => (int) $r->units,
                 'revenue' => round((float) $r->revenue, 3),
                 'orders'  => (int) $r->orders,
             ])->values()->toArray(),
-
-            // Recommendations
             'stock_recommendation_3m' => $stockRec,
             'blend_note'              => $blendNote,
-
-            // Metadata
-            'computed_at'         => now()->toIso8601String(),
-            'computed_by'         => 'laravel_forecast_engine_v1',
-            'forecast_months'     => $months,
+            'computed_at'             => now()->toIso8601String(),
+            'computed_by'             => 'laravel_forecast_engine_v2',
+            'forecast_months'         => $months,
         ];
     }
 
     /**
-     * Compute regional demand breakdown from orders.wilaya
+     * Regional demand from orders.wilaya
+     * FIX: includes pending + processing orders
      */
     public function regionalDemand(int $productId, int $sellerId): array
     {
         $rows = DB::table('order_items as oi')
             ->join('orders as o', 'o.id', '=', 'oi.order_id')
             ->where('oi.product_id', $productId)
-            ->whereIn('o.status', ['completed', 'delivered'])
+            // FIX: was ['completed','delivered'] — now includes pending+processing
+            ->whereIn('o.status', self::COUNTED_STATUSES)
             ->whereNotNull('o.wilaya')
             ->where('o.wilaya', '!=', '')
             ->selectRaw("
@@ -303,7 +261,6 @@ class ForecastEngine
             ];
         })->values()->toArray();
 
-        // Merge with full Tunisia governorate list (ensures all 24 appear on map)
         $allGovernorates = $this->allTunisianGovernorates();
         $regionByName    = collect($regions)->keyBy('wilaya');
 
@@ -320,11 +277,10 @@ class ForecastEngine
             ];
         }, $allGovernorates);
 
-        // Re-attach lat/lng to real data rows
         foreach ($fullMap as &$item) {
-            $govMeta = collect($allGovernorates)->firstWhere('name', $item['wilaya']);
-            $item['lat'] = $govMeta['lat'] ?? null;
-            $item['lng'] = $govMeta['lng'] ?? null;
+            $govMeta       = collect($allGovernorates)->firstWhere('name', $item['wilaya']);
+            $item['lat']   = $govMeta['lat'] ?? null;
+            $item['lng']   = $govMeta['lng'] ?? null;
         }
         unset($item);
 
@@ -337,10 +293,6 @@ class ForecastEngine
 
     // ── Private helpers ────────────────────────────────────────────────────
 
-    /**
-     * Compute linear trend slope (units per month) from last N months.
-     * Positive = growing, negative = declining.
-     */
     private function computeTrendSlope(\Illuminate\Support\Collection $months): float
     {
         $n = $months->count();
@@ -362,9 +314,6 @@ class ForecastEngine
         return $denominator > 0 ? round($numerator / $denominator, 3) : 0.0;
     }
 
-    /**
-     * Category peer baseline — average monthly units for similar products.
-     */
     private function computeCategoryPeerBaseline(
         int $categoryId,
         int $excludeProductId,
@@ -372,6 +321,7 @@ class ForecastEngine
     ): array {
         if (!$categoryId) return ['avg' => 0.0, 'count' => 0];
 
+        // FIX: peers also use all counted statuses
         $peers = DB::table('order_items as oi')
             ->join('orders as o',   'o.id',  '=', 'oi.order_id')
             ->join('products as p', 'p.id',  '=', 'oi.product_id')
@@ -380,7 +330,7 @@ class ForecastEngine
             ->where('p.is_approved', true)
             ->where('p.is_active', true)
             ->whereNull('p.deleted_at')
-            ->whereIn('o.status', ['completed', 'delivered'])
+            ->whereIn('o.status', self::COUNTED_STATUSES)
             ->where('o.created_at', '>=', Carbon::now()->subMonths(6))
             ->selectRaw("
                 p.id as product_id,
@@ -400,31 +350,30 @@ class ForecastEngine
         ];
     }
 
-    /**
-     * Load upcoming events for the given category slug.
-     */
     private function loadUpcomingEvents(?string $categorySlug): \Illuminate\Support\Collection
     {
-        $query = DB::table('product_event_signals')
-            ->where('is_active', true)
-            ->where('ends_at', '>=', Carbon::now()->format('Y-m-d'))
-            ->where('starts_at', '<=', Carbon::now()->addMonths(self::FORECAST_MONTHS)->format('Y-m-d'))
-            ->orderBy('starts_at');
+        // Check table exists first
+        try {
+            $query = DB::table('product_event_signals')
+                ->where('is_active', true)
+                ->where('ends_at', '>=', Carbon::now()->format('Y-m-d'))
+                ->where('starts_at', '<=', Carbon::now()->addMonths(self::FORECAST_MONTHS)->format('Y-m-d'))
+                ->orderBy('starts_at');
 
-        if ($categorySlug) {
-            // Include events that affect all categories OR this specific one
-            $query->where(function ($q) use ($categorySlug) {
-                $q->whereNull('affected_categories')
-                  ->orWhereJsonContains('affected_categories', $categorySlug);
-            });
+            if ($categorySlug) {
+                $query->where(function ($q) use ($categorySlug) {
+                    $q->whereNull('affected_categories')
+                      ->orWhereJsonContains('affected_categories', $categorySlug);
+                });
+            }
+
+            return $query->get();
+        } catch (\Throwable $e) {
+            Log::warning('[ForecastEngine] Events table not available: ' . $e->getMessage());
+            return collect();
         }
-
-        return $query->get();
     }
 
-    /**
-     * Compute demand score 0–100 from multiple signals.
-     */
     private function computeDemandScore(
         float $avgMonthly,
         float $trendSlope,
@@ -432,10 +381,8 @@ class ForecastEngine
         int   $totalOrders,
         float $peerAvg
     ): int {
-        // Component 1: absolute volume (0–35)
         $volumeScore = min(35, ($avgMonthly / max(1, $peerAvg > 0 ? $peerAvg : 10)) * 35);
 
-        // Component 2: trend direction (0–25)
         $trendScore = match(true) {
             $trendSlope > 2  => 25,
             $trendSlope > 0  => 15,
@@ -444,23 +391,19 @@ class ForecastEngine
             default          => 0,
         };
 
-        // Component 3: conversion signal (0–20)
         $conversionScore = 0;
         if ($views > 0 && $totalOrders > 0) {
             $convRate = ($totalOrders / $views) * 100;
             $conversionScore = min(20, $convRate * 4);
         }
 
-        // Component 4: data richness bonus (0–20)
         $richnessScore = min(20, ($totalOrders / self::CONF_HIGH) * 20);
 
-        $raw = $volumeScore + $trendScore + $conversionScore + $richnessScore;
-        return (int) min(100, round($raw));
+        return (int) min(100, round($volumeScore + $trendScore + $conversionScore + $richnessScore));
     }
 
     private function monthConfidence(int $historyOrders, int $monthsAhead): string
     {
-        // Confidence degrades with months ahead
         $degraded = $historyOrders / (($monthsAhead + 1) * 1.5);
         return match(true) {
             $degraded >= self::CONF_HIGH   => 'high',
@@ -471,7 +414,6 @@ class ForecastEngine
 
     private function globalConfidence(int $orders): int
     {
-        // 0–100 score
         return (int) min(100, round(($orders / self::CONF_HIGH) * 75 + 25));
     }
 
@@ -505,9 +447,6 @@ class ForecastEngine
         return 'COALESCE(' . implode(', ', $parts) . ')';
     }
 
-    /**
-     * All 24 Tunisian governorates with coordinates for the ECharts heatmap.
-     */
     private function allTunisianGovernorates(): array
     {
         return [

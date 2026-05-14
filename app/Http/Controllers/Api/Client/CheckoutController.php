@@ -15,6 +15,7 @@ use App\Services\CommissionService;
 use App\Services\WalletService;
 use App\Services\StockAlertService;
 use App\Services\PromotionService;
+use App\Http\Controllers\Api\Seller\SellerForecastController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -32,15 +33,11 @@ class CheckoutController extends Controller
     /**
      * POST /api/checkout
      *
-     * Handles two types of cart rows transparently:
-     *   A) Regular product rows  (product_id set, pack_id null)  — original logic
-     *   B) Pack bundle rows      (pack_id set, product_id null)  — new branch
+     * Handles two types of cart rows:
+     *   A) Regular product rows  (product_id set, pack_id null)
+     *   B) Pack bundle rows      (pack_id set, product_id null)
      *
-     * Both types flow through the same Order / SellerOrder / OrderItem system.
-     * Commission is calculated and stored per OrderItem at creation time.
-     *
-     * Platform products (is_platform_product = true, seller_id = null) are
-     * grouped under the key 'platform' and create a SellerOrder with seller_id = null.
+     * After success, clears forecast cache for ALL sellers in the order.
      */
     public function store(Request $request)
     {
@@ -62,104 +59,57 @@ class CheckoutController extends Controller
         ])->where('user_id', $user->id)->get();
 
         if ($cartItems->isEmpty()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Your cart is empty.',
-            ], 422);
+            return response()->json(['success' => false, 'message' => 'Your cart is empty.'], 422);
         }
 
         $paymentMethod = $request->payment_method ?? 'cod';
 
         // ── Pre-flight validation ─────────────────────────────────────────────
         foreach ($cartItems as $item) {
-
             if ($item->isPack()) {
                 $pack = $item->pack;
-
                 if (!$pack || !$pack->is_active || !$pack->is_approved) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => "The bundle \"{$item->pack_name}\" is no longer available.",
-                    ], 422);
+                    return response()->json(['success' => false, 'message' => "The bundle \"{$item->pack_name}\" is no longer available."], 422);
                 }
-
                 $selectionMap = collect($item->pack_selections ?? [])->keyBy('pack_item_id');
-
                 foreach ($pack->items as $packItem) {
                     $sel       = $selectionMap->get($packItem->id);
                     $variantId = $sel['variant_id'] ?? null;
                     $product   = $packItem->product;
-
                     if (!$product || !$product->is_approved || !$product->is_active) {
-                        return response()->json([
-                            'success' => false,
-                            'message' => "A product in bundle \"{$pack->name}\" is no longer available.",
-                        ], 422);
+                        return response()->json(['success' => false, 'message' => "A product in bundle \"{$pack->name}\" is no longer available."], 422);
                     }
-
-                    $stock = $variantId
-                        ? (ProductVariant::find($variantId)?->stock ?? 0)
-                        : $product->stock;
-
+                    $stock = $variantId ? (ProductVariant::find($variantId)?->stock ?? 0) : $product->stock;
                     if ($stock < $packItem->quantity) {
-                        return response()->json([
-                            'success' => false,
-                            'message' => "\"{$product->name}\" in bundle \"{$pack->name}\" only has {$stock} item(s) in stock.",
-                        ], 422);
+                        return response()->json(['success' => false, 'message' => "\"{$product->name}\" in bundle \"{$pack->name}\" only has {$stock} item(s) in stock."], 422);
                     }
                 }
-
             } else {
                 $product = $item->product;
-
                 if (!$product || !$product->is_approved || !$product->is_active) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => "\"$product->name\" is no longer available.",
-                    ], 422);
+                    return response()->json(['success' => false, 'message' => "\"$product->name\" is no longer available."], 422);
                 }
-
                 $this->ensureNotProductOwner($request, $product);
-
-                $stockPool = $item->variant
-                    ? $item->variant->stock
-                    : $product->stock;
-
+                $stockPool = $item->variant ? $item->variant->stock : $product->stock;
                 if ($stockPool < $item->quantity) {
-                    $label = $item->variant
-                        ? "\"{$product->name}\" ({$item->variant->label})"
-                        : "\"{$product->name}\"";
-
-                    return response()->json([
-                        'success' => false,
-                        'message' => "{$label} only has {$stockPool} item(s) in stock but {$item->quantity} were requested.",
-                    ], 422);
+                    $label = $item->variant ? "\"{$product->name}\" ({$item->variant->label})" : "\"{$product->name}\"";
+                    return response()->json(['success' => false, 'message' => "{$label} only has {$stockPool} item(s) in stock but {$item->quantity} were requested."], 422);
                 }
             }
         }
 
-        // ── Calculate total ───────────────────────────────────────────────────
-        $sellerCol = $this->getSellerCol();
-        $total     = $this->calculateCartTotal($cartItems);
+        $sellerCol       = $this->getSellerCol();
+        $total           = $this->calculateCartTotal($cartItems);
+        $sellerPlanCache = [];
 
         if ($paymentMethod === 'wallet') {
             if ((float) $user->wallet_balance < $total) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Insufficient wallet balance.',
-                    'data'    => [
-                        'wallet_balance' => (float) $user->wallet_balance,
-                        'required'       => $total,
-                    ],
-                ], 422);
+                return response()->json(['success' => false, 'message' => 'Insufficient wallet balance.', 'data' => ['wallet_balance' => (float) $user->wallet_balance, 'required' => $total]], 422);
             }
         }
 
         $decrementedVariants = [];
         $decrementedProducts = [];
-
-        // ── Cache seller plans once per checkout — avoids N+1 on SellerApplication ──
-        $sellerPlanCache = [];
 
         DB::beginTransaction();
         try {
@@ -176,26 +126,19 @@ class CheckoutController extends Controller
                 'notes'          => $request->notes ?? null,
             ]);
 
-            // ── Separate product rows from pack rows ──────────────────────────
             $productRows = $cartItems->filter(fn($i) => !$i->isPack());
             $packRows    = $cartItems->filter(fn($i) =>  $i->isPack());
 
-            // ── A) Process regular product rows ───────────────────────────────
+            // ── A) Regular product rows ───────────────────────────────────────
             if ($productRows->isNotEmpty()) {
-
-                // Group by seller_id — platform products (seller_id = null)
-                // are grouped under the string key 'platform' to avoid null key issues.
                 $groupedBySeller = $productRows->groupBy(function ($item) use ($sellerCol) {
                     $sid = $item->product->{$sellerCol};
                     return $sid !== null ? $sid : 'platform';
                 });
 
                 foreach ($groupedBySeller as $groupKey => $sellerItems) {
-
-                    // Normalize: 'platform' group → seller_id = null in DB
                     $sellerIdForDb = ($groupKey === 'platform') ? null : $groupKey;
 
-                    // Platform products have no seller plan — no commission taken
                     if (!isset($sellerPlanCache[$groupKey])) {
                         $sellerPlanCache[$groupKey] = ($sellerIdForDb === null)
                             ? 'free'
@@ -213,29 +156,23 @@ class CheckoutController extends Controller
 
                     $sellerOrder = SellerOrder::create([
                         'order_id'       => $order->id,
-                        'seller_id'      => $sellerIdForDb,  // null for platform products
+                        'seller_id'      => $sellerIdForDb,
                         'status'         => 'pending',
                         'payment_status' => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
                         'subtotal'       => $sellerSubtotal,
                     ]);
 
                     foreach ($sellerItems as $item) {
-                        $product = $item->product;
-                        $variant = $item->variant;
-
+                        $product   = $item->product;
+                        $variant   = $item->variant;
                         $basePrice = $variant
                             ? (float) ($variant->price_override ?? $product->price)
                             : (float) $product->price;
                         $priceData = $this->promoService->getEffectivePrice($product, $basePrice);
                         $unitPrice = $priceData['effective_price'];
-
-                        $qty = (int) $item->quantity;
-
+                        $qty       = (int) $item->quantity;
                         $commission = $this->commissionService->calculate($unitPrice, $sellerPlan, $qty);
-
-                        $variantLabel = $variant
-                            ? $variant->attributeOptions->pluck('value')->join(' / ')
-                            : null;
+                        $variantLabel = $variant ? $variant->attributeOptions->pluck('value')->join(' / ') : null;
 
                         OrderItem::create([
                             'order_id'              => $order->id,
@@ -255,12 +192,8 @@ class CheckoutController extends Controller
                         ]);
 
                         if ($variant) {
-                            ProductVariant::where('id', $variant->id)
-                                ->decrement('stock', $item->quantity);
-                            $decrementedVariants[] = [
-                                'variant_id' => $variant->id,
-                                'product'    => $product,
-                            ];
+                            ProductVariant::where('id', $variant->id)->decrement('stock', $item->quantity);
+                            $decrementedVariants[] = ['variant_id' => $variant->id, 'product' => $product];
                         } else {
                             $product->decrement('stock', $item->quantity);
                             $decrementedProducts[] = $product->id;
@@ -269,7 +202,7 @@ class CheckoutController extends Controller
                 }
             }
 
-            // ── B) Process pack rows ──────────────────────────────────────────
+            // ── B) Pack rows ──────────────────────────────────────────────────
             foreach ($packRows as $cartRow) {
                 $pack         = $cartRow->pack;
                 $selectionMap = collect($cartRow->pack_selections ?? [])->keyBy('pack_item_id');
@@ -283,8 +216,7 @@ class CheckoutController extends Controller
                 foreach ($packItemsBySeller as $groupKey => $packItems) {
                     $proportion     = $packItems->count() / $pack->items->count();
                     $sellerSubtotal = round($packPrice * $proportion, 3);
-
-                    $sellerIdForDb = ($groupKey === 'platform') ? null : $groupKey;
+                    $sellerIdForDb  = ($groupKey === 'platform') ? null : $groupKey;
 
                     if (!isset($sellerPlanCache[$groupKey])) {
                         $sellerPlanCache[$groupKey] = ($sellerIdForDb === null)
@@ -295,31 +227,21 @@ class CheckoutController extends Controller
 
                     $sellerOrder = SellerOrder::create([
                         'order_id'       => $order->id,
-                        'seller_id'      => $sellerIdForDb,  // null for platform products
+                        'seller_id'      => $sellerIdForDb,
                         'status'         => 'pending',
                         'payment_status' => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
                         'subtotal'       => $sellerSubtotal,
                     ]);
 
                     foreach ($packItems as $packItem) {
-                        $product   = $packItem->product;
-                        $sel       = $selectionMap->get($packItem->id);
-                        $variantId = $sel['variant_id'] ?? null;
-                        $variant   = $variantId
-                            ? $product->variants->firstWhere('id', $variantId)
-                            : null;
-
-                        $unitPrice = $variant
-                            ? (float) ($variant->price_override ?? $product->price)
-                            : (float) $product->price;
-
-                        $qty = (int) $packItem->quantity;
-
-                        $commission = $this->commissionService->calculate($unitPrice, $sellerPlan, $qty);
-
-                        $variantLabel = $variant
-                            ? $variant->attributeOptions->pluck('value')->join(' / ')
-                            : null;
+                        $product      = $packItem->product;
+                        $sel          = $selectionMap->get($packItem->id);
+                        $variantId    = $sel['variant_id'] ?? null;
+                        $variant      = $variantId ? $product->variants->firstWhere('id', $variantId) : null;
+                        $unitPrice    = $variant ? (float) ($variant->price_override ?? $product->price) : (float) $product->price;
+                        $qty          = (int) $packItem->quantity;
+                        $commission   = $this->commissionService->calculate($unitPrice, $sellerPlan, $qty);
+                        $variantLabel = $variant ? $variant->attributeOptions->pluck('value')->join(' / ') : null;
 
                         OrderItem::create([
                             'order_id'              => $order->id,
@@ -339,12 +261,8 @@ class CheckoutController extends Controller
                         ]);
 
                         if ($variant) {
-                            ProductVariant::where('id', $variantId)
-                                ->decrement('stock', $packItem->quantity);
-                            $decrementedVariants[] = [
-                                'variant_id' => $variantId,
-                                'product'    => $product,
-                            ];
+                            ProductVariant::where('id', $variantId)->decrement('stock', $packItem->quantity);
+                            $decrementedVariants[] = ['variant_id' => $variantId, 'product' => $product];
                         } else {
                             $product->decrement('stock', $packItem->quantity);
                             $decrementedProducts[] = $product->id;
@@ -363,17 +281,28 @@ class CheckoutController extends Controller
 
         } catch (\Throwable $e) {
             DB::rollBack();
-            Log::error('[Checkout] store failed: ' . $e->getMessage(), [
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to place order. Please try again.',
-            ], 500);
+            Log::error('[Checkout] store failed: ' . $e->getMessage(), ['file' => $e->getFile(), 'line' => $e->getLine()]);
+            return response()->json(['success' => false, 'message' => 'Failed to place order. Please try again.'], 500);
         }
 
+        // ── Stock alerts ──────────────────────────────────────────────────────
         $this->fireStockAlerts($decrementedVariants, $decrementedProducts);
+
+        // ── FIX: Clear forecast cache for ALL sellers in this order ───────────
+        // Runs AFTER commit so new order_items are in DB.
+        // Covers every SellerOrder — not just the last one from the loop.
+        try {
+            $order->load('sellerOrders.items');
+            foreach ($order->sellerOrders as $so) {
+                if (!$so->seller_id) continue; // skip platform products (no dashboard)
+                $pids = $so->items->pluck('product_id')->unique();
+                foreach ($pids as $pid) {
+                    SellerForecastController::clearForecastCache((int) $pid, (int) $so->seller_id);
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[Forecast] Cache clear after store() failed: ' . $e->getMessage());
+        }
 
         $sellerCount = $productRows->isNotEmpty()
             ? $productRows->groupBy(function ($i) use ($sellerCol) {
@@ -395,10 +324,7 @@ class CheckoutController extends Controller
 
     /**
      * POST /api/checkout/buy-now
-     *
-     * Supports platform products (seller_id = null, is_platform_product = true).
-     * SellerOrder is created with seller_id = null — requires seller_orders.seller_id
-     * to be nullable (migration: make_seller_orders_seller_id_nullable).
+     * Single product direct purchase — bypasses cart.
      */
     public function buyNow(Request $request)
     {
@@ -416,14 +342,10 @@ class CheckoutController extends Controller
         $user          = $request->user();
         $quantity      = (int) $request->quantity;
         $paymentMethod = $request->payment_method ?? 'cod';
-
-        $product = Product::find($request->product_id);
+        $product       = Product::find($request->product_id);
 
         if (!$product || !$product->is_approved || !$product->is_active) {
-            return response()->json([
-                'success' => false,
-                'message' => 'This product is no longer available.',
-            ], 422);
+            return response()->json(['success' => false, 'message' => 'This product is no longer available.'], 422);
         }
 
         $variant = null;
@@ -432,65 +354,34 @@ class CheckoutController extends Controller
                 ->where('id', $request->variant_id)
                 ->where('product_id', $product->id)
                 ->first();
-
             if (!$variant || !$variant->is_active) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Selected variant is not available.',
-                ], 422);
+                return response()->json(['success' => false, 'message' => 'Selected variant is not available.'], 422);
             }
         }
 
         $stockPool = $variant ? $variant->stock : $product->stock;
-
         if ($stockPool < $quantity) {
-            $label = $variant
-                ? "\"{$product->name}\" ({$variant->label})"
-                : "\"{$product->name}\"";
-
-            return response()->json([
-                'success' => false,
-                'message' => "{$label} only has {$stockPool} item(s) in stock.",
-            ], 422);
+            $label = $variant ? "\"{$product->name}\" ({$variant->label})" : "\"{$product->name}\"";
+            return response()->json(['success' => false, 'message' => "{$label} only has {$stockPool} item(s) in stock."], 422);
         }
 
-        $basePrice = $variant
-            ? (float) ($variant->price_override ?? $product->price)
-            : (float) $product->price;
-        $priceData = $this->promoService->getEffectivePrice($product, $basePrice);
-        $unitPrice = $priceData['effective_price'];
-
-        // ── Resolve seller ID and plan ─────────────────────────────────────────
-        // Platform products have seller_id = null → no commission, 'free' plan.
         $sellerCol  = $this->getSellerCol();
         $sellerId   = $product->{$sellerCol}; // null for platform products
-
         $sellerPlan = 'free';
         if ($sellerId !== null) {
-            $app        = SellerApplication::where('user_id', $sellerId)->first();
-            $sellerPlan = $app?->plan ?? 'free';
+            $sellerPlan = SellerApplication::where('user_id', $sellerId)->first()?->plan ?? 'free';
         }
 
-        // ── Calculate commission ──────────────────────────────────────────────
-        $commission = $this->commissionService->calculate($unitPrice, $sellerPlan, $quantity);
-
+        $basePrice    = $variant ? (float) ($variant->price_override ?? $product->price) : (float) $product->price;
+        $priceData    = $this->promoService->getEffectivePrice($product, $basePrice);
+        $unitPrice    = $priceData['effective_price'];
+        $commission   = $this->commissionService->calculate($unitPrice, $sellerPlan, $quantity);
         $subtotal     = $commission['total_price'];
         $total        = round($subtotal + 8, 3);
-        $variantLabel = $variant
-            ? $variant->attributeOptions->pluck('value')->join(' / ')
-            : null;
+        $variantLabel = $variant ? $variant->attributeOptions->pluck('value')->join(' / ') : null;
 
-        if ($paymentMethod === 'wallet') {
-            if ((float) $user->wallet_balance < $total) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Insufficient wallet balance.',
-                    'data'    => [
-                        'wallet_balance' => (float) $user->wallet_balance,
-                        'required'       => $total,
-                    ],
-                ], 422);
-            }
+        if ($paymentMethod === 'wallet' && (float) $user->wallet_balance < $total) {
+            return response()->json(['success' => false, 'message' => 'Insufficient wallet balance.', 'data' => ['wallet_balance' => (float) $user->wallet_balance, 'required' => $total]], 422);
         }
 
         $decrementedVariants = [];
@@ -511,10 +402,9 @@ class CheckoutController extends Controller
                 'notes'          => $request->notes ?? null,
             ]);
 
-            // seller_id = null is now allowed (migration: make_seller_orders_seller_id_nullable)
             $sellerOrder = SellerOrder::create([
                 'order_id'       => $order->id,
-                'seller_id'      => $sellerId,  // null for platform products ✓
+                'seller_id'      => $sellerId,
                 'status'         => 'pending',
                 'payment_status' => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
                 'subtotal'       => $subtotal,
@@ -553,17 +443,21 @@ class CheckoutController extends Controller
 
         } catch (\Throwable $e) {
             DB::rollBack();
-            Log::error('[Checkout] buyNow failed: ' . $e->getMessage(), [
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to place order. Please try again.',
-            ], 500);
+            Log::error('[Checkout] buyNow failed: ' . $e->getMessage(), ['file' => $e->getFile(), 'line' => $e->getLine()]);
+            return response()->json(['success' => false, 'message' => 'Failed to place order. Please try again.'], 500);
         }
 
+        // ── Stock alerts ──────────────────────────────────────────────────────
         $this->fireStockAlerts($decrementedVariants, $decrementedProducts);
+
+        // ── FIX: Clear forecast cache for this product/seller ─────────────────
+        try {
+            if ($sellerId !== null) {
+                SellerForecastController::clearForecastCache((int) $product->id, (int) $sellerId);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[Forecast] Cache clear after buyNow() failed: ' . $e->getMessage());
+        }
 
         return response()->json([
             'success'       => true,
@@ -587,7 +481,6 @@ class CheckoutController extends Controller
                     $this->stockAlertService->checkVariant($freshVariant, $entry['product']);
                 }
             }
-
             foreach ($decrementedProducts as $productId) {
                 $freshProduct = Product::with('seller')->find($productId);
                 if ($freshProduct) {
@@ -599,10 +492,6 @@ class CheckoutController extends Controller
         }
     }
 
-    /**
-     * calculateCartTotal — uses effective (post-promotion) price for product rows.
-     * Pack rows use pack_price_snapshot directly.
-     */
     private function calculateCartTotal($cartItems): float
     {
         $subtotal = $cartItems->sum(function ($item) {
@@ -623,26 +512,17 @@ class CheckoutController extends Controller
     {
         static $col = null;
         if ($col) return $col;
-
         $columns  = DB::select('SHOW COLUMNS FROM products');
         $colNames = array_map(fn($c) => $c->Field, $columns);
         $col      = in_array('seller_id', $colNames) ? 'seller_id' : 'user_id';
-
         return $col;
     }
 
-    /**
-     * Prevent sellers from buying their own products.
-     * Platform products (seller_id = null) are always purchasable by anyone.
-     */
     protected function ensureNotProductOwner(Request $request, Product $product): void
     {
         $sellerCol = $this->getSellerCol();
         $sellerId  = $product->{$sellerCol};
-
-        // Platform products have no seller — anyone can buy them
         if ($sellerId === null) return;
-
         if ($sellerId === $request->user()->id) {
             abort(422, 'You cannot purchase your own product.');
         }

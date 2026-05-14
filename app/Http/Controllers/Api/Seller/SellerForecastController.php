@@ -164,7 +164,7 @@ class SellerForecastController extends Controller
         $salesByProduct = DB::table('order_items as oi')
             ->join('orders as o', 'o.id', '=', 'oi.order_id')
             ->whereIn('oi.product_id', $similar->pluck('id')->toArray())
-            ->whereIn('o.status', ['completed', 'delivered'])
+            ->whereIn('o.status', ['pending', 'processing', 'completed', 'delivered'])
             ->where('o.created_at', '>=', now()->subMonths(6))
             ->selectRaw("oi.product_id, SUM(oi.quantity) as total_units,
                           COUNT(DISTINCT oi.order_id) as total_orders, SUM({$totalExpr}) as total_revenue")
@@ -192,7 +192,7 @@ class SellerForecastController extends Controller
         $ownSales = DB::table('order_items as oi')
             ->join('orders as o', 'o.id', '=', 'oi.order_id')
             ->where('oi.product_id', $productId)
-            ->whereIn('o.status', ['completed', 'delivered'])
+            ->whereIn('o.status', ['pending', 'processing', 'completed', 'delivered'])
             ->where('o.created_at', '>=', now()->subMonths(6))
             ->selectRaw("SUM(oi.quantity) as total_units")->first();
 

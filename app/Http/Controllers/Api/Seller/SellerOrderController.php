@@ -260,31 +260,32 @@ class SellerOrderController extends Controller
 
     /* ── PATCH /api/seller/orders/{id}/status ── */
     public function updateStatus(Request $request, $id)
-    {
-        $request->validate([
-            'status' => 'required|in:pending,processing,completed,delivered,cancelled',
-        ]);
+{
+    $request->validate([
+        'status' => 'required|in:pending,processing,completed,delivered,cancelled',
+    ]);
 
-        $sellerId    = auth()->id();
-        $sellerOrder = SellerOrder::where('seller_id', $sellerId)->findOrFail($id);
-        $sellerOrder->update(['status' => $request->status]);
-        if (in_array($status, ['completed', 'delivered'])) {
-// Invalidate forecast cache for all products in this order
-     $productIds = $sellerOrder->items()->pluck('product_id')->unique();
-     $sellerId   = auth()->id();
-     foreach ($productIds as $productId) {
-         SellerForecastController::clearForecastCache($productId, $sellerId);
-     }
- }
+    $sellerId    = auth()->id();
+    $sellerOrder = SellerOrder::where('seller_id', $sellerId)->findOrFail($id);
 
-        $this->syncParentOrderStatus($sellerOrder->order_id);
+    $status = $request->status;
+    $sellerOrder->update(['status' => $status]);
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Order status updated.',
-            'data'    => $sellerOrder,
-        ]);
+    if (in_array($status, ['completed', 'delivered'])) {
+        $productIds = $sellerOrder->items()->pluck('product_id')->unique();
+        foreach ($productIds as $productId) {
+            SellerForecastController::clearForecastCache((int) $productId, (int) $sellerId);
+        }
     }
+
+    $this->syncParentOrderStatus($sellerOrder->order_id);
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Order status updated.',
+        'data'    => $sellerOrder,
+    ]);
+}
 
     /**
      * Derive and write the correct aggregate status to orders.status
