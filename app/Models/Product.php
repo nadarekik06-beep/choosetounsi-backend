@@ -16,31 +16,33 @@ class Product extends Model
         'seller_id', 'category_id', 'subcategory_id',
         'name', 'slug', 'description', 'short_description',
         'price', 'stock', 'sku',
-        'is_approved', 'is_active',    'is_platform_product', 'featured', 'views',
+        'is_approved', 'is_active', 'is_platform_product', 'featured', 'views',
         'is_pack', 'season',
     ];
 
     protected $casts = [
-        'is_approved' => 'boolean',
-        'is_active'   => 'boolean',
-        'featured'    => 'boolean',
-        'is_platform_product'  => 'boolean',
-        'price'       => 'decimal:3',
-        'is_pack' => 'boolean',
+        'is_approved'         => 'boolean',
+        'is_active'           => 'boolean',
+        'featured'            => 'boolean',
+        'is_platform_product' => 'boolean',
+        'price'               => 'decimal:3',
+        'is_pack'             => 'boolean',
+        'season'              => 'array',   // ← JSON array: ["summer","winter"] stored as JSON in DB
     ];
-    // Add as a public constant on the model for reuse everywhere
-public const SEASONS = [
-    'all_seasons'    => 'All Seasons',
-    'summer'         => 'Summer',
-    'winter'         => 'Winter',
-    'spring'         => 'Spring',
-    'autumn'         => 'Autumn',
-    'ramadan'        => 'Ramadan',
-    'eid_al_fitr'    => 'Eid al-Fitr',
-    'eid_al_adha'    => 'Eid al-Adha',
-    'back_to_school' => 'Back to School',
-    'new_year'       => 'New Year',
-];
+
+    // Canonical season values — reuse everywhere (validation, AI engine, frontend)
+    public const SEASONS = [
+        'all_seasons'    => 'All Seasons',
+        'summer'         => 'Summer',
+        'winter'         => 'Winter',
+        'spring'         => 'Spring',
+        'autumn'         => 'Autumn',
+        'ramadan'        => 'Ramadan',
+        'eid_al_fitr'    => 'Eid al-Fitr',
+        'eid_al_adha'    => 'Eid al-Adha',
+        'back_to_school' => 'Back to School',
+        'new_year'       => 'New Year',
+    ];
 
     protected $appends = ['primary_image_url'];
 
@@ -54,6 +56,10 @@ public const SEASONS = [
             if (empty($product->slug)) {
                 $product->slug = Str::slug($product->name);
             }
+            // Ensure season always defaults to an array, never null
+            if (empty($product->season)) {
+                $product->season = ['all_seasons'];
+            }
         });
 
         static::deleting(function ($product) {
@@ -62,7 +68,6 @@ public const SEASONS = [
             }
             $product->images()->delete();
             $product->attributeValues()->delete();
-            // Cascade handled by DB foreign key, but explicit for clarity
             $product->variants()->delete();
         });
     }
@@ -99,34 +104,22 @@ public const SEASONS = [
         return $this->hasMany(OrderItem::class);
     }
 
-    /**
-     * Raw attribute value rows (product-level, non-variant attributes).
-     */
     public function attributeValues()
     {
         return $this->hasMany(ProductAttributeValue::class);
     }
 
-    /**
-     * Attribute values with their attribute definitions & options eager-loaded.
-     */
     public function attributes()
     {
         return $this->attributeValues()->with(['attribute.options']);
     }
 
-    /**
-     * All variants for this product (with their option data).
-     */
     public function variants()
     {
         return $this->hasMany(ProductVariant::class)
             ->with(['attributeOptions.attribute:id,slug,name,type']);
     }
 
-    /**
-     * Only active variants.
-     */
     public function activeVariants()
     {
         return $this->hasMany(ProductVariant::class)
@@ -136,59 +129,50 @@ public const SEASONS = [
 
     // ── Scopes ─────────────────────────────────────────────────────────────
 
-    public function scopeApproved($query)  { return $query->where('is_approved', true); }
-    public function scopePending($query)   { return $query->where('is_approved', false); }
-    public function scopeActive($query)    { return $query->where('is_active', true); }
-    public function scopeAvailable($query) { return $query->where('is_approved', true)->where('is_active', true); }
-    public function scopeFeatured($query)  { return $query->where('featured', true); }
-    public function scopeInStock($query)   { return $query->where('stock', '>', 0); }
-    public function scopePlatform($query)      { return $query->where('is_platform_product', true); }
-    public function scopeSeller($query)        { return $query->where('is_platform_product', false); }
-    public function scopeAvailableBrand($query){ return $query->where('is_platform_product', true)->where('is_active', true); }
+    public function scopeApproved($query)      { return $query->where('is_approved', true); }
+    public function scopePending($query)        { return $query->where('is_approved', false); }
+    public function scopeActive($query)         { return $query->where('is_active', true); }
+    public function scopeAvailable($query)      { return $query->where('is_approved', true)->where('is_active', true); }
+    public function scopeFeatured($query)       { return $query->where('featured', true); }
+    public function scopeInStock($query)        { return $query->where('stock', '>', 0); }
+    public function scopePlatform($query)       { return $query->where('is_platform_product', true); }
+    public function scopeSeller($query)         { return $query->where('is_platform_product', false); }
+    public function scopeAvailableBrand($query) { return $query->where('is_platform_product', true)->where('is_active', true); }
+
+    /**
+     * Filter by season — checks if the JSON array contains the given season value.
+     * Usage: Product::hasSeason('summer')->get()
+     */
+    public function scopeHasSeason($query, string $season)
+    {
+        return $query->where(function ($q) use ($season) {
+            $q->whereJsonContains('season', $season)
+              ->orWhereJsonContains('season', 'all_seasons');
+        });
+    }
 
     /**
      * Filter by a specific attribute value.
-     *
-     * Routing logic:
-     *   - is_variant = true  → values live in variant_attribute_values
-     *                          (product → product_variants → variant_attribute_values)
-     *   - is_variant = false → values live in product_attribute_values
-     *
-     * $values is always an array of attribute_option_id integers,
-     * e.g. attrs[color][]=104 → $values = [104]
-     *
-     * When multiple option IDs are passed for the same attribute (OR logic):
-     *   → product must have a variant matching ANY of the selected option IDs
-     *
-     * When multiple attributes are filtered (AND logic):
-     *   → index() calls this scope once per attribute, Laravel chains as AND
      */
     public function scopeHasAttribute($query, string $attrSlug, array $values)
     {
-        // Resolve attribute ID from slug
         $attribute = DB::table('attributes')
             ->where('slug', $attrSlug)
             ->select('id')
             ->first();
 
         if (!$attribute) {
-            // Unknown attribute slug → return no results
             return $query->whereRaw('1 = 0');
         }
 
-        // Check if this attribute is marked is_variant=true in any subcategory
         $isVariant = DB::table('subcategory_attributes')
             ->where('attribute_id', $attribute->id)
             ->where('is_variant', true)
             ->exists();
 
-        // Cast all values to integers (frontend sends option IDs)
         $optionIds = array_values(array_map('intval', $values));
 
         if ($isVariant) {
-            // Values live in variant_attribute_values via the pivot:
-            //   product_variants.id = variant_attribute_values.variant_id
-            //   variant_attribute_values.attribute_option_id IN ($optionIds)
             return $query->whereExists(function ($sub) use ($optionIds) {
                 $sub->select(DB::raw(1))
                     ->from('product_variants')
@@ -204,9 +188,6 @@ public const SEASONS = [
             });
         }
 
-        // Non-variant: values are stored JSON-encoded in product_attribute_values.value
-        // e.g. value = '[3,7]' or value = '3'
-        // OR logic across the selected option IDs
         return $query->whereExists(function ($sub) use ($attribute, $optionIds) {
             $sub->select(DB::raw(1))
                 ->from('product_attribute_values')
@@ -223,22 +204,14 @@ public const SEASONS = [
 
     // ── Accessors ──────────────────────────────────────────────────────────
 
-    /**
-     * True if this product has at least one ProductVariant row.
-     */
     public function getHasVariantsAttribute(): bool
     {
-        // Use loaded relation when available to avoid extra query
         if ($this->relationLoaded('variants')) {
             return $this->variants->isNotEmpty();
         }
         return $this->variants()->exists();
     }
 
-    /**
-     * Total stock across all active variants.
-     * Used when has_variants = true.
-     */
     public function getVariantStockAttribute(): int
     {
         if ($this->relationLoaded('variants')) {
@@ -247,14 +220,6 @@ public const SEASONS = [
         return (int) $this->variants()->sum('stock');
     }
 
-    /**
-     * FIXED: Returns null instead of a broken placeholder URL when no image exists.
-     * The placeholder file doesn't exist on disk, causing 404 errors in the browser.
-     * Returning null lets the frontend render its own icon fallback cleanly.
-     *
-     * Also resolves from the already-loaded `images` collection when available
-     * (e.g. in SellerProductController::index) to avoid an extra DB query.
-     */
     public function getPrimaryImageUrlAttribute(): ?string
     {
         if ($this->relationLoaded('images')) {
@@ -275,29 +240,24 @@ public const SEASONS = [
     {
         return $this->is_approved && $this->is_active && $this->stock > 0;
     }
+
     public function syncActiveStatusFromVariants(): void
-{
-    $totalVariants = $this->variants()->count();
+    {
+        $totalVariants = $this->variants()->count();
 
-    // Simple product path: no variants exist → preserve seller's is_active as-is.
-    // This handles the edge case where the seller chose a variant-capable subcategory
-    // but did not generate any variant combinations (product acts as simple).
-    if ($totalVariants === 0) {
-        return;
+        if ($totalVariants === 0) {
+            return;
+        }
+
+        $activeVariants = $this->variants()->where('is_active', true)->count();
+        $shouldBeActive = $activeVariants > 0;
+
+        if ($this->is_active !== $shouldBeActive) {
+            $this->is_active = $shouldBeActive;
+            $this->saveQuietly();
+        }
     }
 
-    // Variant product path: active iff at least one variant is active.
-    $activeVariants = $this->variants()->where('is_active', true)->count();
-    $shouldBeActive = $activeVariants > 0;
-
-    if ($this->is_active !== $shouldBeActive) {
-        $this->is_active = $shouldBeActive;
-        $this->saveQuietly();
-    }
-}
-    /**
-     * FIXED: Returns null instead of a broken placeholder URL when no image exists.
-     */
     public function getPrimaryImageUrl(): ?string
     {
         $primary = $this->primaryImage;
@@ -305,17 +265,18 @@ public const SEASONS = [
             ? Storage::url($primary->image_path)
             : null;
     }
+
     public function sponsorships()
     {
         return $this->hasMany(\App\Models\Sponsorship::class);
     }
+
     public function activeSponsorship()
     {
         return $this->hasOne(\App\Models\Sponsorship::class)
                     ->where('status', 'active')
                     ->orderByDesc('boost_score');
     }
- 
 
     public function incrementViews(): void
     {
@@ -337,10 +298,6 @@ public const SEASONS = [
         return $this->stock > 0 && $this->stock < 10;
     }
 
-    /**
-     * Save product-level attribute values.
-     * $data = ['color' => '[1,2]', 'size' => '[3]', 'brand' => 'Nike', ...]
-     */
     public function syncAttributeValues(array $data): void
     {
         $attrMap = Attribute::whereIn('slug', array_keys($data))->pluck('id', 'slug');
@@ -355,9 +312,6 @@ public const SEASONS = [
         }
     }
 
-    /**
-     * Return product-level attribute values keyed by slug for the seller form.
-     */
     public function getAttributeValuesForForm(): array
     {
         return $this->attributeValues()
@@ -371,19 +325,12 @@ public const SEASONS = [
             ->toArray();
     }
 
-    /**
-     * Sync variants for this product.
-     * $variantsData = array of:
-     *   ['id' => optional, 'option_ids' => [3,7], 'stock' => 10, 'price_override' => null, 'sku' => null]
-     */
     public function syncVariants(array $variantsData): void
     {
-        // Delete variants no longer present in the payload
         $incomingIds = collect($variantsData)->pluck('id')->filter()->values()->toArray();
         if (!empty($incomingIds)) {
             $this->variants()->whereNotIn('id', $incomingIds)->delete();
         } else {
-            // No IDs at all means full replacement
             $this->variants()->delete();
         }
 

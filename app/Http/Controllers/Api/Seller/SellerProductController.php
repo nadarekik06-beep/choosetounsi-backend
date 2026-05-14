@@ -18,60 +18,56 @@ class SellerProductController extends Controller
 {
     // ── Index ──────────────────────────────────────────────────────────────────
 
-   public function index(Request $request)
-{
-    $seller = $request->user();
-    $query  = $seller->products()->with([
-        'category:id,name,slug',
-        'subcategory:id,name,slug',
-        'primaryImage',
-    ]);
+    public function index(Request $request)
+    {
+        $seller = $request->user();
+        $query  = $seller->products()->with([
+            'category:id,name,slug',
+            'subcategory:id,name,slug',
+            'primaryImage',
+        ]);
 
-    if ($request->filled('search')) {
-        $s = $request->search;
-        $query->where(fn($q) => $q->where('name', 'like', "%$s%")->orWhere('sku', 'like', "%$s%"));
+        if ($request->filled('search')) {
+            $s = $request->search;
+            $query->where(fn($q) => $q->where('name', 'like', "%$s%")->orWhere('sku', 'like', "%$s%"));
+        }
+        if ($request->filled('is_active')) {
+            $query->where('is_active', filter_var($request->is_active, FILTER_VALIDATE_BOOLEAN));
+        }
+        if ($request->filled('is_approved')) {
+            $query->where('is_approved', filter_var($request->is_approved, FILTER_VALIDATE_BOOLEAN));
+        }
+
+        $products = $query->orderByDesc('created_at')
+            ->paginate((int) $request->input('per_page', 12));
+
+        $itemColNames = array_map(
+            fn($c) => $c->Field,
+            DB::select('SHOW COLUMNS FROM order_items')
+        );
+
+        $debugMode    = (bool) config('alerts.debug_mode') || $request->boolean('alert_debug');
+        $alertService = new \App\Services\ProductAlertService($debugMode);
+
+        $products->getCollection()->transform(function ($p) use ($alertService) {
+            $p->primary_image_url = $p->primaryImage
+                ? Storage::url($p->primaryImage->image_path)
+                : null;
+            $p->has_variants  = $p->variants()->exists();
+            $p->variant_stock = $p->variants()->sum('stock');
+            return $p;
+        });
+
+        $withAlerts = $alertService->attachAlerts(
+            $products->getCollection(),
+            $seller->id,
+            $itemColNames
+        );
+        $products->getCollection()->replace($withAlerts);
+
+        return response()->json(['success' => true, 'data' => $products]);
     }
-    if ($request->filled('is_active')) {
-        $query->where('is_active', filter_var($request->is_active, FILTER_VALIDATE_BOOLEAN));
-    }
-    if ($request->filled('is_approved')) {
-        $query->where('is_approved', filter_var($request->is_approved, FILTER_VALIDATE_BOOLEAN));
-    }
 
-    $products = $query->orderByDesc('created_at')
-        ->paginate((int) $request->input('per_page', 12));
-
-    // ── Detect order_items columns once ───────────────────────────────────
-    $itemColNames = array_map(
-        fn($c) => $c->Field,
-        DB::select('SHOW COLUMNS FROM order_items')
-    );
-
-    // ── Debug mode: lower all thresholds to expose alerts during testing ──
-    $debugMode = (bool)config('alerts.debug_mode')
-        || $request->boolean('alert_debug');
-
-    $alertService = new \App\Services\ProductAlertService($debugMode);
-
-    $products->getCollection()->transform(function ($p) use ($alertService) {
-        $p->primary_image_url = $p->primaryImage
-            ? Storage::url($p->primaryImage->image_path)
-            : null;
-        $p->has_variants  = $p->variants()->exists();
-        $p->variant_stock = $p->variants()->sum('stock');
-        return $p;
-    });
-
-    // ── Attach alert metadata (single batch query) ────────────────────────
-    $withAlerts = $alertService->attachAlerts(
-        $products->getCollection(),
-        $seller->id,
-        $itemColNames
-    );
-    $products->getCollection()->replace($withAlerts);
-
-    return response()->json(['success' => true, 'data' => $products]);
-}
     // ── Show ───────────────────────────────────────────────────────────────────
 
     public function show(Request $request, $id)
@@ -180,46 +176,6 @@ class SellerProductController extends Controller
         return response()->json(['success' => true, 'data' => $product]);
     }
 
-    private function saveVariantImages(Product $product, Request $request): void
-    {
-        $allFiles = $request->allFiles();
-        if (empty($allFiles['variant_images'])) return;
-
-        $variantImagesInput = $allFiles['variant_images'];
-        if (!is_array($variantImagesInput)) return;
-
-        $validVariantIds = $product->variants()->pluck('id')->flip();
-
-        $maxOrder = $product->images()->max('order') ?? -1;
-        $orderIdx = 0;
-
-        foreach ($variantImagesInput as $variantIdStr => $files) {
-            $variantId = (int) $variantIdStr;
-
-            if (!isset($validVariantIds[$variantId])) {
-                Log::warning("[SellerProduct::saveVariantImages] Invalid variant_id: {$variantId} for product {$product->id}");
-                continue;
-            }
-
-            foreach ((array) $files as $file) {
-                if (!$file || !method_exists($file, 'isValid') || !$file->isValid()) continue;
-
-                $path = $file->store('products', 'public');
-
-                ProductImage::create([
-                    'product_id'      => $product->id,
-                    'variant_id'      => $variantId,
-                    'color_option_id' => null,
-                    'image_path'      => $path,
-                    'order'           => $maxOrder + $orderIdx + 1,
-                    'is_primary'      => false,
-                ]);
-
-                $orderIdx++;
-            }
-        }
-    }
-
     // ── Stats ──────────────────────────────────────────────────────────────────
 
     public function stats(Request $request)
@@ -298,8 +254,9 @@ class SellerProductController extends Controller
                 'is_approved'       => false,
                 'featured'          => false,
                 'views'             => 0,
-                'season'            => $request->input('season', 'all_seasons'),
                 'is_pack'           => filter_var($request->input('is_pack', false), FILTER_VALIDATE_BOOLEAN) ? 1 : 0,
+                // ── FIX: read 'seasons' (array from frontend), fall back to ['all_seasons']
+                'season'            => $this->parseSeasons($request, null),
             ]);
             Log::info('[SellerProduct::store] Product created', ['id' => $product->id]);
         } catch (\Throwable $e) {
@@ -344,7 +301,8 @@ class SellerProductController extends Controller
 
         $this->notifyAdmins('created', $product, $seller);
         if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class, 'clearSellerCache')) {
-       \App\Http\Controllers\Api\Seller\BlackPepperController::clearSellerCache($seller->id);   }
+            \App\Http\Controllers\Api\Seller\BlackPepperController::clearSellerCache($seller->id);
+        }
         Log::info('[SellerProduct::store] DONE', ['id' => $product->id]);
 
         return response()->json([
@@ -376,14 +334,14 @@ class SellerProductController extends Controller
                 'short_description' => $request->short_description ?? $product->short_description,
                 'price'             => $request->price             ?? $product->price,
                 'stock'             => $request->stock             ?? $product->stock,
-                'category_id'       => $request->category_id      ?? $product->category_id,
+                'category_id'       => $request->category_id       ?? $product->category_id,
                 'subcategory_id'    => $request->subcategory_id    ?? $product->subcategory_id,
                 'is_active'         => $isActive,
                 'is_pack'           => $request->has('is_pack')
-                               ? (filter_var($request->input('is_pack'), FILTER_VALIDATE_BOOLEAN) ? 1 : 0)
-                               : $product->is_pack,
-                'season'            => $request->input('season', $product->season),  // ← ADD
-
+                    ? (filter_var($request->input('is_pack'), FILTER_VALIDATE_BOOLEAN) ? 1 : 0)
+                    : $product->is_pack,
+                // ── FIX: read 'seasons' (array from frontend), fall back to existing value
+                'season'            => $this->parseSeasons($request, $product->season),
             ]);
             Log::info('[SellerProduct::update] Product updated');
         } catch (\Throwable $e) {
@@ -434,9 +392,10 @@ class SellerProductController extends Controller
         }
 
         $this->notifyAdmins('updated', $product, $seller);
-if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class, 'clearSellerCache')) {
-       \App\Http\Controllers\Api\Seller\BlackPepperController::clearSellerCache($seller->id);
-  }
+        if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class, 'clearSellerCache')) {
+            \App\Http\Controllers\Api\Seller\BlackPepperController::clearSellerCache($seller->id);
+        }
+
         return response()->json([
             'success' => true,
             'message' => 'Product updated.',
@@ -458,7 +417,7 @@ if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class,
         }
         $product->delete();
 
-        $this->notifyAdmins('deleted', (object)['id' => $pid, 'name' => $pname], $seller);
+        $this->notifyAdmins('deleted', (object) ['id' => $pid, 'name' => $pname], $seller);
 
         return response()->json(['success' => true, 'message' => 'Product deleted.']);
     }
@@ -495,6 +454,90 @@ if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class,
     }
 
     // ── Private helpers ─────────────────────────────────────────────────────────
+
+    /**
+     * Parse the seasons value sent by the frontend.
+     *
+     * The frontend sends:  seasons = '["summer","winter"]'  (JSON-stringified array)
+     * This method decodes it, validates each value, and returns a clean PHP array
+     * ready to be assigned to $product->season (which has 'array' cast on the model).
+     *
+     * Falls back to $existingValue (on update) or ['all_seasons'] (on create)
+     * when the request does not contain a 'seasons' key at all.
+     */
+    private function parseSeasons(Request $request, mixed $existingValue): array
+    {
+        $validSeasons = array_keys(Product::SEASONS);
+
+        // If the request doesn't include 'seasons' at all, keep existing or default
+        if (!$request->has('seasons')) {
+            if (is_array($existingValue) && !empty($existingValue)) {
+                return $existingValue;
+            }
+            return ['all_seasons'];
+        }
+
+        $raw = $request->input('seasons');
+
+        // Frontend sends a JSON string: '["summer","winter"]'
+        if (is_string($raw)) {
+            $decoded = json_decode($raw, true);
+            $seasons = is_array($decoded) ? $decoded : [$raw];
+        } elseif (is_array($raw)) {
+            // Just in case it arrives already decoded
+            $seasons = $raw;
+        } else {
+            return ['all_seasons'];
+        }
+
+        // Validate — keep only known season values
+        $seasons = array_values(array_filter(
+            $seasons,
+            fn($s) => is_string($s) && in_array($s, $validSeasons, true)
+        ));
+
+        return !empty($seasons) ? $seasons : ['all_seasons'];
+    }
+
+    private function saveVariantImages(Product $product, Request $request): void
+    {
+        $allFiles = $request->allFiles();
+        if (empty($allFiles['variant_images'])) return;
+
+        $variantImagesInput = $allFiles['variant_images'];
+        if (!is_array($variantImagesInput)) return;
+
+        $validVariantIds = $product->variants()->pluck('id')->flip();
+
+        $maxOrder = $product->images()->max('order') ?? -1;
+        $orderIdx = 0;
+
+        foreach ($variantImagesInput as $variantIdStr => $files) {
+            $variantId = (int) $variantIdStr;
+
+            if (!isset($validVariantIds[$variantId])) {
+                Log::warning("[SellerProduct::saveVariantImages] Invalid variant_id: {$variantId} for product {$product->id}");
+                continue;
+            }
+
+            foreach ((array) $files as $file) {
+                if (!$file || !method_exists($file, 'isValid') || !$file->isValid()) continue;
+
+                $path = $file->store('products', 'public');
+
+                ProductImage::create([
+                    'product_id'      => $product->id,
+                    'variant_id'      => $variantId,
+                    'color_option_id' => null,
+                    'image_path'      => $path,
+                    'order'           => $maxOrder + $orderIdx + 1,
+                    'is_primary'      => false,
+                ]);
+
+                $orderIdx++;
+            }
+        }
+    }
 
     private function saveAttributes(Product $product, Request $request): void
     {
@@ -606,29 +649,6 @@ if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class,
         }
     }
 
-    /**
-     * Save color-group images.
-     *
-     * Frontend sends:  color_images[{groupKey}][j] = File
-     * groupKey = sorted color option IDs joined by "_", e.g. "104_105_106"
-     *
-     * THE ROOT PROBLEM (now fully fixed):
-     * When groups share color IDs (all groups contain Black=104, White=105),
-     * per-group deletion caused cross-contamination:
-     *   Group1 [104,105,106]: save rows for 104,105,106
-     *   Group2 [104,105,113]: DELETE whereIn([104,105,113]) → kills group1's 104+105 rows!
-     *   Group3 [104,105,115]: DELETE whereIn([104,105,115]) → kills group2's 104+105 rows!
-     *   Result: only group3 survives.
-     *
-     * THE FIX — 3 steps:
-     *   1. Parse ALL groups into memory first
-     *   2. Delete ALL existing color images for the product in ONE atomic query
-     *   3. Save ALL groups — no per-group deletion possible
-     *
-     * Each image file is stored once on disk but gets N DB rows (one per color
-     * ID in the group) so ProductController::show() resolves any single color
-     * ID to its group's images correctly.
-     */
     private function saveColorImages(Product $product, Request $request): void
     {
         $allFiles = $request->allFiles();
@@ -676,15 +696,10 @@ if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class,
         ]);
 
         // ── STEP 2: Delete ALL existing color images atomically ────────────
-        // One query — no cross-group collision possible.
-        // We collect unique image_paths first to avoid deleting a file
-        // that is still referenced by another row (shared path scenario).
         $existingColorImages = $product->images()
             ->whereNotNull('color_option_id')
             ->get();
 
-        // Track paths that have multiple rows so we only delete the file
-        // when the last row referencing it is removed.
         $pathCounts = [];
         foreach ($existingColorImages as $img) {
             $pathCounts[$img->image_path] = ($pathCounts[$img->image_path] ?? 0) + 1;
@@ -699,7 +714,7 @@ if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class,
         }
 
         Log::info('[SellerProduct::saveColorImages] Cleared existing color images', [
-            'product_id' => $product->id,
+            'product_id'   => $product->id,
             'deleted_rows' => $existingColorImages->count(),
         ]);
 
@@ -712,11 +727,9 @@ if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class,
             $colorOptionIds = $group['ids'];
 
             foreach ($group['files'] as $file) {
-                // Store the physical file ONCE on disk
                 $path       = $file->store('products', 'public');
                 $setPrimary = !$hasPrimary && $orderIdx === 0;
 
-                // Save one DB row per color ID — same image_path, different color_option_id
                 foreach ($colorOptionIds as $colorId) {
                     ProductImage::create([
                         'product_id'      => $product->id,
@@ -747,7 +760,7 @@ if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class,
         $counter  = 2;
 
         while (true) {
-            $query = \Illuminate\Support\Facades\DB::table('products')->where('slug', $slug);
+            $query = DB::table('products')->where('slug', $slug);
             if ($excludeId) {
                 $query->where('id', '!=', $excludeId);
             }

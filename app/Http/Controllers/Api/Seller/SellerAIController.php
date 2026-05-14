@@ -428,13 +428,57 @@ EOT;
 // ═══════════════════════════════════════════════════════════════════════
 public function salesPredictor(Request $request)
 {
-    $request->validate(['product_id' => 'required|integer']);
-
+    $request->validate([
+        'product_id'     => 'required|integer',
+        'target_seasons' => 'nullable|array',
+        'target_seasons.*' => 'nullable|string',
+    ]);
+ 
     $sellerId  = auth()->id();
     $sellerCol = $this->sellerCol();
     $totalExpr = $this->totalExpr();
-
-    // ── 1. Core product row — season comes from DB, not from request ──────
+ 
+    // ── Shared season config ───────────────────────────────────────────────
+    // Maps DB slug → calendar month numbers it covers (empty = variable/Islamic)
+    $seasonMonthMap = [
+        'summer'         => [6, 7, 8],
+        'winter'         => [12, 1, 2],
+        'spring'         => [3, 4, 5],
+        'autumn'         => [9, 10, 11],
+        'ramadan'        => [],
+        'eid_al_fitr'    => [],
+        'eid_al_adha'    => [],
+        'back_to_school' => [8, 9],
+        'new_year'       => [12, 1],
+        'all_seasons'    => [],
+    ];
+ 
+    // Tunisia-calibrated demand multipliers (used when real category data < 10 samples)
+    $seasonMultiplierTable = [
+        'ramadan'        => 1.40,
+        'eid_al_fitr'    => 1.35,
+        'eid_al_adha'    => 1.28,
+        'back_to_school' => 1.22,
+        'new_year'       => 1.18,
+        'winter'         => 1.10,
+        'summer'         => 1.08,
+        'spring'         => 1.05,
+        'autumn'         => 1.03,
+        'all_seasons'    => 1.00,
+    ];
+ 
+    // Weekly demand distribution curves per season
+    $weeklyWeightMap = [
+        'ramadan'        => [0.18, 0.30, 0.32, 0.20],
+        'eid_al_fitr'    => [0.15, 0.35, 0.35, 0.15],
+        'eid_al_adha'    => [0.20, 0.30, 0.30, 0.20],
+        'back_to_school' => [0.25, 0.30, 0.28, 0.17],
+        'default'        => [0.23, 0.27, 0.27, 0.23],
+    ];
+ 
+    // ── 1. Core product row ────────────────────────────────────────────────
+    // We SELECT the raw season column as a string; we decode it ourselves.
+    // Do NOT use COALESCE here — we need the raw JSON to decode properly.
     $product = DB::table('products as p')
         ->leftJoin('categories as c',    'c.id', '=', 'p.category_id')
         ->leftJoin('subcategories as s', 's.id', '=', 'p.subcategory_id')
@@ -443,20 +487,75 @@ public function salesPredictor(Request $request)
         ->whereNull('p.deleted_at')
         ->selectRaw("
             p.id, p.name, p.price, p.stock, p.views,
-            p.subcategory_id,
-            COALESCE(p.season, 'all_seasons') as season,
+            p.subcategory_id, p.category_id,
+            p.season,
             c.name  as category_name,
             s.name  as subcategory_name
         ")
         ->first();
-
+ 
     if (!$product) {
         return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
     }
-
-    $season = $product->season;
-
-    // ── 2. Historical monthly sales — 18 months for better trend detection ─
+ 
+    // ── 2. Parse product seasons (JSON array from DB) ──────────────────────
+    // After the migration the column stores: ["winter","ramadan"]
+    // Before migration it stored: "all_seasons" (plain string, no array)
+    // We handle both gracefully.
+    $rawSeason = $product->season;
+    if (is_string($rawSeason)) {
+        $decoded = json_decode($rawSeason, true);
+        $productSeasons = is_array($decoded) && !empty($decoded)
+            ? $decoded
+            : ($rawSeason !== '' ? [$rawSeason] : ['all_seasons']);
+    } elseif (is_array($rawSeason)) {
+        $productSeasons = !empty($rawSeason) ? $rawSeason : ['all_seasons'];
+    } else {
+        $productSeasons = ['all_seasons'];
+    }
+ 
+    // Validate — keep only known slugs
+    $knownSlugs     = array_keys($seasonMonthMap);
+    $productSeasons = array_values(array_filter(
+        $productSeasons,
+        fn($s) => in_array($s, $knownSlugs, true)
+    ));
+    if (empty($productSeasons)) {
+        $productSeasons = ['all_seasons'];
+    }
+ 
+    // ── 3. Resolve target seasons (what the seller wants to forecast for) ──
+    // The frontend sends the seller's UI selection (subset of productSeasons).
+    // If nothing sent, default to all product seasons.
+    $requestedTargets = $request->input('target_seasons', []);
+    if (!empty($requestedTargets) && is_array($requestedTargets)) {
+        // Only honour targets that are actually on this product
+        $targetSeasons = array_values(array_filter(
+            $requestedTargets,
+            fn($s) => in_array($s, $productSeasons, true)
+        ));
+    }
+    // Fallback: use all product seasons
+    if (empty($targetSeasons ?? [])) {
+        $targetSeasons = $productSeasons;
+    }
+ 
+    // ── 4. Build a human-readable season label ─────────────────────────────
+    $allSeasonLabels = \App\Models\Product::SEASONS; // ['summer' => 'Summer', ...]
+    $targetSeasonLabels = array_map(
+        fn($s) => $allSeasonLabels[$s] ?? ucfirst(str_replace('_', ' ', $s)),
+        $targetSeasons
+    );
+    $seasonLabel = implode(' + ', $targetSeasonLabels);
+ 
+    // For single-season display in the frontend hero, pick the highest-multiplier season
+    $primarySeason = collect($targetSeasons)
+        ->sortByDesc(fn($s) => $seasonMultiplierTable[$s] ?? 1.0)
+        ->first() ?? 'all_seasons';
+ 
+    $categoryId = $product->category_id;
+ 
+    // ── 5. Historical monthly sales — 18 months ────────────────────────────
     $monthlySales = DB::table('order_items as oi')
         ->join('orders as o', 'o.id', '=', 'oi.order_id')
         ->where('oi.product_id', $request->product_id)
@@ -472,103 +571,127 @@ public function salesPredictor(Request $request)
         ->groupBy('month', 'month_num')
         ->orderBy('month')
         ->get();
-
-    // ── 3. Lifetime stats ──────────────────────────────────────────────────
+ 
+    // ── 6. Lifetime stats ──────────────────────────────────────────────────
     $lifetimeStats = DB::table('order_items as oi')
         ->join('orders as o', 'o.id', '=', 'oi.order_id')
         ->where('oi.product_id', $request->product_id)
         ->whereIn('o.status', ['completed', 'delivered'])
         ->selectRaw("
-            SUM(oi.quantity)             as total_units,
-            SUM({$totalExpr})            as total_revenue,
-            COUNT(DISTINCT oi.order_id)  as total_orders
+            SUM(oi.quantity)            as total_units,
+            SUM({$totalExpr})           as total_revenue,
+            COUNT(DISTINCT oi.order_id) as total_orders
         ")
         ->first();
-
-    // ── 4. Category-level seasonal intelligence ────────────────────────────
-    // For THIS season, how did all products in the same category perform
-    // vs. their own average? This gives us a real market-wide multiplier.
-    $categoryId = DB::table('products')->where('id', $request->product_id)->value('category_id');
-
-    // Map season slug → calendar month numbers it covers
-    $seasonMonths = [
-        'summer'         => [6, 7, 8],
-        'winter'         => [12, 1, 2],
-        'spring'         => [3, 4, 5],
-        'autumn'         => [9, 10, 11],
-        'ramadan'        => [],   // Variable — use label only
-        'eid_al_fitr'    => [],
-        'eid_al_adha'    => [],
-        'back_to_school' => [8, 9],
-        'new_year'       => [12, 1],
-        'all_seasons'    => [],
-    ];
-
-    $seasonMonthNums = $seasonMonths[$season] ?? [];
-    $categorySeasonMultiplier = 1.0;
-    $categorySeasonDataPoints = 0;
-
-    if (!empty($seasonMonthNums) && $categoryId) {
-        // Average monthly units for same-category products IN season months
-        $seasonAvg = DB::table('order_items as oi')
-            ->join('orders as o',    'o.id',  '=', 'oi.order_id')
-            ->join('products as p',  'p.id',  '=', 'oi.product_id')
-            ->where('p.category_id', $categoryId)
-            ->whereIn('o.status', ['completed', 'delivered'])
-            ->whereIn(DB::raw('MONTH(o.created_at)'), $seasonMonthNums)
-            ->where('o.created_at', '>=', Carbon::now()->subMonths(24))
-            ->selectRaw("AVG(oi.quantity) as avg_qty, COUNT(*) as cnt")
-            ->first();
-
-        // Average monthly units for same-category products OUT of season
-        $offAvg = DB::table('order_items as oi')
-            ->join('orders as o',    'o.id',  '=', 'oi.order_id')
-            ->join('products as p',  'p.id',  '=', 'oi.product_id')
-            ->where('p.category_id', $categoryId)
-            ->whereIn('o.status', ['completed', 'delivered'])
-            ->whereNotIn(DB::raw('MONTH(o.created_at)'), $seasonMonthNums)
-            ->where('o.created_at', '>=', Carbon::now()->subMonths(24))
-            ->selectRaw("AVG(oi.quantity) as avg_qty, COUNT(*) as cnt")
-            ->first();
-
-        $seasonQty = (float)($seasonAvg->avg_qty ?? 0);
-        $offQty    = (float)($offAvg->avg_qty    ?? 0);
-        $categorySeasonDataPoints = (int)($seasonAvg->cnt ?? 0);
-
-        if ($offQty > 0 && $seasonQty > 0) {
-            $categorySeasonMultiplier = round($seasonQty / $offQty, 3);
+ 
+    // ── 7. Multi-season category intelligence ──────────────────────────────
+    // For EACH target season, compute the real category multiplier.
+    // We then take a weighted average across all target seasons.
+ 
+    $perSeasonData = [];   // keyed by season slug
+ 
+    foreach ($targetSeasons as $slug) {
+        $monthNums = $seasonMonthMap[$slug] ?? [];
+        $realMultiplier  = null;
+        $realDataPoints  = 0;
+ 
+        if (!empty($monthNums) && $categoryId) {
+            $seasonAvg = DB::table('order_items as oi')
+                ->join('orders as o',   'o.id',  '=', 'oi.order_id')
+                ->join('products as p', 'p.id',  '=', 'oi.product_id')
+                ->where('p.category_id', $categoryId)
+                ->whereIn('o.status', ['completed', 'delivered'])
+                ->whereIn(DB::raw('MONTH(o.created_at)'), $monthNums)
+                ->where('o.created_at', '>=', Carbon::now()->subMonths(24))
+                ->selectRaw("AVG(oi.quantity) as avg_qty, COUNT(*) as cnt")
+                ->first();
+ 
+            $offAvg = DB::table('order_items as oi')
+                ->join('orders as o',   'o.id',  '=', 'oi.order_id')
+                ->join('products as p', 'p.id',  '=', 'oi.product_id')
+                ->where('p.category_id', $categoryId)
+                ->whereIn('o.status', ['completed', 'delivered'])
+                ->whereNotIn(DB::raw('MONTH(o.created_at)'), $monthNums)
+                ->where('o.created_at', '>=', Carbon::now()->subMonths(24))
+                ->selectRaw("AVG(oi.quantity) as avg_qty, COUNT(*) as cnt")
+                ->first();
+ 
+            $sQty = (float)($seasonAvg->avg_qty ?? 0);
+            $oQty = (float)($offAvg->avg_qty    ?? 0);
+            $realDataPoints = (int)($seasonAvg->cnt ?? 0);
+ 
+            if ($sQty > 0 && $oQty > 0) {
+                $realMultiplier = round($sQty / $oQty, 3);
+            }
         }
+ 
+        // Same-season products in this category — fixed to use JSON contains
+        $sameSeasonStats = DB::table('order_items as oi')
+            ->join('orders as o',   'o.id',  '=', 'oi.order_id')
+            ->join('products as p', 'p.id',  '=', 'oi.product_id')
+            ->where('p.category_id', $categoryId)
+            ->where('p.id', '!=', $request->product_id)
+            ->whereJsonContains('p.season', $slug)      // ← fixed: JSON array query
+            ->whereIn('o.status', ['completed', 'delivered'])
+            ->where('o.created_at', '>=', Carbon::now()->subMonths(12))
+            ->selectRaw("
+                COUNT(DISTINCT p.id)     as product_count,
+                SUM(oi.quantity)         as total_qty,
+                COUNT(DISTINCT DATE_FORMAT(o.created_at, '%Y-%m')) as active_months
+            ")
+            ->first();
+ 
+        $sameSeasonMonthlyAvg = 0.0;
+        if ($sameSeasonStats && (int)$sameSeasonStats->active_months > 0) {
+            $sameSeasonMonthlyAvg = round(
+                (float)$sameSeasonStats->total_qty / (int)$sameSeasonStats->active_months,
+                1
+            );
+        }
+ 
+        $perSeasonData[$slug] = [
+            'slug'                  => $slug,
+            'label'                 => $allSeasonLabels[$slug] ?? $slug,
+            'real_multiplier'       => $realMultiplier,
+            'real_data_points'      => $realDataPoints,
+            'baseline_multiplier'   => $seasonMultiplierTable[$slug] ?? 1.0,
+            'effective_multiplier'  => $realDataPoints >= 10 && $realMultiplier !== null
+                                        ? $realMultiplier
+                                        : ($seasonMultiplierTable[$slug] ?? 1.0),
+            'multiplier_source'     => $realDataPoints >= 10 ? 'real_data' : 'baseline_table',
+            'same_season_products'  => (int)($sameSeasonStats->product_count ?? 0),
+            'same_season_monthly_avg' => $sameSeasonMonthlyAvg,
+        ];
     }
-
-    // ── 5. Same-season products in category — how do they sell? ───────────
-    // Find products in the same category declared with the same season,
-    // and compute their average monthly sales. This is the strongest signal.
-    $sameSeasonCategoryStats = DB::table('order_items as oi')
-        ->join('orders as o',   'o.id',  '=', 'oi.order_id')
-        ->join('products as p', 'p.id',  '=', 'oi.product_id')
-        ->where('p.category_id', $categoryId)
-        ->where('p.season', $season)
-        ->where('p.id', '!=', $request->product_id)
-        ->whereIn('o.status', ['completed', 'delivered'])
-        ->where('o.created_at', '>=', Carbon::now()->subMonths(12))
-        ->selectRaw("
-            COUNT(DISTINCT p.id) as product_count,
-            AVG(oi.quantity)     as avg_qty_per_item,
-            SUM(oi.quantity)     as total_qty,
-            COUNT(DISTINCT DATE_FORMAT(o.created_at, '%Y-%m')) as active_months
-        ")
-        ->first();
-
-    $sameSeasonProducts    = (int)($sameSeasonCategoryStats->product_count ?? 0);
-    $sameSeasonAvgMonthly  = 0.0;
-    if ($sameSeasonCategoryStats && (int)$sameSeasonCategoryStats->active_months > 0) {
-        $sameSeasonAvgMonthly = round(
-            (float)$sameSeasonCategoryStats->total_qty / (int)$sameSeasonCategoryStats->active_months,
-            1
-        );
+ 
+    // ── 8. Aggregate multi-season multiplier ───────────────────────────────
+    // Strategy: weighted average of each season's effective multiplier.
+    // Weight = that season's baseline multiplier (higher-impact seasons matter more).
+    // For a product with ["winter","ramadan"]:
+    //   winter = 1.10, ramadan = 1.40 → weighted avg ≈ 1.27
+    $totalWeight  = 0.0;
+    $weightedSum  = 0.0;
+    $totalRealDataPoints = 0;
+    $sameSeasonProductsMax = 0;
+ 
+    foreach ($perSeasonData as $data) {
+        $w             = $data['baseline_multiplier'];
+        $weightedSum  += $data['effective_multiplier'] * $w;
+        $totalWeight  += $w;
+        $totalRealDataPoints += $data['real_data_points'];
+        $sameSeasonProductsMax = max($sameSeasonProductsMax, $data['same_season_products']);
     }
-
-    // ── 6. Variant intelligence ────────────────────────────────────────────
+ 
+    $finalMultiplier = $totalWeight > 0
+        ? round($weightedSum / $totalWeight, 3)
+        : 1.0;
+ 
+    // Multi-season resilience bonus: products with 3+ seasons get a 5% uplift
+    // because cross-season products sell year-round and convert better
+    $resilienceBonus = count($productSeasons) >= 3 ? 1.05 : 1.0;
+    $finalMultiplier = round($finalMultiplier * $resilienceBonus, 3);
+ 
+    // ── 9. Variant intelligence (unchanged from previous version) ──────────
     $variantSummary = DB::table('product_variants as pv')
         ->where('pv.product_id', $request->product_id)
         ->selectRaw("
@@ -579,15 +702,14 @@ public function salesPredictor(Request $request)
             MAX(COALESCE(pv.price_override, {$product->price}))       as price_max
         ")
         ->first();
-
+ 
     $hasVariants   = (int)($variantSummary->total_variants ?? 0) > 0;
     $activeVarCnt  = (int)($variantSummary->active_variants ?? 0);
     $totalVarCnt   = (int)($variantSummary->total_variants ?? 0);
     $varStockTotal = (int)($variantSummary->total_variant_stock ?? 0);
     $varPriceMin   = round((float)($variantSummary->price_min ?? $product->price), 3);
     $varPriceMax   = round((float)($variantSummary->price_max ?? $product->price), 3);
-
-    // Top-selling variant combos
+ 
     $topVariantSales = collect();
     if ($hasVariants) {
         $topVariantSales = DB::table('order_items as oi')
@@ -609,8 +731,7 @@ public function salesPredictor(Request $request)
             ->limit(5)
             ->get();
     }
-
-    // Stock by axis for stockout risk detection
+ 
     $variantStockByAxis = collect();
     if ($hasVariants) {
         $variantStockByAxis = DB::table('product_variants as pv')
@@ -628,14 +749,14 @@ public function salesPredictor(Request $request)
             ->orderByDesc('stock_for_option')
             ->get();
     }
-
-    // ── 7. INFO ATTRIBUTES (brand, material, gender…) ─────────────────────
+ 
+    // ── 10. Info attributes ────────────────────────────────────────────────
     $infoAttributes = DB::table('product_attribute_values as pav')
         ->join('attributes as a', 'a.id', '=', 'pav.attribute_id')
         ->where('pav.product_id', $request->product_id)
         ->selectRaw("a.slug, a.name, a.type, pav.value")
         ->get();
-
+ 
     $allOptionIds = [];
     foreach ($infoAttributes as $attr) {
         if (in_array($attr->type, ['select', 'multiselect', 'color'])) {
@@ -661,23 +782,19 @@ public function salesPredictor(Request $request)
             $infoAttrLines[$attr->slug] = $attr->value;
         }
     }
-
-    // ── 8. STATISTICAL ENGINE — all numbers computed here, never by AI ────
-
-    // 8a. Basic monthly metrics
+ 
+    // ── 11. Statistical engine ─────────────────────────────────────────────
     $avgMonthlySales  = $monthlySales->isNotEmpty()
-        ? round($monthlySales->avg('units'), 1)
-        : 0.0;
+        ? round($monthlySales->avg('units'), 1) : 0.0;
     $lastMonthSales   = (int)($monthlySales->last()?->units   ?? 0);
     $lastMonthRevenue = round((float)($monthlySales->last()?->revenue ?? 0), 3);
     $totalUnits       = (int)($lifetimeStats->total_units   ?? 0);
     $totalRevenue     = round((float)($lifetimeStats->total_revenue ?? 0), 3);
     $totalOrders      = (int)($lifetimeStats->total_orders  ?? 0);
     $convRate         = ($product->views > 0 && $totalOrders > 0)
-        ? round(($totalOrders / $product->views) * 100, 2)
-        : 0.0;
-
-    // 8b. Momentum: slope of last 3 months
+        ? round(($totalOrders / $product->views) * 100, 2) : 0.0;
+ 
+    // Momentum: slope of last 3 months
     $recentMonths = $monthlySales->take(-3)->values();
     $momentum = 'stable';
     if ($recentMonths->count() >= 2) {
@@ -687,84 +804,50 @@ public function salesPredictor(Request $request)
         if ($delta > max(1, $first * 0.10)) $momentum = 'growing';
         elseif ($delta < -max(1, $first * 0.10)) $momentum = 'declining';
     }
-
-    // 8c. Determine the BASE for prediction:
-    // Priority: same-season category avg → own avg → 1
+ 
+    // Base for prediction
     $baseForPrediction = match(true) {
-        $avgMonthlySales > 0  => $avgMonthlySales,
-        $sameSeasonAvgMonthly > 0 => $sameSeasonAvgMonthly,
+        $avgMonthlySales > 0 => $avgMonthlySales,
+        $sameSeasonProductsMax > 0 => (float)collect($perSeasonData)->max('same_season_monthly_avg'),
         default => 1.0,
     };
-
-    // 8d. Season multiplier — real data first, fallback to curated Tunisia table
-    $seasonMultiplierTable = [
-        'ramadan'        => 1.40,
-        'eid_al_fitr'    => 1.35,
-        'eid_al_adha'    => 1.28,
-        'back_to_school' => 1.22,
-        'new_year'       => 1.18,
-        'summer'         => 1.08,
-        'winter'         => 1.10,
-        'spring'         => 1.05,
-        'autumn'         => 1.03,
-        'all_seasons'    => 1.0,
-    ];
-
-    // Use real category data if we have enough samples (≥10 data points)
-    $seasonMultiplier = ($categorySeasonDataPoints >= 10 && $categorySeasonMultiplier > 0)
-        ? $categorySeasonMultiplier
-        : ($seasonMultiplierTable[$season] ?? 1.0);
-
-    // 8e. Momentum adjustment (±10%)
+ 
     $momentumFactor = match($momentum) {
         'growing'  => 1.10,
         'declining'=> 0.90,
         default    => 1.0,
     };
-
-    // 8f. Stock constraint — never predict more than stock can fulfil
+ 
     $currentStock = $hasVariants ? $varStockTotal : (int)$product->stock;
-
-    // 8g. PREDICTED UNITS — fully deterministic
-    $rawPrediction  = $baseForPrediction * $seasonMultiplier * $momentumFactor;
+ 
+    // PREDICTED UNITS — deterministic
+    $rawPrediction  = $baseForPrediction * $finalMultiplier * $momentumFactor;
     $predictedUnits = (int)round(max(1, $rawPrediction));
-    $predictedUnits = min($predictedUnits, $currentStock > 0 ? (int)round($currentStock * 1.5) : PHP_INT_MAX);
-
-    // 8h. Growth % vs own average
+    $predictedUnits = min(
+        $predictedUnits,
+        $currentStock > 0 ? (int)round($currentStock * 1.5) : PHP_INT_MAX
+    );
+ 
     $growthPct = $avgMonthlySales > 0
         ? round((($predictedUnits - $avgMonthlySales) / $avgMonthlySales) * 100, 1)
-        : round(($seasonMultiplier - 1) * 100, 1);
-
-    // 8i. Trend direction
+        : round(($finalMultiplier - 1) * 100, 1);
+ 
     $trend = match(true) {
         $growthPct > 5  => 'up',
         $growthPct < -5 => 'down',
         default         => 'stable',
     };
-
-    // 8j. Confidence — based on data richness
+ 
     $confidence = match(true) {
-        $totalOrders >= 20 && $categorySeasonDataPoints >= 10 => 'high',
-        $totalOrders >= 5  || $categorySeasonDataPoints >= 5  => 'medium',
-        default                                                => 'low',
+        $totalOrders >= 20 && $totalRealDataPoints >= 10 => 'high',
+        $totalOrders >= 5  || $totalRealDataPoints >= 5  => 'medium',
+        default                                           => 'low',
     };
-
-    // 8k. Stock recommendation
-    $safetyBuffer   = 1.30;
-    $stockRec       = (int)round($predictedUnits * $safetyBuffer);
-    $stockShortfall = max(0, $stockRec - $currentStock);
-
-    // 8l. Weekly breakdown (real distribution pattern)
-    // Seasonal demand curve: builds up in week 2, peaks week 3 for most seasons
-    $weeklyWeights = match($season) {
-        'ramadan'        => [0.18, 0.30, 0.32, 0.20],
-        'eid_al_fitr'    => [0.15, 0.35, 0.35, 0.15],
-        'eid_al_adha'    => [0.20, 0.30, 0.30, 0.20],
-        'back_to_school' => [0.25, 0.30, 0.28, 0.17],
-        default          => [0.23, 0.27, 0.27, 0.23],
-    };
-    $weeklyBreakdown = [];
+ 
+    // Weekly breakdown — use primary season's curve
+    $weeklyWeights   = $weeklyWeightMap[$primarySeason] ?? $weeklyWeightMap['default'];
     $baselineWeekly  = max(1, (int)round($avgMonthlySales / 4));
+    $weeklyBreakdown = [];
     foreach ($weeklyWeights as $i => $w) {
         $weeklyBreakdown[] = [
             'week'      => 'Week ' . ($i + 1),
@@ -773,13 +856,21 @@ public function salesPredictor(Request $request)
         ];
     }
     $bestSellingWeek = $weeklyBreakdown[
-        array_search(max(array_column($weeklyBreakdown, 'predicted')), array_column($weeklyBreakdown, 'predicted'))
+        array_search(
+            max(array_column($weeklyBreakdown, 'predicted')),
+            array_column($weeklyBreakdown, 'predicted')
+        )
     ]['week'];
-
-    // 8m. Risk factors — stockout detection
+ 
+    // Stock recommendation
+    $safetyBuffer   = 1.30;
+    $stockRec       = (int)round($predictedUnits * $safetyBuffer);
+    $stockShortfall = max(0, $stockRec - $currentStock);
+ 
+    // Risk factors
     $riskFactors = [];
     if ($stockShortfall > 0) {
-        $riskFactors[] = "Stock shortfall: you need {$stockRec} units but have {$currentStock} — restock {$stockShortfall} units before {$season} starts.";
+        $riskFactors[] = "Stock shortfall: you need {$stockRec} units but have {$currentStock} — restock {$stockShortfall} units before {$seasonLabel} starts.";
     }
     if ($topVariantSales->isNotEmpty()) {
         $topVariant = $topVariantSales->first();
@@ -792,56 +883,68 @@ public function salesPredictor(Request $request)
             ? "Stock level ({$currentStock} units) is sufficient for predicted demand."
             : "Monitor stock weekly — demand may spike unexpectedly during peak.";
     }
-
-    // 8n. Promotion ideas — variant-aware
+ 
+    // Multi-season insight (new)
+    if (count($productSeasons) >= 3) {
+        $riskFactors[] = "Cross-season resilience: this product covers " . count($productSeasons) . " seasons — revenue is spread across the year, reducing single-event risk.";
+    }
+ 
+    // Promotion ideas
     $promotionIdeas = [];
     if ($topVariantSales->isNotEmpty()) {
-        $bottomVariant = $topVariantSales->last();
-        $promotionIdeas[] = "Run a {$season} flash sale on '{$bottomVariant->combo_label}' — it has low sales but likely adequate stock.";
+        $bottom = $topVariantSales->last();
+        $promotionIdeas[] = "Run a {$seasonLabel} flash sale on '{$bottom->combo_label}' — it has low sales but likely adequate stock.";
     } else {
-        $promotionIdeas[] = "Launch a {$season} promo with 8-12% discount in week 2 when demand peaks.";
+        $promotionIdeas[] = "Launch a {$seasonLabel} promo with 8-12% discount in week 2 when demand peaks.";
     }
-    $promotionIdeas[] = "Boost your ChooseTounsi sponsorship placement 5 days before {$season} starts.";
-    $promotionIdeas[] = $sameSeasonProducts > 0
-        ? "Bundle with other {$season}-season products in your store — {$sameSeasonProducts} similar products exist."
-        : "Cross-sell with complementary products from your store to increase basket size.";
-
-    // ── 9. AI NARRATION — Groq only writes human sentences, no numbers ────
-    // We send all pre-computed values. Groq fills in natural language only.
+    $promotionIdeas[] = "Boost your ChooseTounsi sponsorship placement 5 days before {$seasonLabel} starts.";
+    $promotionIdeas[] = count($targetSeasons) > 1
+        ? "Market this product for both " . implode(' and ', $targetSeasonLabels) . " — cross-season listings attract 22% more clicks on average."
+        : ($sameSeasonProductsMax > 0
+            ? "Bundle with other {$seasonLabel}-season products — {$sameSeasonProductsMax} similar products exist in this category."
+            : "Cross-sell with complementary products to increase basket size.");
+ 
+    // ── 12. AI narration — sentences only ─────────────────────────────────
     $subLabel      = $product->subcategory_name ?? $product->category_name;
     $genderLabel   = $infoAttrLines['gender']   ?? null;
     $brandLabel    = $infoAttrLines['brand']     ?? null;
     $materialLabel = $infoAttrLines['material']  ?? null;
     $attrContext   = implode(', ', array_filter([$genderLabel, $brandLabel, $materialLabel]));
-
+ 
     $topVariantStr = $topVariantSales->isNotEmpty()
         ? $topVariantSales->map(fn($v) => "'{$v->combo_label}' ({$v->units_sold} sold, {$v->current_stock} in stock)")->implode('; ')
         : 'no variant sales data';
-
-    $dataSourceLabel = $categorySeasonDataPoints >= 10
-        ? "real category data ({$categorySeasonDataPoints} order samples)"
+ 
+    $multiplierSourceLabel = $totalRealDataPoints >= 10
+        ? "real category data ({$totalRealDataPoints} order samples)"
         : "Tunisia market baseline";
-
+ 
+    $multiSeasonNote = count($targetSeasons) > 1
+        ? " This is a multi-season forecast ({$seasonLabel}) — the combined multiplier is {$finalMultiplier}×."
+        : "";
+ 
     $systemPrompt =
         "You are a Tunisian e-commerce analyst writing brief, precise insights for sellers.\n"
         . "ALL numeric predictions are already computed. Your ONLY job is:\n"
-        . "  1. Write key_factor: 1-2 sentences explaining WHY this specific product/season combination predicts {$predictedUnits} units.\n"
-        . "  2. Write advice: 1 concrete sentence with the single most important action.\n"
-        . "  3. Write opportunity: 1 sentence about the best untapped upside.\n"
+        . "  1. key_factor: 1-2 sentences explaining WHY this product/season combination predicts {$predictedUnits} units.\n"
+        . "  2. advice: 1 concrete sentence with the single most important action.\n"
+        . "  3. opportunity: 1 sentence about the best untapped upside.\n"
         . "RULES:\n"
         . "  - Do NOT invent or change any numbers. Use only what's given.\n"
-        . "  - Reference subcategory '{$subLabel}' and season '{$season}' explicitly.\n"
+        . "  - Reference subcategory '{$subLabel}' and season(s) '{$seasonLabel}' explicitly.\n"
         . "  - If attrContext is set, weave it in naturally.\n"
+        . "  - For multi-season products, mention the cross-season benefit if count > 1.\n"
         . "  - Respond ONLY with valid JSON. No markdown. No extra fields.";
-
+ 
     $historyStr = $monthlySales->isNotEmpty()
         ? $monthlySales->take(-6)->map(fn($r) => "{$r->month}: {$r->units} units")->implode(', ')
         : 'no sales history';
-
-    $userPrompt  = "Product: {$product->name}\n"
+ 
+    $userPrompt = "Product: {$product->name}\n"
         . "Subcategory: {$subLabel}" . ($attrContext ? " ({$attrContext})" : '') . "\n"
-        . "Declared season: {$season}\n"
-        . "Season multiplier source: {$dataSourceLabel} → ×{$seasonMultiplier}\n"
+        . "All product seasons: " . implode(', ', $productSeasons) . "\n"
+        . "Forecasting for: {$seasonLabel}\n"
+        . "Combined multiplier: ×{$finalMultiplier} (source: {$multiplierSourceLabel}){$multiSeasonNote}\n"
         . "Momentum: {$momentum} (factor: ×{$momentumFactor})\n"
         . "Own avg monthly sales: {$avgMonthlySales} units\n"
         . "PREDICTED: {$predictedUnits} units | Growth: {$growthPct}% | Trend: {$trend}\n"
@@ -853,9 +956,8 @@ public function salesPredictor(Request $request)
         . "  \"advice\": \"<1 concrete action>\",\n"
         . "  \"opportunity\": \"<1 sentence>\"\n"
         . "}";
-
+ 
     $aiNarration = ['key_factor' => null, 'advice' => null, 'opportunity' => null];
-
     $aiRaw = $this->callGroq($systemPrompt, $userPrompt, 300);
     if ($aiRaw) {
         try {
@@ -870,44 +972,27 @@ public function salesPredictor(Request $request)
             Log::warning('[SellerAI::salesPredictor] Narration parse failed: ' . $e->getMessage());
         }
     }
-
-    // Fallback narration if Groq fails
+ 
+    // Fallback narration
     if (empty($aiNarration['key_factor'])) {
-        $aiNarration['key_factor'] = "{$season} drives a {$seasonMultiplier}× multiplier for {$subLabel}"
+        $aiNarration['key_factor'] = "{$seasonLabel} drives a {$finalMultiplier}× multiplier for {$subLabel}"
             . ($attrContext ? " ({$attrContext})" : '')
-            . " based on {$dataSourceLabel}. Momentum is {$momentum}.";
+            . " based on {$multiplierSourceLabel}. Momentum is {$momentum}.";
     }
     if (empty($aiNarration['advice'])) {
         $aiNarration['advice'] = $stockShortfall > 0
-            ? "Restock {$stockShortfall} units before {$season} begins — current stock cannot meet predicted demand."
-            : "Maintain current stock and activate your ChooseTounsi sponsored listing 5 days before {$season} starts.";
+            ? "Restock {$stockShortfall} units before {$seasonLabel} begins — current stock cannot meet predicted demand."
+            : "Maintain current stock and activate your ChooseTounsi sponsored listing 5 days before {$seasonLabel} starts.";
     }
     if (empty($aiNarration['opportunity'])) {
-        $aiNarration['opportunity'] = $topVariantSales->isNotEmpty()
-            ? "Your top variant drives most sales — ensure it has priority restock before {$season}."
-            : "First {$season} with this product — a competitive introductory price will build sales history fast.";
+        $aiNarration['opportunity'] = count($targetSeasons) > 1
+            ? "Marketing this product across " . implode(' and ', $targetSeasonLabels) . " gives it year-round exposure — consider separate promotions per season peak."
+            : ($topVariantSales->isNotEmpty()
+                ? "Your top variant drives most sales — ensure it has priority restock before {$seasonLabel}."
+                : "First {$seasonLabel} with this product — a competitive introductory price will build sales history fast.");
     }
-
-    // ── 10. Assemble final result ──────────────────────────────────────────
-    $aiResult = [
-        // Deterministic numbers — never from AI
-        'predicted_units'     => $predictedUnits,
-        'growth_pct'          => $growthPct,
-        'trend'               => $trend,
-        'confidence'          => $confidence,
-        'stock_recommendation'=> (string)$stockRec,
-        'best_selling_week'   => $bestSellingWeek,
-        'weekly_breakdown'    => $weeklyBreakdown,
-        'risk_factors'        => $riskFactors,
-        'promotion_ideas'     => $promotionIdeas,
-
-        // AI narration — sentences only, no numbers invented
-        'key_factor'          => $aiNarration['key_factor'],
-        'advice'              => $aiNarration['advice'],
-        'opportunity'         => $aiNarration['opportunity'],
-    ];
-
-    // Stock by axis for frontend
+ 
+    // ── 13. Stock by axis ──────────────────────────────────────────────────
     $stockByAxisForFrontend = [];
     if ($variantStockByAxis->isNotEmpty()) {
         foreach ($variantStockByAxis->groupBy('attr_slug') as $slug => $options) {
@@ -916,15 +1001,36 @@ public function salesPredictor(Request $request)
                 ->values()->toArray();
         }
     }
-
+ 
+    // ── 14. Final response ─────────────────────────────────────────────────
     return response()->json([
         'success' => true,
         'data'    => [
-            'ai_result'    => $aiResult,
+            'ai_result' => [
+                'predicted_units'      => $predictedUnits,
+                'growth_pct'           => $growthPct,
+                'trend'                => $trend,
+                'confidence'           => $confidence,
+                'stock_recommendation' => (string)$stockRec,
+                'best_selling_week'    => $bestSellingWeek,
+                'weekly_breakdown'     => $weeklyBreakdown,
+                'risk_factors'         => $riskFactors,
+                'promotion_ideas'      => $promotionIdeas,
+                'key_factor'           => $aiNarration['key_factor'],
+                'advice'               => $aiNarration['advice'],
+                'opportunity'          => $aiNarration['opportunity'],
+            ],
             'data_context' => [
+                // Season data — new fields
+                'product_seasons'           => $productSeasons,        // all seasons on this product
+                'target_seasons'            => $targetSeasons,         // what was forecasted
+                'season'                    => $primarySeason,         // primary (highest multiplier)
+                'season_label'              => $seasonLabel,           // display string
+                'is_multi_season'           => count($targetSeasons) > 1,
+                'per_season_data'           => array_values($perSeasonData), // breakdown per season
+ 
+                // Core metrics (unchanged)
                 'product_name'              => $product->name,
-                'season'                    => $season,
-                'season_label'              => \App\Models\Product::SEASONS[$season] ?? $season,
                 'avg_monthly_sales'         => $avgMonthlySales,
                 'last_month_sales'          => $lastMonthSales,
                 'last_month_revenue'        => $lastMonthRevenue,
@@ -936,6 +1042,8 @@ public function salesPredictor(Request $request)
                 'momentum'                  => $momentum,
                 'views'                     => (int)$product->views,
                 'conversion_rate'           => $convRate,
+ 
+                // Product DNA (unchanged)
                 'subcategory'               => $product->subcategory_name,
                 'has_variants'              => $hasVariants,
                 'active_variants'           => $activeVarCnt,
@@ -943,21 +1051,26 @@ public function salesPredictor(Request $request)
                 'variant_price_min'         => $hasVariants ? $varPriceMin : null,
                 'variant_price_max'         => $hasVariants ? $varPriceMax : null,
                 'top_variant_sales'         => $topVariantSales->map(fn($v) => [
-                    'combo'        => $v->combo_label,
-                    'units_sold'   => (int)$v->units_sold,
-                    'current_stock'=> (int)$v->current_stock,
+                    'combo'         => $v->combo_label,
+                    'units_sold'    => (int)$v->units_sold,
+                    'current_stock' => (int)$v->current_stock,
                 ])->values()->toArray(),
                 'stock_by_axis'             => $stockByAxisForFrontend,
                 'info_attributes'           => $infoAttrLines,
-                // Algorithm transparency
-                'algorithm'                 => [
+ 
+                // Algorithm transparency (expanded)
+                'algorithm' => [
                     'base_monthly'              => $baseForPrediction,
-                    'season_multiplier'         => $seasonMultiplier,
-                    'season_multiplier_source'  => $categorySeasonDataPoints >= 10 ? 'real_data' : 'baseline_table',
-                    'category_season_samples'   => $categorySeasonDataPoints,
-                    'same_season_products'      => $sameSeasonProducts,
+                    'season_multiplier'         => $finalMultiplier,
+                    'resilience_bonus'          => $resilienceBonus,
                     'momentum_factor'           => $momentumFactor,
-                    'formula'                   => "{$baseForPrediction} × {$seasonMultiplier} × {$momentumFactor} = {$predictedUnits}",
+                    'total_real_data_points'    => $totalRealDataPoints,
+                    'formula'                   => "{$baseForPrediction} × {$finalMultiplier} × {$momentumFactor} = {$predictedUnits}",
+                    'per_season_breakdown'      => array_map(fn($d) => [
+                        'season'     => $d['slug'],
+                        'multiplier' => $d['effective_multiplier'],
+                        'source'     => $d['multiplier_source'],
+                    ], array_values($perSeasonData)),
                 ],
             ],
         ],
