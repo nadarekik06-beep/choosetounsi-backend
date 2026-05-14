@@ -50,7 +50,7 @@ use App\Http\Controllers\Api\Seller\SellerPromotionController;
 use App\Http\Controllers\Api\PublicPromotionController;
 use App\Http\Controllers\Api\Seller\CommissionController;
 use App\Http\Controllers\Api\Delivery\DeliveryAuthController;
-
+use App\Http\Controllers\Api\Seller\SellerForecastController;
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES
@@ -187,6 +187,13 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::get('/products',  [SellerAnalyticsController::class, 'products']);
                 Route::get('/customers', [SellerAnalyticsController::class, 'customers']);
                 Route::get('/heatmap',   [SellerAnalyticsController::class, 'heatmap']);
+                Route::post('/forecast',          [SellerForecastController::class, 'fullForecast']);
+                Route::get('/forecast/regional',  [SellerForecastController::class, 'regionalDemand']);
+                Route::get('/forecast/similar',   [SellerForecastController::class, 'similarProducts']);
+                Route::get('/forecast/events',    [SellerForecastController::class, 'upcomingEvents']);
+                Route::post('/forecast/explain',  [SellerForecastController::class, 'aiExplain']);
+                Route::delete('/forecast/cache',   [SellerForecastController::class, 'invalidateCache']);
+                Route::get('/forecast/cache-age',  [SellerForecastController::class, 'cacheAge']);
             });
 
         // ── AI Business Tools (Red Pepper +) ──────────────────────────────

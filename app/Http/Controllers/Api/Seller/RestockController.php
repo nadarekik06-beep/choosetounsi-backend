@@ -7,6 +7,7 @@ use App\Models\Product;
 use App\Services\RestockService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use App\Http\Controllers\Api\Seller\SellerForecastController;
 
 /**
  * RestockController
@@ -48,6 +49,7 @@ class RestockController extends Controller
         if ($hasVariants) {
             return $this->restockVariantProduct($request, $product);
         }
+        SellerForecastController::clearForecastCache($product->id, auth()->id());
 
         return $this->restockSimpleProduct($request, $product);
     }

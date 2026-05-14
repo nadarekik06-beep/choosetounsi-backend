@@ -8,6 +8,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use App\Models\Order;
+use App\Http\Controllers\Api\Seller\SellerForecastController;
 
 /**
  * SellerOrderController
@@ -267,6 +268,14 @@ class SellerOrderController extends Controller
         $sellerId    = auth()->id();
         $sellerOrder = SellerOrder::where('seller_id', $sellerId)->findOrFail($id);
         $sellerOrder->update(['status' => $request->status]);
+        if (in_array($status, ['completed', 'delivered'])) {
+// Invalidate forecast cache for all products in this order
+     $productIds = $sellerOrder->items()->pluck('product_id')->unique();
+     $sellerId   = auth()->id();
+     foreach ($productIds as $productId) {
+         SellerForecastController::clearForecastCache($productId, $sellerId);
+     }
+ }
 
         $this->syncParentOrderStatus($sellerOrder->order_id);
 
