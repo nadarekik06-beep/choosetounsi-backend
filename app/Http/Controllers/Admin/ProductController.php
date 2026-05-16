@@ -25,9 +25,19 @@ class ProductController extends Controller
         ]);
 
         $status = $request->query('status', 'pending');
-        if ($status === 'pending')      $query->where('is_approved', false);
-        elseif ($status === 'approved') $query->where('is_approved', true)->where('is_active', true);
-        elseif ($status === 'disabled') $query->where('is_approved', true)->where('is_active', false);
+
+        if ($status === 'pending') {
+            // Pending = not approved AND no rejection reason (never reviewed)
+            $query->where('is_approved', false)->whereNull('rejection_reason');
+        } elseif ($status === 'rejected') {
+            // Rejected = not approved AND has a rejection reason
+            $query->where('is_approved', false)->whereNotNull('rejection_reason');
+        } elseif ($status === 'approved') {
+            $query->where('is_approved', true)->where('is_active', true);
+        } elseif ($status === 'disabled') {
+            $query->where('is_approved', true)->where('is_active', false);
+        }
+        // 'all' or empty → no filter
 
         if ($search = $request->query('search'))
             $query->where('name', 'like', '%' . $search . '%');
@@ -75,7 +85,6 @@ class ProductController extends Controller
             $image->url = Storage::disk('public')->url($image->image_path);
         });
 
-        // Build variant payload identical to SellerProductController@show
         $product->variant_rows = $product->variants->map(fn($v) => [
             'id'             => $v->id,
             'option_ids'     => $v->attributeOptions->pluck('id')->toArray(),
@@ -86,7 +95,6 @@ class ProductController extends Controller
             'image_urls'     => $v->images->map(fn($i) => Storage::disk('public')->url($i->image_path))->toArray(),
         ]);
 
-        // Build existing_attributes identical to SellerProductController@show
         $product->existing_attributes = $product->attributeValues
             ->mapWithKeys(fn($v) => [
                 $v->attribute->slug => $v->attribute->decodeValue($v->value),
@@ -111,9 +119,6 @@ class ProductController extends Controller
 
     /**
      * PUT /api/admin/products/{id}
-     *
-     * Full product edit for admin — same logic as SellerProductController@update
-     * but without seller ownership check and without resetting approval status.
      */
     public function update(Request $request, $id)
     {
@@ -130,22 +135,17 @@ class ProductController extends Controller
             'is_active'         => 'sometimes|boolean',
             'is_approved'       => 'sometimes|boolean',
             'featured'          => 'sometimes|boolean',
-            'season'            => 'sometimes|nullable|string|max:30',  // ← ADD
-
+            'season'            => 'sometimes|nullable|string|max:30',
         ]);
 
-        // ── Scalar fields ──────────────────────────────────────────────────
         $fieldsToUpdate = [];
         foreach (['name', 'description', 'short_description', 'price', 'stock',
-                  'category_id', 'subcategory_id', 'is_approved', 'featured' , 'season'] as $field) {
+                  'category_id', 'subcategory_id', 'is_approved', 'featured', 'season'] as $field) {
             if ($request->has($field)) {
                 $fieldsToUpdate[$field] = $request->input($field);
             }
         }
 
-        // is_active is NOT a free scalar field — it is derived from variants.
-        // If admin tries to manually activate a product that has no active variants,
-        // reject immediately with a clear explanation.
         if ($request->has('is_active') && $request->boolean('is_active')) {
             $hasVariants      = $product->variants()->exists();
             $hasActiveVariant = $product->variants()->where('is_active', true)->exists();
@@ -158,12 +158,10 @@ class ProductController extends Controller
             }
         }
 
-        // Manual deactivation by admin is always allowed.
         if ($request->has('is_active') && !$request->boolean('is_active')) {
             $fieldsToUpdate['is_active'] = false;
         }
 
-        // Null out subcategory_id when category changes and no subcategory given
         if (isset($fieldsToUpdate['category_id']) &&
             $fieldsToUpdate['category_id'] != $product->category_id &&
             !$request->has('subcategory_id')) {
@@ -174,7 +172,6 @@ class ProductController extends Controller
             $product->update($fieldsToUpdate);
         }
 
-        // ── Attributes ─────────────────────────────────────────────────────
         if ($request->has('attributes')) {
             $attrs = $request->input('attributes', []);
             if (is_array($attrs)) {
@@ -194,7 +191,6 @@ class ProductController extends Controller
             }
         }
 
-        // ── Variants ───────────────────────────────────────────────────────
         if ($request->has('variants')) {
             $variantsInput = $request->input('variants', []);
             if (is_array($variantsInput) && !empty($variantsInput)) {
@@ -246,11 +242,9 @@ class ProductController extends Controller
                 }
             }
 
-            // Enforce variant→status rule after any variant change.
             $product->fresh()->syncActiveStatusFromVariants();
         }
 
-        // ── Notify seller ──────────────────────────────────────────────────
         if ($product->seller) {
             try {
                 $product->seller->notify(new ProductActionNotification(
@@ -261,7 +255,6 @@ class ProductController extends Controller
             }
         }
 
-        // ── Reload and return ──────────────────────────────────────────────
         $product->load([
             'seller:id,name,email',
             'category:id,name,slug',
@@ -297,28 +290,34 @@ class ProductController extends Controller
     }
 
     public function approve($id)
-{
-    $product = Product::with('seller')->findOrFail($id);
+    {
+        $product = Product::with('seller')->findOrFail($id);
 
-    // Approve first, then let variant state decide is_active.
-    // Never force is_active = true — a product with no active variants
-    // must stay inactive even after approval.
-    $product->update(['is_approved' => true]);
-    $product->fresh()->syncActiveStatusFromVariants();
+        // Clear rejection reason on approval so the product goes back to clean state
+        $product->update(['is_approved' => true, 'rejection_reason' => null]);
+        $product->fresh()->syncActiveStatusFromVariants();
 
-    if ($product->seller) {
-        $product->seller->notify(new ProductReviewedNotification('approved', $product->id, $product->name));
+        if ($product->seller) {
+            $product->seller->notify(new ProductReviewedNotification('approved', $product->id, $product->name));
+        }
+        return response()->json(['success' => true, 'message' => 'Product approved.']);
     }
-    return response()->json(['success' => true, 'message' => 'Product approved.']);
-}
 
     public function reject(Request $request, $id)
     {
-        $request->validate(['reason' => 'nullable|string|max:500']);
+        $request->validate(['reason' => 'nullable|string|max:1000']);
         $product = Product::with('seller')->findOrFail($id);
-        $product->update(['is_approved' => false, 'is_active' => false]);
+
+        $product->update([
+            'is_approved'      => false,
+            'is_active'        => false,
+            'rejection_reason' => $request->reason ?? null,
+        ]);
+
         if ($product->seller) {
-            $product->seller->notify(new ProductReviewedNotification('rejected', $product->id, $product->name, $request->reason));
+            $product->seller->notify(
+                new ProductReviewedNotification('rejected', $product->id, $product->name, $request->reason)
+            );
         }
         return response()->json(['success' => true, 'message' => 'Product rejected.']);
     }
@@ -342,10 +341,21 @@ class ProductController extends Controller
         return response()->json(['success' => true, 'message' => 'Product deleted.']);
     }
 
+    /**
+     * Derives the display status from product fields.
+     * Uses rejection_reason as the discriminator between pending and rejected.
+     *
+     * pending  → not approved + no rejection_reason (never reviewed)
+     * rejected → not approved + has rejection_reason (explicitly rejected)
+     * disabled → approved + not active
+     * approved → approved + active
+     */
     private function deriveStatus(Product $product): string
     {
-        if (!$product->is_approved) return 'pending';
-        if (!$product->is_active)   return 'disabled';
+        if (!$product->is_approved) {
+            return $product->rejection_reason ? 'rejected' : 'pending';
+        }
+        if (!$product->is_active) return 'disabled';
         return 'approved';
     }
 }

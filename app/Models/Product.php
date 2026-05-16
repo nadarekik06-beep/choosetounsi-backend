@@ -17,7 +17,7 @@ class Product extends Model
         'name', 'slug', 'description', 'short_description',
         'price', 'stock', 'sku',
         'is_approved', 'is_active', 'is_platform_product', 'featured', 'views',
-        'is_pack', 'season',
+        'is_pack', 'season','rejection_reason',
     ];
 
     protected $casts = [

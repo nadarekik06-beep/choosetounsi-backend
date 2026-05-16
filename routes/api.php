@@ -51,6 +51,8 @@ use App\Http\Controllers\Api\PublicPromotionController;
 use App\Http\Controllers\Api\Seller\CommissionController;
 use App\Http\Controllers\Api\Delivery\DeliveryAuthController;
 use App\Http\Controllers\Api\Seller\SellerForecastController;
+
+
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES
@@ -105,6 +107,7 @@ Route::post('/sponsorships/{id}/click', [SponsorshipController::class, 'recordCl
 Route::get('/packs',        [PublicPackController::class, 'index']);
 Route::get('/packs/{slug}', [PublicPackController::class, 'show']);
 Route::get('/flash-sales', [PublicPromotionController::class, 'flashSales']);
+Route::get('/discounts', [PublicPromotionController::class, 'discounts']);
 Route::get('/promotions/product/{productId}', [PublicPromotionController::class, 'forProduct']);
 Route::post('/delivery/register', [DeliveryAuthController::class, 'register']);
 Route::post('/auth/forgot-password', [AuthController::class, 'forgotPassword']);
