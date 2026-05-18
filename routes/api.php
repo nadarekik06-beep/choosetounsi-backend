@@ -57,6 +57,7 @@ use App\Http\Controllers\Api\Seller\SellerReviewController;
 use App\Http\Controllers\Admin\AdminReviewController;
 use App\Http\Controllers\Admin\FinanceController;
 use App\Http\Controllers\Admin\SettlementController;
+use App\Http\Controllers\Admin\AdminPackController;
 use App\Http\Controllers\Api\Seller\EarningsController;
 /*
 |--------------------------------------------------------------------------
@@ -422,6 +423,17 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/product-update-requests/{id}',          [AdminProductUpdateRequestController::class, 'show']);
         Route::post('/product-update-requests/{id}/approve', [AdminProductUpdateRequestController::class, 'approve']);
         Route::post('/product-update-requests/{id}/reject',  [AdminProductUpdateRequestController::class, 'reject']);
+
+
+        // ── Admin Packs ───────────────────────────────────────────────────
+        // stats MUST come before /{id} to avoid being captured as an ID
+        Route::get('/packs/stats',          [AdminPackController::class, 'stats']);
+        Route::get('/packs',                [AdminPackController::class, 'index']);
+        Route::get('/packs/{id}',           [AdminPackController::class, 'show']);
+        Route::patch('/packs/{id}/approve', [AdminPackController::class, 'approve']);
+        Route::patch('/packs/{id}/reject',  [AdminPackController::class, 'reject']);
+        Route::patch('/packs/{id}/toggle',  [AdminPackController::class, 'toggle']);
+        Route::delete('/packs/{id}',        [AdminPackController::class, 'destroy']);
 
         // ── Orders ────────────────────────────────────────────────────────
         Route::get('/orders/stats',                [AdminOrderController::class, 'stats']);

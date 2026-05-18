@@ -132,6 +132,7 @@ class CheckoutController extends Controller
             $packRows    = $cartItems->filter(fn($i) =>  $i->isPack());
 
             // ── A) Regular product rows ───────────────────────────────────────
+            // UNCHANGED — product commission logic is correct as-is.
             if ($productRows->isNotEmpty()) {
                 $groupedBySeller = $productRows->groupBy(function ($item) use ($sellerCol) {
                     $sid = $item->product->{$sellerCol};
@@ -208,10 +209,29 @@ class CheckoutController extends Controller
             }
 
             // ── B) Pack rows ──────────────────────────────────────────────────
+            //
+            // FIX: Commission is now calculated ONCE on the whole pack_price,
+            // NOT on each individual product inside the pack.
+            //
+            // Why this was wrong before:
+            //   Old code called commissionService->calculate($product->price) per item.
+            //   For a 70 DT pack with a 50 DT + 40 DT product:
+            //     Wrong:   commission(50) + commission(40)  ← wrong price, wrong total
+            //     Correct: commission(70)                  ← pack_price, single calculation
+            //
+            // How the fix works:
+            //   1. One commission calculation per pack using pack_price_snapshot.
+            //   2. The FIRST order_item row carries the full commission figures.
+            //   3. Subsequent items are inventory-tracking rows only (zero commission).
+            //   4. seller_order.subtotal = pack_price_snapshot (already correct above).
+            //
             foreach ($packRows as $cartRow) {
                 $pack         = $cartRow->pack;
                 $selectionMap = collect($cartRow->pack_selections ?? [])->keyBy('pack_item_id');
-                $packPrice    = (float) $cartRow->pack_price_snapshot;
+
+                // pack_price_snapshot: the price the customer paid for the whole pack.
+                // This is the ONLY price commission should be calculated on.
+                $packPrice = (float) $cartRow->pack_price_snapshot;
 
                 $packItemsBySeller = $pack->items->groupBy(function ($pi) use ($sellerCol) {
                     $sid = $pi->product->{$sellerCol};
@@ -230,6 +250,24 @@ class CheckoutController extends Controller
                     }
                     $sellerPlan = $sellerPlanCache[$groupKey];
 
+                    // ── FIXED: Calculate commission ONCE on the seller's portion ──
+                    // Each seller's commission is calculated on their proportional
+                    // share of the pack_price, not on individual product prices.
+                    //
+                    // If a pack has 2 products from the same seller: proportion = 1.0
+                    //   → commission($packPrice × 1.0, $plan)
+                    //
+                    // If a pack has 4 products, 2 from seller A and 2 from seller B:
+                    //   → seller A: commission($packPrice × 0.5, $plan)
+                    //   → seller B: commission($packPrice × 0.5, $plan)
+                    //
+                    // quantity = 1 because pack_price already covers all items.
+                    $packCommission = $this->commissionService->calculate(
+                        $sellerSubtotal,  // ← proportional share of pack_price
+                        $sellerPlan,
+                        1                 // ← 1 pack unit
+                    );
+
                     $sellerOrder = SellerOrder::create([
                         'order_id'       => $order->id,
                         'seller_id'      => $sellerIdForDb,
@@ -238,33 +276,68 @@ class CheckoutController extends Controller
                         'subtotal'       => $sellerSubtotal,
                     ]);
 
+                    // Track whether we've written the commission to the first item yet
+                    $commissionWritten = false;
+
                     foreach ($packItems as $packItem) {
                         $product      = $packItem->product;
                         $sel          = $selectionMap->get($packItem->id);
                         $variantId    = $sel['variant_id'] ?? null;
                         $variant      = $variantId ? $product->variants->firstWhere('id', $variantId) : null;
-                        $unitPrice    = $variant ? (float) ($variant->price_override ?? $product->price) : (float) $product->price;
                         $qty          = (int) $packItem->quantity;
-                        $commission   = $this->commissionService->calculate($unitPrice, $sellerPlan, $qty);
                         $variantLabel = $variant ? $variant->attributeOptions->pluck('value')->join(' / ') : null;
 
-                        OrderItem::create([
-                            'order_id'              => $order->id,
-                            'seller_order_id'       => $sellerOrder->id,
-                            'product_id'            => $product->id,
-                            'variant_id'            => $variantId,
-                            'variant_label'         => $variantLabel,
-                            'product_name'          => $product->name . ' (Bundle: ' . $pack->name . ')',
-                            'quantity'              => $qty,
-                            'unit_price'            => $unitPrice,
-                            'price'                 => $unitPrice,
-                            'total'                 => $commission['total_price'],
-                            'commission_percentage' => $commission['commission_percentage'],
-                            'commission_amount'     => $commission['commission_amount'],
-                            'seller_amount'         => $commission['seller_amount'],
-                            'plan_used'             => $commission['plan_used'],
-                        ]);
+                        if (!$commissionWritten) {
+                            // ── FIRST item: carries ALL commission for this pack+seller ──
+                            // The financial figures here represent the whole seller's portion
+                            // of the pack. Subsequent items are stock-tracking rows only.
+                            OrderItem::create([
+                                'order_id'              => $order->id,
+                                'seller_order_id'       => $sellerOrder->id,
+                                'product_id'            => $product->id,
+                                'variant_id'            => $variantId,
+                                'variant_label'         => $variantLabel,
+                                'product_name'          => $product->name . ' (Bundle: ' . $pack->name . ')',
+                                'quantity'              => $qty,
 
+                                // unit_price = seller's portion of pack_price
+                                // (not the product's individual retail price)
+                                'unit_price'            => $packCommission['unit_price'],
+                                'price'                 => $packCommission['unit_price'],
+                                'total'                 => $packCommission['total_price'],
+
+                                // Commission calculated on pack_price portion, not product price
+                                'commission_percentage' => $packCommission['commission_percentage'],
+                                'commission_amount'     => $packCommission['commission_amount'],
+                                'seller_amount'         => $packCommission['seller_amount'],
+                                'plan_used'             => $packCommission['plan_used'],
+                            ]);
+                            $commissionWritten = true;
+
+                        } else {
+                            // ── SUBSEQUENT items: inventory tracking only ──
+                            // Commission is already captured on the first row.
+                            // These rows exist so stock can be decremented per product.
+                            // Financial dashboard queries should filter commission_amount > 0.
+                            OrderItem::create([
+                                'order_id'              => $order->id,
+                                'seller_order_id'       => $sellerOrder->id,
+                                'product_id'            => $product->id,
+                                'variant_id'            => $variantId,
+                                'variant_label'         => $variantLabel,
+                                'product_name'          => $product->name . ' (Bundle: ' . $pack->name . ')',
+                                'quantity'              => $qty,
+                                'unit_price'            => 0,  // financial data is on the first row
+                                'price'                 => 0,
+                                'total'                 => 0,
+                                'commission_percentage' => 0,  // intentionally zero
+                                'commission_amount'     => 0,  // intentionally zero
+                                'seller_amount'         => 0,  // intentionally zero
+                                'plan_used'             => $sellerPlan,
+                            ]);
+                        }
+
+                        // Stock decrement runs for EVERY item regardless of commission row
                         if ($variant) {
                             ProductVariant::where('id', $variantId)->decrement('stock', $packItem->quantity);
                             $decrementedVariants[] = ['variant_id' => $variantId, 'product' => $product];
@@ -274,7 +347,7 @@ class CheckoutController extends Controller
                         }
                     }
 
-                    // Freeze financial snapshot AFTER all pack items for this seller_order are inserted
+                    // Freeze financial snapshot AFTER all pack items for this seller_order
                     $this->financialSnapshot->freeze($sellerOrder->id);
                 }
             }
@@ -297,12 +370,11 @@ class CheckoutController extends Controller
         $this->fireStockAlerts($decrementedVariants, $decrementedProducts);
 
         // ── Clear forecast cache for ALL sellers in this order ────────────────
-        // Runs AFTER commit so new order_items are in DB.
         try {
             $order->load('sellerOrders.items');
             foreach ($order->sellerOrders as $so) {
                 if (!$so->seller_id) continue;
-                $pids = $so->items->pluck('product_id')->unique();
+                $pids = $so->items->pluck('product_id')->filter()->unique();
                 foreach ($pids as $pid) {
                     SellerForecastController::clearForecastCache((int) $pid, (int) $so->seller_id);
                 }
@@ -331,7 +403,7 @@ class CheckoutController extends Controller
 
     /**
      * POST /api/checkout/buy-now
-     * Single product direct purchase — bypasses cart.
+     * Single product direct purchase — bypasses cart. UNCHANGED.
      */
     public function buyNow(Request $request)
     {
@@ -442,7 +514,6 @@ class CheckoutController extends Controller
                 $decrementedProducts[] = $product->id;
             }
 
-            // Freeze financial snapshot AFTER the single order_item is inserted
             $this->financialSnapshot->freeze($sellerOrder->id);
 
             if ($paymentMethod === 'wallet') {
@@ -457,10 +528,8 @@ class CheckoutController extends Controller
             return response()->json(['success' => false, 'message' => 'Failed to place order. Please try again.'], 500);
         }
 
-        // ── Stock alerts ──────────────────────────────────────────────────────
         $this->fireStockAlerts($decrementedVariants, $decrementedProducts);
 
-        // ── Clear forecast cache for this product/seller ──────────────────────
         try {
             if ($sellerId !== null) {
                 SellerForecastController::clearForecastCache((int) $product->id, (int) $sellerId);
