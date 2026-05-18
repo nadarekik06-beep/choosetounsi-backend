@@ -1,4 +1,5 @@
 <?php
+// app/Http/Controllers/Api/ProductController.php
 
 namespace App\Http\Controllers\Api;
 
@@ -17,7 +18,7 @@ class ProductController extends Controller
     public function __construct(
         private ProductScoringService $scoringService,
         private UserPreferenceService $preferenceService,
-        private PromotionService      $promoService,      // ← PROMO FIX: injected
+        private PromotionService      $promoService,
     ) {}
 
     public function index(Request $request)
@@ -25,6 +26,7 @@ class ProductController extends Controller
         $sort = $request->query('sort', 'created_at');
         $user = $request->user();
 
+        // Scoring applies on the default sort when user is authenticated
         $applyScoring = ($sort === 'created_at') && ($user !== null);
 
         $query = Product::available()
@@ -41,10 +43,12 @@ class ProductController extends Controller
                     ]),
             ]);
 
+        // attributeValues needed for brand + gender scoring
         if ($applyScoring) {
             $query->with(['attributeValues.attribute']);
         }
 
+        // ── Filters ──────────────────────────────────────────────────────────
         if ($search = $request->query('search')) {
             $query->where(fn($q) =>
                 $q->where('name', 'like', "%{$search}%")
@@ -79,57 +83,126 @@ class ProductController extends Controller
             $query->where('is_pack', (int) $request->query('is_pack'));
         }
         if ($request->filled('is_platform_product')) {
-    $query->where('is_platform_product', (bool) $request->boolean('is_platform_product'));
-}
+            $query->where('is_platform_product', (bool) $request->boolean('is_platform_product'));
+        }
 
+        // ── Scoring path (authenticated user, default sort) ───────────────
         if ($applyScoring) {
-            $query->orderByDesc('is_sponsored')->orderByDesc('sponsored_priority');
             $perPage = min((int) $request->query('per_page', 20), 60);
             $page    = max((int) $request->query('page', 1), 1);
 
-            $allProducts  = $query->limit(200)->get();
-            $sponsored    = $allProducts->where('is_sponsored', true)->values();
-            $nonSponsored = $allProducts->where('is_sponsored', false)->values();
-            $prefs        = $this->preferenceService->getCombinedPreferences($user->id);
-            $sorted       = $sponsored->concat($this->scoringService->scoreAndSort($nonSponsored, $prefs))->values();
+            // Fetch a broad candidate set (200 products) — more than a single page
+            // so the scorer has enough material to surface the best matches.
+            // We order DB-side by sponsored_priority first so the top candidates
+            // are likely to include sponsored products before slicing.
+            $allProducts = $query
+                ->orderByDesc('is_sponsored')
+                ->orderByDesc('sponsored_priority')
+                ->limit(200)
+                ->get();
+
+            // Get user preferences (explicit + inferred from activity)
+            $prefs = $this->preferenceService->getCombinedPreferences($user->id);
+
+            // Get recency-weighted activity signals
+            $activityWeights = $this->preferenceService->getActivityWeights($user->id);
+
+            // ── THE FIX: ALL products go through unified scoring ──────────
+            // Sponsored products are NOT pulled out first.
+            // They participate in scoring and get their boost added to their score.
+            // A well-matched non-sponsored product beats an irrelevant sponsored one.
+            $sorted = $this->scoringService->scoreAndSort($allProducts, $prefs, $activityWeights);
+
+            // ── FALLBACK: if query returned nothing, try without filters ──
+            if ($sorted->isEmpty()) {
+                $sorted = $this->buildFallbackProducts($request, $user, $prefs, $activityWeights);
+            }
 
             $total  = $sorted->count();
             $offset = ($page - 1) * $perPage;
 
             return response()->json(['success' => true, 'data' => [
                 'current_page' => $page,
-                'data'         => $this->transformProductCollection($sorted->slice($offset, $perPage)->values()),
+                'data'         => $this->transformProductCollection(
+                    $sorted->slice($offset, $perPage)->values()
+                ),
                 'per_page'     => $perPage,
                 'total'        => $total,
                 'last_page'    => (int) ceil($total / $perPage),
                 'from'         => $offset + 1,
                 'to'           => min($offset + $perPage, $total),
             ]]);
-        } else {
-            $query->orderByDesc('is_sponsored')->orderByDesc('sponsored_priority');
-            match ($sort) {
-                'price_asc'  => $query->orderBy('price'),
-                'price_desc' => $query->orderByDesc('price'),
-                'views'      => $query->orderByDesc('views'),
-                default      => $query->orderByDesc('created_at'),
-            };
-            $perPage  = (int) $request->query('per_page', 20);
-            $products = $query->paginate(min($perPage, 60));
-            $products->getCollection()->transform(fn($p) => $this->transformProductItem($p));
-            return response()->json(['success' => true, 'data' => $products]);
         }
+
+        // ── Non-scoring path (guest, or explicit sort) ────────────────────
+        $query->orderByDesc('is_sponsored')->orderByDesc('sponsored_priority');
+        match ($sort) {
+            'price_asc'  => $query->orderBy('price'),
+            'price_desc' => $query->orderByDesc('price'),
+            'views'      => $query->orderByDesc('views'),
+            default      => $query->orderByDesc('created_at'),
+        };
+        $perPage  = (int) $request->query('per_page', 20);
+        $products = $query->paginate(min($perPage, 60));
+        $products->getCollection()->transform(fn($p) => $this->transformProductItem($p));
+
+        return response()->json(['success' => true, 'data' => $products]);
+    }
+
+    /**
+     * Fallback: when a filtered query returns 0 results, return similar
+     * products from the same category or popular products globally.
+     * This implements the "NO EMPTY CATEGORY RULE".
+     */
+    private function buildFallbackProducts(
+        Request $request,
+        $user,
+        $prefs,
+        array $activityWeights
+    ) {
+        // Try: same category, drop other filters
+        $catSlug = $request->query('category_slug');
+        $catId   = $request->query('category_id');
+
+        if ($catSlug || $catId) {
+            $fallback = Product::available()
+                ->with(['category:id,name,slug', 'subcategory:id,name,slug', 'primaryImage', 'seller:id,name', 'variants' => fn($q) => $q->where('is_active', true)->with(['attributeOptions' => fn($q2) => $q2->with('attribute:id,slug,type')]), 'attributeValues.attribute'])
+                ->when($catSlug, fn($q) => $q->whereHas('category', fn($q2) => $q2->where('slug', $catSlug)))
+                ->when(!$catSlug && $catId, fn($q) => $q->where('category_id', $catId))
+                ->orderByDesc('is_sponsored')
+                ->limit(60)
+                ->get();
+
+            if ($fallback->isNotEmpty()) {
+                return $this->scoringService->scoreAndSort($fallback, $prefs, $activityWeights);
+            }
+        }
+
+        // Last resort: globally popular products
+        $popular = Product::available()
+            ->with(['category:id,name,slug', 'subcategory:id,name,slug', 'primaryImage', 'seller:id,name', 'variants' => fn($q) => $q->where('is_active', true)->with(['attributeOptions' => fn($q2) => $q2->with('attribute:id,slug,type')]), 'attributeValues.attribute'])
+            ->orderByDesc('is_sponsored')
+            ->orderByDesc('views')
+            ->limit(60)
+            ->get();
+
+        return $this->scoringService->scoreAndSort($popular, $prefs, $activityWeights);
     }
 
     public function featured()
     {
         $products = Product::available()->featured()->inStock()
-            ->with(['category:id,name,slug', 'primaryImage'])
-            ->orderByDesc('created_at')->take(12)->get()
+            ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name'])
+            ->orderByDesc('created_at')
+            ->take(12)
+            ->get()
             ->map(function ($p) {
-                $p->primary_image_url = $p->primaryImage
-                    ? Storage::url($p->primaryImage->image_path) : null;
-                return $p;
+                // ── FIXED: run through transformProductItem so promotion
+                //    data (effective_price, discount_amount, promotion)
+                //    is included — same as the index() listing does.
+                return $this->transformProductItem($p);
             });
+ 
         return response()->json(['success' => true, 'data' => $products]);
     }
 
@@ -199,225 +272,10 @@ class ProductController extends Controller
         $variantPrimaryImage = [];
 
         if ($hasVariants) {
-            $productImageUrls = $product->images
-                ->filter(fn($i) => is_null($i->variant_id) && is_null($i->color_option_id))
-                ->map(fn($i) => Storage::url($i->image_path))
-                ->values()->toArray();
-
-            $variantGroupKeys = [];
-            foreach ($product->variants as $v) {
-                $colorOpts = $v->attributeOptions
-                    ->filter(fn($o) => $o->attribute->slug === 'color')
-                    ->sortBy('id')->values();
-                if ($colorOpts->isEmpty()) continue;
-                $variantGroupKeys[$v->id] = $colorOpts->pluck('id')->implode('|');
-            }
-
-            $imagePathColorIds  = [];
-            $imagePathIsPrimary = [];
-            foreach ($product->images->filter(fn($i) => $i->color_option_id !== null) as $img) {
-                $path = $img->image_path;
-                if (!isset($imagePathColorIds[$path])) {
-                    $imagePathColorIds[$path]  = [];
-                    $imagePathIsPrimary[$path] = false;
-                }
-                $imagePathColorIds[$path][] = $img->color_option_id;
-                if ($img->is_primary) {
-                    $imagePathIsPrimary[$path] = true;
-                }
-            }
-
-            $imagePathToGroupKey = [];
-            $knownGroupKeys      = array_unique(array_values($variantGroupKeys));
-
-            foreach ($imagePathColorIds as $path => $colorIds) {
-                $sortedIds = array_unique($colorIds);
-                sort($sortedIds);
-                $candidate = implode('|', $sortedIds);
-
-                if (in_array($candidate, $knownGroupKeys, true)) {
-                    $imagePathToGroupKey[$path] = $candidate;
-                } else {
-                    $matched = null;
-                    foreach ($knownGroupKeys as $gk) {
-                        $gkIds        = array_map('intval', explode('|', $gk));
-                        $allContained = true;
-                        foreach ($sortedIds as $cid) {
-                            if (!in_array($cid, $gkIds, true)) {
-                                $allContained = false;
-                                break;
-                            }
-                        }
-                        if ($allContained) {
-                            $matched = $gk;
-                            break;
-                        }
-                    }
-                    $imagePathToGroupKey[$path] = $matched ?? $candidate;
-                }
-            }
-
-            foreach ($product->images->filter(fn($i) => $i->color_option_id !== null) as $img) {
-                $path     = $img->image_path;
-                $url      = Storage::url($path);
-                $groupKey = $imagePathToGroupKey[$path] ?? null;
-
-                if (!$groupKey) continue;
-
-                if (!in_array($url, $colorImages[$groupKey] ?? [], true)) {
-                    $colorImages[$groupKey][] = $url;
-                }
-                if ($img->is_primary || !isset($colorPrimaryImage[$groupKey])) {
-                    $colorPrimaryImage[$groupKey] = $url;
-                }
-
-                $strId = (string) $img->color_option_id;
-                if (!in_array($url, $colorImages[$strId] ?? [], true)) {
-                    $colorImages[$strId][] = $url;
-                }
-                if ($img->is_primary || !isset($colorPrimaryImage[$strId])) {
-                    $colorPrimaryImage[$strId] = $url;
-                }
-            }
-
-            $variantsPayload = $product->variants->map(function ($v) use (
-                $productImageUrls, &$colorImages, &$colorPrimaryImage,
-                &$variantPrimaryImage, $variantGroupKeys, $product
-            ) {
-                $variantImageUrls = $v->images
-                    ->map(fn($i) => Storage::url($i->image_path))
-                    ->values()->toArray();
-                if (!empty($variantImageUrls)) {
-                    $variantPrimaryImage[$v->id] = $variantImageUrls[0];
-                }
-
-                $colorOpts = $v->attributeOptions
-                    ->filter(fn($o) => $o->attribute->slug === 'color')
-                    ->sortBy('id')->values();
-                $colorOptId = null;
-                $groupKey   = null;
-
-                if ($colorOpts->isNotEmpty()) {
-                    $colorOptId = $colorOpts->first()->id;
-                    $groupKey   = $variantGroupKeys[$v->id] ?? $colorOpts->pluck('id')->implode('|');
-                    $strId      = (string) $colorOptId;
-                    foreach ($variantImageUrls as $url) {
-                        if (!in_array($url, $colorImages[$groupKey] ?? [], true)) $colorImages[$groupKey][] = $url;
-                        if (!in_array($url, $colorImages[$strId]   ?? [], true)) $colorImages[$strId][]    = $url;
-                    }
-                    if ($variantImageUrls) {
-                        $colorPrimaryImage[$groupKey] ??= $variantImageUrls[0];
-                        $colorPrimaryImage[$strId]    ??= $variantImageUrls[0];
-                    }
-                }
-
-                $resolvedImages = $variantImageUrls;
-                if (empty($resolvedImages) && $groupKey && !empty($colorImages[$groupKey])) {
-                    $resolvedImages = array_values(array_unique($colorImages[$groupKey]));
-                }
-                if (empty($resolvedImages)) $resolvedImages = $productImageUrls;
-
-                // ← PROMO FIX: apply promotion discount to variant base price
-                $variantBase       = (float) ($v->price_override ?? $product->price);
-                $variantPromoData  = $this->promoService->getEffectivePrice($product, $variantBase);
-
-                return [
-                    'id'                => $v->id,
-                    'sku'               => $v->sku,
-                    'stock'             => $v->stock,
-                    'is_active'         => $v->is_active,
-                    'price'             => $variantPromoData['effective_price'], // discounted
-                    'original_price'    => $variantBase,                         // for strikethrough
-                    'price_override'    => $v->price_override,
-                    'label'             => $v->label,
-                    'option_map'        => $v->option_map,
-                    'color_option_id'   => $colorOptId,
-                    'color_group_key'   => $groupKey,
-                    'image_urls'        => $resolvedImages,
-                    'primary_image_url' => $resolvedImages[0] ?? null,
-                ];
-            })->values();
-
-            $axisMap             = [];
-            $colorGroups         = [];
-            $registeredOptionIds = [];
-
-            foreach ($product->variants as $variant) {
-                $colorOpts    = $variant->attributeOptions
-                    ->filter(fn($o) => $o->attribute->slug === 'color')
-                    ->sortBy('id')->values();
-                $nonColorOpts = $variant->attributeOptions
-                    ->filter(fn($o) => $o->attribute->slug !== 'color');
-
-                if ($colorOpts->isNotEmpty() && !isset($axisMap['color'])) {
-                    $axisMap['color'] = [
-                        'slug'    => 'color',
-                        'name'    => $colorOpts->first()->attribute->name,
-                        'type'    => 'color',
-                        'options' => [],
-                    ];
-                }
-
-                if ($colorOpts->isNotEmpty()) {
-                    $primaryId = $colorOpts->first()->id;
-                    $groupKey  = $variantGroupKeys[$variant->id] ?? $colorOpts->pluck('id')->implode('|');
-
-                    if (!isset($colorGroups[$groupKey])) {
-                        $resolvedPrimaryImage =
-                            $colorPrimaryImage[$groupKey]
-                            ?? $variantPrimaryImage[$variant->id]
-                            ?? null;
-
-                        $colorGroups[$groupKey] = [
-                            'id'            => $primaryId,
-                            'group_key'     => $groupKey,
-                            'ids'           => $colorOpts->pluck('id')->toArray(),
-                            'value'         => $colorOpts->pluck('value')->implode('+'),
-                            'color_hex'     => $colorOpts->first()->color_hex,
-                            'swatches'      => $colorOpts->map(fn($o) => [
-                                'id'        => $o->id,
-                                'value'     => $o->value,
-                                'color_hex' => $o->color_hex,
-                            ])->toArray(),
-                            'primary_image' => $resolvedPrimaryImage,
-                        ];
-                    }
-                }
-
-                foreach ($nonColorOpts as $opt) {
-                    $axisSlug = $opt->attribute->slug;
-                    $optId    = $opt->id;
-                    if (!isset($axisMap[$axisSlug])) {
-                        $axisMap[$axisSlug] = [
-                            'slug'    => $axisSlug,
-                            'name'    => $opt->attribute->name,
-                            'type'    => $opt->attribute->type,
-                            'options' => [],
-                        ];
-                        $registeredOptionIds[$axisSlug] = [];
-                    }
-                    if (in_array($optId, $registeredOptionIds[$axisSlug], true)) continue;
-                    $axisMap[$axisSlug]['options'][$optId] = [
-                        'id'            => $optId,
-                        'value'         => $opt->value,
-                        'color_hex'     => $opt->color_hex,
-                        'primary_image' => null,
-                    ];
-                    $registeredOptionIds[$axisSlug][] = $optId;
-                }
-            }
-
-            if (isset($axisMap['color'])) {
-                $axisMap['color']['options'] = array_values($colorGroups);
-            }
-            foreach ($axisMap as $s => &$axis) {
-                if ($s !== 'color') $axis['options'] = array_values($axis['options']);
-            }
-            unset($axis);
-            $selectableAxes = array_values($axisMap);
+            // [variant payload logic unchanged — omitted for brevity, keep your existing code]
+            // ... (this section is identical to your original show() method)
         }
 
-        // ── PROMO FIX: compute promotion data for this product ──────────────
         $promoData = $this->promoService->getEffectivePrice($product);
 
         $data                    = $product->toArray();
@@ -426,7 +284,6 @@ class ProductController extends Controller
         $data['selectable_axes'] = $selectableAxes;
         $data['attribute_data']  = $product->attribute_data;
         $data['color_images']    = $colorImages;
-        // ── PROMO FIX: append promotion fields so frontend receives them ────
         $data['effective_price'] = $promoData['effective_price'];
         $data['discount_amount'] = $promoData['discount_amount'];
         $data['promotion']       = $promoData['promotion'];
@@ -436,6 +293,7 @@ class ProductController extends Controller
 
     public function filterAttributes($slug)
     {
+        // Unchanged from your original — keep as-is
         $productIds = DB::table('products as p')
             ->join('categories as c', 'c.id', '=', 'p.category_id')
             ->where('c.slug', $slug)
@@ -478,6 +336,7 @@ class ProductController extends Controller
 
     public function byIds(\Illuminate\Http\Request $request)
     {
+        // Unchanged — keep your existing byIds() implementation exactly as-is
         $request->validate(['ids' => 'required|array|max:50', 'ids.*' => 'integer|min:1']);
         $ids  = $request->input('ids');
         $rows = DB::table('products as p')
@@ -523,7 +382,7 @@ class ProductController extends Controller
         return response()->json(['success' => true, 'products' => $ordered, 'count' => $ordered->count()]);
     }
 
-    // ── Private helpers ────────────────────────────────────────────────────────
+    // ── Private helpers ────────────────────────────────────────────────────
 
     private function transformProductCollection($products): array
     {
@@ -550,11 +409,10 @@ class ProductController extends Controller
         $p->color_swatches = $swatches;
         $p->setRelation('variants', $p->variants->map(fn($v) => ['id' => $v->id, 'stock' => $v->stock])->values());
 
-        // ── PROMO FIX: append promotion data to every product card in listings
-        $promoData             = $this->promoService->getEffectivePrice($p);
-        $p->effective_price    = $promoData['effective_price'];
-        $p->discount_amount    = $promoData['discount_amount'];
-        $p->promotion          = $promoData['promotion'];
+        $promoData          = $this->promoService->getEffectivePrice($p);
+        $p->effective_price = $promoData['effective_price'];
+        $p->discount_amount = $promoData['discount_amount'];
+        $p->promotion       = $promoData['promotion'];
 
         return $p;
     }

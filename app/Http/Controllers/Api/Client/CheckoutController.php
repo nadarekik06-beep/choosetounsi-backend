@@ -12,6 +12,7 @@ use App\Models\ProductVariant;
 use App\Models\SellerApplication;
 use App\Models\SellerOrder;
 use App\Services\CommissionService;
+use App\Services\FinancialSnapshotService;
 use App\Services\WalletService;
 use App\Services\StockAlertService;
 use App\Services\PromotionService;
@@ -24,10 +25,11 @@ use Illuminate\Support\Str;
 class CheckoutController extends Controller
 {
     public function __construct(
-        private WalletService     $walletService,
-        private StockAlertService $stockAlertService,
-        private PromotionService  $promoService,
-        private CommissionService $commissionService,
+        private WalletService            $walletService,
+        private StockAlertService        $stockAlertService,
+        private PromotionService         $promoService,
+        private CommissionService        $commissionService,
+        private FinancialSnapshotService $financialSnapshot,
     ) {}
 
     /**
@@ -163,15 +165,15 @@ class CheckoutController extends Controller
                     ]);
 
                     foreach ($sellerItems as $item) {
-                        $product   = $item->product;
-                        $variant   = $item->variant;
-                        $basePrice = $variant
+                        $product      = $item->product;
+                        $variant      = $item->variant;
+                        $basePrice    = $variant
                             ? (float) ($variant->price_override ?? $product->price)
                             : (float) $product->price;
-                        $priceData = $this->promoService->getEffectivePrice($product, $basePrice);
-                        $unitPrice = $priceData['effective_price'];
-                        $qty       = (int) $item->quantity;
-                        $commission = $this->commissionService->calculate($unitPrice, $sellerPlan, $qty);
+                        $priceData    = $this->promoService->getEffectivePrice($product, $basePrice);
+                        $unitPrice    = $priceData['effective_price'];
+                        $qty          = (int) $item->quantity;
+                        $commission   = $this->commissionService->calculate($unitPrice, $sellerPlan, $qty);
                         $variantLabel = $variant ? $variant->attributeOptions->pluck('value')->join(' / ') : null;
 
                         OrderItem::create([
@@ -199,6 +201,9 @@ class CheckoutController extends Controller
                             $decrementedProducts[] = $product->id;
                         }
                     }
+
+                    // Freeze financial snapshot AFTER all items for this seller_order are inserted
+                    $this->financialSnapshot->freeze($sellerOrder->id);
                 }
             }
 
@@ -268,6 +273,9 @@ class CheckoutController extends Controller
                             $decrementedProducts[] = $product->id;
                         }
                     }
+
+                    // Freeze financial snapshot AFTER all pack items for this seller_order are inserted
+                    $this->financialSnapshot->freeze($sellerOrder->id);
                 }
             }
 
@@ -288,13 +296,12 @@ class CheckoutController extends Controller
         // ── Stock alerts ──────────────────────────────────────────────────────
         $this->fireStockAlerts($decrementedVariants, $decrementedProducts);
 
-        // ── FIX: Clear forecast cache for ALL sellers in this order ───────────
+        // ── Clear forecast cache for ALL sellers in this order ────────────────
         // Runs AFTER commit so new order_items are in DB.
-        // Covers every SellerOrder — not just the last one from the loop.
         try {
             $order->load('sellerOrders.items');
             foreach ($order->sellerOrders as $so) {
-                if (!$so->seller_id) continue; // skip platform products (no dashboard)
+                if (!$so->seller_id) continue;
                 $pids = $so->items->pluck('product_id')->unique();
                 foreach ($pids as $pid) {
                     SellerForecastController::clearForecastCache((int) $pid, (int) $so->seller_id);
@@ -366,7 +373,7 @@ class CheckoutController extends Controller
         }
 
         $sellerCol  = $this->getSellerCol();
-        $sellerId   = $product->{$sellerCol}; // null for platform products
+        $sellerId   = $product->{$sellerCol};
         $sellerPlan = 'free';
         if ($sellerId !== null) {
             $sellerPlan = SellerApplication::where('user_id', $sellerId)->first()?->plan ?? 'free';
@@ -435,6 +442,9 @@ class CheckoutController extends Controller
                 $decrementedProducts[] = $product->id;
             }
 
+            // Freeze financial snapshot AFTER the single order_item is inserted
+            $this->financialSnapshot->freeze($sellerOrder->id);
+
             if ($paymentMethod === 'wallet') {
                 $this->walletService->deductForOrder($user, $order);
             }
@@ -450,7 +460,7 @@ class CheckoutController extends Controller
         // ── Stock alerts ──────────────────────────────────────────────────────
         $this->fireStockAlerts($decrementedVariants, $decrementedProducts);
 
-        // ── FIX: Clear forecast cache for this product/seller ─────────────────
+        // ── Clear forecast cache for this product/seller ──────────────────────
         try {
             if ($sellerId !== null) {
                 SellerForecastController::clearForecastCache((int) $product->id, (int) $sellerId);

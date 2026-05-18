@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Carbon\Carbon;
+use App\Models\UserPreference;
 
 /**
  * SponsorshipController — seller-facing sponsoring system.
@@ -48,6 +49,13 @@ class SponsorshipController extends Controller
             'product_id'    => 'required|integer|exists:products,id',
             'duration_days' => 'sometimes|integer|min:1|max:90',
             'priority'      => 'sometimes|integer|min:1|max:10',
+            'target_gender'         => 'sometimes|nullable|in:male,female,unisex',
+            'target_wilaya_ids'     => 'sometimes|nullable|array',
+            'target_wilaya_ids.*'   => 'string|max:100',
+            'target_category_ids'   => 'sometimes|nullable|array',
+            'target_category_ids.*' => 'integer|exists:categories,id',
+            'target_price_min'      => 'sometimes|nullable|numeric|min:0',
+            'target_price_max'      => 'sometimes|nullable|numeric|min:0|gt:target_price_min',
         ]);
 
         $seller   = $request->user();
@@ -132,10 +140,10 @@ class SponsorshipController extends Controller
         // Persist inside a transaction
         $sponsorship = null;
         DB::transaction(function () use (
-            $sellerId, $product, $plan, $finalPriority,
-            $startAt, $endAt, $price, $wasPaid, $usedFreeQuota,
-            $aiTags, $aiAdCopy, &$sponsorship
-        ) {
+    $sellerId, $product, $plan, $finalPriority,
+    $startAt, $endAt, $price, $wasPaid, $usedFreeQuota,
+    $aiTags, $aiAdCopy, $request, &$sponsorship
+) {
             $sponsorship = Sponsorship::create([
                 'seller_id'       => $sellerId,
                 'product_id'      => $product->id,
@@ -152,7 +160,12 @@ class SponsorshipController extends Controller
                 'impressions'     => 0,
                 'clicks'          => 0,
                 'conversions'     => 0,
-            ]);
+                'target_gender'        => $request->input('target_gender'),
+                'target_wilaya_ids'    => $request->input('target_wilaya_ids'),
+                'target_category_ids'  => $request->input('target_category_ids'),
+                'target_price_min'     => $request->input('target_price_min'),
+                'target_price_max'     => $request->input('target_price_max'),
+                ]);
 
             Sponsorship::syncProductFlags($product->id);
         });
@@ -286,38 +299,92 @@ class SponsorshipController extends Controller
     public function publicFeed(Request $request): JsonResponse
     {
         try { Sponsorship::expireOverdue(); } catch (\Throwable $e) {}
-
-        $limit = min((int) $request->query('limit', 12), 40);
-        $categorySlug = $request->query('category_slug');
-
+ 
+        $limit      = min((int) $request->query('limit', 12), 40);
+        $catSlug    = $request->query('category_slug');
+        $minResults = max(1, (int) $request->query('min_results', 2));
+ 
+        $user  = $request->user();
+        $prefs = null;
+ 
+        if ($user) {
+            $prefs = \App\Models\UserPreference::where('user_id', $user->id)->first();
+        }
+ 
+        // ── Fetch all active sponsored products (broad query) ─────────────
         $query = Product::available()
             ->where('is_sponsored', true)
-            ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name'])
+            ->with([
+                'category:id,name,slug',
+                'primaryImage',
+                'seller:id,name',
+                'sponsorships' => fn($q) => $q->where('status', 'active')
+                    ->select('id', 'product_id', 'ai_ad_copy', 'ai_tags', 'boost_score', 'end_at',
+                             'target_gender', 'target_wilaya_ids', 'target_category_ids',
+                             'target_price_min', 'target_price_max'),
+            ])
             ->orderByDesc('sponsored_priority')
             ->orderByDesc('sponsored_at');
-
-        if ($categorySlug) {
-            $query->whereHas('category', fn($q) => $q->where('slug', $categorySlug));
+ 
+        if ($catSlug) {
+            $query->whereHas('category', fn($q) => $q->where('slug', $catSlug));
         }
-
-        $products = $query->take($limit)->get()->map(function ($p) {
+ 
+        $allSponsored = $query->take(100)->get();
+ 
+        // ── Apply user targeting filter ───────────────────────────────────
+        $targeted = $allSponsored->filter(function ($product) use ($user, $prefs) {
+            // Check targeting against the product's active sponsorship
+            $sponsorship = $product->sponsorships->first();
+            if (!$sponsorship) {
+                return true; // No sponsorship data? Show it (shouldn't happen)
+            }
+            return $sponsorship->matchesUser($user, $prefs);
+        })->values();
+ 
+        // ── FALLBACK: if not enough targeted results, relax targeting ─────
+        if ($targeted->count() < $minResults) {
+            // First: fill from non-targeted sponsored products in the same category
+            $excludeIds  = $targeted->pluck('id')->toArray();
+            $relaxed     = $allSponsored
+                ->whereNotIn('id', $excludeIds)
+                ->take($limit - $targeted->count())
+                ->values();
+ 
+            $targeted = $targeted->concat($relaxed)->values();
+        }
+ 
+        // ── If still not enough, fill with popular non-sponsored products ─
+        if ($targeted->count() < $minResults) {
+            $excludeIds  = $targeted->pluck('id')->toArray();
+            $nonSponsored = Product::available()
+                ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name'])
+                ->when($catSlug, fn($q) => $q->whereHas('category', fn($q2) => $q2->where('slug', $catSlug)))
+                ->whereNotIn('id', $excludeIds)
+                ->orderByDesc('views')
+                ->take($limit - $targeted->count())
+                ->get();
+ 
+            $targeted = $targeted->concat($nonSponsored)->values();
+        }
+ 
+        // ── Format output ─────────────────────────────────────────────────
+        $products = $targeted->take($limit)->map(function ($p) {
             $p->primary_image_url = $p->primaryImage
                 ? Storage::url($p->primaryImage->image_path)
                 : null;
-            $p->is_sponsored = true;
-
-            // Attach active sponsorship's ad copy for display
-            $activeSponsor = Sponsorship::where('product_id', $p->id)
-                ->where('status', 'active')
-                ->select('id', 'ai_ad_copy', 'ai_tags', 'boost_score', 'end_at')
-                ->first();
-            $p->sponsor_data = $activeSponsor;
-
+            $p->is_sponsored  = (bool) ($p->is_sponsored ?? false);
+            $p->sponsor_data  = $p->sponsorships->first();
+ 
+            // Remove raw relation from output
+            unset($p->sponsorships);
+ 
             return $p;
         });
-
+ 
         return response()->json(['success' => true, 'data' => $products]);
     }
+
 
     // =========================================================================
     // POST /api/seller/sponsorships/{id}/impression  (lightweight, no auth)

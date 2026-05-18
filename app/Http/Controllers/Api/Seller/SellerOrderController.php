@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Storage;
 use App\Models\Order;
 use App\Http\Controllers\Api\Seller\SellerForecastController;
 
+
 /**
  * SellerOrderController
  *
@@ -258,35 +259,73 @@ class SellerOrderController extends Controller
         ]);
     }
 
-    /* ── PATCH /api/seller/orders/{id}/status ── */
-    public function updateStatus(Request $request, $id)
-{
-    $request->validate([
-        'status' => 'required|in:pending,processing,completed,delivered,cancelled',
-    ]);
-
-    $sellerId    = auth()->id();
-    $sellerOrder = SellerOrder::where('seller_id', $sellerId)->findOrFail($id);
-
-    $status = $request->status;
-    $sellerOrder->update(['status' => $status]);
-
-    if (in_array($status, ['completed', 'delivered'])) {
-        $productIds = $sellerOrder->items()->pluck('product_id')->unique();
-        foreach ($productIds as $productId) {
-            SellerForecastController::clearForecastCache((int) $productId, (int) $sellerId);
+public function updateStatus(Request $request, $id)
+    {
+        $request->validate([
+            'status' => 'required|in:pending,processing,completed,delivered,cancelled',
+        ]);
+ 
+        $sellerId    = auth()->id();
+        $sellerOrder = SellerOrder::where('seller_id', $sellerId)->findOrFail($id);
+ 
+        $status = $request->status;
+        $sellerOrder->update(['status' => $status]);
+ 
+        // ── Forecast cache invalidation ──────────────────────────────────────
+        if (in_array($status, ['completed', 'delivered'])) {
+            $productIds = $sellerOrder->items()->pluck('product_id')->unique();
+            foreach ($productIds as $productId) {
+                SellerForecastController::clearForecastCache((int) $productId, (int) $sellerId);
+            }
+        }
+ 
+        // ── Create ReviewPrompts when order is delivered ─────────────────────
+        // This triggers the popup on the storefront for all items in this order.
+        if ($status === 'delivered') {
+            $this->createReviewPrompts($sellerOrder);
+        }
+ 
+        $this->syncParentOrderStatus($sellerOrder->order_id);
+ 
+        return response()->json([
+            'success' => true,
+            'message' => 'Order status updated.',
+            'data'    => $sellerOrder,
+        ]);
+    }
+private function createReviewPrompts(\App\Models\SellerOrder $sellerOrder): void
+    {
+        try {
+            // Eager-load the parent order if not already loaded
+            $sellerOrder->loadMissing('order');
+ 
+            $userId = $sellerOrder->order?->user_id;
+            if (!$userId) return;
+ 
+            $items = $sellerOrder->items()->get(['id', 'product_id']);
+ 
+            foreach ($items as $item) {
+                if (!$item->product_id) continue;
+ 
+                \App\Models\ReviewPrompt::firstOrCreate(
+                    [
+                        'user_id'       => $userId,
+                        'order_item_id' => $item->id,
+                    ],
+                    [
+                        'product_id' => $item->product_id,
+                        'sent_at'    => now(),
+                        'channel'    => 'popup',
+                    ]
+                );
+            }
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error(
+                '[ReviewPrompt::createReviewPrompts] ' . $e->getMessage(),
+                ['seller_order_id' => $sellerOrder->id]
+            );
         }
     }
-
-    $this->syncParentOrderStatus($sellerOrder->order_id);
-
-    return response()->json([
-        'success' => true,
-        'message' => 'Order status updated.',
-        'data'    => $sellerOrder,
-    ]);
-}
-
     /**
      * Derive and write the correct aggregate status to orders.status
      * based on the current state of all seller_orders for that order.

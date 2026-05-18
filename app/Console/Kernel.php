@@ -15,6 +15,8 @@ class Kernel extends ConsoleKernel
      */
     protected $commands = [
         \App\Console\Commands\BlackDailyNotify::class,
+        \App\Console\Commands\BackfillSellerOrderFinancials::class,
+
     ];
 
     /**

@@ -51,8 +51,13 @@ use App\Http\Controllers\Api\PublicPromotionController;
 use App\Http\Controllers\Api\Seller\CommissionController;
 use App\Http\Controllers\Api\Delivery\DeliveryAuthController;
 use App\Http\Controllers\Api\Seller\SellerForecastController;
-
-
+use App\Http\Controllers\Api\ProductReviewController;
+use App\Http\Controllers\Api\Client\ReviewController as ClientReviewController;
+use App\Http\Controllers\Api\Seller\SellerReviewController;
+use App\Http\Controllers\Admin\AdminReviewController;
+use App\Http\Controllers\Admin\FinanceController;
+use App\Http\Controllers\Admin\SettlementController;
+use App\Http\Controllers\Api\Seller\EarningsController;
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES
@@ -65,6 +70,8 @@ Route::get('/auth/google/redirect', [AuthController::class, 'googleRedirect']);
 Route::get('/auth/google/callback', [AuthController::class, 'googleCallback']);
 Route::post('/auth/verify-email',        [AuthController::class, 'verifyEmail']);
 Route::post('/auth/resend-verification', [AuthController::class, 'resendVerification']);
+
+Route::get('/products/{slug}/reviews', [ProductReviewController::class, 'index']);
 
 Route::post('/products/by-ids', [ProductController::class, 'byIds']);
 Route::get('/products',          [ProductController::class, 'index']);
@@ -94,6 +101,8 @@ Route::post('/search/image', [\App\Http\Controllers\Api\SearchController::class,
 Route::get('/brand-products',          [PublicBrandProductController::class, 'index']);
 Route::get('/brand-products/featured', [PublicBrandProductController::class, 'featured']);
 Route::get('/brand-products/{slug}',   [PublicBrandProductController::class, 'show']);
+Route::get('/recommendations',                    [ProductRecommendationController::class, 'feed']);
+Route::get('/recommendations/similar/{productId}', [ProductRecommendationController::class, 'similar']);
 
 // This must come BEFORE the auth:sanctum group
 Route::post(
@@ -288,8 +297,23 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/promotions/{id}',     [SellerPromotionController::class, 'update']);
         Route::delete('/promotions/{id}',  [SellerPromotionController::class, 'destroy']);
 
-    }); // ← seller group ends HERE
 
+                
+        Route::get('/reviews/stats',              [SellerReviewController::class, 'stats']);
+        Route::get('/reviews',                    [SellerReviewController::class, 'index']);
+        Route::post('/reviews/{id}/reply',        [SellerReviewController::class, 'reply']);
+        Route::delete('/reviews/{id}/reply',      [SellerReviewController::class, 'deleteReply']);
+        Route::post('/reviews/{id}/report',       [SellerReviewController::class, 'report']);
+
+        Route::prefix('earnings')->group(function () {
+        Route::get('overview', [EarningsController::class, 'overview']);
+        Route::get('orders',   [EarningsController::class, 'orders']);
+        Route::get('history',  [EarningsController::class, 'history']);
+    });
+
+    }); // ← seller group ends HERE
+    Route::post('/reviews/{id}/vote',   [ClientReviewController::class, 'vote']);
+    Route::post('/reviews/{id}/report', [ClientReviewController::class, 'report']);
     /*
     |----------------------------------------------------------------------
     | CLIENT ROUTES
@@ -304,6 +328,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/complaints',                 [ClientComplaintController::class, 'index']);
         Route::post('/complaints',                [ClientComplaintController::class, 'store']);
         Route::get('/complaints/{id}',            [ClientComplaintController::class, 'show']);
+        
+        Route::get('/reviews/eligible',            [ClientReviewController::class, 'eligible']);
+        Route::get('/reviews/tags',                [ClientReviewController::class, 'tags']);
+        Route::post('/reviews',                    [ClientReviewController::class, 'store']);
+        Route::get('/reviews/prompts',             [ClientReviewController::class, 'pendingPrompts']);
+        Route::post('/reviews/prompts/{id}/dismiss',[ClientReviewController::class, 'dismissPrompt']);
     });
 
     /*
@@ -434,6 +464,38 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/sponsorships',               [AdminSponsorshipController::class, 'index']);
         Route::patch('/sponsorships/{id}/cancel', [AdminSponsorshipController::class, 'cancel']);
         Route::patch('/sponsorships/{id}/boost',  [AdminSponsorshipController::class, 'boost']);
+
+
+
+        Route::get('/reviews/stats',                     [AdminReviewController::class, 'stats']);
+        Route::get('/reviews',                           [AdminReviewController::class, 'index']);
+        Route::patch('/reviews/{id}/approve',            [AdminReviewController::class, 'approve']);
+        Route::patch('/reviews/{id}/reject',             [AdminReviewController::class, 'reject']);
+        Route::patch('/reviews/{id}/flag',               [AdminReviewController::class, 'flag']);
+        Route::delete('/reviews/{id}',                   [AdminReviewController::class, 'destroy']);
+        Route::delete('/review-media/{id}',              [AdminReviewController::class, 'destroyMedia']);
+        Route::patch('/review-media/{id}/hide',          [AdminReviewController::class, 'hideMedia']);
+        Route::get('/review-reports',                    [AdminReviewController::class, 'reports']);
+        Route::patch('/review-reports/{id}/resolve',     [AdminReviewController::class, 'resolveReport']);
+        Route::delete('/review-replies/{id}',            [AdminReviewController::class, 'destroyReply']);
+
+
+        Route::prefix('finance')->group(function () {
+        Route::get('overview',         [FinanceController::class, 'overview']);
+        Route::get('orders',           [FinanceController::class, 'orders']);
+        Route::get('sellers',          [FinanceController::class, 'sellers']);
+        Route::get('pending-payouts',  [FinanceController::class, 'pendingPayouts']);
+        Route::post('confirm-money/{id}', [FinanceController::class, 'confirmMoneyReceived']);
+    });
+
+    // Settlement batches
+    Route::prefix('settlements')->group(function () {
+        Route::get('/',            [SettlementController::class, 'index']);
+        Route::post('create',      [SettlementController::class, 'create']);
+        Route::get('{id}',         [SettlementController::class, 'show']);
+        Route::post('{id}/confirm',[SettlementController::class, 'confirm']);
+        Route::post('{id}/cancel', [SettlementController::class, 'cancel']);
+    });
 
     }); // ← admin group ends HERE
 

@@ -1,4 +1,5 @@
 <?php
+// app/Services/ProductScoringService.php
 
 namespace App\Services;
 
@@ -7,40 +8,42 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
- * ProductScoringService
+ * ProductScoringService — unified ranking for ALL products.
  *
- * Computes a visibility score for each product in a collection.
- * Score determines the sort order of product listings.
+ * KEY CHANGE from previous version:
+ *   Sponsored products are NO LONGER pulled out and prepended blindly.
+ *   They enter the same scoring pipeline as non-sponsored products.
+ *   Sponsorship adds a boost score ON TOP of the preference score —
+ *   it can never override a strong preference match.
  *
- * Formula:
- *   Score = UserInterestScore + SellerPriorityScore + ProductBoostScore
+ * Score formula (max theoretical ≈ 230):
  *
- * UserInterestScore (requires authenticated user with preferences):
- *   +50  if product category matches user's preferred categories
- *   +20  if product's brand attribute matches user's preferred brands
- *   +15  if product gender attribute matches user's gender preference
+ *   UserInterestScore    (0–85)   ← PRIMARY ranking factor
+ *     +50  category match
+ *     +20  brand match
+ *     +15  gender match
  *
- * SellerPriorityScore (based on seller's active subscription plan):
- *   +40  Black plan
- *   +25  Red plan
- *   +10  Free/Green plan (default)
+ *   ActivityScore        (0–40)   ← behavioral signals, recency-weighted
+ *     Drawn from user_activity_logs, decays with time
  *
- * ProductBoostScore (computed dynamically — no static columns needed):
- *   +20  Trending: product views rank in top 20% of all active products
- *   +15  New arrival: created within last 30 days
- *   +10  High rating: average review rating >= 4.0 (uses existing reviews if available)
- *   +8   Featured: product.featured = true
- *   +5   Low stock urgency: stock between 1 and 5 (creates urgency)
+ *   SellerPriorityScore  (0–40)   ← seller subscription tier
+ *     +40  black
+ *     +25  red
+ *     +10  free / green
  *
- * Sponsorship bonus (already handled in the DB query layer by is_sponsored,
- * but we also add it here as a score component for unified ranking):
- *   +sponsored_priority  when is_sponsored = true
+ *   ProductBoostScore    (0–38)   ← product-level quality signals
+ *     +20  trending (top 20% by views)
+ *     +15  new arrival (< 30 days)
+ *     +10  high rated (avg ≥ 4.0)
+ *     +8   featured
+ *     +5   low stock urgency (1–5 units)
  *
- * Performance:
- *   - All scores are computed in PHP after a single DB query (no N+1)
- *   - Seller plans are fetched in a single batch query
- *   - Trending threshold is computed once per request
- *   - Brand matching uses the pre-loaded attributeValues relation
+ *   SponsorshipBonus     (10–70)  ← SECONDARY after preference
+ *     Added as-is from sponsored_priority (10=green, 30=red, 70=black)
+ *     ONLY applied when product.is_sponsored = true
+ *
+ * This means a perfectly-matched non-sponsored product (score ≈ 125)
+ * beats an irrelevant black-tier sponsored product (score ≈ 70).
  */
 class ProductScoringService
 {
@@ -50,6 +53,16 @@ class ProductScoringService
     const SCORE_CATEGORY_MATCH = 50;
     const SCORE_BRAND_MATCH    = 20;
     const SCORE_GENDER_MATCH   = 15;
+
+    // ActivityScore — recency half-lives in days
+    const ACTIVITY_WEIGHTS = [
+        'order'    => 4,
+        'cart'     => 3,
+        'favorite' => 2,
+        'view'     => 1,
+    ];
+    const ACTIVITY_HALFLIFE_DAYS = 14;   // score halves every 14 days
+    const ACTIVITY_MAX_SCORE     = 40;   // cap so activity never dominates
 
     // SellerPriorityScore
     const SCORE_PLAN_BLACK = 40;
@@ -64,47 +77,42 @@ class ProductScoringService
     const SCORE_LOW_STOCK   = 5;
 
     // Thresholds
-    const TRENDING_VIEW_PERCENTILE = 0.80;  // top 20% by views
-    const NEW_ARRIVAL_DAYS         = 30;    // created within X days
-    const HIGH_RATING_THRESHOLD    = 4.0;   // average rating >= X
-    const LOW_STOCK_MAX            = 5;     // stock <= X triggers urgency boost
+    const TRENDING_VIEW_PERCENTILE = 0.80;
+    const NEW_ARRIVAL_DAYS         = 30;
+    const HIGH_RATING_THRESHOLD    = 4.0;
+    const LOW_STOCK_MAX            = 5;
+
+    // ── Public API ─────────────────────────────────────────────────────────
 
     /**
-     * Score and sort a collection of Product Eloquent models.
+     * Score and sort ALL products (sponsored + non-sponsored together).
      *
-     * @param  Collection         $products   Products already loaded from DB
-     * @param  UserPreference|null $prefs     Authenticated user's preferences (or null)
-     * @return Collection                     Same products, sorted by score DESC
+     * @param  Collection          $products  All products from DB (mixed sponsored state)
+     * @param  UserPreference|null $prefs     Authenticated user's combined preferences
+     * @param  array               $activityWeights  From UserPreferenceService::inferPreferencesFromActivity()
+     * @return Collection                     Sorted by score DESC
      */
-    public function scoreAndSort(Collection $products, ?UserPreference $prefs = null): Collection
-    {
+    public function scoreAndSort(
+        Collection $products,
+        ?UserPreference $prefs = null,
+        array $activityWeights = []
+    ): Collection {
         if ($products->isEmpty()) {
             return $products;
         }
 
-        // ── Pre-compute lookup tables (batch queries, not per-product) ─────
-
-        $sellerPlanMap    = $this->buildSellerPlanMap($products);
+        $sellerPlanMap     = $this->buildSellerPlanMap($products);
         $trendingThreshold = $this->computeTrendingThreshold();
-        $ratingMap        = $this->buildRatingMap($products);
-
-        // ── Score each product ─────────────────────────────────────────────
+        $ratingMap         = $this->buildRatingMap($products);
 
         return $products
-            ->map(function ($product) use ($prefs, $sellerPlanMap, $trendingThreshold, $ratingMap) {
+            ->map(function ($product) use (
+                $prefs, $activityWeights,
+                $sellerPlanMap, $trendingThreshold, $ratingMap
+            ) {
                 $product->_score = $this->computeScore(
-                    $product,
-                    $prefs,
-                    $sellerPlanMap,
-                    $trendingThreshold,
-                    $ratingMap
-                );
-                $product->_score_breakdown = $this->computeBreakdown(
-                    $product,
-                    $prefs,
-                    $sellerPlanMap,
-                    $trendingThreshold,
-                    $ratingMap
+                    $product, $prefs, $activityWeights,
+                    $sellerPlanMap, $trendingThreshold, $ratingMap
                 );
                 return $product;
             })
@@ -113,17 +121,19 @@ class ProductScoringService
     }
 
     /**
-     * Compute the total score for a single product.
-     * Called once per product — all lookup data is pre-built.
+     * Compute total score for a single product.
+     * All lookup tables must be pre-built (no N+1 here).
      */
     public function computeScore(
         $product,
         ?UserPreference $prefs,
+        array $activityWeights,
         array $sellerPlanMap,
         int $trendingThreshold,
         array $ratingMap
     ): int {
         return $this->userInterestScore($product, $prefs)
+             + $this->activityScore($product, $activityWeights)
              + $this->sellerPriorityScore($product, $sellerPlanMap)
              + $this->productBoostScore($product, $trendingThreshold, $ratingMap)
              + $this->sponsorshipBonus($product);
@@ -132,9 +142,8 @@ class ProductScoringService
     // ── Score components ───────────────────────────────────────────────────
 
     /**
-     * UserInterestScore
-     * Only applies when user has set preferences.
-     * Returns 0 for guests or users without preferences.
+     * UserInterestScore — matches product against explicit user preferences.
+     * Returns 0 for guests or users without any preferences.
      */
     private function userInterestScore($product, ?UserPreference $prefs): int
     {
@@ -144,19 +153,18 @@ class ProductScoringService
 
         $score = 0;
 
-        // +50 if product category is in user's preferred categories
-        if (!empty($prefs->category_ids) && in_array($product->category_id, $prefs->category_ids)) {
+        if (!empty($prefs->category_ids)
+            && in_array((int) $product->category_id, array_map('intval', (array) $prefs->category_ids))
+        ) {
             $score += self::SCORE_CATEGORY_MATCH;
         }
 
-        // +20 if product has a brand attribute matching user's preferred brands
         if (!empty($prefs->brand_ids)) {
-            $score += $this->matchesBrand($product, $prefs->brand_ids)
+            $score += $this->matchesBrand($product, array_map('intval', (array) $prefs->brand_ids))
                 ? self::SCORE_BRAND_MATCH
                 : 0;
         }
 
-        // +15 if product gender attribute matches user's gender preference
         if ($prefs->gender) {
             $score += $this->matchesGender($product, $prefs->gender)
                 ? self::SCORE_GENDER_MATCH
@@ -167,14 +175,46 @@ class ProductScoringService
     }
 
     /**
-     * SellerPriorityScore
-     * Reads the seller's active plan from the pre-built map.
+     * ActivityScore — recency-weighted behavioral signals.
+     *
+     * Uses the interaction_weights from UserPreferenceService::inferPreferencesFromActivity().
+     * Each interaction weight is decayed exponentially by how many days ago it happened.
+     *
+     * The raw score is normalized to 0–ACTIVITY_MAX_SCORE.
+     *
+     * @param  array $activityWeights  product_id => raw_weight (already aggregated)
+     */
+    private function activityScore($product, array $activityWeights): int
+    {
+        if (empty($activityWeights)) {
+            return 0;
+        }
+
+        $rawWeight = $activityWeights[$product->id] ?? 0;
+        if ($rawWeight <= 0) {
+            return 0;
+        }
+
+        // Normalize: cap at the maximum possible weight in the collection,
+        // then scale to ACTIVITY_MAX_SCORE. This prevents one outlier product
+        // (e.g. 200 cart adds) from collapsing everyone else to near zero.
+        $maxWeight = max($activityWeights);
+        if ($maxWeight <= 0) {
+            return 0;
+        }
+
+        $normalized = $rawWeight / $maxWeight; // 0.0 – 1.0
+        return (int) round($normalized * self::ACTIVITY_MAX_SCORE);
+    }
+
+    /**
+     * SellerPriorityScore — seller's active subscription plan.
      */
     private function sellerPriorityScore($product, array $sellerPlanMap): int
     {
         $sellerId = $product->seller_id;
         if (!$sellerId) {
-            return self::SCORE_PLAN_FREE; // platform products get base score
+            return self::SCORE_PLAN_FREE;
         }
 
         $plan = $sellerPlanMap[$sellerId] ?? 'free';
@@ -187,35 +227,29 @@ class ProductScoringService
     }
 
     /**
-     * ProductBoostScore
-     * Computed dynamically — no static DB columns needed.
+     * ProductBoostScore — quality signals computed dynamically.
      */
     private function productBoostScore($product, int $trendingThreshold, array $ratingMap): int
     {
         $score = 0;
 
-        // +20 Trending: views above the 80th percentile threshold
         if (($product->views ?? 0) >= $trendingThreshold && $trendingThreshold > 0) {
             $score += self::SCORE_TRENDING;
         }
 
-        // +15 New arrival: created within last 30 days
         if ($product->created_at && $product->created_at->gte(now()->subDays(self::NEW_ARRIVAL_DAYS))) {
             $score += self::SCORE_NEW_ARRIVAL;
         }
 
-        // +10 High rating: average review >= 4.0
         $avgRating = $ratingMap[$product->id] ?? 0;
         if ($avgRating >= self::HIGH_RATING_THRESHOLD) {
             $score += self::SCORE_HIGH_RATING;
         }
 
-        // +8 Featured product
         if ($product->featured) {
             $score += self::SCORE_FEATURED;
         }
 
-        // +5 Low stock urgency (1–5 items left)
         $stock = $product->stock ?? 0;
         if ($stock >= 1 && $stock <= self::LOW_STOCK_MAX) {
             $score += self::SCORE_LOW_STOCK;
@@ -225,8 +259,11 @@ class ProductScoringService
     }
 
     /**
-     * Sponsorship bonus — adds the product's sponsored_priority when sponsored.
-     * This stacks on top of the existing is_sponsored DB-level sort.
+     * SponsorshipBonus — adds sponsored_priority when the product is sponsored.
+     *
+     * This is ADDITIVE on top of preference score, never replacing it.
+     * A sponsored product with zero preference match gets only this bonus.
+     * A non-sponsored product with strong preference match beats it.
      */
     private function sponsorshipBonus($product): int
     {
@@ -236,15 +273,8 @@ class ProductScoringService
         return 0;
     }
 
-    // ── Brand matching ─────────────────────────────────────────────────────
+    // ── Attribute matching ─────────────────────────────────────────────────
 
-    /**
-     * Checks if the product has a brand attribute value matching the user's preferences.
-     * Brand is stored as a product_attribute_value where attribute.slug = 'brand'.
-     * The value is a JSON-encoded array of attribute_option IDs, e.g. "[12]".
-     *
-     * Requires the product's attributeValues relation to be loaded with the attribute.
-     */
     private function matchesBrand($product, array $preferredBrandIds): bool
     {
         if (!$product->relationLoaded('attributeValues')) {
@@ -257,13 +287,11 @@ class ProductScoringService
                 continue;
             }
 
-            // Decode the stored value — could be "[12]" or "12"
             $decoded = json_decode($pav->value, true);
             if (!is_array($decoded)) {
                 $decoded = [(int) $pav->value];
             }
 
-            // Check if any brand option ID intersects with user preferences
             if (!empty(array_intersect($decoded, $preferredBrandIds))) {
                 return true;
             }
@@ -272,12 +300,6 @@ class ProductScoringService
         return false;
     }
 
-    /**
-     * Checks if the product's gender attribute matches the user's preference.
-     * Gender is stored as a text attribute_value (e.g. "male", "female", "unisex").
-     *
-     * "unisex" matches any gender preference.
-     */
     private function matchesGender($product, string $preferredGender): bool
     {
         if (!$product->relationLoaded('attributeValues')) {
@@ -292,7 +314,6 @@ class ProductScoringService
 
             $productGender = strtolower(trim($pav->value));
 
-            // Unisex matches any preference
             if ($productGender === 'unisex') {
                 return true;
             }
@@ -306,29 +327,23 @@ class ProductScoringService
     // ── Batch lookup builders ──────────────────────────────────────────────
 
     /**
-     * Builds a map of seller_id => active_plan for all sellers in the collection.
-     * Single query — avoids N+1.
-     *
-     * @return array<int, string>  e.g. [5 => 'red', 12 => 'black', 7 => 'free']
+     * seller_id => 'black'|'red'|'free'
+     * Single query, no N+1.
      */
-    private function buildSellerPlanMap(Collection $products): array
+    public function buildSellerPlanMap(Collection $products): array
     {
-        $sellerIds = $products
-            ->pluck('seller_id')
-            ->filter()
-            ->unique()
-            ->values()
-            ->toArray();
+        $sellerIds = $products->pluck('seller_id')->filter()->unique()->values()->toArray();
 
         if (empty($sellerIds)) {
             return [];
         }
 
-        // seller_applications.plan is the source of truth for active plan
+        // Use `plan` column (the active plan post-migration).
+        // Fall back to 'free' if no approved application exists.
         $rows = DB::table('seller_applications')
             ->whereIn('user_id', $sellerIds)
             ->where('status', 'approved')
-            ->select('user_id', 'plan')
+            ->select('user_id', DB::raw("COALESCE(`plan`, 'free') as plan"))
             ->get();
 
         $map = [];
@@ -340,14 +355,10 @@ class ProductScoringService
     }
 
     /**
-     * Computes the views threshold for "trending" — 80th percentile.
-     * Uses a single COUNT + ORDER BY query, not a full table scan.
-     *
-     * Returns 0 if no products exist (disables trending boost).
+     * Views threshold for "trending" — 80th percentile of all active products.
      */
-    private function computeTrendingThreshold(): int
+    public function computeTrendingThreshold(): int
     {
-        // Get total count of active products
         $total = DB::table('products')
             ->where('is_approved', true)
             ->where('is_active', true)
@@ -357,11 +368,9 @@ class ProductScoringService
             return 0;
         }
 
-        // The 80th percentile row offset
-        $offset = (int) floor($total * self::TRENDING_VIEW_PERCENTILE);
-        $offset = max(0, $total - $offset - 1); // convert to OFFSET from highest
+        $offset = max(0, (int) floor($total * self::TRENDING_VIEW_PERCENTILE));
+        $offset = max(0, $total - $offset - 1);
 
-        // Get the views value at that percentile
         $row = DB::table('products')
             ->where('is_approved', true)
             ->where('is_active', true)
@@ -371,17 +380,13 @@ class ProductScoringService
             ->limit(1)
             ->value('views');
 
-        return (int) ($row ?? PHP_INT_MAX); // if no views data, disable trending
+        return (int) ($row ?? PHP_INT_MAX);
     }
 
     /**
-     * Builds a map of product_id => average_rating.
-     * Reads from the product_reviews table if it exists.
-     * Returns an empty map if no reviews table is present (graceful degradation).
-     *
-     * @return array<int, float>
+     * product_id => avg_rating, batch fetched.
      */
-    private function buildRatingMap(Collection $products): array
+    public function buildRatingMap(Collection $products): array
     {
         $productIds = $products->pluck('id')->toArray();
 
@@ -389,7 +394,6 @@ class ProductScoringService
             return [];
         }
 
-        // Check if product_reviews table exists — graceful degradation
         if (!\Illuminate\Support\Facades\Schema::hasTable('product_reviews')) {
             return [];
         }
@@ -408,48 +412,30 @@ class ProductScoringService
 
             return $map;
         } catch (\Throwable $e) {
-            // If query fails for any reason, skip rating boost gracefully
             return [];
         }
     }
 
     // ── Debug helper ───────────────────────────────────────────────────────
 
-    /**
-     * Returns a human-readable breakdown of a product's score.
-     * Useful for development and future admin panel display.
-     */
     public function computeBreakdown(
         $product,
         ?UserPreference $prefs,
+        array $activityWeights,
         array $sellerPlanMap,
         int $trendingThreshold,
         array $ratingMap
     ): array {
-        $sellerId = $product->seller_id;
-        $plan     = $sellerPlanMap[$sellerId] ?? 'free';
-        $avgRating = $ratingMap[$product->id] ?? 0;
-        $stock     = $product->stock ?? 0;
-
         return [
-            'user_interest'    => $this->userInterestScore($product, $prefs),
-            'seller_priority'  => $this->sellerPriorityScore($product, $sellerPlanMap),
-            'product_boost'    => $this->productBoostScore($product, $trendingThreshold, $ratingMap),
-            'sponsorship'      => $this->sponsorshipBonus($product),
-            'total'            => $this->computeScore($product, $prefs, $sellerPlanMap, $trendingThreshold, $ratingMap),
-            'details' => [
-                'seller_plan'       => $plan,
-                'views'             => $product->views ?? 0,
-                'trending_threshold'=> $trendingThreshold,
-                'is_trending'       => ($product->views ?? 0) >= $trendingThreshold && $trendingThreshold > 0,
-                'is_new_arrival'    => $product->created_at?->gte(now()->subDays(self::NEW_ARRIVAL_DAYS)) ?? false,
-                'avg_rating'        => $avgRating,
-                'is_high_rated'     => $avgRating >= self::HIGH_RATING_THRESHOLD,
-                'is_featured'       => (bool) $product->featured,
-                'stock'             => $stock,
-                'low_stock_bonus'   => $stock >= 1 && $stock <= self::LOW_STOCK_MAX,
-                'is_sponsored'      => (bool) $product->is_sponsored,
-            ],
+            'user_interest'   => $this->userInterestScore($product, $prefs),
+            'activity'        => $this->activityScore($product, $activityWeights),
+            'seller_priority' => $this->sellerPriorityScore($product, $sellerPlanMap),
+            'product_boost'   => $this->productBoostScore($product, $trendingThreshold, $ratingMap),
+            'sponsorship'     => $this->sponsorshipBonus($product),
+            'total'           => $this->computeScore(
+                $product, $prefs, $activityWeights,
+                $sellerPlanMap, $trendingThreshold, $ratingMap
+            ),
         ];
     }
 }

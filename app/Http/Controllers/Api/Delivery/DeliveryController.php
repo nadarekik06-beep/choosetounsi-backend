@@ -230,12 +230,20 @@ class DeliveryController extends Controller
             $assignment->update($update);
 
             $sellerOrderStatus = match ($newStatus) {
-                'picked_up' => 'processing',
-                'delivered' => 'delivered',
-                'canceled'  => 'completed',
-                default     => 'processing',
-            };
-            $assignment->sellerOrder->update(['status' => $sellerOrderStatus]);
+    'picked_up' => 'processing',
+    'delivered' => 'delivered',
+    'canceled'  => 'completed',
+    default     => 'processing',
+};
+
+$sellerOrderUpdate = ['status' => $sellerOrderStatus];
+
+// When delivered, stamp the financial confirmation timestamp
+if ($newStatus === 'delivered') {
+    $sellerOrderUpdate['delivery_confirmed_at'] = now();
+}
+
+$assignment->sellerOrder->update($sellerOrderUpdate);
 
             return response()->json([
                 'success' => true,

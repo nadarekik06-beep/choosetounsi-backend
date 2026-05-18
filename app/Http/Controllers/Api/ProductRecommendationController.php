@@ -4,11 +4,13 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Product;
+use App\Models\SellerApplication;
 use App\Services\ProductScoringService;
-use App\Services\PromotionService;
 use App\Services\UserPreferenceService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 
 class ProductRecommendationController extends Controller
@@ -16,265 +18,326 @@ class ProductRecommendationController extends Controller
     public function __construct(
         private ProductScoringService $scoringService,
         private UserPreferenceService $preferenceService,
-        private PromotionService      $promoService,      // ← ADDED
     ) {}
 
-    // ── 1. Similar Items ───────────────────────────────────────────────────
+    // =========================================================================
+    // GET /api/recommendations   (homepage personalized feed)
+    // =========================================================================
 
-    public function similar(Request $request, string $slug)
+    public function feed(Request $request): JsonResponse
     {
-        $product = $this->findProduct($slug);
-        if (!$product) {
-            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
-        }
+        $user  = $request->user();
+        $limit = min((int) $request->query('limit', 20), 60);
 
-        $priceMin = $product->price * 0.5;
-        $priceMax = $product->price * 1.5;
+        if ($user) {
+            $prefs           = $this->preferenceService->getCombinedPreferences($user->id);
+            $activityWeights = $this->preferenceService->getActivityWeights($user->id);
 
-        $products = Product::available()
-            ->where('category_id', $product->category_id)
-            ->where('id', '!=', $product->id)
-            ->whereBetween('price', [$priceMin, $priceMax])
-            ->with(['primaryImage', 'seller:id,name', 'attributeValues.attribute'])
-            ->limit(20)
-            ->get();
-
-        $prefs  = $this->getUserPreferences($request);
-        $scored = $this->scoringService->scoreAndSort($products, $prefs)->take(8);
-
-        return response()->json([
-            'success' => true,
-            'data'    => $scored->map(fn($p) => $this->transformProduct($p))->values(),
-        ]);
-    }
-
-    // ── 2. Complementary Items ─────────────────────────────────────────────
-
-    public function complementary(Request $request, string $slug)
-    {
-        $product = $this->findProduct($slug);
-        if (!$product) {
-            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
-        }
-
-        $complementIds = DB::table('product_complementary')
-            ->where('product_id', $product->id)
-            ->orderBy('order')
-            ->limit(8)
-            ->pluck('complement_id')
-            ->toArray();
-
-        if (!empty($complementIds)) {
-            $products = Product::available()
-                ->whereIn('id', $complementIds)
-                ->with(['primaryImage', 'seller:id,name', 'attributeValues.attribute'])
+            $candidates = Product::available()
+                ->with([
+                    'category:id,name,slug',
+                    'primaryImage',
+                    'seller:id,name',
+                    'variants'          => fn($q) => $q->where('is_active', true),
+                    'attributeValues.attribute',
+                ])
+                ->where(function ($q) use ($prefs, $activityWeights) {
+                    $q->where('is_sponsored', true);
+                    if (!empty($prefs?->category_ids)) {
+                        $q->orWhereIn('category_id', array_map('intval', (array) $prefs->category_ids));
+                    }
+                    if (!empty($activityWeights)) {
+                        $q->orWhereIn('id', array_keys($activityWeights));
+                    }
+                })
+                ->orderByDesc('is_sponsored')
+                ->orderByDesc('views')
+                ->limit(200)
                 ->get();
 
-            $prefs  = $this->getUserPreferences($request);
-            $scored = $this->scoringService->scoreAndSort($products, $prefs)->take(8);
+            if ($candidates->count() < 40) {
+                $existingIds = $candidates->pluck('id')->toArray();
+                $backfill    = Product::available()
+                    ->with([
+                        'category:id,name,slug', 'primaryImage', 'seller:id,name',
+                        'variants'          => fn($q) => $q->where('is_active', true),
+                        'attributeValues.attribute',
+                    ])
+                    ->whereNotIn('id', $existingIds)
+                    ->orderByDesc('views')
+                    ->orderByDesc('created_at')
+                    ->limit(80)
+                    ->get();
+                $candidates = $candidates->concat($backfill);
+            }
+
+            $scored = $this->scoringService->scoreAndSort($candidates, $prefs, $activityWeights);
 
             return response()->json([
-                'success' => true,
-                'source'  => 'curated',
-                'data'    => $scored->map(fn($p) => $this->transformProduct($p))->values(),
-            ]);
-        }
-
-        $frequentlyBoughtWith = DB::table('order_items as oi1')
-            ->join('order_items as oi2', 'oi1.order_id', '=', 'oi2.order_id')
-            ->where('oi1.product_id', $product->id)
-            ->where('oi2.product_id', '!=', $product->id)
-            ->select('oi2.product_id', DB::raw('COUNT(*) as pair_count'))
-            ->groupBy('oi2.product_id')
-            ->orderByDesc('pair_count')
-            ->limit(12)
-            ->pluck('oi2.product_id')
-            ->toArray();
-
-        if (!empty($frequentlyBoughtWith)) {
-            $products = Product::available()
-                ->whereIn('id', $frequentlyBoughtWith)
-                ->with(['primaryImage', 'seller:id,name', 'attributeValues.attribute'])
-                ->get();
-
-            $prefs  = $this->getUserPreferences($request);
-            $scored = $this->scoringService->scoreAndSort($products, $prefs)->take(8);
-
-            return response()->json([
-                'success' => true,
-                'source'  => 'behavioral',
-                'data'    => $scored->map(fn($p) => $this->transformProduct($p))->values(),
+                'success'         => true,
+                'personalized'    => true,
+                'has_preferences' => $prefs?->hasAnyPreference() ?? false,
+                'data'            => $this->transformCollection($scored->take($limit)),
             ]);
         }
 
         $products = Product::available()
-            ->where('id', '!=', $product->id)
-            ->where('category_id', '!=', $product->category_id)
-            ->with(['primaryImage', 'seller:id,name', 'attributeValues.attribute'])
+            ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
+                    'variants' => fn($q) => $q->where('is_active', true)])
+            ->orderByDesc('is_sponsored')
+            ->orderByDesc('sponsored_priority')
             ->orderByDesc('views')
-            ->limit(20)
+            ->limit($limit)
             ->get();
 
-        $prefs  = $this->getUserPreferences($request);
-        $scored = $this->scoringService->scoreAndSort($products, $prefs)->take(8);
-
         return response()->json([
-            'success' => true,
-            'source'  => 'fallback',
-            'data'    => $scored->map(fn($p) => $this->transformProduct($p))->values(),
+            'success'      => true,
+            'personalized' => false,
+            'data'         => $this->transformCollection($products),
         ]);
     }
 
-    // ── 3. From This Seller ────────────────────────────────────────────────
+    // =========================================================================
+    // GET /api/products/{slug}/similar
+    // =========================================================================
 
-    public function fromSeller(Request $request, string $slug)
+    public function similar(Request $request, string $slug): JsonResponse
     {
-        $product = $this->findProduct($slug);
-        if (!$product) {
-            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
+        $limit = min((int) $request->query('limit', 8), 20);
+        $user  = $request->user();
+
+        $source = Product::available()
+            ->where('slug', $slug)
+            ->select('id', 'category_id', 'seller_id')
+            ->first();
+
+        if (!$source) {
+            return response()->json(['success' => true, 'data' => []]);
         }
 
-        if (!$product->seller_id) {
+        $candidates = Product::available()
+            ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
+                    'variants' => fn($q) => $q->where('is_active', true),
+                    'attributeValues.attribute'])
+            ->where('category_id', $source->category_id)
+            ->where('id', '!=', $source->id)
+            ->limit(80)
+            ->get();
+
+        if ($candidates->count() < $limit) {
+            $existingIds  = $candidates->pluck('id')->push($source->id)->toArray();
+            $supplemental = Product::available()
+                ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
+                        'variants' => fn($q) => $q->where('is_active', true),
+                        'attributeValues.attribute'])
+                ->whereNotIn('id', $existingIds)
+                ->orderByDesc('views')
+                ->limit(40)
+                ->get();
+            $candidates = $candidates->concat($supplemental);
+        }
+
+        $prefs           = $user ? $this->preferenceService->getCombinedPreferences($user->id) : null;
+        $activityWeights = $user ? $this->preferenceService->getActivityWeights($user->id) : [];
+        $scored          = $this->scoringService->scoreAndSort($candidates, $prefs, $activityWeights);
+
+        return response()->json([
+            'success' => true,
+            'data'    => $this->transformCollection($scored->take($limit)),
+        ]);
+    }
+
+    // =========================================================================
+    // GET /api/products/{slug}/complementary
+    // =========================================================================
+
+    public function complementary(Request $request, string $slug): JsonResponse
+    {
+        $limit = min((int) $request->query('limit', 4), 12);
+        $user  = $request->user();
+
+        $source = Product::available()
+            ->where('slug', $slug)
+            ->select('id', 'category_id')
+            ->first();
+
+        if (!$source) {
+            return response()->json(['success' => true, 'data' => []]);
+        }
+
+        // If explicit complementary pairs exist, use them
+        if (Schema::hasTable('product_complementary')) {
+            $explicitIds = DB::table('product_complementary')
+                ->where('product_id', $source->id)
+                ->orderBy('order')
+                ->pluck('complement_id')
+                ->toArray();
+
+            if (!empty($explicitIds)) {
+                $products = Product::available()
+                    ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
+                            'variants' => fn($q) => $q->where('is_active', true)])
+                    ->whereIn('id', $explicitIds)
+                    ->get()
+                    ->sortBy(fn($p) => array_search($p->id, $explicitIds))
+                    ->values();
+
+                return response()->json([
+                    'success' => true,
+                    'data'    => $this->transformCollection($products->take($limit)),
+                ]);
+            }
+        }
+
+        // Fallback: cross-sell from different categories, scored by user interest
+        $candidates = Product::available()
+            ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
+                    'variants' => fn($q) => $q->where('is_active', true),
+                    'attributeValues.attribute'])
+            ->where('category_id', '!=', $source->category_id)
+            ->where('id', '!=', $source->id)
+            ->orderByDesc('is_sponsored')
+            ->orderByDesc('featured')
+            ->orderByDesc('views')
+            ->limit(40)
+            ->get();
+
+        $prefs           = $user ? $this->preferenceService->getCombinedPreferences($user->id) : null;
+        $activityWeights = $user ? $this->preferenceService->getActivityWeights($user->id) : [];
+        $scored          = $this->scoringService->scoreAndSort($candidates, $prefs, $activityWeights);
+
+        return response()->json([
+            'success' => true,
+            'data'    => $this->transformCollection($scored->take($limit)),
+        ]);
+    }
+
+    // =========================================================================
+    // GET /api/products/{slug}/from-seller
+    // =========================================================================
+
+    public function fromSeller(Request $request, string $slug): JsonResponse
+    {
+        $limit = min((int) $request->query('limit', 4), 12);
+
+        $source = Product::available()
+            ->where('slug', $slug)
+            ->with('seller:id,name')
+            ->select('id', 'seller_id', 'category_id')
+            ->first();
+
+        if (!$source || !$source->seller_id) {
             return response()->json(['success' => true, 'data' => [], 'seller' => null]);
         }
 
-        $products = Product::available()
-            ->where('seller_id', $product->seller_id)
-            ->where('id', '!=', $product->id)
-            ->with(['primaryImage', 'seller:id,name', 'attributeValues.attribute'])
-            ->limit(20)
-            ->get();
-
-        $prefs  = $this->getUserPreferences($request);
-        $scored = $this->scoringService->scoreAndSort($products, $prefs)->take(8);
-
-        $seller = DB::table('users as u')
-            ->leftJoin('seller_applications as sa', 'sa.user_id', '=', 'u.id')
-            ->where('u.id', $product->seller_id)
-            ->select('u.id', 'u.name', 'u.avatar', 'sa.business_name', 'sa.plan', 'sa.wilaya')
+        $sellerId    = $source->seller_id;
+        $application = SellerApplication::where('user_id', $sellerId)
+            ->where('status', 'approved')
+            ->select('user_id', 'business_name', 'wilaya', 'plan', 'profile_picture')
             ->first();
 
-        return response()->json([
-            'success' => true,
-            'data'    => $scored->map(fn($p) => $this->transformProduct($p))->values(),
-            'seller'  => $seller ? [
-                'id'             => $seller->id,
-                'name'           => $seller->name,
-                'business_name'  => $seller->business_name,
-                'plan'           => $seller->plan ?? 'free',
-                'wilaya'         => $seller->wilaya,
-                'avatar'         => $seller->avatar,
-                'total_products' => Product::available()->where('seller_id', $seller->id)->count(),
-            ] : null,
-        ]);
-    }
+        $totalProducts = Product::available()->where('seller_id', $sellerId)->count();
 
-    // ── 4. Recommended ────────────────────────────────────────────────────
-
-    public function recommended(Request $request, string $slug)
-    {
-        $product = $this->findProduct($slug);
-        if (!$product) {
-            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
-        }
-
-        $user = $request->user();
-
-        if ($user) {
-            $inferred             = $this->preferenceService->inferPreferencesFromActivity($user->id);
-            $interactedProductIds = $inferred['top_product_ids'] ?? [];
-            $targetCategoryIds    = !empty($inferred['top_category_ids'])
-                ? $inferred['top_category_ids']
-                : [$product->category_id];
-
-            $products = Product::available()
-                ->where('id', '!=', $product->id)
-                ->whereIn('category_id', $targetCategoryIds)
-                ->with(['primaryImage', 'seller:id,name', 'attributeValues.attribute'])
-                ->limit(30)
-                ->get();
-
-            if (!empty($interactedProductIds)) {
-                $interactedProducts = Product::available()
-                    ->whereIn('id', $interactedProductIds)
-                    ->where('id', '!=', $product->id)
-                    ->with(['primaryImage', 'seller:id,name', 'attributeValues.attribute'])
-                    ->limit(10)
-                    ->get();
-
-                $products = $products->concat($interactedProducts)->unique('id')->values();
-            }
-        } else {
-            $products = Product::available()
-                ->where('id', '!=', $product->id)
-                ->where('category_id', $product->category_id)
-                ->with(['primaryImage', 'seller:id,name', 'attributeValues.attribute'])
-                ->orderByDesc('views')
-                ->limit(20)
-                ->get();
-        }
-
-        $prefs  = $this->getUserPreferences($request);
-        $scored = $this->scoringService->scoreAndSort($products, $prefs)->take(8);
-
-        return response()->json([
-            'success' => true,
-            'data'    => $scored->map(fn($p) => $this->transformProduct($p))->values(),
-        ]);
-    }
-
-    // ── Private helpers ────────────────────────────────────────────────────
-
-    private function findProduct(string $slug): ?Product
-    {
-        return Product::available()->where('slug', $slug)->first();
-    }
-
-    private function getUserPreferences(Request $request): ?\App\Models\UserPreference
-    {
-        $user = $request->user();
-        return $user ? $this->preferenceService->getCombinedPreferences($user->id) : null;
-    }
-
-    /**
-     * Transform a product for API response.
-     *
-     * CHANGE: now calls PromotionService to append effective_price,
-     * discount_amount, and promotion to every product — same as
-     * ProductController@transformProductItem does for listings.
-     */
-    private function transformProduct(Product $p): array
-    {
-        $imgUrl = null;
-        if ($p->relationLoaded('primaryImage') && $p->primaryImage) {
-            $imgUrl = Storage::url($p->primaryImage->image_path);
-        } elseif ($p->primary_image_url) {
-            $imgUrl = $p->primary_image_url;
-        }
-
-        // ── ADDED: compute promotion discount ─────────────────────────────
-        $promoData = $this->promoService->getEffectivePrice($p);
-
-        return [
-            'id'                => $p->id,
-            'name'              => $p->name,
-            'slug'              => $p->slug,
-            'short_description' => $p->short_description,
-            'price'             => (float) $p->price,         // original base price
-            'effective_price'   => $promoData['effective_price'],  // ← NEW
-            'discount_amount'   => $promoData['discount_amount'],  // ← NEW
-            'promotion'         => $promoData['promotion'],         // ← NEW
-            'stock'             => $p->stock,
-            'views'             => $p->views ?? 0,
-            'featured'          => (bool) $p->featured,
-            'is_sponsored'      => (bool) $p->is_sponsored,
-            'primary_image_url' => $imgUrl,
-            'category_id'       => $p->category_id,
-            'seller'            => $p->seller ? [
-                'id'   => $p->seller->id,
-                'name' => $p->seller->name,
-            ] : null,
-            '_score'            => $p->_score ?? null,
+        $sellerInfo = [
+            'id'             => $sellerId,
+            'name'           => $source->seller->name ?? '',
+            'business_name'  => $application?->business_name ?? null,
+            'plan'           => $application?->plan ?? 'free',
+            'wilaya'         => $application?->wilaya ?? null,
+            'avatar'         => $application?->profile_picture
+                ? Storage::url($application->profile_picture)
+                : null,
+            'total_products' => $totalProducts,
         ];
+
+        $products = Product::available()
+            ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
+                    'variants' => fn($q) => $q->where('is_active', true)])
+            ->where('seller_id', $sellerId)
+            ->where('id', '!=', $source->id)
+            ->orderByDesc('is_sponsored')
+            ->orderByDesc('featured')
+            ->orderByDesc('views')
+            ->limit($limit)
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data'    => $this->transformCollection($products),
+            'seller'  => $sellerInfo,
+        ]);
+    }
+
+    // =========================================================================
+    // GET /api/products/{slug}/recommended
+    // =========================================================================
+
+    public function recommended(Request $request, string $slug): JsonResponse
+    {
+        $limit = min((int) $request->query('limit', 4), 12);
+        $user  = $request->user();
+
+        $source = Product::available()
+            ->where('slug', $slug)
+            ->select('id', 'category_id', 'seller_id')
+            ->first();
+
+        if (!$source) {
+            return response()->json(['success' => true, 'data' => []]);
+        }
+
+        $prefs           = $user ? $this->preferenceService->getCombinedPreferences($user->id) : null;
+        $activityWeights = $user ? $this->preferenceService->getActivityWeights($user->id) : [];
+
+        $candidates = Product::available()
+            ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
+                    'variants' => fn($q) => $q->where('is_active', true),
+                    'attributeValues.attribute'])
+            ->where('id', '!=', $source->id)
+            ->where(function ($q) use ($prefs, $source) {
+                if (!empty($prefs?->category_ids)) {
+                    $q->whereIn('category_id', array_map('intval', (array) $prefs->category_ids));
+                } else {
+                    $q->where('category_id', $source->category_id);
+                }
+                $q->orWhere('is_sponsored', true);
+            })
+            ->orderByDesc('featured')
+            ->orderByDesc('is_sponsored')
+            ->orderByDesc('views')
+            ->limit(60)
+            ->get();
+
+        $scored = $this->scoringService->scoreAndSort($candidates, $prefs, $activityWeights);
+
+        return response()->json([
+            'success' => true,
+            'data'    => $this->transformCollection($scored->take($limit)),
+        ]);
+    }
+
+    // =========================================================================
+    // Private helpers
+    // =========================================================================
+
+    private function transformCollection($products): array
+    {
+        return $products->map(function ($p) {
+            $p->primary_image_url  = $p->primaryImage
+                ? Storage::url($p->primaryImage->image_path)
+                : null;
+            $p->is_sponsored       = (bool) ($p->is_sponsored ?? false);
+            $p->sponsored_priority = (int)  ($p->sponsored_priority ?? 0);
+ 
+            if ($p->relationLoaded('variants')) {
+                $p->setRelation(
+                    'variants',
+                    $p->variants->map(fn($v) => ['id' => $v->id, 'stock' => $v->stock])->values()
+                );
+            }
+ 
+       
+            return $p;
+        })->values()->toArray();
     }
 }
