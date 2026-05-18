@@ -49,17 +49,26 @@ class CheckoutController extends Controller
             'phone'          => 'required|string|max:30',
             'notes'          => 'nullable|string|max:1000',
             'payment_method' => 'nullable|string|in:cod,card,d17,wallet',
-        ]);
+            'item_ids'       => 'nullable|array',
+            'item_ids.*'     => 'integer',
+            ]);
 
         $user = $request->user();
 
-        $cartItems = Cart::with([
-            'product',
-            'variant.attributeOptions.attribute',
-            'pack.items.product',
-            'pack.items.product.variants.attributeOptions.attribute',
-        ])->where('user_id', $user->id)->get();
+       $cartQuery = Cart::with([
+    'product',
+    'variant.attributeOptions.attribute',
+    'pack.items.product',
+    'pack.items.product.variants.attributeOptions.attribute',
+])->where('user_id', $user->id);
 
+$selectedIds = $request->input('item_ids');
+if (!empty($selectedIds)) {
+    $cartQuery->whereIn('id', $selectedIds);
+}
+
+$cartItems      = $cartQuery->get();
+$checkingOutIds = $cartItems->pluck('id')->all();
         if ($cartItems->isEmpty()) {
             return response()->json(['success' => false, 'message' => 'Your cart is empty.'], 422);
         }
@@ -356,8 +365,9 @@ class CheckoutController extends Controller
                 $this->walletService->deductForOrder($user, $order);
             }
 
-            Cart::where('user_id', $user->id)->delete();
-
+            Cart::where('user_id', $user->id)
+                ->whereIn('id', $checkingOutIds)
+                ->delete();
             DB::commit();
 
         } catch (\Throwable $e) {

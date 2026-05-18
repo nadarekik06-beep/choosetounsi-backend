@@ -50,9 +50,10 @@ class SellerProductController extends Controller
         $alertService = new \App\Services\ProductAlertService($debugMode);
 
         $products->getCollection()->transform(function ($p) use ($alertService) {
-            $p->primary_image_url = $p->primaryImage
-                ? Storage::url($p->primaryImage->image_path)
-                : null;
+                $appUrl = rtrim(config('app.url'), '/');
+                $p->primary_image_url = $p->primaryImage
+                    ? $appUrl . Storage::url($p->primaryImage->image_path)
+                    : null;
             $p->has_variants  = $p->variants()->exists();
             $p->variant_stock = $p->variants()->sum('stock');
             return $p;
@@ -88,19 +89,18 @@ class SellerProductController extends Controller
         } catch (\Throwable $e) {
             Log::warning('[SellerProduct::show] variants.images not available: ' . $e->getMessage());
         }
+        $appUrl = rtrim(config('app.url'), '/');
+       $product->primary_image_url = $product->primaryImage
+    ? $appUrl . Storage::url($product->primaryImage->image_path)
+    : null;
 
-        $product->primary_image_url = $product->primaryImage
-            ? Storage::url($product->primaryImage->image_path)
-            : null;
-
-        $product->images->each(fn($img) => $img->url = Storage::url($img->image_path));
-
+$product->images->each(fn($img) => $img->url = $appUrl . Storage::url($img->image_path));
         $product->existing_attributes = $product->attributeValues
             ->mapWithKeys(fn($v) => [
                 $v->attribute->slug => $v->attribute->decodeValue($v->value),
             ]);
 
-        $product->variant_rows = $product->variants->map(function ($v) {
+$product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
             $colorGroup  = [];
             $nonColorMap = [];
@@ -155,9 +155,9 @@ class SellerProductController extends Controller
 
             $imageUrls = [];
             if ($v->relationLoaded('images')) {
-                $imageUrls = $v->images
-                    ->map(fn($i) => Storage::url($i->image_path))
-                    ->toArray();
+               $imageUrls = $v->images
+                ->map(fn($i) => $appUrl . Storage::url($i->image_path))
+                ->toArray();
             }
 
             return [

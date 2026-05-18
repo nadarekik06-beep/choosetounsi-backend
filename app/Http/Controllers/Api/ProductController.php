@@ -91,29 +91,17 @@ class ProductController extends Controller
             $perPage = min((int) $request->query('per_page', 20), 60);
             $page    = max((int) $request->query('page', 1), 1);
 
-            // Fetch a broad candidate set (200 products) — more than a single page
-            // so the scorer has enough material to surface the best matches.
-            // We order DB-side by sponsored_priority first so the top candidates
-            // are likely to include sponsored products before slicing.
             $allProducts = $query
                 ->orderByDesc('is_sponsored')
                 ->orderByDesc('sponsored_priority')
                 ->limit(200)
                 ->get();
 
-            // Get user preferences (explicit + inferred from activity)
-            $prefs = $this->preferenceService->getCombinedPreferences($user->id);
-
-            // Get recency-weighted activity signals
+            $prefs           = $this->preferenceService->getCombinedPreferences($user->id);
             $activityWeights = $this->preferenceService->getActivityWeights($user->id);
 
-            // ── THE FIX: ALL products go through unified scoring ──────────
-            // Sponsored products are NOT pulled out first.
-            // They participate in scoring and get their boost added to their score.
-            // A well-matched non-sponsored product beats an irrelevant sponsored one.
             $sorted = $this->scoringService->scoreAndSort($allProducts, $prefs, $activityWeights);
 
-            // ── FALLBACK: if query returned nothing, try without filters ──
             if ($sorted->isEmpty()) {
                 $sorted = $this->buildFallbackProducts($request, $user, $prefs, $activityWeights);
             }
@@ -152,7 +140,6 @@ class ProductController extends Controller
     /**
      * Fallback: when a filtered query returns 0 results, return similar
      * products from the same category or popular products globally.
-     * This implements the "NO EMPTY CATEGORY RULE".
      */
     private function buildFallbackProducts(
         Request $request,
@@ -160,7 +147,6 @@ class ProductController extends Controller
         $prefs,
         array $activityWeights
     ) {
-        // Try: same category, drop other filters
         $catSlug = $request->query('category_slug');
         $catId   = $request->query('category_id');
 
@@ -178,7 +164,6 @@ class ProductController extends Controller
             }
         }
 
-        // Last resort: globally popular products
         $popular = Product::available()
             ->with(['category:id,name,slug', 'subcategory:id,name,slug', 'primaryImage', 'seller:id,name', 'variants' => fn($q) => $q->where('is_active', true)->with(['attributeOptions' => fn($q2) => $q2->with('attribute:id,slug,type')]), 'attributeValues.attribute'])
             ->orderByDesc('is_sponsored')
@@ -197,14 +182,17 @@ class ProductController extends Controller
             ->take(12)
             ->get()
             ->map(function ($p) {
-                // ── FIXED: run through transformProductItem so promotion
-                //    data (effective_price, discount_amount, promotion)
-                //    is included — same as the index() listing does.
                 return $this->transformProductItem($p);
             });
- 
+
         return response()->json(['success' => true, 'data' => $products]);
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  show() — FULLY RESTORED
+    //  The entire variant-building block was missing (replaced by a comment).
+    //  This is the complete, correct implementation.
+    // ═══════════════════════════════════════════════════════════════════════
 
     public function show(Request $request, $slug)
     {
@@ -242,6 +230,7 @@ class ProductController extends Controller
             );
         }
 
+        // ── Attribute data (non-variant informational attributes) ──────────
         $product->attribute_data = $product->attributeValues->map(function ($pav) {
             $attr  = $pav->attribute;
             $value = $attr->decodeValue($pav->value);
@@ -259,25 +248,309 @@ class ProductController extends Controller
             ];
         })->keyBy('slug');
 
+        // ── Primary image URL ──────────────────────────────────────────────
         $product->primary_image_url = $product->primaryImage
             ? Storage::url($product->primaryImage->image_path) : null;
 
         $product->images->each(fn($img) => $img->url = Storage::url($img->image_path));
 
+        // ── Variant system ─────────────────────────────────────────────────
         $hasVariants         = $product->variants->isNotEmpty();
         $variantsPayload     = [];
         $selectableAxes      = [];
-        $colorImages         = [];
-        $colorPrimaryImage   = [];
-        $variantPrimaryImage = [];
+        $colorImages         = [];          // string key → url[]
+        $colorPrimaryImage   = [];          // string key → first url
+        $variantPrimaryImage = [];          // variant_id → first image url
 
         if ($hasVariants) {
-            // [variant payload logic unchanged — omitted for brevity, keep your existing code]
-            // ... (this section is identical to your original show() method)
+
+            // Product-level images: no color_option_id AND no variant_id
+            $productImageUrls = $product->images
+                ->filter(fn($i) => is_null($i->variant_id) && is_null($i->color_option_id))
+                ->map(fn($i) => Storage::url($i->image_path))
+                ->values()
+                ->toArray();
+
+            // ── Step 1: Build colorGroupMap from VARIANTS (not from images) ──
+            //
+            // colorGroupMap maps EVERY color option ID that appears in any variant
+            // to the full sorted array of color IDs for that variant's color group.
+            //
+            // Example: variant has color options [Red=104, Blue=105]
+            //   colorGroupMap[104] = [104, 105]
+            //   colorGroupMap[105] = [104, 105]
+            //
+            // This means any single color_option_id stored on a product_image row
+            // can be resolved back to the correct groupKey — regardless of which
+            // color ID in the group was used as the storage key.
+            //
+            // First-write-wins: the first variant that introduces a color ID owns
+            // the group definition for that ID.
+            $colorGroupMap = [];
+
+            foreach ($product->variants as $v) {
+                $colorOpts = $v->attributeOptions
+                    ->filter(fn($o) => $o->attribute->slug === 'color')
+                    ->sortBy('id')
+                    ->values();
+
+                if ($colorOpts->isEmpty()) continue;
+
+                $allIds = $colorOpts->pluck('id')->toArray();
+
+                foreach ($allIds as $cid) {
+                    if (!isset($colorGroupMap[$cid])) {
+                        $colorGroupMap[$cid] = $allIds;
+                    }
+                }
+            }
+
+            // ── Step 2: Map color images to groupKey ─────────────────────────
+            //
+            // SellerProductController::saveColorImages() saves one product_image row
+            // per color ID in the group (all pointing to the same image_path).
+            // So when we encounter a product_image with color_option_id=104, there
+            // is also a row with color_option_id=105 for the same path.
+            //
+            // To avoid registering the same physical image multiple times under the
+            // same groupKey, we group rows by image_path first, then determine the
+            // groupKey from the union of all color IDs sharing that path.
+            //
+            // This is the most robust approach — it doesn't assume which ID was saved
+            // as "primary" and correctly handles both old and new save formats.
+
+            // Collect all color-keyed images grouped by image_path
+            $pathToColorIds = [];   // image_path → [color_option_id, ...]
+            $pathToIsFirst  = [];   // image_path → bool (first occurrence)
+
+            $product->images
+                ->filter(fn($i) => $i->color_option_id !== null)
+                ->each(function ($img) use (&$pathToColorIds) {
+                    $pathToColorIds[$img->image_path][] = $img->color_option_id;
+                });
+
+            foreach ($pathToColorIds as $path => $cids) {
+                // Determine the groupKey: union all IDs from colorGroupMap for each cid
+                $allGroupIds = [];
+                foreach ($cids as $cid) {
+                    $groupIds    = $colorGroupMap[$cid] ?? [$cid];
+                    $allGroupIds = array_unique(array_merge($allGroupIds, $groupIds));
+                }
+                sort($allGroupIds);
+                $groupKey = implode('|', $allGroupIds);
+                $url      = Storage::url($path);
+
+                // Register under the full groupKey
+                if (!in_array($url, $colorImages[$groupKey] ?? [])) {
+                    $colorImages[$groupKey][] = $url;
+                }
+                if (!isset($colorPrimaryImage[$groupKey])) {
+                    $colorPrimaryImage[$groupKey] = $url;
+                }
+
+                // Also register under each individual color ID string for backward compat
+                // (CartController and old frontend code may look up by single string ID)
+                foreach ($allGroupIds as $gid) {
+                    $strId = (string) $gid;
+                    if (!in_array($url, $colorImages[$strId] ?? [])) {
+                        $colorImages[$strId][] = $url;
+                    }
+                    if (!isset($colorPrimaryImage[$strId])) {
+                        $colorPrimaryImage[$strId] = $url;
+                    }
+                }
+            }
+
+            // ── Step 3: Build variantPrimaryImage from variant-linked images ─
+            //
+            // Some images are stored with variant_id (no color_option_id).
+            // These are the per-variant images uploaded via VariantImageManager.
+            // We expose them so the frontend can resolve image_urls per variant.
+            foreach ($product->variants as $v) {
+                if ($v->images->isEmpty()) continue;
+
+                $primary = $v->images->firstWhere('is_primary', true)
+                        ?? $v->images->sortBy('order')->first();
+
+                if ($primary) {
+                    $variantPrimaryImage[$v->id] = Storage::url($primary->image_path);
+                }
+            }
+
+            // ── Step 4: Build variants payload ────────────────────────────────
+
+            $variantsPayload = $product->variants->map(function ($v) use (
+                $productImageUrls, $colorImages, $colorPrimaryImage, $variantPrimaryImage, $product
+            ) {
+                // Resolve image_urls for this variant:
+                // Priority: variant's own images → color-group images → product images
+                $variantImageUrls = $v->images
+                    ->map(fn($i) => Storage::url($i->image_path))
+                    ->values()
+                    ->toArray();
+
+                // Build the color group key for this variant
+                $colorOpts = $v->attributeOptions
+                    ->filter(fn($o) => $o->attribute->slug === 'color')
+                    ->sortBy('id')
+                    ->values();
+
+                $colorGroupKey = null;
+
+                if ($colorOpts->isNotEmpty()) {
+                    $colorIds      = $colorOpts->pluck('id')->toArray();
+                    sort($colorIds);
+                    $colorGroupKey = implode('|', $colorIds);
+
+                    // If variant has no own images, fall back to color-group images
+                    if (empty($variantImageUrls) && isset($colorImages[$colorGroupKey])) {
+                        $variantImageUrls = $colorImages[$colorGroupKey];
+                    }
+                }
+
+                // Final fallback: product-level images
+                if (empty($variantImageUrls)) {
+                    $variantImageUrls = $productImageUrls;
+                }
+
+                // Primary image for this variant
+                $primaryImageUrl = $variantPrimaryImage[$v->id]
+                    ?? ($colorGroupKey ? ($colorPrimaryImage[$colorGroupKey] ?? null) : null)
+                    ?? $productImageUrls[0]
+                    ?? null;
+
+                $productBasePrice = (float) $product->price;
+                $effectiveBase    = $v->price_override !== null
+                    ? (float) $v->price_override
+                    : $productBasePrice;
+
+                return [
+                    'id'              => $v->id,
+                    'sku'             => $v->sku,
+                    'stock'           => $v->stock,
+                    'is_active'       => $v->is_active,
+                    // Effective price = variant override OR product base price
+                    'price'           => $effectiveBase,
+                    'original_price'  => $productBasePrice,
+                    'price_override'  => $v->price_override !== null ? (float) $v->price_override : null,
+                    'label'           => $v->label,
+                    // option_map is the accessor on ProductVariant — handles color group grouping
+                    'option_map'      => $v->option_map,
+                    // color_group_key: pipe-joined sorted color option IDs, e.g. "104|105"
+                    // The frontend uses this to match selectedOptions['color'] against variants
+                    'color_group_key' => $colorGroupKey,
+                    // color_option_id: primary (lowest) color ID — for backward compat
+                    'color_option_id' => $v->color_option_id,
+                    // image_urls: ordered list of image URLs for this variant
+                    'image_urls'      => $variantImageUrls,
+                    'primary_image_url' => $primaryImageUrl,
+                ];
+            })->values()->toArray();
+
+            // ── Step 5: Build selectable_axes ─────────────────────────────────
+            //
+            // selectable_axes tells the frontend which attribute axes to show
+            // as selectors (color swatches, size buttons, etc.) and what options
+            // are available for each axis — deduped across all variants.
+            //
+            // For the color axis: options are keyed by groupKey (e.g. "104|105")
+            // so that multi-color variants appear as a single swatch entry.
+            //
+            // For non-color axes: options are keyed by attribute_option_id.
+
+            $axesMap = [];   // slug → axis definition
+
+            foreach ($product->variants as $v) {
+                foreach ($v->attributeOptions as $opt) {
+                    $attr = $opt->attribute;
+                    $slug = $attr->slug;
+
+                    if (!isset($axesMap[$slug])) {
+                        $axesMap[$slug] = [
+                            'slug'    => $slug,
+                            'name'    => $attr->name,
+                            'type'    => $slug === 'color' ? 'color' : 'select',
+                            'options' => [],  // keyed by selectionKey
+                        ];
+                    }
+                }
+            }
+
+            // Populate options for each axis from variants
+            foreach ($product->variants as $v) {
+                // ── Color axis ──────────────────────────────────────────────
+                $colorOpts = $v->attributeOptions
+                    ->filter(fn($o) => $o->attribute->slug === 'color')
+                    ->sortBy('id')
+                    ->values();
+
+                if ($colorOpts->isNotEmpty() && isset($axesMap['color'])) {
+                    $colorIds  = $colorOpts->pluck('id')->toArray();
+                    sort($colorIds);
+                    $groupKey  = implode('|', $colorIds);
+
+                    if (!isset($axesMap['color']['options'][$groupKey])) {
+                        $primaryOpt = $colorOpts->first();
+
+                        // primary_image: color-group image → variant primary image → null
+                        $primaryImage = $colorPrimaryImage[$groupKey]
+                            ?? $variantPrimaryImage[$v->id]
+                            ?? null;
+
+                        $axesMap['color']['options'][$groupKey] = [
+                            'id'            => $primaryOpt->id,
+                            'group_key'     => $groupKey,
+                            'ids'           => $colorIds,
+                            'value'         => $colorOpts->pluck('value')->join('+'),
+                            'color_hex'     => $primaryOpt->color_hex,
+                            'primary_image' => $primaryImage,
+                            // swatches: individual color entries for rendering split circles
+                            'swatches'      => $colorOpts->map(fn($o) => [
+                                'id'        => $o->id,
+                                'value'     => $o->value,
+                                'color_hex' => $o->color_hex,
+                            ])->toArray(),
+                        ];
+                    }
+                }
+
+                // ── Non-color axes ──────────────────────────────────────────
+                $nonColorOpts = $v->attributeOptions
+                    ->filter(fn($o) => $o->attribute->slug !== 'color');
+
+                foreach ($nonColorOpts as $opt) {
+                    $slug = $opt->attribute->slug;
+                    if (!isset($axesMap[$slug])) continue;
+
+                    $optionKey = (string) $opt->id;
+                    if (!isset($axesMap[$slug]['options'][$optionKey])) {
+                        $axesMap[$slug]['options'][$optionKey] = [
+                            'id'            => $opt->id,
+                            'value'         => $opt->value,
+                            'color_hex'     => $opt->color_hex ?? null,
+                            'primary_image' => null,
+                        ];
+                    }
+                }
+            }
+
+            // Convert options maps to sequential arrays
+            foreach ($axesMap as $slug => &$axis) {
+                $axis['options'] = array_values($axis['options']);
+            }
+            unset($axis);
+
+            // Only axes that have at least one option become selectable
+            $selectableAxes = array_values(array_filter(
+                $axesMap,
+                fn($axis) => count($axis['options']) > 0
+            ));
         }
 
+        // ── Promotion data ─────────────────────────────────────────────────
         $promoData = $this->promoService->getEffectivePrice($product);
 
+        // ── Assemble response ──────────────────────────────────────────────
         $data                    = $product->toArray();
         $data['has_variants']    = $hasVariants;
         $data['variants']        = $variantsPayload;
@@ -293,7 +566,6 @@ class ProductController extends Controller
 
     public function filterAttributes($slug)
     {
-        // Unchanged from your original — keep as-is
         $productIds = DB::table('products as p')
             ->join('categories as c', 'c.id', '=', 'p.category_id')
             ->where('c.slug', $slug)
@@ -336,7 +608,6 @@ class ProductController extends Controller
 
     public function byIds(\Illuminate\Http\Request $request)
     {
-        // Unchanged — keep your existing byIds() implementation exactly as-is
         $request->validate(['ids' => 'required|array|max:50', 'ids.*' => 'integer|min:1']);
         $ids  = $request->input('ids');
         $rows = DB::table('products as p')

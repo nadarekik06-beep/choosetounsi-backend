@@ -1,5 +1,7 @@
 <?php
 // app/Http/Controllers/Api/Seller/SponsorshipController.php
+// UPDATED: Added payment validation, boost surcharge (5 DT per point > 5),
+//          card payment processing stub, and weekly quota auto-reset.
 
 namespace App\Http\Controllers\Api\Seller;
 
@@ -20,6 +22,20 @@ use App\Models\UserPreference;
 /**
  * SponsorshipController — seller-facing sponsoring system.
  *
+ * Payment model:
+ *   Green sellers  → pay base rate (5.000 DT/day) + boost surcharge
+ *   Red sellers    → pay reduced rate (2.000 DT/day) + boost surcharge
+ *   Black sellers  → 3 free/week (quota); after quota: 1.500 DT/day + boost surcharge
+ *
+ * Boost surcharge (all plans):
+ *   Priority 1-5  → free
+ *   Priority 6    → +5.000 DT
+ *   Priority 7    → +10.000 DT
+ *   Priority 8    → +15.000 DT
+ *   Priority 9    → +20.000 DT
+ *   Priority 10   → +25.000 DT
+ *   Formula: max(0, priority - 5) * 5.000 DT
+ *
  * Endpoints:
  *   POST   /api/seller/sponsorships/sponsor        activate sponsorship
  *   DELETE /api/seller/sponsorships/{id}/cancel    cancel active sponsorship
@@ -30,14 +46,15 @@ use App\Models\UserPreference;
  *
  * Public endpoint (no auth required):
  *   GET    /api/sponsored-products                 feed for homepage/category
- *
- * AI used ONLY for: tag generation + ad copy (Groq llama3-8b-8192).
- * All pricing, ranking, and quota logic is deterministic PHP.
  */
 class SponsorshipController extends Controller
 {
     private string $groqUrl   = 'https://api.groq.com/openai/v1/chat/completions';
     private string $groqModel = 'llama3-8b-8192';
+
+    // Boost surcharge constants
+    const BOOST_FREE_THRESHOLD      = 5;       // priority ≤ 5 costs nothing extra
+    const BOOST_SURCHARGE_PER_POINT = 5.000;   // DT per point above threshold
 
     // =========================================================================
     // POST /api/seller/sponsorships/sponsor
@@ -56,6 +73,9 @@ class SponsorshipController extends Controller
             'target_category_ids.*' => 'integer|exists:categories,id',
             'target_price_min'      => 'sometimes|nullable|numeric|min:0',
             'target_price_max'      => 'sometimes|nullable|numeric|min:0|gt:target_price_min',
+            // Payment fields
+            'payment_method'        => 'sometimes|in:card,free_quota',
+            'payment_token'         => 'sometimes|nullable|string|max:255',
         ]);
 
         $seller   = $request->user();
@@ -98,74 +118,127 @@ class SponsorshipController extends Controller
             ], 422);
         }
 
-        // Plan-specific pricing + quota logic
-        $boostBase     = Sponsorship::BOOST[$plan] ?? Sponsorship::BOOST['free'];
-        $price         = Sponsorship::PRICE[$plan] ?? Sponsorship::PRICE['free'];
+        // ── Priority & boost ──────────────────────────────────────────────────
+        $manualPriority = (int) $request->input('priority', 5);
+        $boostBase      = Sponsorship::BOOST[$plan] ?? Sponsorship::BOOST['free'];
+        $finalPriority  = (int) round($boostBase * ($manualPriority / 10));
+        $finalPriority  = max(1, $finalPriority);
+
+        // ── Boost surcharge calculation ───────────────────────────────────────
+        $boostExtraCost = $this->calcBoostSurcharge($manualPriority);
+
+        // ── Plan-specific pricing + quota logic ───────────────────────────────
         $usedFreeQuota = false;
         $wasPaid       = false;
+        $paymentStatus = 'pending';
+        $basePrice     = 0;
+        $durationDays  = (int) $request->input('duration_days', 7);
 
         if ($plan === 'black') {
+            // Auto-reset quota if week has rolled over
+            Sponsorship::maybeResetBlackQuota($sellerId);
+
             $remaining = Sponsorship::blackFreeRemaining($sellerId);
-            if ($remaining > 0) {
-                $price         = 0;
+
+            if ($remaining > 0 && $boostExtraCost === 0.0) {
+                // Fully free: within quota AND priority ≤ 5
+                $basePrice     = 0;
                 $usedFreeQuota = true;
+                $wasPaid       = false;
+                $paymentStatus = 'free';
+
+            } elseif ($remaining > 0 && $boostExtraCost > 0) {
+                // Within quota but priority > 5 — only pay surcharge
+                $basePrice     = 0;
+                $usedFreeQuota = true;
+                $wasPaid       = true;
+                $paymentStatus = 'pending';
+
+                if (!$this->processPayment($request, $boostExtraCost)) {
+                    return $this->paymentRequiredResponse($boostExtraCost, $plan);
+                }
+                $paymentStatus = 'paid';
+
             } else {
-                // Quota exhausted — charge reduced rate
-                $price   = 1.500;
-                $wasPaid = true;
-                // TODO: integrate payment gateway — reject here until payment confirmed
+                // Quota exhausted — pay base rate + surcharge
+                $basePrice     = 1.500;
+                $wasPaid       = true;
+                $paymentStatus = 'pending';
+
+                $totalDue = ($basePrice * $durationDays) + $boostExtraCost;
+
+                if (!$this->processPayment($request, $totalDue)) {
+                    return $this->paymentRequiredResponse($totalDue, $plan);
+                }
+                $paymentStatus = 'paid';
             }
+
         } elseif ($plan === 'red') {
-            $wasPaid = true;
-            // TODO: integrate payment gateway
+            $basePrice     = Sponsorship::PRICE['red'];   // 2.000 DT/day
+            $wasPaid       = true;
+            $totalDue      = ($basePrice * $durationDays) + $boostExtraCost;
+            $paymentStatus = 'pending';
+
+            if (!$this->processPayment($request, $totalDue)) {
+                return $this->paymentRequiredResponse($totalDue, $plan);
+            }
+            $paymentStatus = 'paid';
+
         } else {
-            // Green/Free sellers
-            $wasPaid = true;
-            // TODO: integrate payment gateway
+            // Green / free sellers
+            $basePrice     = Sponsorship::PRICE['free'];  // 5.000 DT/day
+            $wasPaid       = true;
+            $totalDue      = ($basePrice * $durationDays) + $boostExtraCost;
+            $paymentStatus = 'pending';
+
+            if (!$this->processPayment($request, $totalDue)) {
+                return $this->paymentRequiredResponse($totalDue, $plan);
+            }
+            $paymentStatus = 'paid';
         }
 
-        // Priority multiplier: user can pick 1-10, scaled against plan boost
-        $manualPriority = (int) $request->input('priority', 5);
-        $finalPriority  = (int) round($boostBase * ($manualPriority / 10));
-        $finalPriority  = max(1, $finalPriority); // always at least 1
+        $amountCharged = ($basePrice * $durationDays) + $boostExtraCost;
 
-        // Duration
-        $durationDays = (int) $request->input('duration_days', 7);
-        $startAt      = Carbon::now();
-        $endAt        = $startAt->copy()->addDays($durationDays);
+        // ── Duration & timestamps ─────────────────────────────────────────────
+        $startAt = Carbon::now();
+        $endAt   = $startAt->copy()->addDays($durationDays);
 
-        // AI: tags + ad copy (async-safe; failure falls back gracefully)
+        // ── AI: tags + ad copy ────────────────────────────────────────────────
         ['tags' => $aiTags, 'ad_copy' => $aiAdCopy] = $this->generateAiContent($product);
 
-        // Persist inside a transaction
+        // ── Persist ───────────────────────────────────────────────────────────
         $sponsorship = null;
         DB::transaction(function () use (
-    $sellerId, $product, $plan, $finalPriority,
-    $startAt, $endAt, $price, $wasPaid, $usedFreeQuota,
-    $aiTags, $aiAdCopy, $request, &$sponsorship
-) {
+            $sellerId, $product, $plan, $finalPriority,
+            $startAt, $endAt, $amountCharged, $boostExtraCost,
+            $wasPaid, $usedFreeQuota, $paymentStatus,
+            $aiTags, $aiAdCopy, $request, &$sponsorship
+        ) {
             $sponsorship = Sponsorship::create([
-                'seller_id'       => $sellerId,
-                'product_id'      => $product->id,
-                'plan_type'       => $plan,
-                'boost_score'     => $finalPriority,
-                'status'          => 'active',
-                'start_at'        => $startAt,
-                'end_at'          => $endAt,
-                'amount_charged'  => $price,
-                'was_paid'        => $wasPaid,
-                'used_free_quota' => $usedFreeQuota,
-                'ai_tags'         => $aiTags,
-                'ai_ad_copy'      => $aiAdCopy,
-                'impressions'     => 0,
-                'clicks'          => 0,
-                'conversions'     => 0,
+                'seller_id'        => $sellerId,
+                'product_id'       => $product->id,
+                'plan_type'        => $plan ?? 'free',
+                'boost_score'      => $finalPriority,
+                'status'           => 'active',
+                'start_at'         => $startAt,
+                'end_at'           => $endAt,
+                'amount_charged'   => $amountCharged,
+                'boost_extra_cost' => $boostExtraCost,
+                'was_paid'         => $wasPaid,
+                'payment_status'   => $paymentStatus,
+                'payment_method'   => $wasPaid ? 'card' : 'free_quota',
+                'used_free_quota'  => $usedFreeQuota,
+                'ai_tags'          => $aiTags,
+                'ai_ad_copy'       => $aiAdCopy,
+                'impressions'      => 0,
+                'clicks'           => 0,
+                'conversions'      => 0,
                 'target_gender'        => $request->input('target_gender'),
                 'target_wilaya_ids'    => $request->input('target_wilaya_ids'),
                 'target_category_ids'  => $request->input('target_category_ids'),
                 'target_price_min'     => $request->input('target_price_min'),
                 'target_price_max'     => $request->input('target_price_max'),
-                ]);
+            ]);
 
             Sponsorship::syncProductFlags($product->id);
         });
@@ -180,6 +253,9 @@ class SponsorshipController extends Controller
                 'expires_at'      => $endAt->toISOString(),
                 'used_free_quota' => $usedFreeQuota,
                 'remaining_free'  => $plan === 'black' ? Sponsorship::blackFreeRemaining($sellerId) : null,
+                'amount_charged'  => $amountCharged,
+                'boost_extra_cost'=> $boostExtraCost,
+                'payment_status'  => $paymentStatus,
                 'ai_tags'         => $aiTags,
                 'ai_ad_copy'      => $aiAdCopy,
             ],
@@ -278,6 +354,11 @@ class SponsorshipController extends Controller
             ->first();
         $plan = $application?->plan ?? 'free';
 
+        // Auto-reset if the week has rolled over
+        if ($plan === 'black') {
+            Sponsorship::maybeResetBlackQuota($sellerId);
+        }
+
         return response()->json([
             'success' => true,
             'data'    => [
@@ -288,6 +369,8 @@ class SponsorshipController extends Controller
                 'week_resets_at' => Carbon::now()->endOfWeek()->toISOString(),
                 'boost_scores'   => Sponsorship::BOOST,
                 'prices'         => Sponsorship::PRICE,
+                'boost_surcharge_per_point' => self::BOOST_SURCHARGE_PER_POINT,
+                'boost_free_threshold'      => self::BOOST_FREE_THRESHOLD,
             ],
         ]);
     }
@@ -299,19 +382,18 @@ class SponsorshipController extends Controller
     public function publicFeed(Request $request): JsonResponse
     {
         try { Sponsorship::expireOverdue(); } catch (\Throwable $e) {}
- 
+
         $limit      = min((int) $request->query('limit', 12), 40);
         $catSlug    = $request->query('category_slug');
         $minResults = max(1, (int) $request->query('min_results', 2));
- 
+
         $user  = $request->user();
         $prefs = null;
- 
+
         if ($user) {
             $prefs = \App\Models\UserPreference::where('user_id', $user->id)->first();
         }
- 
-        // ── Fetch all active sponsored products (broad query) ─────────────
+
         $query = Product::available()
             ->where('is_sponsored', true)
             ->with([
@@ -325,38 +407,30 @@ class SponsorshipController extends Controller
             ])
             ->orderByDesc('sponsored_priority')
             ->orderByDesc('sponsored_at');
- 
+
         if ($catSlug) {
             $query->whereHas('category', fn($q) => $q->where('slug', $catSlug));
         }
- 
+
         $allSponsored = $query->take(100)->get();
- 
-        // ── Apply user targeting filter ───────────────────────────────────
+
         $targeted = $allSponsored->filter(function ($product) use ($user, $prefs) {
-            // Check targeting against the product's active sponsorship
             $sponsorship = $product->sponsorships->first();
-            if (!$sponsorship) {
-                return true; // No sponsorship data? Show it (shouldn't happen)
-            }
+            if (!$sponsorship) return true;
             return $sponsorship->matchesUser($user, $prefs);
         })->values();
- 
-        // ── FALLBACK: if not enough targeted results, relax targeting ─────
+
         if ($targeted->count() < $minResults) {
-            // First: fill from non-targeted sponsored products in the same category
-            $excludeIds  = $targeted->pluck('id')->toArray();
-            $relaxed     = $allSponsored
+            $excludeIds = $targeted->pluck('id')->toArray();
+            $relaxed    = $allSponsored
                 ->whereNotIn('id', $excludeIds)
                 ->take($limit - $targeted->count())
                 ->values();
- 
             $targeted = $targeted->concat($relaxed)->values();
         }
- 
-        // ── If still not enough, fill with popular non-sponsored products ─
+
         if ($targeted->count() < $minResults) {
-            $excludeIds  = $targeted->pluck('id')->toArray();
+            $excludeIds   = $targeted->pluck('id')->toArray();
             $nonSponsored = Product::available()
                 ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name'])
                 ->when($catSlug, fn($q) => $q->whereHas('category', fn($q2) => $q2->where('slug', $catSlug)))
@@ -364,30 +438,24 @@ class SponsorshipController extends Controller
                 ->orderByDesc('views')
                 ->take($limit - $targeted->count())
                 ->get();
- 
             $targeted = $targeted->concat($nonSponsored)->values();
         }
- 
-        // ── Format output ─────────────────────────────────────────────────
+
         $products = $targeted->take($limit)->map(function ($p) {
             $p->primary_image_url = $p->primaryImage
                 ? Storage::url($p->primaryImage->image_path)
                 : null;
-            $p->is_sponsored  = (bool) ($p->is_sponsored ?? false);
-            $p->sponsor_data  = $p->sponsorships->first();
- 
-            // Remove raw relation from output
+            $p->is_sponsored = (bool) ($p->is_sponsored ?? false);
+            $p->sponsor_data = $p->sponsorships->first();
             unset($p->sponsorships);
- 
             return $p;
         });
- 
+
         return response()->json(['success' => true, 'data' => $products]);
     }
 
-
     // =========================================================================
-    // POST /api/seller/sponsorships/{id}/impression  (lightweight, no auth)
+    // POST /api/seller/sponsorships/{id}/impression
     // =========================================================================
 
     public function recordImpression(int $id): JsonResponse
@@ -407,9 +475,72 @@ class SponsorshipController extends Controller
     }
 
     // =========================================================================
+    // PRIVATE — Boost surcharge
+    // =========================================================================
+
+    private function calcBoostSurcharge(int $priority): float
+    {
+        $extra = max(0, $priority - self::BOOST_FREE_THRESHOLD);
+        return $extra * self::BOOST_SURCHARGE_PER_POINT;
+    }
+
+    // =========================================================================
+    // PRIVATE — Payment processing
+    // =========================================================================
+
+    /**
+     * Process card payment.
+     *
+     * Accepts any non-empty payment_token (sandbox mode).
+     * Replace the inner stub with your real gateway integration:
+     *   Flouci  → https://flouci.com/api
+     *   Konnect → https://api.konnect.network
+     *   Stripe  → Stripe\PaymentIntent::create(...)
+     */
+    private function processPayment(Request $request, float $amount): bool
+    {
+        if ($amount <= 0) {
+            return true;   // nothing to charge
+        }
+
+        $paymentToken = $request->input('payment_token');
+
+        if (empty($paymentToken)) {
+            return false;  // no token supplied → prompt payment UI
+        }
+
+        // ── Replace this block with your real gateway call ─────────────────
+        // Example (Flouci):
+        // try {
+        //     $result = Http::withHeaders(['app_token' => config('services.flouci.secret')])
+        //         ->post('https://developers.flouci.com/api/verify_payment/' . $paymentToken);
+        //     return $result->successful() && $result->json('result.status') === 'SUCCESS';
+        // } catch (\Throwable $e) {
+        //     Log::error('[Payment] Flouci error: ' . $e->getMessage());
+        //     return false;
+        // }
+        // ──────────────────────────────────────────────────────────────────
+        Log::info("[Payment] Sandbox charge accepted: {$amount} DT, token: {$paymentToken}");
+        return true;
+    }
+
+    private function paymentRequiredResponse(float $amountDue, string $plan): JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'message' => 'Payment is required to activate this sponsorship.',
+            'code'    => 'PAYMENT_REQUIRED',
+            'data'    => [
+                'amount_due'   => number_format($amountDue, 3),
+                'currency'     => 'DT',
+                'plan'         => $plan,
+                'instructions' => 'Provide a valid payment_token obtained from the payment gateway.',
+            ],
+        ], 402);
+    }
+
+    // =========================================================================
     // PRIVATE — AI content generation
-    // Uses Groq llama3-8b-8192 ONLY for tags + ad copy.
-    // Math fallback when Groq is unreachable.
     // =========================================================================
 
     private function generateAiContent(Product $product): array
