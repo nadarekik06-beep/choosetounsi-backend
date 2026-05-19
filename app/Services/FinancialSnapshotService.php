@@ -66,7 +66,8 @@ class FinancialSnapshotService
      * Mark money as received from delivery company.
      * Transitions payout_status from 'pending' to 'ready'.
      *
-     * Only call this after delivery confirmation AND admin cash receipt.
+     * After marking the seller_order, syncs the parent orders.payment_status
+     * to 'paid' if ALL seller_orders for that order are now paid.
      *
      * @param  int  $sellerOrderId
      * @param  int  $adminUserId
@@ -80,15 +81,17 @@ class FinancialSnapshotService
             return false;
         }
 
-        // Guard: must be delivered first
+        // Guard: must be delivered or completed first
         if (!in_array($sellerOrder->status, ['delivered', 'completed'])) {
-    return false;
-}
+            return false;
+        }
+
         // Guard: already processed
         if ($sellerOrder->payout_status !== 'pending') {
             return false;
         }
 
+        // ── Mark this seller_order as ready + paid ────────────────────────────
         DB::table('seller_orders')
             ->where('id', $sellerOrderId)
             ->update([
@@ -98,6 +101,36 @@ class FinancialSnapshotService
                 'payment_status'    => 'paid',
                 'updated_at'        => now(),
             ]);
+
+        // ── Sync parent order payment_status ──────────────────────────────────
+        // If ALL seller_orders for this parent order are now paid,
+        // mark the parent orders row as paid too.
+        // This keeps the Orders page in sync with the Finance > Cash In action.
+        try {
+            $orderId = $sellerOrder->order_id;
+
+            $totalSellerOrders = DB::table('seller_orders')
+                ->where('order_id', $orderId)
+                ->count();
+
+            $paidSellerOrders = DB::table('seller_orders')
+                ->where('order_id', $orderId)
+                ->where('payment_status', 'paid')
+                ->count();
+
+            if ($totalSellerOrders > 0 && $paidSellerOrders === $totalSellerOrders) {
+                DB::table('orders')
+                    ->where('id', $orderId)
+                    ->update([
+                        'payment_status' => 'paid',
+                        'updated_at'     => now(),
+                    ]);
+            }
+        } catch (\Throwable $e) {
+            // Non-fatal — the seller_order is already correctly marked.
+            // The parent order sync is a display convenience only.
+            Log::warning('[FinancialSnapshotService::confirmMoneyReceived] parent sync failed — ' . $e->getMessage());
+        }
 
         return true;
     }

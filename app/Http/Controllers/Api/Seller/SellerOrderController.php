@@ -354,22 +354,40 @@ private function createReviewPrompts(\App\Models\SellerOrder $sellerOrder): void
     }
 
     /* ── PATCH /api/seller/orders/{id}/payment ── */
-    public function updatePayment(Request $request, $id)
-    {
-        $request->validate([
-            'payment_status' => 'required|in:unpaid,paid,refunded',
-        ]);
+    /* ── PATCH /api/seller/orders/{id}/payment ── */
+public function updatePayment(Request $request, $id)
+{
+    $request->validate([
+        'payment_status' => 'required|in:refunded',
+    ]);
 
-        $sellerId    = auth()->id();
-        $sellerOrder = SellerOrder::where('seller_id', $sellerId)->findOrFail($id);
-        $sellerOrder->update(['payment_status' => $request->payment_status]);
+    $sellerId    = auth()->id();
+    $sellerOrder = SellerOrder::where('seller_id', $sellerId)->findOrFail($id);
 
+    // Block: admin has already confirmed payment — seller cannot override
+    if ($sellerOrder->payment_status === 'paid') {
         return response()->json([
-            'success' => true,
-            'message' => 'Payment status updated.',
-            'data'    => $sellerOrder,
-        ]);
+            'success' => false,
+            'message' => 'Payment has already been confirmed by admin and cannot be changed.',
+        ], 403);
     }
+
+    // Block: refund only makes sense on delivered/completed orders
+    if (!in_array($sellerOrder->status, ['delivered', 'completed'])) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Can only mark as refunded after order is delivered or completed.',
+        ], 422);
+    }
+
+    $sellerOrder->update(['payment_status' => 'refunded']);
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Order marked as refunded.',
+        'data'    => $sellerOrder,
+    ]);
+}
 
     // ── Private helpers ──────────────────────────────────────────────────────
 

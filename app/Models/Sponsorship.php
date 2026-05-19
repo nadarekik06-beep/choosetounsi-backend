@@ -188,6 +188,11 @@ class Sponsorship extends Model
     }
 
     // ── Business logic helpers ────────────────────────────────────────────────
+    public static function maybeResetBlackQuota(int $sellerId): void
+{
+    // intentionally empty — blackFreeUsedThisWeek() already scopes
+    // to Carbon::now()->startOfWeek(), so it self-resets each week.
+}
 
     public static function blackFreeUsedThisWeek(int $sellerId): int
     {
