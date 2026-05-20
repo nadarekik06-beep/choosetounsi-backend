@@ -64,14 +64,31 @@ class BrandProductController extends Controller
         $products = $query->orderByDesc('created_at')
             ->paginate((int) $request->input('per_page', 15));
 
-        $products->getCollection()->transform(function ($p) {
-            $p->primary_image_url = $p->primaryImage
-                ? Storage::url($p->primaryImage->image_path)
-                : null;
-            $p->has_variants  = $p->variants()->exists();
-            $p->variant_stock = (int) $p->variants()->sum('stock');
-            return $p;
-        });
+$productIds = $products->getCollection()->pluck('id')->toArray();
+$allColorImages = \App\Models\ProductImage::whereIn('product_id', $productIds)
+    ->whereNotNull('color_option_id')
+    ->select('product_id', 'image_path')
+    ->get()
+    ->groupBy('product_id');
+
+$products->getCollection()->transform(function ($p) use ($allColorImages) {
+    $p->primary_image_url = $p->primaryImage
+        ? Storage::url($p->primaryImage->image_path)
+        : null;
+    $p->has_variants  = $p->variants()->exists();
+    $p->variant_stock = (int) $p->variants()->sum('stock');
+
+    $variantImages = [];
+    foreach ($allColorImages->get($p->id, collect()) as $img) {
+        $url = \Illuminate\Support\Facades\Storage::url($img->image_path);
+        if (!in_array($url, $variantImages, true)) {
+            $variantImages[] = $url;
+        }
+    }
+    $p->variant_images = $variantImages;
+
+    return $p;
+});
 
         return response()->json(['success' => true, 'data' => $products]);
     }

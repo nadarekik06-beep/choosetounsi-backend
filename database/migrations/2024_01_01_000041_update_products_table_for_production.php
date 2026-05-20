@@ -14,22 +14,21 @@ class UpdateProductsTableForProduction extends Migration
             if (!Schema::hasColumn('products', 'slug')) {
                 $table->string('slug')->unique()->after('name');
             }
-            
+
             if (!Schema::hasColumn('products', 'short_description')) {
                 $table->string('short_description', 200)->nullable()->after('description');
             }
-            
+
             if (!Schema::hasColumn('products', 'views')) {
                 $table->integer('views')->default(0)->after('stock');
             }
-            
+
             if (!Schema::hasColumn('products', 'featured')) {
                 $table->boolean('featured')->default(false)->after('is_active');
             }
         });
 
         // Create indexes separately to avoid duplicate index errors
-        // Check if index exists first
         if (!DB::select("SHOW INDEX FROM products WHERE Key_name = 'products_seller_id_is_approved_is_active_index'")) {
             Schema::table('products', function (Blueprint $table) {
                 $table->index(['seller_id', 'is_approved', 'is_active']);
@@ -52,7 +51,6 @@ class UpdateProductsTableForProduction extends Migration
     public function down()
     {
         Schema::table('products', function (Blueprint $table) {
-            // Drop indexes if they exist
             if (DB::select("SHOW INDEX FROM products WHERE Key_name = 'products_seller_id_is_approved_is_active_index'")) {
                 $table->dropIndex('products_seller_id_is_approved_is_active_index');
             }
@@ -63,19 +61,10 @@ class UpdateProductsTableForProduction extends Migration
                 $table->dropIndex('products_slug_index');
             }
 
-            // Drop columns safely
-            if (Schema::hasColumn('products', 'slug')) {
-                $table->dropColumn('slug');
-            }
-            if (Schema::hasColumn('products', 'short_description')) {
-                $table->dropColumn('short_description');
-            }
-            if (Schema::hasColumn('products', 'views')) {
-                $table->dropColumn('views');
-            }
-            if (Schema::hasColumn('products', 'featured')) {
-                $table->dropColumn('featured');
-            }
+            if (Schema::hasColumn('products', 'slug'))              $table->dropColumn('slug');
+            if (Schema::hasColumn('products', 'short_description')) $table->dropColumn('short_description');
+            if (Schema::hasColumn('products', 'views'))             $table->dropColumn('views');
+            if (Schema::hasColumn('products', 'featured'))          $table->dropColumn('featured');
         });
     }
 }

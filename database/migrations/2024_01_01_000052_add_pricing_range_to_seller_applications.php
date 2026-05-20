@@ -1,5 +1,4 @@
 <?php
-// database/migrations/2024_01_01_000001_add_pricing_range_to_seller_applications.php
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
@@ -10,9 +9,11 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('seller_applications', function (Blueprint $table) {
+            // Use after('status') — 'plan' column does not exist yet at this point.
+            // It is added later in 2026_04_13_174647_add_plan_columns_to_seller_applications_table
             $table->enum('pricing_range', ['budget', 'mid', 'premium'])
                   ->nullable()
-                  ->after('plan')
+                  ->after('status')
                   ->comment('Seller price positioning: budget / mid / premium');
         });
     }

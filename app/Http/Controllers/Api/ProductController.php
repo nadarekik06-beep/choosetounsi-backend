@@ -36,11 +36,12 @@ class ProductController extends Controller
                 'primaryImage',
                 'seller:id,name',
                 'variants' => fn($q) => $q
-                    ->where('is_active', true)
-                    ->with([
-                        'attributeOptions' => fn($q2) => $q2
-                            ->with('attribute:id,slug,type'),
-                    ]),
+    ->where('is_active', true)
+    ->with([
+        'attributeOptions' => fn($q2) => $q2
+            ->with('attribute:id,slug,type'),
+        'images',           // ← CORRECT: sibling of attributeOptions, not nested inside it
+    ]),
             ]);
 
         // attributeValues needed for brand + gender scoring
@@ -655,36 +656,69 @@ class ProductController extends Controller
 
     // ── Private helpers ────────────────────────────────────────────────────
 
-    private function transformProductCollection($products): array
-    {
-        return $products->map(fn($p) => $this->transformProductItem($p))->values()->toArray();
-    }
+ 
+private function transformProductCollection($products): array
+{
+    $productIds = $products->pluck('id')->toArray();
+    $colorImagesMap = $this->batchLoadColorImages($productIds);
 
-    private function transformProductItem($p): mixed
-    {
-        $p->primary_image_url  = $p->primaryImage ? Storage::url($p->primaryImage->image_path) : null;
-        $p->is_sponsored       = (bool) $p->is_sponsored;
-        $p->sponsored_priority = (int)  $p->sponsored_priority;
+    return $products->map(fn($p) => $this->transformProductItem($p, $colorImagesMap))
+        ->values()
+        ->toArray();
+}
 
-        $swatches = []; $seen = [];
-        foreach ($p->variants as $variant) {
-            foreach ($variant->attributeOptions as $opt) {
-                if ($opt->attribute && $opt->attribute->slug === 'color'
-                    && !in_array($opt->id, $seen, true)
-                ) {
-                    $seen[]     = $opt->id;
-                    $swatches[] = ['id' => $opt->id, 'value' => $opt->value, 'color_hex' => $opt->color_hex];
-                }
+// AFTER — add variant_images collection before stripping:
+private function transformProductItem($p, ?\Illuminate\Support\Collection $colorImagesMap = null): mixed
+{
+    $p->primary_image_url  = $p->primaryImage ? Storage::url($p->primaryImage->image_path) : null;
+    $p->is_sponsored       = (bool) $p->is_sponsored;
+    $p->sponsored_priority = (int)  $p->sponsored_priority;
+
+    $swatches = []; $seen = [];
+    foreach ($p->variants as $variant) {
+        foreach ($variant->attributeOptions as $opt) {
+            if ($opt->attribute && $opt->attribute->slug === 'color'
+                && !in_array($opt->id, $seen, true)
+            ) {
+                $seen[]     = $opt->id;
+                $swatches[] = ['id' => $opt->id, 'value' => $opt->value, 'color_hex' => $opt->color_hex];
             }
         }
-        $p->color_swatches = $swatches;
-        $p->setRelation('variants', $p->variants->map(fn($v) => ['id' => $v->id, 'stock' => $v->stock])->values());
-
-        $promoData          = $this->promoService->getEffectivePrice($p);
-        $p->effective_price = $promoData['effective_price'];
-        $p->discount_amount = $promoData['discount_amount'];
-        $p->promotion       = $promoData['promotion'];
-
-        return $p;
     }
+    $p->color_swatches = $swatches;
+
+    // Load color-keyed images directly — these have color_option_id set, NOT variant_id
+// AFTER (uses pre-loaded map, falls back to single query if map not provided):
+$variantImages = [];
+$colorImgs = $colorImagesMap
+    ? $colorImagesMap->get($p->id, collect())
+    : \App\Models\ProductImage::where('product_id', $p->id)
+        ->whereNotNull('color_option_id')
+        ->select('image_path')
+        ->get();
+foreach ($colorImgs as $img) {
+    $url = Storage::url($img->image_path);
+    if (!in_array($url, $variantImages, true)) {
+        $variantImages[] = $url;
+    }
+}
+$p->variant_images = $variantImages;
+    $p->setRelation('variants', $p->variants->map(fn($v) => ['id' => $v->id, 'stock' => $v->stock])->values());
+
+    $promoData          = $this->promoService->getEffectivePrice($p);
+    $p->effective_price = $promoData['effective_price'];
+    $p->discount_amount = $promoData['discount_amount'];
+    $p->promotion       = $promoData['promotion'];
+
+    return $p;
+}
+// Add this NEW private method to ProductController:
+private function batchLoadColorImages(array $productIds): \Illuminate\Support\Collection
+{
+    return \App\Models\ProductImage::whereIn('product_id', $productIds)
+        ->whereNotNull('color_option_id')
+        ->select('product_id', 'image_path')
+        ->get()
+        ->groupBy('product_id');
+}
 }

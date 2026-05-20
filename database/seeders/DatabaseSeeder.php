@@ -159,7 +159,6 @@ class DatabaseSeeder extends Seeder
         echo "✓ Products created (2 approved, 2 pending, 1 disabled)\n";
 
         // ── Orders ────────────────────────────────────────────────
-        // Check your ENUM first and use only valid values
         $orders = [
             [
                 'user_id'        => $client1->id,
@@ -167,7 +166,7 @@ class DatabaseSeeder extends Seeder
                 'total_amount'   => 71.980,
                 'status'         => 'completed',
                 'payment_status' => 'paid',
-                'payment_method' => 'credit_card',
+                'payment_method' => 'card',
             ],
             [
                 'user_id'        => $client2->id,
@@ -175,7 +174,7 @@ class DatabaseSeeder extends Seeder
                 'total_amount'   => 25.990,
                 'status'         => 'pending',
                 'payment_status' => 'unpaid',
-                'payment_method' => 'cash_on_delivery',
+                'payment_method' => 'cod',          // was 'cash_on_delivery'
             ],
             [
                 'user_id'        => $client1->id,
@@ -183,7 +182,7 @@ class DatabaseSeeder extends Seeder
                 'total_amount'   => 45.000,
                 'status'         => 'processing',
                 'payment_status' => 'paid',
-                'payment_method' => 'credit_card',
+                'payment_method' => 'card',
             ],
             [
                 'user_id'        => $client2->id,
@@ -191,7 +190,7 @@ class DatabaseSeeder extends Seeder
                 'total_amount'   => 33.980,
                 'status'         => 'completed',
                 'payment_status' => 'paid',
-                'payment_method' => 'credit_card',
+                'payment_method' => 'card',
             ],
             [
                 'user_id'        => $client3->id,
@@ -199,7 +198,7 @@ class DatabaseSeeder extends Seeder
                 'total_amount'   => 15.990,
                 'status'         => 'cancelled',
                 'payment_status' => 'refunded',
-                'payment_method' => 'credit_card',
+                'payment_method' => 'card',
             ],
         ];
 
@@ -216,7 +215,7 @@ class DatabaseSeeder extends Seeder
         echo "==============================================\n";
         echo "Admin Login:\n";
         echo "  Email:    admin@choosetounsi.com\n";
-        echo "  Password: Admin@1234!\n";      
+        echo "  Password: Admin@1234!\n";
         echo "==============================================\n";
     }
 }

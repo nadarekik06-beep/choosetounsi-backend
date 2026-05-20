@@ -23,22 +23,12 @@ return new class extends Migration
             $table->index(['category_id', 'is_active']);
         });
 
-        // Add subcategory_id to products
-        Schema::table('products', function (Blueprint $table) {
-            $table->foreignId('subcategory_id')
-                ->nullable()
-                ->after('category_id')
-                ->constrained('subcategories')
-                ->nullOnDelete();
-        });
+        // NOTE: subcategory_id is added to products in update_products_table_for_production
+        // which runs AFTER the products table is created (2024_01_01_000040).
     }
 
     public function down(): void
     {
-        Schema::table('products', function (Blueprint $table) {
-            $table->dropForeign(['subcategory_id']);
-            $table->dropColumn('subcategory_id');
-        });
         Schema::dropIfExists('subcategories');
     }
 };

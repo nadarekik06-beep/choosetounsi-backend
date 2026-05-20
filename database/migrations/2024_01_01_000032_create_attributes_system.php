@@ -56,23 +56,12 @@ return new class extends Migration
             $table->unique(['subcategory_id', 'attribute_id']);
         });
 
-        // ── Product attribute values (the actual data per product) ─────────
-        Schema::create('product_attribute_values', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('product_id')->constrained()->onDelete('cascade');
-            $table->foreignId('attribute_id')->constrained()->onDelete('cascade');
-            $table->text('value')->nullable();
-            $table->timestamps();
-
-            $table->unique(['product_id', 'attribute_id']);
-            // ✅ Removed the index on 'value' — TEXT columns cannot be indexed in MySQL
-            // Filtering by attribute_id alone is still fast via the unique index above
-        });
+        // NOTE: product_attribute_values is created in 2024_01_01_000042_create_product_attribute_values
+        // AFTER the products table exists. Do NOT create it here.
     }
 
     public function down(): void
     {
-        Schema::dropIfExists('product_attribute_values');
         Schema::dropIfExists('subcategory_attributes');
         Schema::dropIfExists('attribute_options');
         Schema::dropIfExists('attributes');

@@ -34,11 +34,13 @@ class ProductRecommendationController extends Controller
             $activityWeights = $this->preferenceService->getActivityWeights($user->id);
 
             $candidates = Product::available()
+                // AFTER:
                 ->with([
                     'category:id,name,slug',
                     'primaryImage',
                     'seller:id,name',
-                    'variants'          => fn($q) => $q->where('is_active', true),
+                    'variants'          => fn($q) => $q->where('is_active', true)
+                                                    ->with('images'),   // ← ADD THIS
                     'attributeValues.attribute',
                 ])
                 ->where(function ($q) use ($prefs, $activityWeights) {
@@ -57,13 +59,13 @@ class ProductRecommendationController extends Controller
 
             if ($candidates->count() < 40) {
                 $existingIds = $candidates->pluck('id')->toArray();
-                $backfill    = Product::available()
-                    ->with([
-                        'category:id,name,slug', 'primaryImage', 'seller:id,name',
-                        'variants'          => fn($q) => $q->where('is_active', true),
-                        'attributeValues.attribute',
-                    ])
-                    ->whereNotIn('id', $existingIds)
+                $backfill = Product::available()
+    ->with([
+        'category:id,name,slug', 'primaryImage', 'seller:id,name',
+        'variants' => fn($q) => $q->where('is_active', true)->with('images'),  // ← ADD
+        'attributeValues.attribute',
+    ])
+                        ->whereNotIn('id', $existingIds)
                     ->orderByDesc('views')
                     ->orderByDesc('created_at')
                     ->limit(80)
@@ -82,8 +84,9 @@ class ProductRecommendationController extends Controller
         }
 
         $products = Product::available()
-            ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
-                    'variants' => fn($q) => $q->where('is_active', true)])
+          ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
+        'variants' => fn($q) => $q->where('is_active', true)->with('images')]) // ← ADD
+
             ->orderByDesc('is_sponsored')
             ->orderByDesc('sponsored_priority')
             ->orderByDesc('views')
@@ -319,25 +322,45 @@ class ProductRecommendationController extends Controller
     // =========================================================================
     // Private helpers
     // =========================================================================
+// AFTER — add variant_images before stripping variants:
+private function transformCollection($products): array
+{
+    // Collect all product IDs to batch-load their color images
+    $productIds = $products->pluck('id')->toArray();
 
-    private function transformCollection($products): array
-    {
-        return $products->map(function ($p) {
-            $p->primary_image_url  = $p->primaryImage
-                ? Storage::url($p->primaryImage->image_path)
-                : null;
-            $p->is_sponsored       = (bool) ($p->is_sponsored ?? false);
-            $p->sponsored_priority = (int)  ($p->sponsored_priority ?? 0);
- 
-            if ($p->relationLoaded('variants')) {
-                $p->setRelation(
-                    'variants',
-                    $p->variants->map(fn($v) => ['id' => $v->id, 'stock' => $v->stock])->values()
-                );
+    // Batch load all color-keyed images for these products in ONE query
+    $allColorImages = \App\Models\ProductImage::whereIn('product_id', $productIds)
+        ->whereNotNull('color_option_id')
+        ->select('product_id', 'image_path')
+        ->get()
+        ->groupBy('product_id');
+
+    return $products->map(function ($p) use ($allColorImages) {
+        $p->primary_image_url  = $p->primaryImage
+            ? Storage::url($p->primaryImage->image_path)
+            : null;
+        $p->is_sponsored       = (bool) ($p->is_sponsored ?? false);
+        $p->sponsored_priority = (int)  ($p->sponsored_priority ?? 0);
+
+        // Collect unique variant image URLs from color_option_id images
+        $variantImages = [];
+        $colorImgs = $allColorImages->get($p->id, collect());
+        foreach ($colorImgs as $img) {
+            $url = Storage::url($img->image_path);
+            if (!in_array($url, $variantImages, true)) {
+                $variantImages[] = $url;
             }
- 
-       
-            return $p;
-        })->values()->toArray();
-    }
+        }
+        $p->variant_images = $variantImages;
+
+        if ($p->relationLoaded('variants')) {
+            $p->setRelation(
+                'variants',
+                $p->variants->map(fn($v) => ['id' => $v->id, 'stock' => $v->stock])->values()
+            );
+        }
+
+        return $p;
+    })->values()->toArray();
+}
 }

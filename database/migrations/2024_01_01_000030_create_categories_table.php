@@ -21,19 +21,12 @@ class CreateCategoriesTable extends Migration
             $table->timestamps();
         });
 
-        // Add category_id to products table
-        Schema::table('products', function (Blueprint $table) {
-            $table->foreignId('category_id')->nullable()->after('seller_id')->constrained()->nullOnDelete();
-        });
+        // NOTE: category_id is added to products in update_products_table_for_production
+        // which runs AFTER the products table is created (2024_01_01_000040).
     }
 
     public function down()
     {
-        Schema::table('products', function (Blueprint $table) {
-            $table->dropForeign(['category_id']);
-            $table->dropColumn('category_id');
-        });
-        
         Schema::dropIfExists('categories');
     }
 }

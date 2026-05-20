@@ -441,15 +441,35 @@ class SponsorshipController extends Controller
             $targeted = $targeted->concat($nonSponsored)->values();
         }
 
-        $products = $targeted->take($limit)->map(function ($p) {
-            $p->primary_image_url = $p->primaryImage
-                ? Storage::url($p->primaryImage->image_path)
-                : null;
-            $p->is_sponsored = (bool) ($p->is_sponsored ?? false);
-            $p->sponsor_data = $p->sponsorships->first();
-            unset($p->sponsorships);
-            return $p;
-        });
+    // AFTER:
+// Batch-load color images for all products in one query
+$productIds = $targeted->take($limit)->pluck('id')->toArray();
+$allColorImages = \App\Models\ProductImage::whereIn('product_id', $productIds)
+    ->whereNotNull('color_option_id')
+    ->select('product_id', 'image_path')
+    ->get()
+    ->groupBy('product_id');
+
+$products = $targeted->take($limit)->map(function ($p) use ($allColorImages) {
+    $p->primary_image_url = $p->primaryImage
+        ? Storage::url($p->primaryImage->image_path)
+        : null;
+    $p->is_sponsored = (bool) ($p->is_sponsored ?? false);
+    $p->sponsor_data = $p->sponsorships->first();
+    unset($p->sponsorships);
+
+    // Collect unique variant images from color-keyed images
+    $variantImages = [];
+    foreach ($allColorImages->get($p->id, collect()) as $img) {
+        $url = Storage::url($img->image_path);
+        if (!in_array($url, $variantImages, true)) {
+            $variantImages[] = $url;
+        }
+    }
+    $p->variant_images = $variantImages;
+
+    return $p;
+});
 
         return response()->json(['success' => true, 'data' => $products]);
     }
