@@ -310,6 +310,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('overview', [EarningsController::class, 'overview']);
         Route::get('orders',   [EarningsController::class, 'orders']);
         Route::get('history',  [EarningsController::class, 'history']);
+        Route::get('receipt',           [EarningsController::class, 'fullReceipt']);   // ← nouveau
+        Route::get('settlement/{id}',   [EarningsController::class, 'settlementReceipt']); // ← nouveau
     });
 
     }); // ← seller group ends HERE
