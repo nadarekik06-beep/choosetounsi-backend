@@ -30,12 +30,17 @@ class SettlementController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = DB::table('settlement_batches as sb')
-            ->join('users as u', 'u.id', '=', 'sb.seller_id')
-            ->select([
-                'sb.*',
-                'u.name as seller_name',
-                'u.email as seller_email',
-            ]);
+    ->join('users as u', 'u.id', '=', 'sb.seller_id')
+    ->leftJoin('seller_applications as sa', function ($join) {
+        $join->on('sa.user_id', '=', 'sb.seller_id')
+             ->where('sa.status', '=', 'approved');
+    })
+    ->select([
+        'sb.*',
+        'u.name as seller_name',
+        'u.email as seller_email',
+        'sa.phone_number as seller_phone',
+    ]);
 
         if ($s = $request->query('status')) {
             $query->where('sb.status', $s);
@@ -49,8 +54,14 @@ class SettlementController extends Controller
         if ($d = $request->query('date_to')) {
             $query->where('sb.batch_date', '<=', $d);
         }
+        if ($s = $request->query('search')) {
+            $query->where(function ($q) use ($s) {
+                $q->where('u.name',           'like', "%$s%")
+                  ->orWhere('sa.phone_number', 'like', "%$s%");
+            });
+        }
 
-        $results = $query->orderByDesc('sb.batch_date')->paginate(15);
+$results = $query->orderByDesc('sb.batch_date')->paginate(15);
 
         return response()->json(['success' => true, 'data' => $results]);
     }

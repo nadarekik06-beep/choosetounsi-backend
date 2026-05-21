@@ -126,6 +126,10 @@ class FinanceController extends Controller
             ->join('orders as o', 'o.id', '=', 'so.order_id')
             ->join('users as s', 's.id', '=', 'so.seller_id')
             ->leftJoin('users as admin', 'admin.id', '=', 'so.money_received_by')
+            ->leftJoin('seller_applications as sa', function ($join) {
+                $join->on('sa.user_id', '=', 'so.seller_id')
+                    ->where('sa.status', '=', 'approved');
+            })
             ->select([
                 'so.id',
                 'so.order_id',
@@ -133,6 +137,7 @@ class FinanceController extends Controller
                 'o.order_number',
                 's.name as seller_name',
                 's.email as seller_email',
+                'sa.phone_number as seller_phone',
                 'so.status',
                 'so.payout_status',
                 'so.payment_status',
@@ -184,12 +189,17 @@ class FinanceController extends Controller
     {
         $query = DB::table('seller_orders as so')
             ->join('users as u', 'u.id', '=', 'so.seller_id')
+            ->leftJoin('seller_applications as sa', function ($join) {
+                $join->on('sa.user_id', '=', 'so.seller_id')
+                    ->where('sa.status', '=', 'approved');
+            })
             ->where('so.status', '!=', 'cancelled')
-            ->groupBy('so.seller_id', 'u.name', 'u.email')
+            ->groupBy('so.seller_id', 'u.name', 'u.email', 'sa.phone_number')
             ->select([
                 'so.seller_id',
                 'u.name as seller_name',
                 'u.email as seller_email',
+                'sa.phone_number as seller_phone',
                 DB::raw('COUNT(so.id) as orders_count'),
                 DB::raw('COALESCE(SUM(so.subtotal), 0) as gross_revenue'),
                 DB::raw('COALESCE(SUM(so.commission_amount), 0) as total_commission'),
@@ -205,7 +215,10 @@ class FinanceController extends Controller
             $query->whereDate('so.created_at', '<=', $d);
         }
         if ($s = $request->query('search')) {
-            $query->where('u.name', 'like', "%$s%");
+            $query->where(function ($q) use ($s) {
+                $q->where('u.name',           'like', "%$s%")
+                  ->orWhere('sa.phone_number', 'like', "%$s%");
+            });
         }
 
         $results = $query
@@ -224,6 +237,10 @@ class FinanceController extends Controller
         $results = DB::table('seller_orders as so')
             ->join('orders as o', 'o.id', '=', 'so.order_id')
             ->join('users as s', 's.id', '=', 'so.seller_id')
+            ->leftJoin('seller_applications as sa', function ($join) {
+                $join->on('sa.user_id', '=', 'so.seller_id')
+                    ->where('sa.status', '=', 'approved');
+            })
             ->where('so.payout_status', 'ready')
             ->whereNull('so.settlement_batch_id')
             ->select([
@@ -231,6 +248,7 @@ class FinanceController extends Controller
                 'o.order_number',
                 's.name as seller_name',
                 's.email as seller_email',
+                'sa.phone_number as seller_phone',
                 'so.seller_id',
                 'so.subtotal',
                 'so.commission_amount',

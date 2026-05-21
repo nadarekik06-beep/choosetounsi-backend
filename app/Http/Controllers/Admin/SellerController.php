@@ -23,10 +23,17 @@ class SellerController extends Controller
             elseif ($status === 'suspended')  $query->where('is_active', false);
         }
 
-        if ($search = $request->query('search')) {
+       if ($search = $request->query('search')) {
             $query->where(function ($q) use ($search) {
-                $q->where('name', 'like', '%' . $search . '%')
-                  ->orWhere('email', 'like', '%' . $search . '%');
+                $q->where('name',  'like', '%' . $search . '%')
+                  ->orWhere('email', 'like', '%' . $search . '%')
+                  ->orWhereExists(function ($sub) use ($search) {
+                      $sub->select(DB::raw(1))
+                          ->from('seller_applications')
+                          ->whereColumn('seller_applications.user_id', 'users.id')
+                          ->where('seller_applications.status', 'approved')
+                          ->where('seller_applications.phone_number', 'like', '%' . $search . '%');
+                  });
             });
         }
 
