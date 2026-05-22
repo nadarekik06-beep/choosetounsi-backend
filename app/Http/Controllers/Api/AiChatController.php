@@ -61,6 +61,12 @@ use Illuminate\Support\Facades\DB;
  * Fix 19 — Lightweight topic tracker: last 5 search topics stored in Cache
  *           and injected into system prompt.
  * Fix 20 — promptGeneral() now carries full personality guidance.
+ * Fix 21 — [HALLUCINATION FIX] buildProductContextBlock() wraps the product
+ *           list with an explicit anti-fabrication firewall. The AI is now
+ *           forbidden from referencing any product not in the injected list.
+ *           An explicit NO_PRODUCTS_FOUND signal is sent when DB returns
+ *           nothing, preventing the AI from inventing alternatives.
+ *           toolProductSearch() now also searches the 'description' column.
  */
 class AiChatController extends Controller
 {
@@ -69,10 +75,11 @@ class AiChatController extends Controller
 
     // Intents that benefit from DeepSeek's reasoning over Gemini's speed
     private const DEEPSEEK_INTENTS = ['compare_products'];
-    
-public function __construct(
-    private \App\Services\ChatIntentClassifier $classifier,
-) {}
+
+    public function __construct(
+        private \App\Services\ChatIntentClassifier $classifier,
+    ) {}
+
     // Intents whose AI text can be safely cached across sessions
     private const CACHEABLE_INTENTS = ['trending_products', 'flash_sales', 'packs'];
 
@@ -84,12 +91,12 @@ public function __construct(
     {
         // Fix 18 — lang_hint is now validated
         $request->validate([
-            'message'         => 'required|string|max:1000',
-            'session_id'      => 'required|string|max:120',
-            'history'         => 'sometimes|array|max:12',
-            'history.*.role'  => 'required|in:user,assistant',
+            'message'           => 'required|string|max:1000',
+            'session_id'        => 'required|string|max:120',
+            'history'           => 'sometimes|array|max:12',
+            'history.*.role'    => 'required|in:user,assistant',
             'history.*.content' => 'required|string|max:2000',
-            'lang_hint'       => 'sometimes|string|in:en,fr,ar,tz',
+            'lang_hint'         => 'sometimes|string|in:en,fr,ar,tz',
         ]);
 
         // Fix 14 — $detectedLang declared before try so catch can use it
@@ -247,7 +254,7 @@ public function __construct(
                 'message'  => $result['text'],
                 'products' => $toolResult['products'] ?? [],
                 'intent'   => $intent['type'],
-                'provider' => $result['provider'], // for debugging; remove in prod if desired
+                'provider' => $result['provider'],
             ]);
 
         } catch (\Throwable $e) {
@@ -266,7 +273,7 @@ public function __construct(
             };
 
             return response()->json([
-                'success'  => true, // keep frontend happy — this isn't a client error
+                'success'  => true,
                 'message'  => $errorMsg,
                 'products' => [],
             ]);
@@ -299,7 +306,7 @@ public function __construct(
         foreach ($injectionPatterns as $pattern) {
             if (preg_match($pattern, $message)) {
                 Log::warning('[AiChat] Possible prompt injection attempt', ['message' => $message]);
-                break; // log once and continue — system prompt is the real defence
+                break;
             }
         }
 
@@ -310,16 +317,11 @@ public function __construct(
     // STEP 1 — INTENT CLASSIFICATION (conversation-aware)
     // =========================================================================
 
-    /**
-     * Classify the user's intent using the full conversation context.
-     * Resolves references like "show me cheaper ones" by looking at history.
-     */
     private function classifyIntent(string $message, array $history): array
     {
         $lower         = mb_strtolower($message);
         $resolvedQuery = $this->resolveContextualReference($message, $history);
 
-        // ── -1. Fix 3 — Pure greetings never inherit context ──────────────
         $pureGreetings = [
             'hi', 'hello', 'hey', 'salut', 'bonjour', 'salam',
             'ahlan', 'bonsoir', 'yo', 'hola', 'مرحبا', 'أهلا', 'السلام عليكم',
@@ -328,7 +330,6 @@ public function __construct(
             return ['type' => 'general', 'query' => $message, 'raw_message' => $message];
         }
 
-        // ── 0. Context carry-forward (affirmative replies) ────────────────
         $affirmatives = [
             'oui', 'yes', 'yeah', 'yep', 'ok', 'okay',
             'bahi', 'ey', 'ayeh', 'na3m', 'نعم', 'أيوه', 'باهي',
@@ -352,7 +353,6 @@ public function __construct(
             }
         }
 
-        // ── 1. Comparison — routes to DeepSeek ───────────────────────────
         if (preg_match('/compar|vs\.?|versus|difference|quel est le meilleur|which is better|قارن|مقارنة/u', $lower)) {
             return [
                 'type'          => 'compare_products',
@@ -365,7 +365,6 @@ public function __construct(
             ];
         }
 
-        // ── 2. Flash sales / promotions ───────────────────────────────────
         if (preg_match('/flash.?sale|promotion|promo|solde|discount|r[ée]duction|offre|en promotion|بالتخفيض|تخفيضات|عروض|mrigla|barcha tkhfidh/u', $lower)) {
             return [
                 'type'        => 'flash_sales',
@@ -377,7 +376,6 @@ public function __construct(
             ];
         }
 
-        // ── 3. Packs / bundles ────────────────────────────────────────────
         if (preg_match('/\bpacks?\b|bundle|lot\b|ensemble|coffret|مجموعة|باقة/u', $lower)) {
             return [
                 'type'        => 'packs',
@@ -389,7 +387,6 @@ public function __construct(
             ];
         }
 
-        // ── 4. Fix 2 — Seller onboarding (literal '...' replaced) ────────
         if (preg_match(
             '/\bstore\b|open.*store|my store|\bsell\b|vendor|vendeur|devenir.*vendeur|become.*seller|how.*sell'
             . '|بائع|كيف.*أبيع|كيف أصبح|أصبح تاجر|تاجر'
@@ -400,17 +397,14 @@ public function __construct(
             return ['type' => 'seller_onboarding', 'query' => $message, 'raw_message' => $message];
         }
 
-        // ── 5. Checkout / order guidance ──────────────────────────────────
         if (preg_match('/checkout|comment.*payer|how.*pay|how.*do.*order|how.*to.*order|how.*place|how.*order|comment.*commander|order.*place|كيف.*أدفع|كيف.*أطلب|comment passer commande/u', $lower)) {
             return ['type' => 'checkout_guidance', 'query' => $message, 'raw_message' => $message];
         }
 
-        // ── 6. Cart status (read-only) ────────────────────────────────────
         if (preg_match('/my cart|mon panier|panier actuel|what.*in.*cart|سلتي|قائمة التسوق/u', $lower)) {
             return ['type' => 'cart_status', 'query' => $message, 'raw_message' => $message];
         }
 
-        // ── 7. Trending / popular ─────────────────────────────────────────
         if (preg_match('/trending|popular|best.?sell|most.?view|populaire|الأكثر مبيعاً|mzyen barsha/u', $lower)) {
             return [
                 'type'        => 'trending_products',
@@ -422,9 +416,6 @@ public function __construct(
             ];
         }
 
-        // ── 8. Contextual reference ("show cheaper ones", "show more") ────
-        // Fix 4 — Only phrase-level signals trigger contextual resolution;
-        //          single common words ('it','this','more', etc.) are removed.
         $isContextual = $resolvedQuery !== $message;
         if ($isContextual && !empty($resolvedQuery)) {
             return [
@@ -438,7 +429,6 @@ public function __construct(
             ];
         }
 
-        // ── 8b. Browsing intent ───────────────────────────────────────────
         if (preg_match('/\bbrowse\b|browsing|explore|just looking|voir les produits|تصفح/u', $lower)) {
             return [
                 'type'        => 'trending_products',
@@ -450,9 +440,7 @@ public function __construct(
             ];
         }
 
-        // ── 9. Explicit product search ────────────────────────────────────
         $searchSignals = [
-            // English
             'need', 'want', 'looking for', 'find', 'show', 'search', 'buy', 'get me',
             'give me', 'recommend', 'suggest', 'list', 'price', 'cheap', 'affordable',
             'browse', 'explore', 'discover', 'do you have', 'have you got', 'wish',
@@ -464,7 +452,6 @@ public function __construct(
             'would you happen to have', 'i urgently need', 'i must find',
             'i am in need of', 'browse through', 'look around', 'filter',
             'compare', 'check availability', 'see if you have',
-            // French
             'cherche', 'trouver', 'acheter', 'besoin', 'montrer', 'veux',
             'affiche', 'avez vous', 'est ce que vous avez', 'souhaite', 'désire',
             'aimerais', 'ça me dirait de', 'j aurais besoin de',
@@ -478,7 +465,6 @@ public function __construct(
             'il me faut absolument', 'je dois absolument trouver',
             'j ai un besoin urgent de', 'je cherche d urgence',
             'consulter', 'parcourir', 'filtrer', 'comparer', 'vérifier la disponibilité',
-            // Arabic
             'نحتاج', 'أريد', 'اريد', 'ابحث', 'أبحث', 'اشتري', 'عايز', 'عندكم',
             'وريني', 'بدي', 'ابغى', 'نبغي', 'نبحث', 'نحتاج إلى', 'أرغب في',
             'أود', 'أحاول إيجاد', 'أبحث عن', 'دور على', 'لقى', 'تجد',
@@ -488,7 +474,6 @@ public function __construct(
             'أرني', 'دلني على', 'اعرض لي', 'شوفلي', 'لاقيلي', 'بدي إياك',
             'محتاج ضروري', 'لازم ألقى', 'عاجلني', 'قارن', 'فلتر',
             'تأكد من التوفر', 'شوف إذا عندكم',
-            // Darija
             'warini', 'orini', 'arini', 'nheb', 'nchri', 'nlawj', '3andkom',
             'jibli', 'n7eb', 'n7ib', 'n7awel nal9a', 'n7awel nloca', 'n7awel n9a',
             'n7awel nji', 'n7awel nget', 'n7awel ndir', 'n7awel ntal9a',
@@ -509,79 +494,29 @@ public function __construct(
             }
         }
 
-        // ── 10. General / greeting / unknown ─────────────────────────────
         return ['type' => 'general', 'query' => $message, 'raw_message' => $message];
     }
 
     /**
-     * Resolve contextual references to concrete search terms.
-     *
-     * Fix 4 — $contextSignals now contains ONLY phrases, not ambiguous
-     * single common words like 'it', 'this', 'more', 'same', 'autre', 'plus'.
+     * Fix 4 — $contextSignals contains ONLY phrases, not ambiguous single words.
      */
     private function resolveContextualReference(string $message, array $history): string
     {
         $lower = mb_strtolower($message);
 
-        // Fix 4 — phrase-only signals; all single-word false triggers removed
         $contextSignals = [
-            // English — phrases only
-            'show more',
-            'show me more',
-            'more like this',
-            'more of these',
-            'like this',
-            'something similar',
-            'something else',
-            'different one',
-            'same thing',
-            'same one',
-            'same brand',
-            'same style',
-            'same price',
-            'same category',
-            'another one',
-            'best one',
-            'cheaper',
-            'more expensive',
-
-            // French — phrases only
-            'moins cher',
-            'plus cher',
-            'montre plus',
-            'plus comme ça',
-            'comme ça',
-            'quelque chose de similaire',
-            'un autre',
-            'une autre',
-            'ceux là',
-            'les mêmes',
-            'même marque',
-            'même style',
-            'même prix',
-
-            // Arabic — phrases only
-            'مشابه',
-            'مشابهة',
-            'مثل هذا',
-            'زي هذا',
-            'واحد آخر',
-            'واحدة أخرى',
-            'نفس الماركة',
-            'نفس السعر',
-
-            // Tunisian Darija — phrases only
-            'zid akther',
-            'warini akther',
-            'warini haja okhra',
-            'haja okhra',
-            'kima heka',
-            'mrigel akther',
-            'nafs soum',
-            'nafs marque',
-            'kima hedha',
-            'nafs',
-            'nafsou',
+            'show more', 'show me more', 'more like this', 'more of these',
+            'like this', 'something similar', 'something else', 'different one',
+            'same thing', 'same one', 'same brand', 'same style', 'same price',
+            'same category', 'another one', 'best one', 'cheaper', 'more expensive',
+            'moins cher', 'plus cher', 'montre plus', 'plus comme ça', 'comme ça',
+            'quelque chose de similaire', 'un autre', 'une autre', 'ceux là',
+            'les mêmes', 'même marque', 'même style', 'même prix',
+            'مشابه', 'مشابهة', 'مثل هذا', 'زي هذا', 'واحد آخر', 'واحدة أخرى',
+            'نفس الماركة', 'نفس السعر',
+            'zid akther', 'warini akther', 'warini haja okhra', 'haja okhra',
+            'kima heka', 'mrigel akther', 'nafs soum', 'nafs marque',
+            'kima hedha', 'nafs', 'nafsou',
         ];
 
         $isContextual = false;
@@ -693,9 +628,9 @@ public function __construct(
         foreach ($products as &$p) {
             $promo = $promotionData->get($p['id']);
             if ($promo) {
-                $p['discount_type']  = $promo->discount_type;
-                $p['discount_value'] = (float) $promo->discount_value;
-                $p['promo_ends_at']  = $promo->ends_at;
+                $p['discount_type']   = $promo->discount_type;
+                $p['discount_value']  = (float) $promo->discount_value;
+                $p['promo_ends_at']   = $promo->ends_at;
                 $p['effective_price'] = $promo->discount_type === 'percentage'
                     ? round($p['price'] * (1 - $promo->discount_value / 100), 3)
                     : max(0, round($p['price'] - $promo->discount_value, 3));
@@ -719,7 +654,7 @@ public function __construct(
             $q->where('pack_price', '>=', $intent['price_min']);
         }
 
-        // Fix 16 — MAX_CARDS constant now used here
+        // Fix 16 — MAX_CARDS constant used here
         $packs = $q->take(self::MAX_CARDS)->get();
 
         if ($packs->isEmpty()) {
@@ -744,6 +679,10 @@ public function __construct(
         return ['products' => $formatted, 'context' => 'packs'];
     }
 
+    /**
+     * Fix 21 — Also searches 'description' column (was only short_description before).
+     * This improves recall for products whose keywords are in the long description.
+     */
     private function toolProductSearch(array $intent): array
     {
         $baseQuery = function () use ($intent) {
@@ -763,16 +702,42 @@ public function __construct(
         };
 
         if (!empty($intent['query'])) {
-            $search   = $intent['query'];
-            $synonyms = $this->expandQuerySynonyms($search);
+            $search = $intent['query'];
 
-            $results = $baseQuery()->where(function ($q) use ($search, $synonyms) {
-                $q->where('name', 'like', "%{$search}%")
-                  ->orWhere('short_description', 'like', "%{$search}%");
+            // Fix 22 — Sanitize query: strip punctuation/special chars that break LIKE
+            // e.g. "summer dres?" → "summer dres", "shoes!" → "shoes"
+            $cleanSearch = trim(preg_replace('/[^\p{L}\p{N}\s]/u', ' ', $search));
+            $cleanSearch = trim(preg_replace('/\s+/', ' ', $cleanSearch));
 
+            // Fix 22 — Tokenize: search each word independently so multi-word
+            // queries find partial matches. "summer dress" → ['summer', 'dress']
+            // This also handles truncated words: "dres" still matches "Dress"
+            $tokens = array_filter(
+                explode(' ', mb_strtolower($cleanSearch)),
+                fn($t) => mb_strlen($t) >= 3
+            );
+
+            $synonyms = $this->expandQuerySynonyms($cleanSearch);
+
+            // Build the search: each token OR synonym matched against name/description
+            $results = $baseQuery()->where(function ($q) use ($cleanSearch, $tokens, $synonyms) {
+                // Full cleaned phrase first (highest relevance)
+                $q->where('name', 'like', "%{$cleanSearch}%")
+                  ->orWhere('short_description', 'like', "%{$cleanSearch}%")
+                  ->orWhere('description', 'like', "%{$cleanSearch}%");
+
+                // Each individual token (handles typos and partial words)
+                foreach ($tokens as $token) {
+                    $q->orWhere('name', 'like', "%{$token}%")
+                      ->orWhere('short_description', 'like', "%{$token}%")
+                      ->orWhere('description', 'like', "%{$token}%");
+                }
+
+                // Synonyms for cross-language matching
                 foreach ($synonyms as $syn) {
                     $q->orWhere('name', 'like', "%{$syn}%")
-                      ->orWhere('short_description', 'like', "%{$syn}%");
+                      ->orWhere('short_description', 'like', "%{$syn}%")
+                      ->orWhere('description', 'like', "%{$syn}%");
                 }
             })->take(self::MAX_PRODUCTS)->get();
 
@@ -780,10 +745,10 @@ public function __construct(
                 return ['products' => $this->formatProducts($results), 'context' => 'product_results'];
             }
 
-            // Category fallback
-            $allTerms = array_merge([$search], $synonyms);
+            // Category fallback — also use tokens for category name matching
+            $allTerms = array_unique(array_merge([$cleanSearch], $tokens, $synonyms));
             foreach ($allTerms as $term) {
-                if (mb_strlen($term) < 2) continue;
+                if (mb_strlen(trim($term)) < 2) continue;
                 $category = Category::where('name', 'like', "%{$term}%")
                     ->orWhere('name_ar', 'like', "%{$term}%")
                     ->first();
@@ -817,8 +782,6 @@ public function __construct(
 
     /**
      * Fix 1 — Duplicate keys removed. Each term appears exactly once.
-     * The second duplicate block (// Clothing — tops … 'لابتوب') is gone.
-     * Unique entries from that block have been merged into the first definitions.
      */
     private function expandQuerySynonyms(string $query): array
     {
@@ -924,12 +887,10 @@ public function __construct(
             'سيارة'       => ['car', 'voiture', 'auto'],
         ];
 
-        // Direct match
         if (isset($synonymMap[$lower])) {
             return $synonymMap[$lower];
         }
 
-        // Partial match — query contains or is contained within a known key
         $found = [];
         foreach ($synonymMap as $key => $synonyms) {
             if (mb_strpos($lower, $key) !== false || mb_strpos($key, $lower) !== false) {
@@ -991,15 +952,17 @@ public function __construct(
      * Fix 9  — $detectedLang passed to every intent prompt method.
      * Fix 10 — Darija guide is conditional; omitted for English/French users.
      * Fix 19 — Topic history block included in system prompt.
+     * Fix 21 — Product block now uses buildProductContextBlock() which adds
+     *           an explicit anti-hallucination firewall around the product list.
      */
     private function buildSystemPrompt(
         array  $intent,
         array  $toolResult,
         $user,
         string $detectedLang,
-        array  $history     = [],
+        array  $history      = [],
         array  $currentTopic = [],
-        string $sessionId   = '',
+        string $sessionId    = '',
     ): string {
         $platform = "ChooseTounsi — Tunisia's #1 multi-vendor e-commerce marketplace.";
         $userName = $user ? $user->name : null;
@@ -1038,24 +1001,8 @@ public function __construct(
             }
         }
 
-        // Product block
-        $productBlock = '';
-        if (!empty($toolResult['products'])) {
-            $lines = [];
-            foreach ($toolResult['products'] as $i => $p) {
-                $stock    = $p['stock'] > 0 ? "In stock ({$p['stock']})" : '⚠️ Out of stock';
-                $lines[]  = sprintf(
-                    '%d. **%s** | %.3f TND | %s | %s | slug: %s',
-                    $i + 1,
-                    $p['name'],
-                    $p['price'],
-                    $p['category'],
-                    $stock,
-                    $p['slug']
-                );
-            }
-            $productBlock = "AVAILABLE PRODUCTS (from live database):\n" . implode("\n", $lines);
-        }
+        // Fix 21 — Product block now wrapped with anti-hallucination firewall
+        $productBlock = $this->buildProductContextBlock($toolResult['products'] ?? []);
 
         // Cart block
         $cartBlock = '';
@@ -1164,6 +1111,85 @@ SYSTEM;
     }
 
     // =========================================================================
+    // Fix 21 — PRODUCT CONTEXT BLOCK WITH ANTI-HALLUCINATION FIREWALL
+    // =========================================================================
+
+    /**
+     * Wraps the product list with an explicit prohibition against invention.
+     *
+     * BEFORE (original): Products were listed as plain text with no restriction.
+     *   The AI could reference them as inspiration and then add invented products.
+     *
+     * AFTER (Fix 21): The block explicitly:
+     *   1. Labels products as "DATABASE RESULTS — ONLY SOURCE OF TRUTH"
+     *   2. Forbids referencing any product not in the list
+     *   3. When the list is empty, sends NO_PRODUCTS_FOUND — the AI must say
+     *      so honestly instead of inventing alternatives
+     */
+    private function buildProductContextBlock(array $products): string
+    {
+        if (empty($products)) {
+            return <<<EOT
+== PRODUCT DATA ==
+STATUS: NO_PRODUCTS_FOUND
+
+Zero products matched this query in the live database.
+
+YOUR RESPONSE MUST:
+1. Tell the user directly: no matching products were found.
+2. Suggest they try different keywords or visit /shop.
+3. STOP. Do not write product names. Do not write prices.
+   Do not write "we have a variety of..." — this is fabrication.
+   Do not write "you can find... in our shop" with invented details.
+
+FORBIDDEN PHRASES (these imply products exist when they do not):
+- "We have a variety of..."
+- "We carry several..."
+- "You can find... in our /shop section"
+- Any product name not in this block
+- Any price not in this block
+
+CORRECT response example: "I couldn't find any summer dresses in our catalog right now. Try searching with different keywords or browse /shop directly."
+EOT;
+        }
+
+        // Use JSON so the AI reads it as structured data, not text to repeat verbatim
+        $data = [];
+        foreach ($products as $i => $p) {
+            $data[] = [
+                'position'    => $i + 1,
+                'name'        => $p['name'],
+                'price_TND'   => number_format($p['price'], 3),
+                'category'    => $p['category'],
+                'in_stock'    => $p['stock'] > 0 ? 'yes' : 'no',
+                'stock_count' => $p['stock'],
+                'slug'        => $p['slug'],
+            ];
+        }
+
+        $count   = count($products);
+        $json    = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+
+        return <<<EOT
+== PRODUCT DATA (LIVE DATABASE — ONLY SOURCE OF TRUTH) ==
+{$count} product(s) found:
+
+{$json}
+
+YOUR RULES FOR THIS RESPONSE:
+- Write ONE short natural sentence introducing these results.
+- Do NOT copy or repeat the raw data above — the frontend renders product cards automatically.
+- Do NOT write product names in a list format — just a brief intro sentence.
+- Do NOT mention any product outside the {$count} above.
+- Do NOT invent prices, stock, descriptions, or categories.
+- If the products don't perfectly match the request, say so honestly, but only recommend from the list above.
+
+CORRECT: "Here are the summer dresses we have available!"
+WRONG:   "1. **Summer Dress** | 100.000 TND | Fashion & Clothing..." ← never repeat the raw data
+EOT;
+    }
+
+    // =========================================================================
     // LANGUAGE DETECTION
     // =========================================================================
 
@@ -1174,12 +1200,10 @@ SYSTEM;
     {
         $msg = mb_strtolower(trim($message));
 
-        // Arabic script → immediate answer
         if (preg_match('/[\x{0600}-\x{06FF}]/u', $msg)) {
             return 'Arabic';
         }
 
-        // Darija romanized — strong signals only
         $darijaWords = [
             'bahi', '3andna', '3andek', 'mafamach', 'warini', 'nheb',
             'barcha', 'nchri', 'chnia', '9adeh', 'yezzi', 'mrigla',
@@ -1189,7 +1213,6 @@ SYSTEM;
             if (str_contains($msg, $word)) return 'Tunisian Darija';
         }
 
-        // French — needs 2+ weak signals OR 1 strong signal
         $frenchStrong = [
             'bonjour', 'bonsoir', 'merci', 'je cherche', 'je veux',
             'comment', 'devenir', 'vendeur', "j'ai", 'est-ce que',
@@ -1204,7 +1227,6 @@ SYSTEM;
         }
         if ($frenchCount >= 2) return 'French';
 
-        // English positive signals
         $englishSignals = [
             'i want', 'i need', 'i wanna', 'show me', 'can you',
             'how to', 'how do', 'what is', 'tell me', 'give me',
@@ -1220,8 +1242,6 @@ SYSTEM;
 
     // =========================================================================
     // INTENT-SPECIFIC PROMPT FRAGMENTS
-    // Fix 9  — every method now receives and enforces $detectedLang
-    // Fix 11 — promptCheckoutGuidance() example is language-conditional
     // =========================================================================
 
     private function promptFlashSales(array $toolResult, string $detectedLang = 'English'): string
@@ -1255,34 +1275,37 @@ SYSTEM;
         $count = count($toolResult['products'] ?? []);
 
         if ($toolResult['context'] === 'no_results') {
-            return "SITUATION: No products found.\n"
-                . "Tell the user no exact matches were found. Suggest different keywords or browsing /shop.\n"
+            return "SITUATION: No products found in the database for this query.\n"
+                . "Tell the user honestly that no matching products were found. Do NOT invent alternatives.\n"
+                . "Suggest different keywords or browsing /shop.\n"
                 . "Reply in {$detectedLang} only.";
         }
         if ($toolResult['context'] === 'product_fallback') {
-            return "SITUATION: No exact keyword match — showing best available products.\n"
-                . "Acknowledge you couldn't find an exact match but here are relevant products. Suggest different terms.\n"
+            return "SITUATION: No exact keyword match — showing best available products from the database.\n"
+                . "Acknowledge you couldn't find an exact match but here are relevant products from the list above. Suggest different terms.\n"
                 . "Reply in {$detectedLang} only.";
         }
 
         $priceNote = !empty($intent['price_max']) ? " under {$intent['price_max']} TND" : '';
-        return "SITUATION: Found {$count} products{$priceNote}.\n"
+        return "SITUATION: Found {$count} real products{$priceNote} from the database.\n"
             . "Briefly introduce the results (1 sentence). Don't list all products — cards are shown separately.\n"
+            . "Only reference products from the PRODUCT DATA block above.\n"
             . "Reply in {$detectedLang} only.";
     }
 
     private function promptCompare(array $toolResult, string $detectedLang = 'English'): string
     {
         $count = count($toolResult['products'] ?? []);
-        return "SITUATION: User wants to compare products. Found {$count} options.\n"
-            . "Highlight key differences (price range, features from descriptions). Help the user decide based on use case. Be specific and practical. This is a reasoning task — be thorough but concise.\n"
+        return "SITUATION: User wants to compare products. Found {$count} options from the database.\n"
+            . "Highlight key differences (price range, features from descriptions). Help the user decide based on use case.\n"
+            . "Only compare products from the PRODUCT DATA block above — never invent additional options.\n"
             . "Reply in {$detectedLang} only.";
     }
 
     private function promptTrending(array $toolResult, string $detectedLang = 'English'): string
     {
         $count = count($toolResult['products'] ?? []);
-        return "SITUATION: User asked for trending/popular products. Showing top {$count} by views.\n"
+        return "SITUATION: User asked for trending/popular products. Showing top {$count} by views from the database.\n"
             . "Mention these are the most viewed on ChooseTounsi right now. Be enthusiastic but brief.\n"
             . "Reply in {$detectedLang} only.";
     }
@@ -1416,8 +1439,6 @@ PROMPT;
 
     // =========================================================================
     // MESSAGE FORMAT BUILDERS
-    // Gemini uses  {role: 'user'|'model', parts: [{text}]}
-    // OpenAI uses  {role: 'user'|'assistant', content: string}
     // =========================================================================
 
     private function buildGeminiMessages(array $history, string $currentMessage): array
@@ -1445,7 +1466,7 @@ PROMPT;
 
         foreach (array_slice($history, -6) as $turn) {
             $messages[] = [
-                'role'    => $turn['role'], // 'user' | 'assistant'
+                'role'    => $turn['role'],
                 'content' => $turn['content'],
             ];
         }
@@ -1490,22 +1511,17 @@ PROMPT;
         $fillerWords = [
             'give me the cheapest', 'cheapest', 'least expensive', 'most affordable',
             'give the cheapest', 'le moins cher', 'rkhis',
-            // English
             'i need', 'i want', 'looking for', 'search for', 'show me', 'find me',
             'recommend', 'can you find', 'do you have', 'can i get', 'give me',
             'show', 'find', 'get me',
-            // French
             'je cherche', 'je veux', 'montre moi', 'montrez moi', 'affiche moi',
             'trouve moi', 'avez vous', 'est ce que vous avez', 'je besoin de',
             'donne moi',
-            // Arabic
             'اريد', 'أريد', 'ابحث عن', 'أبحث عن', 'عندك', 'عندكم', 'هل عندكم',
             'اعطني', 'وريني', 'نحب', 'نحب نشري',
-            // Darija
             'warini', 'orini', 'arini', 'nheb', 'nchri', 'besh nchri',
             '3andek', '3andkom', 'famma', 'lawajt 3la', 'hebb', 'nlawwej',
             'nlawj', '9adeh', 'mrigla', 'soum', 'prix',
-            // Common
             'cherch', 'recherche', 'need', 'want', 'show',
         ];
 
