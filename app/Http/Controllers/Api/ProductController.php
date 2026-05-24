@@ -272,96 +272,92 @@ class ProductController extends Controller
                 ->values()
                 ->toArray();
 
-            // ── Step 1: Build colorGroupMap from VARIANTS (not from images) ──
-            //
-            // colorGroupMap maps EVERY color option ID that appears in any variant
-            // to the full sorted array of color IDs for that variant's color group.
-            //
-            // Example: variant has color options [Red=104, Blue=105]
-            //   colorGroupMap[104] = [104, 105]
-            //   colorGroupMap[105] = [104, 105]
-            //
-            // This means any single color_option_id stored on a product_image row
-            // can be resolved back to the correct groupKey — regardless of which
-            // color ID in the group was used as the storage key.
-            //
-            // First-write-wins: the first variant that introduces a color ID owns
-            // the group definition for that ID.
-            $colorGroupMap = [];
+            
+//
+// FIX: The old colorGroupMap used first-write-wins, which caused images to be
+// assigned to the wrong group when the same color ID appeared in multiple groups.
+// (e.g. Black=8 in group [5,7,8] AND in solo group [8] — Black's solo images
+// would be registered under "5|7|8" instead of "8".)
+//
+// New approach: build an authoritative map from variant definitions (each variant
+// knows its exact color group), then resolve each image path to the correct group
+// by exact match first, then smallest-containing-subset fallback.
 
-            foreach ($product->variants as $v) {
-                $colorOpts = $v->attributeOptions
-                    ->filter(fn($o) => $o->attribute->slug === 'color')
-                    ->sortBy('id')
-                    ->values();
+// Build authoritative variant group registry: groupKey → groupKey (identity)
+$variantGroupRegistry = [];  // e.g. "5|7|8" => "5|7|8", "8" => "8"
 
-                if ($colorOpts->isEmpty()) continue;
+foreach ($product->variants as $v) {
+    $colorIds = $v->attributeOptions
+        ->filter(fn($o) => $o->attribute->slug === 'color')
+        ->sortBy('id')
+        ->pluck('id')
+        ->toArray();
 
-                $allIds = $colorOpts->pluck('id')->toArray();
+    if (empty($colorIds)) continue;
 
-                foreach ($allIds as $cid) {
-                    if (!isset($colorGroupMap[$cid])) {
-                        $colorGroupMap[$cid] = $allIds;
-                    }
+    sort($colorIds);
+    $key = implode('|', $colorIds);
+    $variantGroupRegistry[$key] = $key;
+}
+
+// Collect color images grouped by image_path (handles duplicate rows from old save format)
+$pathToColorIds = [];
+
+$product->images
+    ->filter(fn($i) => $i->color_option_id !== null)
+    ->each(function ($img) use (&$pathToColorIds) {
+        $pathToColorIds[$img->image_path][] = (int) $img->color_option_id;
+    });
+
+foreach ($pathToColorIds as $path => $cids) {
+    $storedIds = array_values(array_unique($cids));
+    sort($storedIds);
+    $storedKey = implode('|', $storedIds);
+
+    // Exact match: new format stores primary ID only, or all IDs for the group
+    if (isset($variantGroupRegistry[$storedKey])) {
+        $groupKey = $storedKey;
+    } else {
+        // Subset match: old format may store only one ID from a multi-color group.
+        // Find the smallest registered group that contains ALL stored IDs.
+        $groupKey = null;
+        foreach ($variantGroupRegistry as $vKey) {
+            $vIds = array_map('intval', explode('|', $vKey));
+            if (count(array_intersect($storedIds, $vIds)) === count($storedIds)) {
+                if ($groupKey === null) {
+                    $groupKey = $vKey;
+                } else {
+                    // Prefer the more specific (smaller) group
+                    $curLen = substr_count($groupKey, '|') + 1;
+                    $newLen = substr_count($vKey, '|') + 1;
+                    if ($newLen < $curLen) $groupKey = $vKey;
                 }
             }
+        }
+        // Last resort: use stored key as-is
+        if ($groupKey === null) $groupKey = $storedKey;
+    }
 
-            // ── Step 2: Map color images to groupKey ─────────────────────────
-            //
-            // SellerProductController::saveColorImages() saves one product_image row
-            // per color ID in the group (all pointing to the same image_path).
-            // So when we encounter a product_image with color_option_id=104, there
-            // is also a row with color_option_id=105 for the same path.
-            //
-            // To avoid registering the same physical image multiple times under the
-            // same groupKey, we group rows by image_path first, then determine the
-            // groupKey from the union of all color IDs sharing that path.
-            //
-            // This is the most robust approach — it doesn't assume which ID was saved
-            // as "primary" and correctly handles both old and new save formats.
+    $url = Storage::url($path);
 
-            // Collect all color-keyed images grouped by image_path
-            $pathToColorIds = [];   // image_path → [color_option_id, ...]
-            $pathToIsFirst  = [];   // image_path → bool (first occurrence)
+    if (!in_array($url, $colorImages[$groupKey] ?? [])) {
+        $colorImages[$groupKey][] = $url;
+    }
+    if (!isset($colorPrimaryImage[$groupKey])) {
+        $colorPrimaryImage[$groupKey] = $url;
+    }
 
-            $product->images
-                ->filter(fn($i) => $i->color_option_id !== null)
-                ->each(function ($img) use (&$pathToColorIds) {
-                    $pathToColorIds[$img->image_path][] = $img->color_option_id;
-                });
-
-            foreach ($pathToColorIds as $path => $cids) {
-                // Determine the groupKey: union all IDs from colorGroupMap for each cid
-                $allGroupIds = [];
-                foreach ($cids as $cid) {
-                    $groupIds    = $colorGroupMap[$cid] ?? [$cid];
-                    $allGroupIds = array_unique(array_merge($allGroupIds, $groupIds));
-                }
-                sort($allGroupIds);
-                $groupKey = implode('|', $allGroupIds);
-                $url      = Storage::url($path);
-
-                // Register under the full groupKey
-                if (!in_array($url, $colorImages[$groupKey] ?? [])) {
-                    $colorImages[$groupKey][] = $url;
-                }
-                if (!isset($colorPrimaryImage[$groupKey])) {
-                    $colorPrimaryImage[$groupKey] = $url;
-                }
-
-                // Also register under each individual color ID string for backward compat
-                // (CartController and old frontend code may look up by single string ID)
-                foreach ($allGroupIds as $gid) {
-                    $strId = (string) $gid;
-                    if (!in_array($url, $colorImages[$strId] ?? [])) {
-                        $colorImages[$strId][] = $url;
-                    }
-                    if (!isset($colorPrimaryImage[$strId])) {
-                        $colorPrimaryImage[$strId] = $url;
-                    }
-                }
-            }
-
+    // Backward compat: also register under each individual color ID string
+    foreach (array_map('intval', explode('|', $groupKey)) as $gid) {
+        $strId = (string) $gid;
+        if (!in_array($url, $colorImages[$strId] ?? [])) {
+            $colorImages[$strId][] = $url;
+        }
+        if (!isset($colorPrimaryImage[$strId])) {
+            $colorPrimaryImage[$strId] = $url;
+        }
+    }
+}
             // ── Step 3: Build variantPrimaryImage from variant-linked images ─
             //
             // Some images are stored with variant_id (no color_option_id).

@@ -408,7 +408,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/products/{id}/reject',  [AdminProductController::class, 'reject']);
         Route::patch('/products/{id}/disable', [AdminProductController::class, 'disable']);
         Route::delete('/products/{id}',        [AdminProductController::class, 'destroy']);
-
+        Route::post('/products/{id}/restore',  [AdminProductController::class, 'restore']);
+        Route::delete('/products/{id}/force',  [AdminProductController::class, 'forceDestroy']);
         Route::get('/brand-products/stats',                           [\App\Http\Controllers\Admin\BrandProductController::class, 'stats']);
         Route::get('/brand-products',                                 [\App\Http\Controllers\Admin\BrandProductController::class, 'index']);
         Route::post('/brand-products',                                [\App\Http\Controllers\Admin\BrandProductController::class, 'store']);
@@ -418,6 +419,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/brand-products/{id}',                         [\App\Http\Controllers\Admin\BrandProductController::class, 'destroy']);
         Route::delete('/brand-products/{id}/images/{imageId}',        [\App\Http\Controllers\Admin\BrandProductController::class, 'destroyImage']);
         Route::patch('/brand-products/{id}/images/{imageId}/primary', [\App\Http\Controllers\Admin\BrandProductController::class, 'setPrimaryImage']);
+
+
+
+        
 
         // ── Product Update Requests ───────────────────────────────────────
         Route::get('/product-update-requests/stats',         [AdminProductUpdateRequestController::class, 'stats']);

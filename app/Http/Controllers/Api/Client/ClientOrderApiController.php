@@ -43,15 +43,16 @@ class ClientOrderApiController extends Controller
     public function index(Request $request)
     {
         $orders = Order::where('user_id', $request->user()->id)
-            ->with([
-                'sellerOrders',
-                'items.product.images',
-                'items.product.primaryImage',
-                'items.variant.attributeOptions.attribute',
-                'items.variant.images',
-            ])
-            ->orderByDesc('created_at')
-            ->paginate(20);
+    ->with([
+        'sellerOrders',
+        'items.variant.attributeOptions.attribute',
+        'items.variant.images',
+        'items' => fn($q) => $q->with([
+            'product' => fn($pq) => $pq->withTrashed()->with(['images', 'primaryImage']),
+        ]),
+    ])
+    ->orderByDesc('created_at')
+    ->paginate(20);
 
         $orders->getCollection()->transform(function ($order) {
             return $this->transformOrder($order);
@@ -66,14 +67,15 @@ class ClientOrderApiController extends Controller
     public function show(Request $request, $id)
     {
         $order = Order::where('user_id', $request->user()->id)
-            ->with([
-                'sellerOrders',
-                'items.product.images',
-                'items.product.primaryImage',
-                'items.variant.attributeOptions.attribute',
-                'items.variant.images',
-            ])
-            ->findOrFail($id);
+    ->with([
+        'sellerOrders',
+        'items.variant.attributeOptions.attribute',
+        'items.variant.images',
+        'items' => fn($q) => $q->with([
+            'product' => fn($pq) => $pq->withTrashed()->with(['images', 'primaryImage']),
+        ]),
+    ])
+    ->findOrFail($id);
 
         return response()->json(['success' => true, 'data' => $this->transformOrder($order)]);
     }

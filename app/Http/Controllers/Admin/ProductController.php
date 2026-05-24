@@ -16,41 +16,25 @@ use Illuminate\Support\Facades\Storage;
 
 class ProductController extends Controller
 {
-    public function index(Request $request)
-    {
-        $query = Product::with([
-            'seller:id,name,email',
-            'category:id,name',
-            'primaryImage',
-        ]);
+public function index(Request $request)
+{
+    $status = $request->query('status', 'pending');
 
-        $status = $request->query('status', 'pending');
-
-        if ($status === 'pending') {
-            // Pending = not approved AND no rejection reason (never reviewed)
-            $query->where('is_approved', false)->whereNull('rejection_reason');
-        } elseif ($status === 'rejected') {
-            // Rejected = not approved AND has a rejection reason
-            $query->where('is_approved', false)->whereNotNull('rejection_reason');
-        } elseif ($status === 'approved') {
-            $query->where('is_approved', true)->where('is_active', true);
-        } elseif ($status === 'disabled') {
-            $query->where('is_approved', true)->where('is_active', false);
-        }
-        // 'all' or empty → no filter
+    if ($status === 'deleted_by_seller') {
+        $query = Product::onlyTrashed()
+            ->where('deleted_by_seller', true)
+            ->with(['seller:id,name,email', 'category:id,name', 'primaryImage']);
 
         if ($search = $request->query('search'))
             $query->where('name', 'like', '%' . $search . '%');
-        if ($categoryId = $request->query('category_id'))
-            $query->where('category_id', $categoryId);
         if ($sellerId = $request->query('seller_id'))
             $query->where('seller_id', $sellerId);
 
-        $products = $query->orderByDesc('created_at')
+        $products = $query->orderByDesc('deleted_at')
             ->paginate((int) $request->query('per_page', 15));
 
         $products->getCollection()->transform(function ($product) {
-            $product->status = $this->deriveStatus($product);
+            $product->status = 'deleted_by_seller';
             $product->primary_image_url = $product->primaryImage
                 ? Storage::disk('public')->url($product->primaryImage->image_path)
                 : null;
@@ -59,6 +43,49 @@ class ProductController extends Controller
 
         return response()->json(['success' => true, 'data' => $products]);
     }
+
+    // Normal statuses — SoftDeletes automatically excludes deleted_at IS NOT NULL
+    $query = Product::with([
+        'seller:id,name,email',
+        'category:id,name',
+        'primaryImage',
+    ]);
+
+    if ($status === 'pending') {
+        $query->where('is_approved', false)
+              ->whereNull('rejection_reason')
+              ->where(fn($q) => $q->where('deleted_by_seller', false)
+                                  ->orWhereNull('deleted_by_seller'));
+    } elseif ($status === 'rejected') {
+        $query->where('is_approved', false)
+              ->whereNotNull('rejection_reason');
+    } elseif ($status === 'approved') {
+        $query->where('is_approved', true)->where('is_active', true);
+    } elseif ($status === 'disabled') {
+        $query->where('is_approved', true)->where('is_active', false);
+    }
+    // 'all' → SoftDeletes excludes soft-deleted automatically
+
+    if ($search = $request->query('search'))
+        $query->where('name', 'like', '%' . $search . '%');
+    if ($categoryId = $request->query('category_id'))
+        $query->where('category_id', $categoryId);
+    if ($sellerId = $request->query('seller_id'))
+        $query->where('seller_id', $sellerId);
+
+    $products = $query->orderByDesc('created_at')
+        ->paginate((int) $request->query('per_page', 15));
+
+    $products->getCollection()->transform(function ($product) {
+        $product->status = $this->deriveStatus($product);
+        $product->primary_image_url = $product->primaryImage
+            ? Storage::disk('public')->url($product->primaryImage->image_path)
+            : null;
+        return $product;
+    });
+
+    return response()->json(['success' => true, 'data' => $products]);
+}
 
     public function show($id)
     {
@@ -329,17 +356,78 @@ class ProductController extends Controller
     }
 
     public function destroy($id)
-    {
-        $product = Product::with('seller')->findOrFail($id);
-        $name    = $product->name;
-        $pid     = $product->id;
-        $seller  = $product->seller;
-        $product->delete();
-        if ($seller) {
-            $seller->notify(new ProductActionNotification('deleted', $pid, $name, 'Admin', 0));
-        }
-        return response()->json(['success' => true, 'message' => 'Product deleted.']);
+{
+    $product = Product::with('seller')->findOrFail($id);
+    $name    = $product->name;
+    $pid     = $product->id;
+    $seller  = $product->seller;
+
+    // Manually clean up
+    foreach ($product->images as $img) {
+        Storage::disk('public')->delete($img->image_path);
     }
+    $product->images()->delete();
+    $product->attributeValues()->delete();
+
+    \App\Models\OrderItem::whereIn(
+        'variant_id',
+        $product->variants()->pluck('id')
+    )->update(['variant_id' => null]);
+
+    $product->variants()->delete();
+    $product->forceDelete(); // use forceDelete so boot hook doesn't interfere
+
+    if ($seller) {
+        $seller->notify(new ProductActionNotification('deleted', $pid, $name, 'Admin', 0));
+    }
+
+    return response()->json(['success' => true, 'message' => 'Product deleted.']);
+}
+    /**
+ * POST /api/admin/products/{id}/restore
+ * Restores a seller-deleted product back to pending review.
+ */
+public function restore($id)
+{
+    $product = Product::onlyTrashed()->findOrFail($id);
+    $product->restore();
+    $product->update([
+        'is_approved'       => false,
+        'is_active'         => false,
+        'deleted_by_seller' => false, // ← clear flag
+        'rejection_reason'  => null,
+    ]);
+    return response()->json(['success' => true, 'message' => 'Product restored to pending review.']);
+}
+
+/**
+ * DELETE /api/admin/products/{id}/force
+ * Permanently deletes a seller-deleted product (admin decision).
+ */
+public function forceDestroy($id)
+{
+    $product = Product::onlyTrashed()->findOrFail($id);
+
+    // Manually clean up images since boot hook no longer does it
+    foreach ($product->images as $img) {
+        Storage::disk('public')->delete($img->image_path);
+    }
+    $product->images()->delete();
+    $product->attributeValues()->delete();
+
+    \App\Models\OrderItem::whereIn(
+        'variant_id',
+        $product->variants()->pluck('id')
+    )->update(['variant_id' => null]);
+
+    $product->variants()->delete();
+    $product->forceDelete();
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Product permanently deleted.',
+    ]);
+}
 
     /**
      * Derives the display status from product fields.
@@ -351,11 +439,12 @@ class ProductController extends Controller
      * approved → approved + active
      */
     private function deriveStatus(Product $product): string
-    {
-        if (!$product->is_approved) {
-            return $product->rejection_reason ? 'rejected' : 'pending';
-        }
-        if (!$product->is_active) return 'disabled';
-        return 'approved';
+{
+    if ($product->deleted_by_seller) return 'deleted_by_seller';
+    if (!$product->is_approved) {
+        return $product->rejection_reason ? 'rejected' : 'pending';
     }
+    if (!$product->is_active) return 'disabled';
+    return 'approved';
+}
 }

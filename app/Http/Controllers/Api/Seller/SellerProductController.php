@@ -405,22 +405,45 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
     // ── Delete ─────────────────────────────────────────────────────────────────
 
-    public function destroy(Request $request, $id)
-    {
-        $seller  = $request->user();
-        $product = $seller->products()->findOrFail($id);
-        $pid     = $product->id;
-        $pname   = $product->name;
+ public function destroy(Request $request, $id)
+{
+    $seller  = $request->user();
+    $product = $seller->products()->findOrFail($id);
+    $pid     = $product->id;
+    $pname   = $product->name;
 
-        foreach ($product->images as $img) {
-            Storage::disk('public')->delete($img->image_path);
-        }
-        $product->delete();
+    $hasOrders = \App\Models\OrderItem::where('product_id', $pid)->exists();
 
-        $this->notifyAdmins('deleted', (object) ['id' => $pid, 'name' => $pname], $seller);
+    if ($hasOrders) {
+        // Soft delete — preserves order history and images
+        $product->update([
+            'is_active'         => false,
+            'is_approved'       => false,
+            'deleted_by_seller' => true,
+        ]);
+        $product->delete(); // soft delete via SoftDeletes trait
 
-        return response()->json(['success' => true, 'message' => 'Product deleted.']);
+        $this->notifyAdmins('deactivated', $product, $seller);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Product removed.',
+        ]);
     }
+
+    // No orders — hard delete, clean everything
+    foreach ($product->images as $img) {
+        Storage::disk('public')->delete($img->image_path);
+    }
+    $product->images()->delete();
+    $product->attributeValues()->delete();
+    $product->variants()->delete();
+    $product->forceDelete(); // ← must be forceDelete, not delete()
+
+    $this->notifyAdmins('deleted', (object) ['id' => $pid, 'name' => $pname], $seller);
+
+    return response()->json(['success' => true, 'message' => 'Product deleted.']);
+}
 
     // ── Image endpoints ─────────────────────────────────────────────────────────
 
@@ -726,24 +749,27 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         foreach ($groups as $group) {
             $colorOptionIds = $group['ids'];
 
-            foreach ($group['files'] as $file) {
-                $path       = $file->store('products', 'public');
-                $setPrimary = !$hasPrimary && $orderIdx === 0;
+           foreach ($group['files'] as $file) {
+    $path       = $file->store('products', 'public');
+    $setPrimary = !$hasPrimary && $orderIdx === 0;
 
-                foreach ($colorOptionIds as $colorId) {
-                    ProductImage::create([
-                        'product_id'      => $product->id,
-                        'variant_id'      => null,
-                        'color_option_id' => $colorId,
-                        'image_path'      => $path,
-                        'order'           => $maxOrder + $orderIdx + 1,
-                        'is_primary'      => $setPrimary,
-                    ]);
-                }
+    // FIX: store ONE row per image using the primary (lowest) color ID.
+    // The old format stored N rows (one per color ID in the group), causing
+    // duplicate DB entries and ambiguous group resolution in ProductController.
+    // ProductController::show() resolves the primary ID back to the full group
+    // via the variant-based registry (exact then subset match).
+    ProductImage::create([
+        'product_id'      => $product->id,
+        'variant_id'      => null,
+        'color_option_id' => $colorOptionIds[0],  // primary (lowest) ID only
+        'image_path'      => $path,
+        'order'           => $maxOrder + $orderIdx + 1,
+        'is_primary'      => $setPrimary,
+    ]);
 
-                if ($setPrimary) $hasPrimary = true;
-                $orderIdx++;
-            }
+    if ($setPrimary) $hasPrimary = true;
+    $orderIdx++;
+}
 
             Log::info('[SellerProduct::saveColorImages] Group saved', [
                 'key'   => $group['key'],

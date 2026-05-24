@@ -7,17 +7,18 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Product extends Model
 {
-    use HasFactory;
+    use HasFactory,  SoftDeletes;
 
     protected $fillable = [
         'seller_id', 'category_id', 'subcategory_id',
         'name', 'slug', 'description', 'short_description',
         'price', 'stock', 'sku',
         'is_approved', 'is_active', 'is_platform_product', 'featured', 'views',
-        'is_pack', 'season','rejection_reason',
+        'is_pack', 'season','rejection_reason', 'deleted_by_seller', 
     ];
 
     protected $casts = [
@@ -28,6 +29,7 @@ class Product extends Model
         'price'               => 'decimal:3',
         'is_pack'             => 'boolean',
         'season'              => 'array',   // ← JSON array: ["summer","winter"] stored as JSON in DB
+        'deleted_by_seller'   => 'boolean',
     ];
 
     // Canonical season values — reuse everywhere (validation, AI engine, frontend)
@@ -63,13 +65,13 @@ class Product extends Model
         });
 
         static::deleting(function ($product) {
-            foreach ($product->images as $image) {
-                Storage::disk('public')->delete($image->image_path);
-            }
-            $product->images()->delete();
-            $product->attributeValues()->delete();
-            $product->variants()->delete();
-        });
+    // Only runs on soft delete (seller path)
+    // Images are preserved intentionally
+    \App\Models\OrderItem::whereIn(
+        'variant_id',
+        $product->variants()->pluck('id')
+    )->update(['variant_id' => null]);
+});
     }
 
     // ── Relationships ──────────────────────────────────────────────────────

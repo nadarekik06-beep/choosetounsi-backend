@@ -36,15 +36,17 @@ class SellerOrderController extends Controller
      * Base query: only this seller's sub-orders.
      */
     private function sellerOrderQuery(int $sellerId)
-    {
-        return SellerOrder::where('seller_id', $sellerId)
-            ->with([
-                'order.user:id,name',
-                'items.product.images',
-                'items.variant.attributeOptions.attribute',
-                'items.variant.images',
-            ]);
-    }
+{
+    return SellerOrder::where('seller_id', $sellerId)
+        ->with([
+            'order.user:id,name',
+            'items.variant.attributeOptions.attribute',
+            'items.variant.images',
+            'items' => fn($q) => $q->with([
+                'product' => fn($pq) => $pq->withTrashed()->with(['images']),
+            ]),
+        ]);
+}
 
     /* ── GET /api/seller/orders/stats ── */
     public function stats(Request $request)
