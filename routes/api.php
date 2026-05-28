@@ -59,6 +59,7 @@ use App\Http\Controllers\Admin\FinanceController;
 use App\Http\Controllers\Admin\SettlementController;
 use App\Http\Controllers\Admin\AdminPackController;
 use App\Http\Controllers\Api\Seller\EarningsController;
+use App\Http\Controllers\Api\Delivery\RefundDeliveryController;
 /*
 |--------------------------------------------------------------------------
 | PUBLIC ROUTES
@@ -552,14 +553,21 @@ Route::prefix('delivery')
             Route::get('/orders/active',       [DeliveryController::class, 'activeOrders']); // BEFORE /{id}
             Route::post('/orders/{id}/assign', [DeliveryController::class, 'assign']);
             Route::get('/team',                [DeliveryController::class, 'team']);
+            // Refund admin routes — stats MUST be before /{id}
+            Route::get('/refunds/stats',        [RefundDeliveryController::class, 'stats']);
+            Route::get('/refunds',              [RefundDeliveryController::class, 'index']);
+            Route::post('/refunds/{id}/assign', [RefundDeliveryController::class, 'assign']);
         });
 
         // ── Delivery Guy only ─────────────────────────────────────────────
         Route::middleware('delivery:guy')->group(function () {
             Route::get('/my-orders',           [DeliveryController::class, 'myOrders']);
             Route::put('/orders/{id}/status',  [DeliveryController::class, 'updateStatus']);
+            Route::get('/my-refunds',          [RefundDeliveryController::class, 'myRefunds']);
+            Route::put('/refunds/{id}/status', [RefundDeliveryController::class, 'updateGuyStatus']);
         });
 
         // ── Shared — LAST so /active is not swallowed by /{id} ───────────
-        Route::get('/orders/{id}',             [DeliveryController::class, 'showOrder']);
-    });
+        Route::get('/orders/{id}',  [DeliveryController::class, 'showOrder']);
+        Route::get('/refunds/{id}', [RefundDeliveryController::class, 'show']); 
+        });

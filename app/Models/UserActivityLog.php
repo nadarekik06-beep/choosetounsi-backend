@@ -31,12 +31,14 @@ class UserActivityLog extends Model
     const ACTION_FAVORITE = 'favorite';
     const ACTION_CART     = 'cart';
     const ACTION_ORDER    = 'order';
+    const ACTION_PURCHASE = 'purchase'; // ← ADDED
 
     const ACTIONS = [
         self::ACTION_VIEW,
         self::ACTION_FAVORITE,
         self::ACTION_CART,
         self::ACTION_ORDER,
+        self::ACTION_PURCHASE, // ← ADDED
     ];
 
     // ── Relationships ──────────────────────────────────────────────────────

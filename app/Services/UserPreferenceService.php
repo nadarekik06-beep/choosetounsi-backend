@@ -9,32 +9,16 @@ use App\Models\UserPreference;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
-/**
- * UserPreferenceService
- *
- * CHANGES vs previous version:
- *   - inferPreferencesFromActivity() now applies exponential recency decay
- *     so a cart add yesterday outweighs a view from 50 days ago
- *   - getCombinedPreferences() now also returns interaction_weights
- *     (needed by ProductScoringService::activityScore)
- *   - Added getActivityWeights() as a clean public method for the scoring service
- */
 class UserPreferenceService
 {
     // Recency decay half-life: score halves every N days
     const ACTIVITY_HALFLIFE_DAYS = 14;
 
-    /**
-     * Get or create a UserPreference record for the given user.
-     */
     public function getOrCreate(int $userId): UserPreference
     {
         return UserPreference::firstOrCreate(['user_id' => $userId]);
     }
 
-    /**
-     * Save preferences from the onboarding form.
-     */
     public function saveOnboardingPreferences(int $userId, array $data): UserPreference
     {
         $prefs = UserPreference::updateOrCreate(
@@ -53,9 +37,6 @@ class UserPreferenceService
         return $prefs;
     }
 
-    /**
-     * Update preferences from the profile settings page (partial update).
-     */
     public function updatePreferences(int $userId, array $data): UserPreference
     {
         $prefs   = $this->getOrCreate($userId);
@@ -72,9 +53,6 @@ class UserPreferenceService
         return $prefs;
     }
 
-    /**
-     * Skip onboarding — marks completed without saving preferences.
-     */
     public function skipOnboarding(int $userId): void
     {
         User::where('id', $userId)->update(['onboarding_completed' => true]);
@@ -83,8 +61,9 @@ class UserPreferenceService
     /**
      * Log a user activity event.
      *
-     * Deduplication: 'view' actions are deduplicated within a 30-minute
-     * session window. All other actions are always logged.
+     * FIX 1: Added 'purchase' to valid actions check via ACTIONS constant (now includes it).
+     * FIX 2: Session ID is now passed as nullable — no crash if API route has no session.
+     * FIX 3: try/catch now logs the FULL exception message so silent failures are visible.
      */
     public function logActivity(
         int $userId,
@@ -93,11 +72,13 @@ class UserPreferenceService
         string $action,
         ?string $sessionId = null
     ): void {
+        // Validate action against the model constant
         if (!in_array($action, UserActivityLog::ACTIONS, true)) {
-            Log::warning("[UserPreferenceService] Invalid action: {$action}");
+            Log::warning("[UserPreferenceService] Invalid action '{$action}' — not in ACTIONS constant.");
             return;
         }
 
+        // Deduplicate view actions within the same session window (30 min)
         if ($action === UserActivityLog::ACTION_VIEW && $sessionId) {
             $recentView = DB::table('user_activity_logs')
                 ->where('user_id', $userId)
@@ -108,7 +89,7 @@ class UserPreferenceService
                 ->exists();
 
             if ($recentView) {
-                return;
+                return; // Already logged this view in this session
             }
         }
 
@@ -118,37 +99,27 @@ class UserPreferenceService
                 'product_id'  => $productId,
                 'category_id' => $categoryId,
                 'action'      => $action,
-                'session_id'  => $sessionId,
+                'session_id'  => $sessionId, // nullable — safe for API routes
             ]);
         } catch (\Throwable $e) {
-            Log::warning("[UserPreferenceService] Failed to log activity: " . $e->getMessage());
+            // FIX 3: Log full details so we can actually debug failures
+            Log::warning("[UserPreferenceService] Failed to log activity: " . $e->getMessage(), [
+                'user_id'    => $userId,
+                'product_id' => $productId,
+                'action'     => $action,
+                'error'      => $e->getMessage(),
+            ]);
         }
     }
 
     /**
      * Infer dynamic preferences from activity logs WITH recency decay.
-     *
-     * Scoring formula per log entry:
-     *   raw_weight = action_weight × decay_factor
-     *   decay_factor = 2^(-days_ago / HALFLIFE)
-     *
-     * This means:
-     *   An order (weight 4) from today       → 4.0
-     *   An order (weight 4) from 14 days ago → 2.0
-     *   An order (weight 4) from 28 days ago → 1.0
-     *   A view  (weight 1) from yesterday    → ~0.95
-     *
-     * @param  int $userId
-     * @param  int $days    Look-back window in days
-     * @return array{
-     *   top_category_ids: int[],
-     *   top_product_ids:  int[],
-     *   interaction_weights: array<int, float>
-     * }
+     * FIX: Added 'purchase' weight (highest = 10).
      */
     public function inferPreferencesFromActivity(int $userId, int $days = 60): array
     {
         $actionWeights = [
+            'purchase' => 10, // ← ADDED: highest signal
             'order'    => 4,
             'cart'     => 3,
             'favorite' => 2,
@@ -157,7 +128,6 @@ class UserPreferenceService
 
         $halflife = self::ACTIVITY_HALFLIFE_DAYS;
 
-        // Fetch logs with created_at for decay calculation
         $logs = DB::table('user_activity_logs')
             ->where('user_id', $userId)
             ->where('created_at', '>=', now()->subDays($days))
@@ -177,11 +147,9 @@ class UserPreferenceService
         $productScores  = [];
 
         foreach ($logs as $log) {
-            $actionWeight = $actionWeights[$log->action] ?? 1;
-
-            // Exponential recency decay: weight halves every HALFLIFE days
-            $daysAgo      = ($now - strtotime($log->created_at)) / 86400;
-            $decayFactor  = pow(2, -$daysAgo / $halflife);
+            $actionWeight  = $actionWeights[$log->action] ?? 1;
+            $daysAgo       = ($now - strtotime($log->created_at)) / 86400;
+            $decayFactor   = pow(2, -$daysAgo / $halflife);
             $decayedWeight = $actionWeight * $decayFactor;
 
             if ($log->category_id) {
@@ -200,27 +168,15 @@ class UserPreferenceService
         return [
             'top_category_ids'    => array_map('intval', array_keys(array_slice($categoryScores, 0, 5, true))),
             'top_product_ids'     => array_map('intval', array_keys(array_slice($productScores, 0, 20, true))),
-            'interaction_weights' => $productScores,  // float weights, keyed by product_id
+            'interaction_weights' => $productScores,
         ];
     }
 
-    /**
-     * Get ONLY the interaction_weights for the scoring service.
-     * More efficient than getCombinedPreferences() when prefs are already loaded.
-     *
-     * Returns: array<int, float>  product_id => decayed_weight
-     */
     public function getActivityWeights(int $userId, int $days = 60): array
     {
         return $this->inferPreferencesFromActivity($userId, $days)['interaction_weights'];
     }
 
-    /**
-     * Get combined preferences: explicit + inferred from activity.
-     * Enriches the UserPreference object with behavioral category data.
-     *
-     * Returns null only when there is truly no data at all.
-     */
     public function getCombinedPreferences(int $userId): ?UserPreference
     {
         $prefs    = UserPreference::where('user_id', $userId)->first();
@@ -231,7 +187,6 @@ class UserPreferenceService
                 return null;
             }
 
-            // Build a virtual preference from inferred data alone
             $prefs = new UserPreference([
                 'user_id'      => $userId,
                 'category_ids' => $inferred['top_category_ids'],
@@ -244,7 +199,6 @@ class UserPreferenceService
             return $prefs;
         }
 
-        // Merge inferred categories into explicit preferences (deduplicated)
         $mergedCategories = array_unique(array_merge(
             array_map('intval', (array) ($prefs->category_ids ?? [])),
             $inferred['top_category_ids']

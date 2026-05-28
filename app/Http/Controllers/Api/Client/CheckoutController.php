@@ -16,6 +16,7 @@ use App\Services\FinancialSnapshotService;
 use App\Services\WalletService;
 use App\Services\StockAlertService;
 use App\Services\PromotionService;
+use App\Services\UserPreferenceService; // ← CHANGE 1: Added import
 use App\Http\Controllers\Api\Seller\SellerForecastController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -24,12 +25,14 @@ use Illuminate\Support\Str;
 
 class CheckoutController extends Controller
 {
+    // ← CHANGE 2: Added UserPreferenceService to constructor
     public function __construct(
         private WalletService            $walletService,
         private StockAlertService        $stockAlertService,
         private PromotionService         $promoService,
         private CommissionService        $commissionService,
         private FinancialSnapshotService $financialSnapshot,
+        private UserPreferenceService    $preferenceService, // ← ADD THIS LINE
     ) {}
 
     /**
@@ -370,6 +373,33 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 ->delete();
             DB::commit();
 
+            // ── CHANGE 3a: Log purchase activity for preferences ──────────────
+            try {
+                $sessionId = $this->safeSessionId($request);
+                foreach ($productRows as $item) {
+                    $this->preferenceService->logActivity(
+                        userId:     $user->id,
+                        productId:  $item->product_id,
+                        categoryId: $item->product->category_id,
+                        action:     'purchase',
+                        sessionId:  $sessionId
+                    );
+                }
+                foreach ($packRows as $cartRow) {
+                    foreach ($cartRow->pack->items as $packItem) {
+                        $this->preferenceService->logActivity(
+                            userId:     $user->id,
+                            productId:  $packItem->product_id,
+                            categoryId: $packItem->product->category_id,
+                            action:     'purchase',
+                            sessionId:  $sessionId
+                        );
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::warning('[Preferences] purchase log failed: ' . $e->getMessage());
+            }
+
         } catch (\Throwable $e) {
             DB::rollBack();
             Log::error('[Checkout] store failed: ' . $e->getMessage(), ['file' => $e->getFile(), 'line' => $e->getLine()]);
@@ -532,6 +562,19 @@ $checkingOutIds = $cartItems->pluck('id')->all();
 
             DB::commit();
 
+            // ── CHANGE 3b: Log purchase activity for preferences ──────────────
+            try {
+                $this->preferenceService->logActivity(
+                    userId:     $user->id,
+                    productId:  $product->id,
+                    categoryId: $product->category_id,
+                    action:     'purchase',
+                    sessionId:  $this->safeSessionId($request)
+                );
+            } catch (\Throwable $e) {
+                Log::warning('[Preferences] buyNow purchase log failed: ' . $e->getMessage());
+            }
+
         } catch (\Throwable $e) {
             DB::rollBack();
             Log::error('[Checkout] buyNow failed: ' . $e->getMessage(), ['file' => $e->getFile(), 'line' => $e->getLine()]);
@@ -614,6 +657,16 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         if ($sellerId === null) return;
         if ($sellerId === $request->user()->id) {
             abort(422, 'You cannot purchase your own product.');
+        }
+    }
+
+    // ── CHANGE 4: Safe session ID helper ─────────────────────────────────────
+    private function safeSessionId(Request $request): ?string
+    {
+        try {
+            return $request->session()->getId();
+        } catch (\Throwable $e) {
+            return null; // API routes may not have a session — that's fine
         }
     }
 }

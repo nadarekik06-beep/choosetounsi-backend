@@ -5,17 +5,21 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Storage;
+use App\Events\ComplaintApproved; // ← NEW
 
 /**
  * FILE: app/Models/Complaint.php  ← REPLACE existing file
  *
- * Changes from v1:
- *   - Added STATUS_SELLER_REJECTED constant
- *   - Added isSellerRejectedPendingAdmin() helper
- *   - Added sellerApprove() helper
- *   - Added sellerReject() helper
- *   - Updated VALID_STATUSES array
- *   - Updated isResolved() to include seller_rejected_pending_admin as non-final
+ * Changes from v2 (refund delivery extension):
+ *   - Added refund_status, refund_task_id to $fillable and $casts
+ *   - Added REFUND_STATUS_* constants
+ *   - Added refundTask() relationship
+ *   - Added hasRefundTask() helper
+ *   - sellerApprove()       now fires ComplaintApproved event
+ *   - approve()             now fires ComplaintApproved event
+ *   - overrideToApproved()  now fires ComplaintApproved event
+ *
+ * ALL existing methods and constants are preserved unchanged.
  */
 class Complaint extends Model
 {
@@ -26,7 +30,7 @@ class Complaint extends Model
     const STATUS_PENDING                    = 'pending';
     const STATUS_REVIEWING                  = 'reviewing';
     const STATUS_APPROVED                   = 'approved';
-    const STATUS_SELLER_REJECTED            = 'seller_rejected_pending_admin'; // NEW
+    const STATUS_SELLER_REJECTED            = 'seller_rejected_pending_admin';
     const STATUS_REJECTED                   = 'rejected';
 
     const VALID_STATUSES = [
@@ -37,6 +41,13 @@ class Complaint extends Model
         self::STATUS_REJECTED,
     ];
 
+    // ── Refund status constants (NEW) ──────────────────────────────────────
+
+    const REFUND_STATUS_PENDING   = 'pending';
+    const REFUND_STATUS_ASSIGNED  = 'assigned';
+    const REFUND_STATUS_PICKED_UP = 'picked_up';
+    const REFUND_STATUS_COMPLETED = 'completed';
+
     const COMPLAINT_TYPES = [
         'wrong_product'   => 'Wrong product received',
         'wrong_size'      => 'Wrong size',
@@ -45,7 +56,6 @@ class Complaint extends Model
         'other'           => 'Other',
     ];
 
-    /** Maximum days after delivery the client can file a complaint. */
     const COMPLAINT_WINDOW_DAYS = 14;
 
     // ── Fillable ───────────────────────────────────────────────────────────
@@ -61,9 +71,12 @@ class Complaint extends Model
         'status',
         'rejection_reason',
         'seller_note',
-        'seller_decision',   // NEW: 'approved' | 'rejected'
+        'seller_decision',
         'reviewed_at',
         'resolved_at',
+        // ── Refund tracking (NEW) ─────────────────────────────────────────
+        'refund_status',
+        'refund_task_id',
     ];
 
     // ── Casts ──────────────────────────────────────────────────────────────
@@ -77,9 +90,18 @@ class Complaint extends Model
 
     // ── Relationships ──────────────────────────────────────────────────────
 
-    public function user()   { return $this->belongsTo(User::class); }
-    public function order()  { return $this->belongsTo(Order::class); }
-    public function seller() { return $this->belongsTo(User::class, 'seller_id'); }
+    public function user()    { return $this->belongsTo(User::class); }
+    public function order()   { return $this->belongsTo(Order::class); }
+    public function seller()  { return $this->belongsTo(User::class, 'seller_id'); }
+
+    /**
+     * The refund delivery task created when this complaint is approved.
+     * NEW relationship.
+     */
+    public function refundTask()
+    {
+        return $this->hasOne(RefundDeliveryTask::class, 'complaint_id');
+    }
 
     // ── Accessors ──────────────────────────────────────────────────────────
 
@@ -98,37 +120,47 @@ class Complaint extends Model
 
     // ── Scopes ─────────────────────────────────────────────────────────────
 
-    public function scopePending($q)          { return $q->where('status', self::STATUS_PENDING); }
-    public function scopeReviewing($q)        { return $q->where('status', self::STATUS_REVIEWING); }
-    public function scopeApproved($q)         { return $q->where('status', self::STATUS_APPROVED); }
-    public function scopeRejected($q)         { return $q->where('status', self::STATUS_REJECTED); }
-    public function scopeSellerRejected($q)   { return $q->where('status', self::STATUS_SELLER_REJECTED); }
+    public function scopePending($q)         { return $q->where('status', self::STATUS_PENDING); }
+    public function scopeReviewing($q)       { return $q->where('status', self::STATUS_REVIEWING); }
+    public function scopeApproved($q)        { return $q->where('status', self::STATUS_APPROVED); }
+    public function scopeRejected($q)        { return $q->where('status', self::STATUS_REJECTED); }
+    public function scopeSellerRejected($q)  { return $q->where('status', self::STATUS_SELLER_REJECTED); }
     public function scopeForSeller($q, int $sellerId) { return $q->where('seller_id', $sellerId); }
 
     // ── Status helpers ─────────────────────────────────────────────────────
 
-    public function isPending(): bool                  { return $this->status === self::STATUS_PENDING; }
-    public function isReviewing(): bool                { return $this->status === self::STATUS_REVIEWING; }
-    public function isApproved(): bool                 { return $this->status === self::STATUS_APPROVED; }
+    public function isPending(): bool                   { return $this->status === self::STATUS_PENDING; }
+    public function isReviewing(): bool                 { return $this->status === self::STATUS_REVIEWING; }
+    public function isApproved(): bool                  { return $this->status === self::STATUS_APPROVED; }
     public function isSellerRejectedPendingAdmin(): bool { return $this->status === self::STATUS_SELLER_REJECTED; }
-    public function isRejected(): bool                 { return $this->status === self::STATUS_REJECTED; }
+    public function isRejected(): bool                  { return $this->status === self::STATUS_REJECTED; }
 
-    /**
-     * A complaint is "resolved" only when admin has made the FINAL decision.
-     * seller_rejected_pending_admin is NOT resolved — admin still needs to act.
-     */
     public function isResolved(): bool
     {
         return in_array($this->status, [self::STATUS_APPROVED, self::STATUS_REJECTED]);
     }
 
-    /**
-     * Can the seller still act on this complaint?
-     * Seller can act when status is pending or reviewing.
-     */
     public function sellerCanAct(): bool
     {
         return in_array($this->status, [self::STATUS_PENDING, self::STATUS_REVIEWING]);
+    }
+
+    // ── Refund helpers (NEW) ────────────────────────────────────────────────
+
+    /**
+     * Whether a refund delivery task has been created for this complaint.
+     */
+    public function hasRefundTask(): bool
+    {
+        return !is_null($this->refund_task_id);
+    }
+
+    /**
+     * Whether the refund process is complete.
+     */
+    public function isRefundCompleted(): bool
+    {
+        return $this->refund_status === self::REFUND_STATUS_COMPLETED;
     }
 
     // ── Action helpers ─────────────────────────────────────────────────────
@@ -143,7 +175,12 @@ class Complaint extends Model
         ]);
     }
 
-    /** Seller approves → APPROVED directly (no admin needed) */
+    /**
+     * Seller approves → APPROVED directly (no admin needed).
+     *
+     * CHANGE from v2: fires ComplaintApproved event after saving.
+     * The CreateRefundDeliveryTask listener will pick it up.
+     */
     public function sellerApprove(?string $sellerNote = null): void
     {
         $this->update([
@@ -153,9 +190,15 @@ class Complaint extends Model
             'reviewed_at'     => $this->reviewed_at ?? now(),
             'resolved_at'     => now(),
         ]);
+
+        // ← NEW: trigger refund task creation
+        ComplaintApproved::dispatch($this->fresh());
     }
 
-    /** Seller rejects → SELLER_REJECTED_PENDING_ADMIN (admin must validate) */
+    /**
+     * Seller rejects → SELLER_REJECTED_PENDING_ADMIN.
+     * No change — does NOT fire ComplaintApproved.
+     */
     public function sellerReject(string $sellerNote, string $rejectionReason): void
     {
         $this->update([
@@ -167,16 +210,26 @@ class Complaint extends Model
         ]);
     }
 
-    /** Admin approves (final) */
+    /**
+     * Admin approves (final — from any non-resolved status).
+     *
+     * CHANGE from v2: fires ComplaintApproved event after saving.
+     */
     public function approve(): void
     {
         $this->update([
             'status'      => self::STATUS_APPROVED,
             'resolved_at' => now(),
         ]);
+
+        // ← NEW: trigger refund task creation
+        ComplaintApproved::dispatch($this->fresh());
     }
 
-    /** Admin confirms seller rejection → REJECTED (final) */
+    /**
+     * Admin confirms seller rejection → REJECTED (final).
+     * No change — complaint rejected, no refund needed.
+     */
     public function confirmRejection(): void
     {
         $this->update([
@@ -185,16 +238,26 @@ class Complaint extends Model
         ]);
     }
 
-    /** Admin overrides seller rejection → APPROVED (final) */
+    /**
+     * Admin overrides seller rejection → APPROVED (final).
+     *
+     * CHANGE from v2: fires ComplaintApproved event after saving.
+     */
     public function overrideToApproved(): void
     {
         $this->update([
             'status'      => self::STATUS_APPROVED,
             'resolved_at' => now(),
         ]);
+
+        // ← NEW: trigger refund task creation
+        ComplaintApproved::dispatch($this->fresh());
     }
 
-    /** Admin rejects (from any non-resolved status, with reason) */
+    /**
+     * Admin rejects (from any non-resolved status, with reason).
+     * No change — no refund needed.
+     */
     public function reject(string $reason): void
     {
         $this->update([

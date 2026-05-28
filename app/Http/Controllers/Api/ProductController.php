@@ -227,7 +227,7 @@ class ProductController extends Controller
                 productId:  $product->id,
                 categoryId: $product->category_id,
                 action:     'view',
-                sessionId:  $request->session()->getId()
+                sessionId: $this->safeSessionId($request)
             );
         }
 
@@ -661,6 +661,14 @@ private function transformProductCollection($products): array
     return $products->map(fn($p) => $this->transformProductItem($p, $colorImagesMap))
         ->values()
         ->toArray();
+}
+private function safeSessionId(Request $request): ?string
+{
+    try {
+        return $request->session()->getId();
+    } catch (\Throwable $e) {
+        return null; // API routes may not have session — that's fine
+    }
 }
 
 // AFTER — add variant_images collection before stripping:

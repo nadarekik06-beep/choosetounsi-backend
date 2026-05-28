@@ -4,21 +4,41 @@ namespace App\Http\Controllers\Api\Delivery;
 
 use App\Http\Controllers\Controller;
 use App\Models\DeliveryAssignment;
+use App\Models\Order;
 use App\Models\SellerOrder;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * FILE: app/Http/Controllers/Api/Delivery/DeliveryController.php  ← REPLACE
+ *
+ * FIXES in this version:
+ *
+ *   BUG 1 — Client couldn't file complaint after delivery guy marked "delivered":
+ *     Root cause: updateStatus() was updating seller_orders.status → 'delivered'
+ *     but never touching orders.status. The complaint eligibility check reads
+ *     orders.status === 'delivered', so it always failed for delivery-completed orders.
+ *     Fix: syncParentOrderStatus() is now called inside updateStatus() after
+ *     updating the seller_order, identical to SellerOrderController's approach.
+ *
+ *   BUG 2 — "Picked up" status was invisible everywhere:
+ *     Root cause: picked_up mapped to 'processing' on seller_orders, which was
+ *     already the status — nothing changed visually.
+ *     Fix: picked_up now maps to 'out_for_delivery' (new ENUM value added via
+ *     migration 2026_05_24_000004). This gives a distinct tracking status
+ *     visible in client storefront, seller dashboard, and admin panel.
+ *
+ *   All existing methods are preserved unchanged.
+ */
 class DeliveryController extends Controller
 {
     // ══════════════════════════════════════════════════════════════════════
-    // DELIVERY ADMIN ENDPOINTS
+    // DELIVERY ADMIN ENDPOINTS  (all unchanged)
     // ══════════════════════════════════════════════════════════════════════
 
     /**
      * GET /api/delivery/orders
-     * Returns seller_orders ready for delivery (processing OR completed),
-     * not yet assigned to a delivery guy.
      */
     public function readyOrders(Request $request)
     {
@@ -28,7 +48,6 @@ class DeliveryController extends Controller
                 'order.user:id,name,email',
                 'items.product:id,name',
                 'seller:id,name,email',
-                // Load seller's approved application for pickup address & phone
                 'seller.sellerApplication:id,user_id,phone_number,wilaya,city,business_name',
             ])
             ->latest()
@@ -42,7 +61,6 @@ class DeliveryController extends Controller
 
     /**
      * GET /api/delivery/orders/active
-     * Returns all orders currently assigned or in-transit.
      */
     public function activeOrders(Request $request)
     {
@@ -168,7 +186,6 @@ class DeliveryController extends Controller
 
     /**
      * GET /api/delivery/my-orders
-     * Delivery guy sees seller info so he knows where to PICK UP the order.
      */
     public function myOrders(Request $request)
     {
@@ -197,6 +214,18 @@ class DeliveryController extends Controller
 
     /**
      * PUT /api/delivery/orders/{id}/status
+     *
+     * FIXES APPLIED:
+     *
+     *   1. picked_up → 'out_for_delivery' (was: 'processing')
+     *      This makes the "in transit" state visible to client, seller, admin.
+     *
+     *   2. After updating seller_order status, syncParentOrderStatus() is called.
+     *      This ensures orders.status is always kept in sync — which is required
+     *      for the complaint eligibility check to work after delivery.
+     *
+     *   3. Review prompts are created when delivery guy confirms 'delivered',
+     *      identical to SellerOrderController's behaviour when seller marks delivered.
      */
     public function updateStatus(Request $request, int $id)
     {
@@ -223,27 +252,49 @@ class DeliveryController extends Controller
         }
 
         try {
+            // ── 1. Update delivery_assignment timestamps ────────────────────
             $update = ['status' => $newStatus];
             if ($newStatus === 'picked_up') $update['picked_up_at'] = now();
             if ($newStatus === 'delivered')  $update['delivered_at'] = now();
-
             $assignment->update($update);
 
+            // ── 2. Map assignment status → seller_order status ─────────────
+            //
+            // CHANGE: picked_up now maps to 'out_for_delivery' instead of
+            // 'processing'. This exposes the in-transit state everywhere.
+            //
+            // OLD: 'picked_up' => 'processing'  ← was invisible (same as before)
+            // NEW: 'picked_up' => 'out_for_delivery' ← distinct, trackable step
+            //
             $sellerOrderStatus = match ($newStatus) {
-    'picked_up' => 'processing',
-    'delivered' => 'delivered',
-    'canceled'  => 'completed',
-    default     => 'processing',
-};
+                'picked_up' => 'out_for_delivery', // ← FIX (was: 'processing')
+                'delivered' => 'delivered',
+                'canceled'  => 'completed',         // revert to seller's last known good
+                default     => 'processing',
+            };
 
-$sellerOrderUpdate = ['status' => $sellerOrderStatus];
+            $sellerOrderUpdate = ['status' => $sellerOrderStatus];
 
-// When delivered, stamp the financial confirmation timestamp
-if ($newStatus === 'delivered') {
-    $sellerOrderUpdate['delivery_confirmed_at'] = now();
-}
+            // Stamp the financial confirmation timestamp on delivery
+            if ($newStatus === 'delivered') {
+                $sellerOrderUpdate['delivery_confirmed_at'] = now();
+            }
 
-$assignment->sellerOrder->update($sellerOrderUpdate);
+            $assignment->sellerOrder->update($sellerOrderUpdate);
+
+            // ── 3. Sync the parent orders.status ──────────────────────────
+            //
+            // FIX (Bug 1): This was missing. Without it, orders.status never
+            // reached 'delivered', so the complaint eligibility check always
+            // failed for delivery-completed orders.
+            //
+            $this->syncParentOrderStatus($assignment->sellerOrder->order_id);
+
+            // ── 4. Create review prompts when order is delivered ───────────
+            // Mirrors SellerOrderController::createReviewPrompts()
+            if ($newStatus === 'delivered') {
+                $this->createReviewPrompts($assignment->sellerOrder);
+            }
 
             return response()->json([
                 'success' => true,
@@ -285,6 +336,75 @@ $assignment->sellerOrder->update($sellerOrderUpdate);
     // PRIVATE HELPERS
     // ══════════════════════════════════════════════════════════════════════
 
+    /**
+     * Derive and write the correct aggregate status to orders.status
+     * based on the current state of all seller_orders for that order.
+     *
+     * Priority cascade (highest → lowest):
+     *   all cancelled           → cancelled
+     *   all delivered           → delivered
+     *   any out_for_delivery    → out_for_delivery
+     *   all completed/delivered → completed
+     *   default                 → processing
+     *
+     * Identical logic to SellerOrderController::syncParentOrderStatus().
+     */
+    private function syncParentOrderStatus(int $orderId): void
+    {
+        $statuses = SellerOrder::where('order_id', $orderId)
+            ->pluck('status')
+            ->toArray();
+
+        if (empty($statuses)) return;
+
+        $unique = array_unique($statuses);
+
+        $derived = match (true) {
+            $unique === ['cancelled']
+                => 'cancelled',
+            $unique === ['delivered']
+                => 'delivered',
+            in_array('out_for_delivery', $statuses)
+                => 'out_for_delivery',
+            count(array_diff($unique, ['completed', 'delivered'])) === 0
+                => 'completed',
+            default
+                => 'processing',
+        };
+
+        Order::where('id', $orderId)->update(['status' => $derived]);
+    }
+
+    /**
+     * Create review prompts when a delivery guy confirms delivery.
+     * Mirrors SellerOrderController::createReviewPrompts() exactly.
+     */
+    private function createReviewPrompts(SellerOrder $sellerOrder): void
+    {
+        try {
+            $sellerOrder->loadMissing('order');
+            $userId = $sellerOrder->order?->user_id;
+            if (!$userId) return;
+
+            $items = $sellerOrder->items()->get(['id', 'product_id']);
+
+            foreach ($items as $item) {
+                if (!$item->product_id) continue;
+                \App\Models\ReviewPrompt::firstOrCreate(
+                    ['user_id' => $userId, 'order_item_id' => $item->id],
+                    ['product_id' => $item->product_id, 'sent_at' => now(), 'channel' => 'popup']
+                );
+            }
+        } catch (\Exception $e) {
+            Log::error('[Delivery::createReviewPrompts] ' . $e->getMessage(), [
+                'seller_order_id' => $sellerOrder->id,
+            ]);
+        }
+    }
+
+    /**
+     * Format a SellerOrder for the delivery app API response.
+     */
     private function formatOrder(SellerOrder $so, bool $withAssignment = false): array
     {
         $order       = $so->order;
@@ -300,8 +420,6 @@ $assignment->sellerOrder->update($sellerOrderUpdate);
             'payment_method' => $order?->payment_method,
             'subtotal'       => (float) $so->subtotal,
             'created_at'     => $so->created_at,
-
-            // ── Delivery destination (CLIENT) ──────────────────────────────
             'wilaya'         => $order?->wilaya,
             'address'        => $order?->address,
             'phone'          => $order?->phone,
@@ -311,13 +429,6 @@ $assignment->sellerOrder->update($sellerOrderUpdate);
                 'name'  => $order->user->name,
                 'email' => $order->user->email,
             ] : null,
-
-            // ── Pickup origin (SELLER) ─────────────────────────────────────
-            // business_name : the shop/brand name from the seller application
-            // name          : the seller's account name (User.name)
-            // email         : the seller's login email (User.email)
-            // phone         : the contact number from the seller application
-            // wilaya + city : the seller's registered location (pickup address)
             'seller'         => $seller ? [
                 'id'            => $seller->id,
                 'name'          => $seller->name,
@@ -327,7 +438,6 @@ $assignment->sellerOrder->update($sellerOrderUpdate);
                 'city'          => $application?->city,
                 'business_name' => $application?->business_name,
             ] : null,
-
             'items' => $so->relationLoaded('items')
                 ? $so->items->map(fn($i) => [
                     'id'           => $i->id,

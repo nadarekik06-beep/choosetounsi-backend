@@ -63,6 +63,7 @@ class SellerOrderController extends Controller
             'revenue'   => (clone $base)
                 ->whereIn('status', ['completed', 'delivered'])
                 ->sum('subtotal'),
+            'out_for_delivery' => (clone $base)->where('status', 'out_for_delivery')->count(),
         ]]);
     }
 
@@ -264,8 +265,8 @@ class SellerOrderController extends Controller
 public function updateStatus(Request $request, $id)
     {
         $request->validate([
-            'status' => 'required|in:pending,processing,completed,delivered,cancelled',
-        ]);
+                'status' => 'required|in:pending,processing,out_for_delivery,completed,delivered,cancelled',
+                        ]);
  
         $sellerId    = auth()->id();
         $sellerOrder = SellerOrder::where('seller_id', $sellerId)->findOrFail($id);
@@ -332,28 +333,26 @@ private function createReviewPrompts(\App\Models\SellerOrder $sellerOrder): void
      * Derive and write the correct aggregate status to orders.status
      * based on the current state of all seller_orders for that order.
      */
-    private function syncParentOrderStatus(int $orderId): void
-    {
-        $statuses = SellerOrder::where('order_id', $orderId)
-            ->pluck('status')
-            ->toArray();
+     private function syncParentOrderStatus(int $orderId): void
+   {
+       $statuses = SellerOrder::where('order_id', $orderId)->pluck('status')->toArray();
+       if (empty($statuses)) return;
+       $unique = array_unique($statuses);
 
-        if (empty($statuses)) return;
+       $derived = match(true) {
+           $unique === ['cancelled']
+               => 'cancelled',
+           $unique === ['delivered']
+               => 'delivered',
+           in_array('out_for_delivery', $statuses)
+               => 'out_for_delivery',                   // ← NEW
+           count(array_diff($unique, ['completed', 'delivered'])) === 0
+               => 'completed',
+           default => 'processing',
+       };
 
-        $unique = array_unique($statuses);
-
-        $derived = match(true) {
-            $unique === ['cancelled']
-                => 'cancelled',
-            $unique === ['delivered']
-                => 'delivered',
-            count(array_diff($unique, ['completed', 'delivered'])) === 0
-                => 'completed',
-            default => 'processing',
-        };
-
-        Order::where('id', $orderId)->update(['status' => $derived]);
-    }
+       Order::where('id', $orderId)->update(['status' => $derived]);
+   }
 
     /* ── PATCH /api/seller/orders/{id}/payment ── */
     /* ── PATCH /api/seller/orders/{id}/payment ── */

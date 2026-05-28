@@ -317,6 +317,14 @@ class CartController extends Controller
     }
 
     // ── Private: Formatters ────────────────────────────────────────────────────
+private function safeSessionId(Request $request): ?string
+{
+    try {
+        return $request->session()->getId();
+    } catch (\Throwable $e) {
+        return null;
+    }
+}
 
     /**
      * Format a regular product cart row.

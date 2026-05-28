@@ -36,6 +36,8 @@ class DeliveryAuthController extends Controller
                     'password'  => Hash::make($data['password']),
                     'role'      => $data['role'],
                     'is_active' => true,
+                    'email_verified_at' => now(), // ✅ delivery accounts skip email verification
+
                 ]);
 
                 // 2. Create role-specific profile
