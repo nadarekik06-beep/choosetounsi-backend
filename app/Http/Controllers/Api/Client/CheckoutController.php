@@ -496,7 +496,9 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         $unitPrice    = $priceData['effective_price'];
         $commission   = $this->commissionService->calculate($unitPrice, $sellerPlan, $quantity);
         $subtotal     = $commission['total_price'];
-        $total        = round($subtotal + 8, 3);
+        $deliveryFee = $product->getEffectiveDeliveryFee();
+        $total       = round($subtotal + $deliveryFee, 3);
+
         $variantLabel = $variant ? $variant->attributeOptions->pluck('value')->join(' / ') : null;
 
         if ($paymentMethod === 'wallet' && (float) $user->wallet_balance < $total) {
@@ -597,6 +599,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             'order_number'  => $order->order_number,
             'order_id'      => $order->id,
             'total'         => $total,
+            'delivery_fee'  => $deliveryFee,
             'needs_payment' => $paymentMethod === 'card',
         ], 201);
     }
@@ -636,8 +639,24 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             $priceData = $this->promoService->getEffectivePrice($item->product, $basePrice);
             return round($priceData['effective_price'] * $item->quantity, 3);
         });
-
-        return round($subtotal + 8, 3);
+ 
+        $deliveryFee = $this->resolveCartDeliveryFee($cartItems);
+ 
+        return round($subtotal + $deliveryFee, 3);
+    }
+    private function resolveCartDeliveryFee($cartItems): float
+    {
+        // Packs always require delivery
+        if ($cartItems->contains(fn($i) => $i->isPack())) {
+            return \App\Models\Product::DEFAULT_DELIVERY_FEE;
+        }
+ 
+        // Check if every product in the cart has free delivery
+        $allFreeDelivery = $cartItems->every(function ($item) {
+            return $item->product && $item->product->isFreeDelivery();
+        });
+ 
+        return $allFreeDelivery ? 0.0 : \App\Models\Product::DEFAULT_DELIVERY_FEE;
     }
 
     private function getSellerCol(): string

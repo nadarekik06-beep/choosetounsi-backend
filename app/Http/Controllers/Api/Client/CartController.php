@@ -338,23 +338,22 @@ private function safeSessionId(Request $request): ?string
     {
         $product = $item->product;
         $variant = $item->variant;
-
-        // ← PROMO FIX: compute base price exactly as before, then apply promotion
+ 
         $basePrice = $variant
             ? ($variant->price_override !== null
                 ? (float) $variant->price_override
                 : (float) $product->price)
             : (float) $product->price;
-
+ 
         $promoData = $this->promotionService->getEffectivePrice($product, $basePrice);
-        $price     = $promoData['effective_price'];   // discounted (= basePrice when no promo)
-
+        $price     = $promoData['effective_price'];
+ 
         $imageUrl = $this->resolveImageUrl($product, $variant);
         $stock    = $variant ? $variant->stock : $product->stock;
-
+ 
         $variantLabel   = null;
         $variantOptions = [];
-
+ 
         if ($variant && $variant->relationLoaded('attributeOptions')) {
             $variantLabel = $variant->attributeOptions->pluck('value')->join(' / ');
             foreach ($variant->attributeOptions as $opt) {
@@ -365,25 +364,28 @@ private function safeSessionId(Request $request): ?string
                 ];
             }
         }
-
+ 
         return [
-            'id'              => $item->id,
-            'product_id'      => $product->id,
-            'variant_id'      => $variant?->id,
-            'name'            => $product->name,
-            'slug'            => $product->slug,
-            'sku'             => $variant?->sku ?? $product->sku,
-            'category'        => $product->category?->name,
-            'price'           => $price,                                   // discounted
-            'original_price'  => $basePrice,                               // ← PROMO FIX: for strikethrough in cart drawer
-            'promotion'       => $promoData['promotion'],                  // ← PROMO FIX: badge data (null when no promo)
-            'quantity'        => $item->quantity,
-            'stock'           => $stock,
-            'line_total'      => round($price * $item->quantity, 3),       // uses discounted price
-            'image_url'       => $imageUrl,
-            'variant_label'   => $variantLabel,
-            'variant_options' => $variantOptions,
-            'is_pack'         => false,
+            'id'               => $item->id,
+            'product_id'       => $product->id,
+            'variant_id'       => $variant?->id,
+            'name'             => $product->name,
+            'slug'             => $product->slug,
+            'sku'              => $variant?->sku ?? $product->sku,
+            'category'         => $product->category?->name,
+            'price'            => $price,
+            'original_price'   => $basePrice,
+            'promotion'        => $promoData['promotion'],
+            'quantity'         => $item->quantity,
+            'stock'            => $stock,
+            'line_total'       => round($price * $item->quantity, 3),
+            'image_url'        => $imageUrl,
+            'variant_label'    => $variantLabel,
+            'variant_options'  => $variantOptions,
+            'is_pack'          => false,
+            // ── NEW: delivery fee fields ──────────────────────────────────
+            'is_free_delivery' => $product->isFreeDelivery(),
+            'delivery_fee'     => $product->getEffectiveDeliveryFee(),
         ];
     }
 

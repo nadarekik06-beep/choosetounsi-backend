@@ -375,7 +375,39 @@ foreach ($pathToColorIds as $path => $cids) {
             }
 
             // ── Step 4: Build variants payload ────────────────────────────────
+// ── Step 3b: Bridge variant images → color group images ───────────────────
+foreach ($product->variants as $v) {
+    if (!isset($variantPrimaryImage[$v->id])) continue;
 
+    $colorOpts = $v->attributeOptions
+        ->filter(fn($o) => $o->attribute->slug === 'color')
+        ->sortBy('id')
+        ->values();
+
+    if ($colorOpts->isEmpty()) continue;
+
+    $colorIds = $colorOpts->pluck('id')->toArray();
+    sort($colorIds);
+    $groupKey = implode('|', $colorIds);
+
+    $vImgUrls = $v->images
+        ->map(fn($i) => Storage::url($i->image_path))
+        ->values()
+        ->toArray();
+
+    if (empty($colorImages[$groupKey])) {
+        $colorImages[$groupKey]      = $vImgUrls;
+        $colorPrimaryImage[$groupKey] = $variantPrimaryImage[$v->id];
+
+        foreach ($colorIds as $cid) {
+            $strId = (string) $cid;
+            if (empty($colorImages[$strId])) {
+                $colorImages[$strId]      = $vImgUrls;
+                $colorPrimaryImage[$strId] = $variantPrimaryImage[$v->id];
+            }
+        }
+    }
+}
             $variantsPayload = $product->variants->map(function ($v) use (
                 $productImageUrls, $colorImages, $colorPrimaryImage, $variantPrimaryImage, $product
             ) {

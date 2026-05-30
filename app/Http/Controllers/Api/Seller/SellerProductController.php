@@ -257,6 +257,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                 'is_pack'           => filter_var($request->input('is_pack', false), FILTER_VALIDATE_BOOLEAN) ? 1 : 0,
                 // ── FIX: read 'seasons' (array from frontend), fall back to ['all_seasons']
                 'season'            => $this->parseSeasons($request, null),
+                'delivery_fee' => $this->parseDeliveryFee($request, null),
             ]);
             Log::info('[SellerProduct::store] Product created', ['id' => $product->id]);
         } catch (\Throwable $e) {
@@ -342,6 +343,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                     : $product->is_pack,
                 // ── FIX: read 'seasons' (array from frontend), fall back to existing value
                 'season'            => $this->parseSeasons($request, $product->season),
+                'delivery_fee' => $this->parseDeliveryFee($request, $product->delivery_fee),
             ]);
             Log::info('[SellerProduct::update] Product updated');
         } catch (\Throwable $e) {
@@ -521,6 +523,24 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
         return !empty($seasons) ? $seasons : ['all_seasons'];
     }
+    private function parseDeliveryFee(\Illuminate\Http\Request $request, mixed $existingValue): ?float
+    {
+        if (!$request->has('delivery_fee')) {
+            return $existingValue; // preserve on update; null on create
+        }
+ 
+        $raw = $request->input('delivery_fee');
+ 
+        // Explicit null / empty string → platform default
+        if ($raw === null || $raw === '' || $raw === 'null') {
+            return null;
+        }
+ 
+        $fee = (float) $raw;
+ 
+        // Only accept 0 (free) or positive values; reject negatives
+        return $fee >= 0 ? round($fee, 3) : null;
+    }
 
     private function saveVariantImages(Product $product, Request $request): void
     {
@@ -672,113 +692,119 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         }
     }
 
-    private function saveColorImages(Product $product, Request $request): void
-    {
-        $allFiles = $request->allFiles();
-        if (empty($allFiles['color_images'])) return;
+   private function saveColorImages(Product $product, Request $request): void
+{
+    $allFiles = $request->allFiles();
+    if (empty($allFiles['color_images'])) return;
 
-        $colorImagesInput = $allFiles['color_images'];
-        if (empty($colorImagesInput) || !is_array($colorImagesInput)) return;
+    $colorImagesInput = $allFiles['color_images'];
+    if (empty($colorImagesInput) || !is_array($colorImagesInput)) return;
 
-        // ── STEP 1: Parse ALL groups into memory ───────────────────────────
-        $groups = [];
+    // ── STEP 1: Parse ALL groups into memory ───────────────────────────
+    $groups = [];
 
-        foreach ($colorImagesInput as $groupKey => $files) {
-            $colorOptionIds = array_values(array_filter(
-                array_map('intval', explode('_', (string) $groupKey)),
-                fn($id) => $id > 0
-            ));
+    foreach ($colorImagesInput as $groupKey => $files) {
+        $colorOptionIds = array_values(array_filter(
+            array_map('intval', explode('_', (string) $groupKey)),
+            fn($id) => $id > 0
+        ));
 
-            if (empty($colorOptionIds)) {
-                Log::warning("[SellerProduct::saveColorImages] Invalid groupKey skipped: {$groupKey}");
-                continue;
-            }
+        if (empty($colorOptionIds)) continue;
+        sort($colorOptionIds);
 
-            sort($colorOptionIds);
+        $validFiles = array_values(array_filter(
+            (array) $files,
+            fn($f) => $f && method_exists($f, 'isValid') && $f->isValid()
+        ));
 
-            $validFiles = array_values(array_filter(
-                (array) $files,
-                fn($f) => $f && method_exists($f, 'isValid') && $f->isValid()
-            ));
+        if (empty($validFiles)) continue;
 
-            if (empty($validFiles)) continue;
+        $groups[] = [
+            'ids'   => $colorOptionIds,
+            'files' => $validFiles,
+            'key'   => implode('|', $colorOptionIds),
+        ];
+    }
 
-            $groups[] = [
-                'ids'   => $colorOptionIds,
-                'files' => $validFiles,
-                'key'   => $groupKey,
-            ];
+    if (empty($groups)) return;
+
+    // ── STEP 2: Delete ALL existing color images ────────────────────────
+    $existingColorImages = $product->images()
+        ->whereNotNull('color_option_id')
+        ->get();
+
+    $pathCounts = [];
+    foreach ($existingColorImages as $img) {
+        $pathCounts[$img->image_path] = ($pathCounts[$img->image_path] ?? 0) + 1;
+    }
+    foreach ($existingColorImages as $img) {
+        $pathCounts[$img->image_path]--;
+        if ($pathCounts[$img->image_path] === 0) {
+            Storage::disk('public')->delete($img->image_path);
         }
+        $img->delete();
+    }
 
-        if (empty($groups)) return;
-
-        Log::info('[SellerProduct::saveColorImages] Groups to save', [
-            'product_id'  => $product->id,
-            'group_count' => count($groups),
-            'groups'      => array_map(fn($g) => ['key' => $g['key'], 'ids' => $g['ids'], 'files' => count($g['files'])], $groups),
-        ]);
-
-        // ── STEP 2: Delete ALL existing color images atomically ────────────
-        $existingColorImages = $product->images()
-            ->whereNotNull('color_option_id')
-            ->get();
-
-        $pathCounts = [];
-        foreach ($existingColorImages as $img) {
-            $pathCounts[$img->image_path] = ($pathCounts[$img->image_path] ?? 0) + 1;
-        }
-
-        foreach ($existingColorImages as $img) {
-            $pathCounts[$img->image_path]--;
-            if ($pathCounts[$img->image_path] === 0) {
-                Storage::disk('public')->delete($img->image_path);
-            }
-            $img->delete();
-        }
-
-        Log::info('[SellerProduct::saveColorImages] Cleared existing color images', [
-            'product_id'   => $product->id,
-            'deleted_rows' => $existingColorImages->count(),
-        ]);
-
-        // ── STEP 3: Save all groups ────────────────────────────────────────
-        $maxOrder   = $product->images()->max('order') ?? -1;
-        $hasPrimary = $product->images()->where('is_primary', true)->exists();
-        $orderIdx   = 0;
-
-        foreach ($groups as $group) {
-            $colorOptionIds = $group['ids'];
-
-           foreach ($group['files'] as $file) {
-    $path       = $file->store('products', 'public');
-    $setPrimary = !$hasPrimary && $orderIdx === 0;
-
-    // FIX: store ONE row per image using the primary (lowest) color ID.
-    // The old format stored N rows (one per color ID in the group), causing
-    // duplicate DB entries and ambiguous group resolution in ProductController.
-    // ProductController::show() resolves the primary ID back to the full group
-    // via the variant-based registry (exact then subset match).
-    ProductImage::create([
-        'product_id'      => $product->id,
-        'variant_id'      => null,
-        'color_option_id' => $colorOptionIds[0],  // primary (lowest) ID only
-        'image_path'      => $path,
-        'order'           => $maxOrder + $orderIdx + 1,
-        'is_primary'      => $setPrimary,
-    ]);
-
-    if ($setPrimary) $hasPrimary = true;
-    $orderIdx++;
-}
-
-            Log::info('[SellerProduct::saveColorImages] Group saved', [
-                'key'   => $group['key'],
-                'ids'   => $colorOptionIds,
-                'files' => count($group['files']),
-            ]);
+    // ── STEP 3: Build a map of which IDs are shared across groups ──────
+    // For each group, find which of its IDs are NOT used in any other group.
+    // If a truly unique ID exists, use only that.
+    // If ALL IDs are shared, store one row per ID so the exact-match
+    // retrieval in ProductController can find the right group.
+    $allGroupIds = [];
+    foreach ($groups as $group) {
+        foreach ($group['ids'] as $id) {
+            $allGroupIds[$id][] = $group['key'];
         }
     }
 
+    // ── STEP 4: Save all groups ─────────────────────────────────────────
+    $maxOrder   = $product->images()->max('order') ?? -1;
+    $hasPrimary = $product->images()->where('is_primary', true)->exists();
+    $orderIdx   = 0;
+
+    foreach ($groups as $group) {
+        $colorOptionIds = $group['ids'];
+
+        // Find IDs that belong ONLY to this group
+        $uniqueIds = array_values(array_filter(
+            $colorOptionIds,
+            fn($id) => count($allGroupIds[$id]) === 1
+        ));
+
+        // If we have unique IDs, store just one row using the first unique ID.
+        // If NO unique ID exists (all IDs shared), store one row per ID
+        // so ProductController exact-match can find this group.
+        $storageIds = !empty($uniqueIds)
+            ? [$uniqueIds[0]]
+            : $colorOptionIds;  // store all IDs — exact match will resolve correctly
+
+        foreach ($group['files'] as $file) {
+            $path       = $file->store('products', 'public');
+            $setPrimary = !$hasPrimary && $orderIdx === 0;
+
+            foreach ($storageIds as $storageId) {
+                ProductImage::create([
+                    'product_id'      => $product->id,
+                    'variant_id'      => null,
+                    'color_option_id' => $storageId,
+                    'image_path'      => $path,
+                    'order'           => $maxOrder + $orderIdx + 1,
+                    'is_primary'      => $setPrimary && ($storageId === $storageIds[0]),
+                ]);
+            }
+
+            if ($setPrimary) $hasPrimary = true;
+            $orderIdx++;
+        }
+
+        Log::info('[SellerProduct::saveColorImages] Group saved', [
+            'key'         => $group['key'],
+            'ids'         => $colorOptionIds,
+            'storage_ids' => $storageIds,
+            'files'       => count($group['files']),
+        ]);
+    }
+}
     private function uniqueSlug(string $base, ?int $excludeId = null): string
     {
         $slug     = Str::slug($base);
