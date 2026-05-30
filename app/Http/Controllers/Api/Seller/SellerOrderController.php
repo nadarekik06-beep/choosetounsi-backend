@@ -263,39 +263,57 @@ class SellerOrderController extends Controller
     }
 
 public function updateStatus(Request $request, $id)
-    {
-        $request->validate([
-                'status' => 'required|in:pending,processing,out_for_delivery,completed,delivered,cancelled',
-                        ]);
- 
-        $sellerId    = auth()->id();
-        $sellerOrder = SellerOrder::where('seller_id', $sellerId)->findOrFail($id);
- 
-        $status = $request->status;
-        $sellerOrder->update(['status' => $status]);
- 
-        // ── Forecast cache invalidation ──────────────────────────────────────
-        if (in_array($status, ['completed', 'delivered'])) {
-            $productIds = $sellerOrder->items()->pluck('product_id')->unique();
-            foreach ($productIds as $productId) {
-                SellerForecastController::clearForecastCache((int) $productId, (int) $sellerId);
-            }
+{
+    $request->validate([
+        'status' => 'required|in:pending,processing,out_for_delivery,completed,delivered,cancelled',
+    ]);
+
+    $sellerId    = auth()->id();
+    $sellerOrder = SellerOrder::where('seller_id', $sellerId)->findOrFail($id);
+
+    $status = $request->status;
+    $sellerOrder->update(['status' => $status]);
+
+    // ── Forecast cache invalidation ──────────────────────────────────────
+    if (in_array($status, ['completed', 'delivered'])) {
+        $productIds = $sellerOrder->items()->pluck('product_id')->unique();
+        foreach ($productIds as $productId) {
+            SellerForecastController::clearForecastCache((int) $productId, (int) $sellerId);
         }
- 
-        // ── Create ReviewPrompts when order is delivered ─────────────────────
-        // This triggers the popup on the storefront for all items in this order.
-        if ($status === 'delivered') {
-            $this->createReviewPrompts($sellerOrder);
-        }
- 
-        $this->syncParentOrderStatus($sellerOrder->order_id);
- 
-        return response()->json([
-            'success' => true,
-            'message' => 'Order status updated.',
-            'data'    => $sellerOrder,
-        ]);
     }
+
+    // ── Create ReviewPrompts when order is delivered ─────────────────────
+    if ($status === 'delivered') {
+        $this->createReviewPrompts($sellerOrder);
+    }
+
+    // ── REFUND PICKUP NOTIFICATION ────────────────────────────────────────
+    // When a refunded order is marked 'delivered', it means the seller
+    // confirmed the returned product was physically picked up.
+    if ($status === 'delivered' && $sellerOrder->payment_status === 'refunded') {
+        $sellerOrder->loadMissing('order');
+        $orderNumber = $sellerOrder->order?->order_number ?? "#{$sellerOrder->id}";
+
+        $seller = \App\Models\User::find($sellerId);
+        if ($seller) {
+            $seller->notify(
+                new \App\Notifications\RefundStatusNotification(
+                    'pickup_done',
+                    $sellerOrder,
+                    $orderNumber
+                )
+            );
+        }
+    }
+
+    $this->syncParentOrderStatus($sellerOrder->order_id);
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Order status updated.',
+        'data'    => $sellerOrder,
+    ]);
+}
 private function createReviewPrompts(\App\Models\SellerOrder $sellerOrder): void
     {
         try {
@@ -382,6 +400,21 @@ public function updatePayment(Request $request, $id)
     }
 
     $sellerOrder->update(['payment_status' => 'refunded']);
+
+    // ── REFUND NOTIFICATION ───────────────────────────────────────────────
+    $sellerOrder->loadMissing('order');
+    $orderNumber = $sellerOrder->order?->order_number ?? "#{$sellerOrder->id}";
+
+    $seller = \App\Models\User::find($sellerId);
+    if ($seller) {
+        $seller->notify(
+            new \App\Notifications\RefundStatusNotification(
+                'refunded',
+                $sellerOrder,
+                $orderNumber
+            )
+        );
+    }
 
     return response()->json([
         'success' => true,

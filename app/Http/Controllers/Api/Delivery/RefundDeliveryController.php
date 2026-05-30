@@ -8,6 +8,7 @@ use App\Models\RefundDeliveryTask;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 class RefundDeliveryController extends Controller
 {
@@ -33,8 +34,10 @@ class RefundDeliveryController extends Controller
     {
         $query = RefundDeliveryTask::with([
             'deliveryGuy:id,name,email',
-            'complaint.order.user',          // for customer info
-            'seller.sellerApplication',      // for seller name + business_name
+            'complaint.order.user:id,name,email',
+            'complaint.order.items:id,order_id,product_name,quantity',
+            'complaint',
+            'seller.sellerApplication',
         ]);
 
         if ($request->filled('status')) {
@@ -54,7 +57,9 @@ class RefundDeliveryController extends Controller
     {
         $task = RefundDeliveryTask::with([
             'deliveryGuy:id,name,email',
-            'complaint.order.user',
+            'complaint.order.user:id,name,email',
+            'complaint.order.items:id,order_id,product_name,quantity,unit_price',
+            'complaint',
             'seller.sellerApplication',
         ])->findOrFail($id);
 
@@ -103,7 +108,13 @@ class RefundDeliveryController extends Controller
                 'success' => true,
                 'message' => "Refund task assigned to {$deliveryGuy->name}.",
                 'data'    => $this->formatTask(
-                    $task->fresh(['deliveryGuy', 'complaint.order.user', 'seller.sellerApplication'])
+                    $task->fresh([
+                        'deliveryGuy',
+                        'complaint.order.user',
+                        'complaint.order.items',
+                        'complaint',
+                        'seller.sellerApplication',
+                    ])
                 ),
             ]);
 
@@ -119,7 +130,9 @@ class RefundDeliveryController extends Controller
     {
         $tasks = RefundDeliveryTask::forDeliveryGuy(auth()->id())
             ->with([
-                'complaint.order.user',
+                'complaint.order.user:id,name,email',
+                'complaint.order.items:id,order_id,product_name,quantity',
+                'complaint',
                 'seller.sellerApplication',
             ])
             ->whereIn('status', [
@@ -166,7 +179,12 @@ class RefundDeliveryController extends Controller
                 'success' => true,
                 'message' => "Refund task status updated to \"{$newStatus}\".",
                 'data'    => $this->formatTask(
-                    $task->fresh(['complaint.order.user', 'seller.sellerApplication'])
+                    $task->fresh([
+                        'complaint.order.user',
+                        'complaint.order.items',
+                        'complaint',
+                        'seller.sellerApplication',
+                    ])
                 ),
             ]);
 
@@ -178,41 +196,60 @@ class RefundDeliveryController extends Controller
 
     // ── Private Helpers ────────────────────────────────────────────────────
 
+    /**
+     * Format a RefundDeliveryTask for API response.
+     *
+     * All data is resolved via relations — no snapshot columns exist anymore.
+     * Required eager loads:
+     *   complaint.order.user
+     *   complaint.order.items
+     *   complaint
+     *   seller.sellerApplication
+     *   deliveryGuy (optional, for admin views)
+     */
     private function formatTask(RefundDeliveryTask $task, bool $detailed = false): array
     {
-        // ── Resolve customer info via relations ────────────────────────────
-        $order = $task->complaint?->order;
-        $user  = $order?->user;
+        // ── Customer info ──────────────────────────────────────────────────
+        $complaint = $task->complaint;
+        $order     = $complaint?->order;
+        $user      = $order?->user;
 
-        // ── Resolve seller info via relations ──────────────────────────────
+        // ── Seller info ────────────────────────────────────────────────────
         $sellerUser = $task->seller;
         $sellerApp  = $sellerUser?->sellerApplication;
+
+        // ── Items ──────────────────────────────────────────────────────────
+        $items = $order?->relationLoaded('items')
+            ? $order->items->map(fn($i) => [
+                'product_name' => $i->product_name,
+                'quantity'     => (int) $i->quantity,
+              ])->values()
+            : [];
 
         $data = [
             'id'           => $task->id,
             'complaint_id' => $task->complaint_id,
-            'order_id'     => $task->order_id,
             'status'       => $task->status,
             'created_at'   => $task->created_at,
 
-            // ── Customer (pickup location) — from order + user ─────────────
+            // ── Customer (pickup location — agent goes TO collect item) ────
             'customer' => [
-                'name'    => $user?->name ?? 'Unknown',
+                'name'    => $user?->name    ?? 'Unknown',
                 'phone'   => $order?->phone,
                 'wilaya'  => $order?->wilaya,
                 'address' => $order?->address,
             ],
 
-            // ── Seller (return location) — name/business from relations ─────
+            // ── Seller (return location — agent brings item BACK here) ─────
             'seller' => [
-                'name'          => $sellerUser?->name ?? 'Unknown',
+                'name'          => $sellerUser?->name          ?? 'Unknown',
                 'business_name' => $sellerApp?->business_name,
-                'phone'         => $task->seller_phone,    // snapshot kept
-                'wilaya'        => $task->seller_wilaya,   // snapshot kept
-                'city'          => $task->seller_city,     // snapshot kept
+                'phone'         => $sellerApp?->phone_number,
+                'wilaya'        => $sellerApp?->wilaya,
+                'city'          => $sellerApp?->city,
             ],
 
-            'items'        => $task->items_summary,
+            'items' => $items,
 
             'delivery_guy' => $task->relationLoaded('deliveryGuy') && $task->deliveryGuy
                 ? [
@@ -228,14 +265,15 @@ class RefundDeliveryController extends Controller
             'notes'        => $task->notes,
         ];
 
+        // ── Complaint context ──────────────────────────────────────────────
         if ($detailed) {
             $data['complaint'] = [
-                'type'        => $task->complaint_type,
-                'description' => $task->complaint_description,
-                'image_url'   => $task->complaint_image_url,
+                'type'        => $complaint?->complaint_type,
+                'description' => $complaint?->description,
+                'image_url'   => $complaint?->image_url, // uses getImageUrlAttribute()
             ];
         } else {
-            $data['complaint_type'] = $task->complaint_type;
+            $data['complaint_type'] = $complaint?->complaint_type;
         }
 
         return $data;

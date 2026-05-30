@@ -5,7 +5,6 @@ namespace App\Listeners;
 use App\Events\ComplaintApproved;
 use App\Models\Complaint;
 use App\Models\RefundDeliveryTask;
-use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -14,15 +13,15 @@ use Illuminate\Support\Facades\Log;
  *
  * Triggered by: ComplaintApproved event
  *
- * customer_name/phone/wilaya/address are NOT stored anymore — resolved via
- * complaint → order → user at query time.
+ * Creates a lean RefundDeliveryTask with only the operational columns.
+ * All context (customer info, seller info, items, complaint details) is
+ * resolved at query time via relations — nothing is snapshotted here.
  *
- * seller_name/business_name are NOT stored anymore — resolved via
- * seller_id → users → seller_applications at query time.
- *
- * Still stored as snapshots (delivery guy needs them offline):
- *   seller_phone, seller_wilaya, seller_city
- *   items_summary, complaint_type, complaint_description, complaint_image_url
+ * Relations used by RefundDeliveryController::formatTask():
+ *   $task->complaint->order->user      → customer name, phone, wilaya, address
+ *   $task->complaint->order->items     → items list
+ *   $task->complaint                   → type, description, image_url
+ *   $task->seller->sellerApplication   → seller phone, wilaya, city, business_name
  */
 class CreateRefundDeliveryTask
 {
@@ -30,11 +29,13 @@ class CreateRefundDeliveryTask
     {
         $complaint = $event->complaint;
 
+        // Guard: skip if task already exists (idempotent)
         if ($complaint->hasRefundTask()) {
             Log::info("[RefundTask] Complaint #{$complaint->id} already has a refund task — skipping.");
             return;
         }
 
+        // Guard: only create for approved complaints
         if (!$complaint->isApproved()) {
             Log::warning("[RefundTask] ComplaintApproved event fired for non-approved complaint #{$complaint->id} — skipping.");
             return;
@@ -42,45 +43,11 @@ class CreateRefundDeliveryTask
 
         try {
             DB::transaction(function () use ($complaint) {
-                $order = $complaint->order()->with('user')->first();
-
-                if (!$order) {
-                    Log::error("[RefundTask] Complaint #{$complaint->id}: order not found.");
-                    return;
-                }
-
-                $seller      = User::with('sellerApplication')->find($complaint->seller_id);
-                $application = $seller?->sellerApplication;
-
-                $items = DB::table('order_items')
-                    ->where('order_id', $order->id)
-                    ->select('product_name', 'quantity')
-                    ->get()
-                    ->map(fn($i) => [
-                        'product_name' => $i->product_name,
-                        'quantity'     => (int) $i->quantity,
-                    ])
-                    ->toArray();
 
                 $task = RefundDeliveryTask::create([
-                    'complaint_id'          => $complaint->id,
-                    'order_id'              => $order->id,
-                    'seller_id'             => $complaint->seller_id,
-
-                    // ── Seller contact snapshot (kept — delivery guy needs these) ──
-                    'seller_phone'          => $application?->phone_number,
-                    'seller_wilaya'         => $application?->wilaya,
-                    'seller_city'           => $application?->city,
-
-                    // ── Items snapshot ─────────────────────────────────────────────
-                    'items_summary'         => $items,
-
-                    // ── Complaint context snapshot ─────────────────────────────────
-                    'complaint_type'        => $complaint->complaint_type,
-                    'complaint_description' => $complaint->description,
-                    'complaint_image_url'   => $complaint->image_url,
-
-                    'status'                => RefundDeliveryTask::STATUS_PENDING,
+                    'complaint_id' => $complaint->id,
+                    'seller_id'    => $complaint->seller_id,
+                    'status'       => RefundDeliveryTask::STATUS_PENDING,
                 ]);
 
                 $complaint->update([

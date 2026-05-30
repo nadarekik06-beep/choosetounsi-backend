@@ -10,17 +10,22 @@ use Illuminate\Database\Eloquent\Model;
  *
  * Lifecycle: pending → assigned → picked_up → completed
  *
- * Customer info (name, phone, wilaya, address) is resolved via:
- *   $task->complaint->order  (order has phone, wilaya, address)
- *   $task->complaint->order->user  (user has name)
+ * All data is resolved via relations — no snapshot columns:
  *
- * Seller info (name, business_name) is resolved via:
- *   $task->seller (User)
- *   $task->seller->sellerApplication
+ *   Customer info  → $task->complaint->order (phone, wilaya, address)
+ *                    $task->complaint->order->user (name)
  *
- * Kept as snapshots (delivery convenience, avoids deep joins in mobile app):
- *   seller_phone, seller_wilaya, seller_city
- *   items_summary, complaint_type, complaint_description, complaint_image_url
+ *   Seller info    → $task->seller (name)
+ *                    $task->seller->sellerApplication (phone, wilaya, city, business_name)
+ *
+ *   Order items    → $task->complaint->order->items
+ *
+ *   Complaint data → $task->complaint (type, description, image_url)
+ *
+ * Only truly unique operational columns are stored here:
+ *   complaint_id, seller_id, status,
+ *   delivery_guy_id, assigned_by,
+ *   assigned_at, picked_up_at, completed_at, notes
  */
 class RefundDeliveryTask extends Model
 {
@@ -47,17 +52,7 @@ class RefundDeliveryTask extends Model
 
     protected $fillable = [
         'complaint_id',
-        'order_id',
         'seller_id',
-        // customer_name, customer_phone, customer_wilaya, customer_address REMOVED
-        // seller_name, seller_business_name REMOVED
-        'seller_phone',
-        'seller_wilaya',
-        'seller_city',
-        'items_summary',
-        'complaint_type',
-        'complaint_description',
-        'complaint_image_url',
         'status',
         'delivery_guy_id',
         'assigned_by',
@@ -68,10 +63,9 @@ class RefundDeliveryTask extends Model
     ];
 
     protected $casts = [
-        'items_summary' => 'array',
-        'assigned_at'   => 'datetime',
-        'picked_up_at'  => 'datetime',
-        'completed_at'  => 'datetime',
+        'assigned_at'  => 'datetime',
+        'picked_up_at' => 'datetime',
+        'completed_at' => 'datetime',
     ];
 
     // ── Relationships ──────────────────────────────────────────────────────
@@ -79,11 +73,6 @@ class RefundDeliveryTask extends Model
     public function complaint()
     {
         return $this->belongsTo(Complaint::class);
-    }
-
-    public function order()
-    {
-        return $this->belongsTo(Order::class);
     }
 
     public function seller()
