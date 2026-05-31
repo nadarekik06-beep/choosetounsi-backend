@@ -72,46 +72,108 @@ class OrderController extends Controller
     /**
      * GET /api/admin/orders/{id}
      */
-    public function show($id)
-    {
-        $order = Order::with([
-            'user:id,name,email',
-            'items',
-            'items.product:id,name,slug,is_platform_product',
-            'items.product.primaryImage',
-            'items.variant:id,product_id,sku',
-            'items.variant.images',
-            'items.variant.attributeOptions.attribute:id,slug,name,type',
-            'sellerOrders',
-            'sellerOrders.seller:id,name,email',
-        ])->findOrFail($id);
+public function show($id)
+{
+    $order = Order::with([
+        'user:id,name,email',
+        'items',
+        'items.product:id,name,slug,is_platform_product',
+        'items.product.primaryImage',
+        'items.variant:id,product_id,sku',
+        'items.variant.images',
+        'items.variant.attributeOptions.attribute:id,slug,name,type',
+        'sellerOrders',
+        'sellerOrders.seller:id,name,email',
+    ])->findOrFail($id);
 
-        $order->items->each(function ($item) {
-            $item->resolved_image_url = $this->resolveItemImage($item);
+    // ── Step 1: Resolve image, variant_options, is_platform_item ──────────
+    $order->items->each(function ($item) {
+        $item->resolved_image_url = $this->resolveItemImage($item);
 
-            if ($item->variant && $item->variant->relationLoaded('attributeOptions')) {
-                $item->variant_options = $item->variant->attributeOptions
-                    ->mapWithKeys(fn($o) => [
-                        $o->attribute->slug => [
-                            'value'     => $o->value,
-                            'color_hex' => $o->color_hex,
-                        ],
-                    ]);
-            } else {
-                $item->variant_options = [];
-            }
+        if ($item->variant && $item->variant->relationLoaded('attributeOptions')) {
+            $item->variant_options = $item->variant->attributeOptions
+                ->mapWithKeys(fn($o) => [
+                    $o->attribute->slug => [
+                        'value'     => $o->value,
+                        'color_hex' => $o->color_hex,
+                    ],
+                ]);
+        } else {
+            $item->variant_options = [];
+        }
 
-            $item->is_platform_item = (bool) optional($item->product)->is_platform_product;
-        });
+        $item->is_platform_item = (bool) optional($item->product)->is_platform_product;
+    });
 
-        $platformUserId = PlatformUser::id();
-        $order->has_platform_items = $platformUserId
-            ? $order->sellerOrders->contains('seller_id', $platformUserId)
-            : false;
+    // ── Step 2: Detect returned / exchanged items ──────────────────────────
+    $returnedItemIds   = collect();
+    $exchangedItemIds  = collect();
+    $allItemsReturned  = false;
+    $allItemsExchanged = false;
 
-        return response()->json(['success' => true, 'data' => $order]);
+    $complaints = \App\Models\Complaint::where('order_id', $id)
+        ->where('status', \App\Models\Complaint::STATUS_APPROVED)
+        ->where('refund_status', \App\Models\Complaint::REFUND_STATUS_COMPLETED)
+        ->get(['id', 'order_item_ids', 'resolution_type']);
+
+    foreach ($complaints as $complaint) {
+        $ids        = $complaint->order_item_ids;
+        $isExchange = $complaint->resolution_type === \App\Models\Complaint::RESOLUTION_EXCHANGE;
+
+        if (is_null($ids) || empty($ids)) {
+            if ($isExchange) { $allItemsExchanged = true; }
+            else             { $allItemsReturned  = true; }
+            continue;
+        }
+        if ($isExchange) {
+            $exchangedItemIds = $exchangedItemIds->merge($ids);
+        } else {
+            $returnedItemIds = $returnedItemIds->merge($ids);
+        }
     }
 
+    $returnedItemIds  = $returnedItemIds->unique()->toArray();
+    $exchangedItemIds = $exchangedItemIds->unique()->toArray();
+
+    // ── Step 3: Tag each item with item_status ─────────────────────────────
+    $order->items->each(function ($item) use (
+        $returnedItemIds, $allItemsReturned,
+        $exchangedItemIds, $allItemsExchanged
+    ) {
+        $isReturned  = $allItemsReturned  || in_array($item->id, $returnedItemIds);
+        $isExchanged = $allItemsExchanged || in_array($item->id, $exchangedItemIds);
+        $item->item_status = $isReturned ? 'returned' : ($isExchanged ? 'exchanged' : null);
+        $item->is_returned = $isReturned;
+    });
+
+    // ── Step 4: Commission summary (exclude returned items) ────────────────
+    $nonReturnedItems = $order->items->filter(fn($i) => $i->item_status !== 'returned');
+
+    $commissionSummary = [
+        'gross_total'      => round($nonReturnedItems->sum('total'),             3),
+        'total_commission' => round($nonReturnedItems->sum('commission_amount'), 3),
+        'total_seller'     => round($nonReturnedItems->sum('seller_amount'),     3),
+    ];
+    $order->setAttribute('commission_summary', $commissionSummary);
+
+    // ── Step 5: Fix total_amount (active subtotals + shipping) ────────────
+    $activeSubtotal = $order->sellerOrders
+        ->where('status', '!=', 'cancelled')
+        ->sum(fn($so) => (float) $so->subtotal);
+
+    $order->total_amount = round(
+        $activeSubtotal + (float) ($order->shipping_fee ?? 0),
+        3
+    );
+
+    // ── Step 6: Platform badge ─────────────────────────────────────────────
+    $platformUserId = PlatformUser::id();
+    $order->has_platform_items = $platformUserId
+        ? $order->sellerOrders->contains('seller_id', $platformUserId)
+        : false;
+
+    return response()->json(['success' => true, 'data' => $order]);
+}
     /**
      * PATCH /api/admin/orders/{id}/status
      */

@@ -246,9 +246,10 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
             DB::table('seller_orders')
                 ->where('settlement_batch_id', $id)
                 ->update([
-                    'payout_status' => 'paid',
-                    'settled_at'    => $now,
-                    'updated_at'    => $now,
+                    'payout_status'  => 'paid',
+                    'payment_status' => 'paid',
+                    'settled_at'     => $now,
+                    'updated_at'     => $now,
                 ]);
 
             DB::commit();
@@ -280,31 +281,62 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
             ], 422);
         }
 
-        DB::beginTransaction();
-        try {
-            // Unlink orders — put them back to 'ready'
-            DB::table('seller_orders')
-                ->where('settlement_batch_id', $id)
-                ->update([
-                    'settlement_batch_id' => null,
-                    'updated_at'          => now(),
-                ]);
+ DB::beginTransaction();
+try {
+    $now = now();
 
-            DB::table('settlement_batches')->where('id', $id)->update([
-                'status'     => 'cancelled',
-                'updated_at' => now(),
-            ]);
+    // Mark batch as paid
+    DB::table('settlement_batches')->where('id', $id)->update([
+        'status'       => 'paid',
+        'confirmed_by' => auth()->id(),
+        'confirmed_at' => $now,
+        'paid_at'      => $now,
+        'updated_at'   => $now,
+    ]);
 
-            DB::commit();
+    // Mark all seller_orders in batch as paid
+    DB::table('seller_orders')
+        ->where('settlement_batch_id', $id)
+        ->update([
+            'payout_status'  => 'paid',
+            'payment_status' => 'paid',   // ← ADDED
+            'settled_at'     => $now,
+            'updated_at'     => $now,
+        ]);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Batch cancelled. Orders returned to ready queue.',
-            ]);
+    // ── Sync parent orders.payment_status ─────────────────────────────
+    // Only mark an order as 'paid' if ALL its seller_orders are now paid.
+    $orderIds = DB::table('seller_orders')
+        ->where('settlement_batch_id', $id)
+        ->pluck('order_id')
+        ->unique()
+        ->toArray();
 
-        } catch (\Throwable $e) {
-            DB::rollBack();
-            return response()->json(['success' => false, 'message' => 'Cancellation failed.'], 500);
+    foreach ($orderIds as $orderId) {
+        $allPaid = !DB::table('seller_orders')
+            ->where('order_id', $orderId)
+            ->where('payment_status', '!=', 'paid')
+            ->exists();
+
+        if ($allPaid) {
+            DB::table('orders')
+                ->where('id', $orderId)
+                ->update(['payment_status' => 'paid', 'updated_at' => $now]);
         }
+    }
+    // ── End sync ──────────────────────────────────────────────────────
+
+    DB::commit();
+
+    return response()->json([
+        'success' => true,
+        'message' => "Batch {$batch->batch_reference} confirmed. Seller marked as paid.",
+    ]);
+
+} catch (\Throwable $e) {
+    DB::rollBack();
+    Log::error('[SettlementController::confirm] ' . $e->getMessage());
+    return response()->json(['success' => false, 'message' => 'Confirmation failed.'], 500);
+}
     }
 }

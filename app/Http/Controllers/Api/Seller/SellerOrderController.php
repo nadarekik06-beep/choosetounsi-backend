@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use App\Models\Order;
 use App\Http\Controllers\Api\Seller\SellerForecastController;
+use App\Models\Complaint;
 
 
 /**
@@ -107,10 +108,41 @@ class SellerOrderController extends Controller
     {
         $sellerId    = auth()->id();
         $sellerOrder = $this->sellerOrderQuery($sellerId)->findOrFail($id);
+        // ── Determine returned items ──────────────────────────────────────────
+// REPLACE WITH:
+$returnedItemIds   = collect();
+$exchangedItemIds  = collect();
+$allItemsReturned  = false;
+$allItemsExchanged = false;
 
+$complaints = \App\Models\Complaint::where('order_id', $sellerOrder->order_id)
+    ->where('seller_id', $sellerId)
+    ->where('status', \App\Models\Complaint::STATUS_APPROVED)
+    ->where('refund_status', \App\Models\Complaint::REFUND_STATUS_COMPLETED)
+    ->get(['id', 'order_item_ids', 'resolution_type']);
+
+foreach ($complaints as $complaint) {
+    $ids        = $complaint->order_item_ids; // array|null
+    $isExchange = $complaint->resolution_type === \App\Models\Complaint::RESOLUTION_EXCHANGE;
+
+    if (is_null($ids) || empty($ids)) {
+        // Whole-order complaint (legacy NULL or no specific items)
+        if ($isExchange) { $allItemsExchanged = true; }
+        else             { $allItemsReturned  = true; }
+        continue;
+    }
+
+    if ($isExchange) {
+        $exchangedItemIds = $exchangedItemIds->merge($ids);
+    } else {
+        $returnedItemIds = $returnedItemIds->merge($ids);
+    }
+}
+
+$returnedItemIds  = $returnedItemIds->unique()->toArray();
+$exchangedItemIds = $exchangedItemIds->unique()->toArray();
         // ── Map items with full variant + commission details ───────────────
-        $mappedItems = $sellerOrder->items->map(function ($item) {
-
+$mappedItems = $sellerOrder->items->map(function ($item) use ($returnedItemIds, $allItemsReturned, $exchangedItemIds, $allItemsExchanged) {
             $productName = $item->product_name
                 ?? $item->product?->name
                 ?? "Product #{$item->product_id}";
@@ -190,7 +222,9 @@ class SellerOrderController extends Controller
             // NEVER recalculate — always read stored values.
             // commission_amount = 0 means legacy order → has_commission = false.
             $commissionAmount = (float) ($item->commission_amount ?? 0);
-            $hasCommission    = $commissionAmount > 0;
+$isReturned  = $allItemsReturned  || in_array($item->id, $returnedItemIds);
+$isExchanged = $allItemsExchanged || in_array($item->id, $exchangedItemIds);
+$itemStatus  = $isReturned ? 'returned' : ($isExchanged ? 'exchanged' : null);            $hasCommission    = $commissionAmount > 0;
 
             return [
                 // ── Core fields ───────────────────────────────────────────
@@ -213,24 +247,32 @@ class SellerOrderController extends Controller
                 'commission_amount'     => $hasCommission ? round($commissionAmount, 3)            : null,
                 'seller_amount'         => $hasCommission ? round((float) $item->seller_amount, 3) : null,
                 'plan_used'             => $hasCommission ? $item->plan_used                       : null,
+                // ADD alongside existing fields:
+'is_returned' => $isReturned,
+'item_status' => $itemStatus,   // 'returned' | 'exchanged' | null
             ];
         });
 
         // ── Commission order-level totals ─────────────────────────────────
         // Aggregate only from items that have commission data.
         // For legacy orders: has_commission = false, amounts = null.
-        $commissionItems  = $sellerOrder->items->filter(
-            fn($i) => (float) ($i->commission_amount ?? 0) > 0
-        );
-        $hasAnyCommission = $commissionItems->isNotEmpty();
+     $commissionItems = $sellerOrder->items->filter(function ($i) use (
+    $returnedItemIds, $allItemsReturned
+) {
+    // Exclude returned items — their commission was reversed by MarkOrderRefunded
+    $isReturned = $allItemsReturned || in_array($i->id, $returnedItemIds);
+    return !$isReturned && (float) ($i->commission_amount ?? 0) > 0;
+});
+$hasAnyCommission = $commissionItems->isNotEmpty();
 
-        $totalGross            = round((float) $sellerOrder->subtotal, 3);
-        $totalCommissionAmount = $hasAnyCommission
-            ? round($commissionItems->sum(fn($i) => (float) $i->commission_amount), 3)
-            : null;
-        $totalSellerNet        = $hasAnyCommission
-            ? round($commissionItems->sum(fn($i) => (float) $i->seller_amount), 3)
-            : null;
+// seller_subtotal is already adjusted by MarkOrderRefunded (returned items subtracted)
+$totalGross            = round((float) $sellerOrder->subtotal, 3);
+$totalCommissionAmount = $hasAnyCommission
+    ? round($commissionItems->sum(fn($i) => (float) $i->commission_amount), 3)
+    : null;
+$totalSellerNet        = $hasAnyCommission
+    ? round($commissionItems->sum(fn($i) => (float) $i->seller_amount), 3)
+    : null;
 
         $order    = $sellerOrder->order;
         $customer = $order->user ? ['name' => $order->user->name] : null;

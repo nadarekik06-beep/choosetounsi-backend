@@ -5,33 +5,30 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Storage;
-use App\Events\ComplaintApproved; // ← NEW
+use App\Events\ComplaintApproved;
 
 /**
- * FILE: app/Models/Complaint.php  ← REPLACE existing file
+ * FILE: app/Models/Complaint.php  ← REPLACE
  *
- * Changes from v2 (refund delivery extension):
- *   - Added refund_status, refund_task_id to $fillable and $casts
- *   - Added REFUND_STATUS_* constants
- *   - Added refundTask() relationship
- *   - Added hasRefundTask() helper
- *   - sellerApprove()       now fires ComplaintApproved event
- *   - approve()             now fires ComplaintApproved event
- *   - overrideToApproved()  now fires ComplaintApproved event
- *
- * ALL existing methods and constants are preserved unchanged.
+ * Changes from previous version:
+ *   - COMPLAINT_WINDOW_DAYS removed, replaced with COMPLAINT_WINDOW_HOURS = 48
+ *   - Added 'resolution_type' to $fillable and $casts
+ *   - Added RESOLUTION_* constants
+ *   - Added isExchange() / isReturnRefund() helpers
+ *   - eligibleOrders() query in ComplaintController uses hours now
+ *   - All existing methods, scopes, and constants preserved
  */
 class Complaint extends Model
 {
     use HasFactory;
 
-    // ── Constants ──────────────────────────────────────────────────────────
+    // ── Status constants ───────────────────────────────────────────────────
 
-    const STATUS_PENDING                    = 'pending';
-    const STATUS_REVIEWING                  = 'reviewing';
-    const STATUS_APPROVED                   = 'approved';
-    const STATUS_SELLER_REJECTED            = 'seller_rejected_pending_admin';
-    const STATUS_REJECTED                   = 'rejected';
+    const STATUS_PENDING         = 'pending';
+    const STATUS_REVIEWING       = 'reviewing';
+    const STATUS_APPROVED        = 'approved';
+    const STATUS_SELLER_REJECTED = 'seller_rejected_pending_admin';
+    const STATUS_REJECTED        = 'rejected';
 
     const VALID_STATUSES = [
         self::STATUS_PENDING,
@@ -41,12 +38,37 @@ class Complaint extends Model
         self::STATUS_REJECTED,
     ];
 
-    // ── Refund status constants (NEW) ──────────────────────────────────────
+    // ── Resolution type constants (NEW) ────────────────────────────────────
 
-    const REFUND_STATUS_PENDING   = 'pending';
-    const REFUND_STATUS_ASSIGNED  = 'assigned';
-    const REFUND_STATUS_PICKED_UP = 'picked_up';
-    const REFUND_STATUS_COMPLETED = 'completed';
+    /**
+     * Customer wants a replacement item sent.
+     * Delivery agent brings the new item. Stock is NOT restored on the
+     * original item (it stays with the customer until exchanged).
+     * No financial adjustment — the seller sends a replacement at own cost.
+     */
+    const RESOLUTION_EXCHANGE = 'exchange';
+
+    /**
+     * Customer wants their money back.
+     * Delivery agent collects the complained item(s) and returns them to seller.
+     * Stock IS restored. Commission on returned items is reversed.
+     * seller_order.subtotal is adjusted downward.
+     * If ALL items in the seller_order are returned → seller_order status = 'cancelled'.
+     * If SOME items only → seller_order status stays 'delivered', partial refund noted.
+     */
+    const RESOLUTION_RETURN_REFUND = 'return_refund';
+
+    // ── Complaint window ───────────────────────────────────────────────────
+
+    /**
+     * How long after delivery a customer can file a complaint.
+     *
+     * CHANGED from 14 days to 48 hours per business requirement.
+     * All eligibility checks use this constant — change it here only.
+     */
+    const COMPLAINT_WINDOW_HOURS = 48;
+
+    // ── Complaint types ────────────────────────────────────────────────────
 
     const COMPLAINT_TYPES = [
         'wrong_product'   => 'Wrong product received',
@@ -56,15 +78,22 @@ class Complaint extends Model
         'other'           => 'Other',
     ];
 
-    const COMPLAINT_WINDOW_DAYS = 14;
+    // ── Refund status constants ────────────────────────────────────────────
+
+    const REFUND_STATUS_PENDING   = 'pending';
+    const REFUND_STATUS_ASSIGNED  = 'assigned';
+    const REFUND_STATUS_PICKED_UP = 'picked_up';
+    const REFUND_STATUS_COMPLETED = 'completed';
 
     // ── Fillable ───────────────────────────────────────────────────────────
 
     protected $fillable = [
         'user_id',
         'order_id',
+        'order_item_ids',
         'seller_id',
         'complaint_type',
+        'resolution_type',    // ← NEW
         'other_reason',
         'description',
         'image_path',
@@ -74,7 +103,6 @@ class Complaint extends Model
         'seller_decision',
         'reviewed_at',
         'resolved_at',
-        // ── Refund tracking (NEW) ─────────────────────────────────────────
         'refund_status',
         'refund_task_id',
     ];
@@ -82,25 +110,29 @@ class Complaint extends Model
     // ── Casts ──────────────────────────────────────────────────────────────
 
     protected $casts = [
-        'reviewed_at' => 'datetime',
-        'resolved_at' => 'datetime',
+        'reviewed_at'    => 'datetime',
+        'resolved_at'    => 'datetime',
+        'order_item_ids' => 'array',
     ];
 
     protected $appends = ['image_url'];
 
     // ── Relationships ──────────────────────────────────────────────────────
 
-    public function user()    { return $this->belongsTo(User::class); }
-    public function order()   { return $this->belongsTo(Order::class); }
-    public function seller()  { return $this->belongsTo(User::class, 'seller_id'); }
+    public function user()   { return $this->belongsTo(User::class); }
+    public function order()  { return $this->belongsTo(Order::class); }
+    public function seller() { return $this->belongsTo(User::class, 'seller_id'); }
 
-    /**
-     * The refund delivery task created when this complaint is approved.
-     * NEW relationship.
-     */
     public function refundTask()
     {
         return $this->hasOne(RefundDeliveryTask::class, 'complaint_id');
+    }
+
+    public function complainedItems()
+    {
+        $ids = $this->order_item_ids ?? [];
+        return $this->hasMany(OrderItem::class, 'order_id', 'order_id')
+            ->when(!empty($ids), fn($q) => $q->whereIn('id', $ids));
     }
 
     // ── Accessors ──────────────────────────────────────────────────────────
@@ -120,20 +152,20 @@ class Complaint extends Model
 
     // ── Scopes ─────────────────────────────────────────────────────────────
 
-    public function scopePending($q)         { return $q->where('status', self::STATUS_PENDING); }
-    public function scopeReviewing($q)       { return $q->where('status', self::STATUS_REVIEWING); }
-    public function scopeApproved($q)        { return $q->where('status', self::STATUS_APPROVED); }
-    public function scopeRejected($q)        { return $q->where('status', self::STATUS_REJECTED); }
-    public function scopeSellerRejected($q)  { return $q->where('status', self::STATUS_SELLER_REJECTED); }
+    public function scopePending($q)        { return $q->where('status', self::STATUS_PENDING); }
+    public function scopeReviewing($q)      { return $q->where('status', self::STATUS_REVIEWING); }
+    public function scopeApproved($q)       { return $q->where('status', self::STATUS_APPROVED); }
+    public function scopeRejected($q)       { return $q->where('status', self::STATUS_REJECTED); }
+    public function scopeSellerRejected($q) { return $q->where('status', self::STATUS_SELLER_REJECTED); }
     public function scopeForSeller($q, int $sellerId) { return $q->where('seller_id', $sellerId); }
 
     // ── Status helpers ─────────────────────────────────────────────────────
 
-    public function isPending(): bool                   { return $this->status === self::STATUS_PENDING; }
-    public function isReviewing(): bool                 { return $this->status === self::STATUS_REVIEWING; }
-    public function isApproved(): bool                  { return $this->status === self::STATUS_APPROVED; }
+    public function isPending(): bool                    { return $this->status === self::STATUS_PENDING; }
+    public function isReviewing(): bool                  { return $this->status === self::STATUS_REVIEWING; }
+    public function isApproved(): bool                   { return $this->status === self::STATUS_APPROVED; }
     public function isSellerRejectedPendingAdmin(): bool { return $this->status === self::STATUS_SELLER_REJECTED; }
-    public function isRejected(): bool                  { return $this->status === self::STATUS_REJECTED; }
+    public function isRejected(): bool                   { return $this->status === self::STATUS_REJECTED; }
 
     public function isResolved(): bool
     {
@@ -145,19 +177,28 @@ class Complaint extends Model
         return in_array($this->status, [self::STATUS_PENDING, self::STATUS_REVIEWING]);
     }
 
-    // ── Refund helpers (NEW) ────────────────────────────────────────────────
+    // ── Resolution type helpers (NEW) ──────────────────────────────────────
 
-    /**
-     * Whether a refund delivery task has been created for this complaint.
-     */
+    /** Customer wants a replacement item. */
+    public function isExchange(): bool
+    {
+        return $this->resolution_type === self::RESOLUTION_EXCHANGE;
+    }
+
+    /** Customer wants item(s) collected and money returned. */
+    public function isReturnRefund(): bool
+    {
+        return $this->resolution_type === self::RESOLUTION_RETURN_REFUND
+            || is_null($this->resolution_type); // legacy fallback
+    }
+
+    // ── Refund helpers ──────────────────────────────────────────────────────
+
     public function hasRefundTask(): bool
     {
         return !is_null($this->refund_task_id);
     }
 
-    /**
-     * Whether the refund process is complete.
-     */
     public function isRefundCompleted(): bool
     {
         return $this->refund_status === self::REFUND_STATUS_COMPLETED;
@@ -165,7 +206,6 @@ class Complaint extends Model
 
     // ── Action helpers ─────────────────────────────────────────────────────
 
-    /** Seller adds note → reviewing */
     public function markReviewing(?string $sellerNote = null): void
     {
         $this->update([
@@ -175,12 +215,6 @@ class Complaint extends Model
         ]);
     }
 
-    /**
-     * Seller approves → APPROVED directly (no admin needed).
-     *
-     * CHANGE from v2: fires ComplaintApproved event after saving.
-     * The CreateRefundDeliveryTask listener will pick it up.
-     */
     public function sellerApprove(?string $sellerNote = null): void
     {
         $this->update([
@@ -190,15 +224,9 @@ class Complaint extends Model
             'reviewed_at'     => $this->reviewed_at ?? now(),
             'resolved_at'     => now(),
         ]);
-
-        // ← NEW: trigger refund task creation
         ComplaintApproved::dispatch($this->fresh());
     }
 
-    /**
-     * Seller rejects → SELLER_REJECTED_PENDING_ADMIN.
-     * No change — does NOT fire ComplaintApproved.
-     */
     public function sellerReject(string $sellerNote, string $rejectionReason): void
     {
         $this->update([
@@ -210,26 +238,15 @@ class Complaint extends Model
         ]);
     }
 
-    /**
-     * Admin approves (final — from any non-resolved status).
-     *
-     * CHANGE from v2: fires ComplaintApproved event after saving.
-     */
     public function approve(): void
     {
         $this->update([
             'status'      => self::STATUS_APPROVED,
             'resolved_at' => now(),
         ]);
-
-        // ← NEW: trigger refund task creation
         ComplaintApproved::dispatch($this->fresh());
     }
 
-    /**
-     * Admin confirms seller rejection → REJECTED (final).
-     * No change — complaint rejected, no refund needed.
-     */
     public function confirmRejection(): void
     {
         $this->update([
@@ -238,26 +255,15 @@ class Complaint extends Model
         ]);
     }
 
-    /**
-     * Admin overrides seller rejection → APPROVED (final).
-     *
-     * CHANGE from v2: fires ComplaintApproved event after saving.
-     */
     public function overrideToApproved(): void
     {
         $this->update([
             'status'      => self::STATUS_APPROVED,
             'resolved_at' => now(),
         ]);
-
-        // ← NEW: trigger refund task creation
         ComplaintApproved::dispatch($this->fresh());
     }
 
-    /**
-     * Admin rejects (from any non-resolved status, with reason).
-     * No change — no refund needed.
-     */
     public function reject(string $reason): void
     {
         $this->update([

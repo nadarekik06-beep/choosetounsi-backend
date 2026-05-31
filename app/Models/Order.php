@@ -73,8 +73,12 @@ class Order extends Model
     public function sellerOrders()
     {
         return $this->hasMany(SellerOrder::class);
-    }
 
+    }
+public function complaints()
+{
+    return $this->hasMany(\App\Models\Complaint::class);
+}
     /* ── Scopes ── */
 
     public function scopeCompleted($query)  { return $query->where('status', 'completed'); }

@@ -11,15 +11,12 @@ use Illuminate\Support\Facades\Log;
 /**
  * FILE: app/Http/Controllers/Admin/AdminComplaintController.php  ← REPLACE
  *
- * Changes from v1:
- *   - Added confirmRejection() → validates seller's rejection → status = REJECTED
- *   - Added overrideToApproved() → overrides seller rejection → status = APPROVED
- *   - stats() updated to include seller_rejected_pending_admin count
- *   - approve() and reject() preserved from v1
+ * Change from previous version:
+ *   - show() now eager-loads 'complainedItems' so admin can see exactly
+ *     which items the customer flagged.
  *
- * New routes needed (add to api.php admin group):
- *   PATCH /api/admin/complaints/{id}/confirm-rejection
- *   PATCH /api/admin/complaints/{id}/override-approve
+ * All other methods (stats, index, approve, reject, confirmRejection,
+ * overrideToApproved) are unchanged.
  */
 class AdminComplaintController extends Controller
 {
@@ -32,13 +29,13 @@ class AdminComplaintController extends Controller
         return response()->json([
             'success' => true,
             'data' => [
-                'total'            => Complaint::count(),
-                'pending'          => Complaint::pending()->count(),
-                'reviewing'        => Complaint::reviewing()->count(),
-                'approved'         => Complaint::approved()->count(),
-                'seller_rejected'  => Complaint::sellerRejected()->count(), // needs admin action
-                'rejected'         => Complaint::rejected()->count(),
-                'needs_admin'      => Complaint::sellerRejected()->count(), // alias for badge
+                'total'           => Complaint::count(),
+                'pending'         => Complaint::pending()->count(),
+                'reviewing'       => Complaint::reviewing()->count(),
+                'approved'        => Complaint::approved()->count(),
+                'seller_rejected' => Complaint::sellerRejected()->count(),
+                'rejected'        => Complaint::rejected()->count(),
+                'needs_admin'     => Complaint::sellerRejected()->count(),
             ],
         ]);
     }
@@ -85,6 +82,8 @@ class AdminComplaintController extends Controller
             'seller:id,name,email',
             'order:id,order_number,total_amount,status,created_at,wilaya,address,phone',
             'order.items:id,order_id,product_name,quantity,unit_price,total',
+            // ↓ NEW: load the specific items the customer complained about
+            'complainedItems:id,order_id,product_name,quantity,unit_price,total',
         ])->findOrFail($id);
 
         return response()->json(['success' => true, 'data' => $complaint]);
@@ -92,7 +91,6 @@ class AdminComplaintController extends Controller
 
     // ─────────────────────────────────────────────────────────────────────
     // PATCH /api/admin/complaints/{id}/approve
-    // Admin directly approves (from any non-resolved status)
     // ─────────────────────────────────────────────────────────────────────
 
     public function approve($id)
@@ -123,7 +121,6 @@ class AdminComplaintController extends Controller
 
     // ─────────────────────────────────────────────────────────────────────
     // PATCH /api/admin/complaints/{id}/reject
-    // Admin directly rejects (from any non-resolved status, with reason)
     // ─────────────────────────────────────────────────────────────────────
 
     public function reject(Request $request, $id)
@@ -157,9 +154,7 @@ class AdminComplaintController extends Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // PATCH /api/admin/complaints/{id}/confirm-rejection  ← NEW
-    // Admin validates seller's rejection → status = REJECTED (final)
-    // Client is notified.
+    // PATCH /api/admin/complaints/{id}/confirm-rejection
     // ─────────────────────────────────────────────────────────────────────
 
     public function confirmRejection($id)
@@ -183,15 +178,13 @@ class AdminComplaintController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Seller\'s rejection confirmed. The complaint is now rejected. Client has been notified.',
+            'message' => 'Seller\'s rejection confirmed. Client has been notified.',
             'data'    => $complaint->fresh(),
         ]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // PATCH /api/admin/complaints/{id}/override-approve  ← NEW
-    // Admin overrides seller's rejection → status = APPROVED (final)
-    // Client is notified.
+    // PATCH /api/admin/complaints/{id}/override-approve
     // ─────────────────────────────────────────────────────────────────────
 
     public function overrideToApproved($id)

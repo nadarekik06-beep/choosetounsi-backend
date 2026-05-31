@@ -226,7 +226,8 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('seller.plan:black')
             ->group(function () {
                 Route::get('/ai-hub',          [BlackPepperController::class, 'aiHub']);
-                Route::get('/profit-center',   [BlackPepperController::class, 'profitCenter']);
+                Route::get('/revenue-goals',  [BlackPepperController::class, 'revenueGoals']);
+                Route::post('/revenue-goals', [BlackPepperController::class, 'setRevenueGoal']);
                 Route::get('/sponsored',                   [BlackPepperController::class, 'sponsoredProducts']);
                 Route::post('/sponsor/{id}',               [BlackPepperController::class, 'toggleSponsorship']);
                 Route::get('/vip-requests',    [BlackPepperController::class, 'myVipRequests']);

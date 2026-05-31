@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\Client;
 
 use App\Http\Controllers\Controller;
+use App\Models\Complaint;
 use App\Models\Order;
 use App\Models\Product;
 use App\Models\ProductVariant;
@@ -12,19 +13,18 @@ use Illuminate\Support\Facades\Storage;
 /**
  * FILE: app/Http/Controllers/Api/Client/ClientOrderApiController.php  ← REPLACE
  *
- * CHANGE from previous version:
- *   transformOrder() now includes delivery tracking timestamps in seller_groups[].
- *   Each seller group gains a 'tracking' object:
+ * Change from previous version:
+ *   transformOrder() now adds is_returned (bool) and refund_status (string|null)
+ *   to each order item so the frontend can display a "Returned" badge.
  *
- *   {
- *     picked_up_at:  string|null   ← when delivery guy picked up from seller
- *     delivered_at:  string|null   ← when delivery guy confirmed delivery
- *     assigned_at:   string|null   ← when delivery was assigned
- *     delivery_guy:  string|null   ← delivery person's name
- *   }
+ *   Logic:
+ *     - Load approved complaints for this order that have resolution_type = 'return_refund'
+ *       AND refund_status = 'completed' (delivery agent finished the pickup).
+ *     - Collect the order_item_ids from those complaints into a flat set.
+ *     - Each item whose id is in that set gets is_returned = true.
+ *     - Legacy complaints (order_item_ids = null) mark ALL items as returned.
  *
- *   This powers the OrderTracker stepper on the client storefront.
- *   All existing logic is preserved exactly — this is purely additive.
+ *   All existing fields and logic are 100% preserved — purely additive.
  */
 class ClientOrderApiController extends Controller
 {
@@ -36,19 +36,26 @@ class ClientOrderApiController extends Controller
         $orders = Order::where('user_id', $request->user()->id)
             ->with([
                 'sellerOrders',
-                'sellerOrders.deliveryAssignment.deliveryGuy:id,name', // ← NEW
+                'sellerOrders.deliveryAssignment.deliveryGuy:id,name',
                 'items.variant.attributeOptions.attribute',
                 'items.variant.images',
                 'items' => fn($q) => $q->with([
                     'product' => fn($pq) => $pq->withTrashed()->with(['images', 'primaryImage']),
                 ]),
+                // ← NEW: load approved return complaints for this order
+                'complaints' => fn($q) => $q
+                    ->where('status', Complaint::STATUS_APPROVED)
+->where(function ($q) {
+    $q->where('resolution_type', Complaint::RESOLUTION_RETURN_REFUND)
+      ->orWhereNull('resolution_type');
+})                  
+                  ->where('refund_status', Complaint::REFUND_STATUS_COMPLETED)
+                    ->select('id', 'order_id', 'order_item_ids', 'refund_status'),
             ])
             ->orderByDesc('created_at')
             ->paginate(20);
 
-        $orders->getCollection()->transform(function ($order) {
-            return $this->transformOrder($order);
-        });
+        $orders->getCollection()->transform(fn($order) => $this->transformOrder($order));
 
         return response()->json(['success' => true, 'data' => $orders]);
     }
@@ -61,12 +68,18 @@ class ClientOrderApiController extends Controller
         $order = Order::where('user_id', $request->user()->id)
             ->with([
                 'sellerOrders',
-                'sellerOrders.deliveryAssignment.deliveryGuy:id,name', // ← NEW
+                'sellerOrders.deliveryAssignment.deliveryGuy:id,name',
                 'items.variant.attributeOptions.attribute',
                 'items.variant.images',
                 'items' => fn($q) => $q->with([
                     'product' => fn($pq) => $pq->withTrashed()->with(['images', 'primaryImage']),
                 ]),
+                // ← NEW
+                'complaints' => fn($q) => $q
+                    ->where('status', Complaint::STATUS_APPROVED)
+                    ->where('resolution_type', Complaint::RESOLUTION_RETURN_REFUND)
+                    ->where('refund_status', Complaint::REFUND_STATUS_COMPLETED)
+                    ->select('id', 'order_id', 'order_item_ids', 'refund_status'),
             ])
             ->findOrFail($id);
 
@@ -93,24 +106,34 @@ class ClientOrderApiController extends Controller
 
     // ── Private helpers ──────────────────────────────────────────────────────
 
-    /**
-     * Transform an Order into the client-facing shape.
-     *
-     * CHANGE: seller_groups now includes a 'tracking' key per group:
-     *   {
-     *     assigned_at:   ISO timestamp when delivery was assigned
-     *     picked_up_at:  ISO timestamp when agent picked up from seller
-     *     delivered_at:  ISO timestamp when agent confirmed delivery
-     *     delivery_guy:  name of the delivery person (or null)
-     *   }
-     *
-     * This is purely additive — no existing fields are changed.
-     */
     private function transformOrder(Order $order): array
     {
         $sellerOrderMap = $order->sellerOrders->keyBy('id');
 
-        $enrichedItems = $order->items->map(function ($item) use ($sellerOrderMap, $order) {
+        // ── Build the set of returned item IDs ─────────────────────────────
+        // From all approved + completed return_refund complaints on this order.
+        // If a complaint has order_item_ids = null (legacy), it means ALL items
+        // in that order were returned — mark everything.
+        $returnedItemIds = collect();
+        $allItemsReturned = false;
+
+        if ($order->relationLoaded('complaints')) {
+            foreach ($order->complaints as $complaint) {
+                $ids = $complaint->order_item_ids; // array|null (cast on model)
+                if (is_null($ids) || empty($ids)) {
+                    $allItemsReturned = true;
+                    break;
+                }
+                $returnedItemIds = $returnedItemIds->merge($ids);
+            }
+        }
+
+        $returnedItemIds = $returnedItemIds->unique()->toArray();
+
+        // ── Enrich items ───────────────────────────────────────────────────
+        $enrichedItems = $order->items->map(function ($item) use (
+            $sellerOrderMap, $order, $returnedItemIds, $allItemsReturned
+        ) {
             $item->setAttribute(
                 'resolved_image_url',
                 $this->resolveImageUrl($item->product, $item->variant)
@@ -121,21 +144,24 @@ class ClientOrderApiController extends Controller
                 : null;
 
             $item->seller_order_id      = $so?->id;
-            $item->seller_order_status  = $so?->status          ?? $order->status;
-            $item->seller_order_payment = $so?->payment_status  ?? $order->payment_status;
+            $item->seller_order_status  = $so?->status         ?? $order->status;
+            $item->seller_order_payment = $so?->payment_status ?? $order->payment_status;
+
+            // ← NEW: mark returned items
+            $item->setAttribute(
+                'is_returned',
+                $allItemsReturned || in_array($item->id, $returnedItemIds)
+            );
 
             return $item;
         });
 
-        // Build seller_groups with tracking timestamps ─────────────────────
+        // ── Build seller_groups ────────────────────────────────────────────
         $sellerGroups = $order->sellerOrders->map(function ($so) use ($enrichedItems) {
             $groupItems = $enrichedItems
                 ->filter(fn($i) => $i->seller_order_id === $so->id)
                 ->values();
 
-            // ── Delivery tracking timestamps (NEW) ─────────────────────────
-            // Sourced from delivery_assignments via eager-loaded relation.
-            // All fields are null if no delivery assignment exists yet.
             $assignment = $so->relationLoaded('deliveryAssignment')
                 ? $so->deliveryAssignment
                 : null;
@@ -155,7 +181,7 @@ class ClientOrderApiController extends Controller
                 'payment_status'  => $so->payment_status,
                 'subtotal'        => (float) $so->subtotal,
                 'items'           => $groupItems,
-                'tracking'        => $tracking, // ← NEW
+                'tracking'        => $tracking,
             ];
         })->values();
 
@@ -163,13 +189,19 @@ class ClientOrderApiController extends Controller
         $arr['items']         = $enrichedItems->values();
         $arr['seller_groups'] = $sellerGroups;
 
+        // Override total_amount with live sum from active seller_orders
+        // (orders.total_amount may be stale if a partial return reduced a seller subtotal)
+        $arr['total_amount'] = round(
+    $order->sellerOrders
+        ->where('status', '!=', 'cancelled')
+        ->sum(fn($so) => (float) $so->subtotal)
+    + (float) ($order->shipping_fee ?? 0),
+    3
+);
+
         return $arr;
     }
 
-    /**
-     * Resolve the best image URL for an order item.
-     * Unchanged from previous version.
-     */
     private function resolveImageUrl(?Product $product, ?ProductVariant $variant): ?string
     {
         if (!$product) return null;

@@ -19,7 +19,7 @@ use App\Services\FunnelInsightService;
 use App\Services\ProductQualityService;
 use App\Services\AutoPromotionService;
 use Illuminate\Support\Facades\Cache;
-
+use App\Models\RevenueGoal;
 /**
  * BlackPepperController  — Phases 1, 2 & 3 complete
  *
@@ -646,146 +646,200 @@ PROMPT;
     // 6. PROFIT COMMAND CENTER
     //    GET /api/seller/black/profit-center
     // =========================================================================
-    public function profitCenter(Request $request): JsonResponse
-    {
-        $sellerId  = auth()->id();
-        $sellerCol = $this->sellerCol();
-        $totalExpr = $this->totalExpr();
-        $now       = Carbon::now();
-
-        $dailyRevenue = DB::table('order_items as oi')
-            ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->join('orders as o', 'o.id', '=', 'oi.order_id')
-            ->where("p.{$sellerCol}", $sellerId)->whereNull('p.deleted_at')
-            ->whereIn('o.status', ['completed', 'delivered'])
-            ->where('o.created_at', '>=', $now->copy()->subDays(90))
-            ->selectRaw("DATE(o.created_at) as day, SUM({$totalExpr}) as revenue, COUNT(DISTINCT oi.order_id) as orders")
-            ->groupBy('day')->orderBy('day')->get();
-
-        $monthlyRevenue = DB::table('order_items as oi')
-            ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->join('orders as o', 'o.id', '=', 'oi.order_id')
-            ->where("p.{$sellerCol}", $sellerId)->whereNull('p.deleted_at')
-            ->whereIn('o.status', ['completed', 'delivered'])
-            ->where('o.created_at', '>=', $now->copy()->subMonths(6))
-            ->selectRaw("DATE_FORMAT(o.created_at, '%Y-%m') as month, SUM({$totalExpr}) as revenue, SUM(oi.quantity) as units, COUNT(DISTINCT oi.order_id) as orders")
-            ->groupBy('month')->orderBy('month')->get();
-
-        $productMargins = DB::table('order_items as oi')
-            ->join('products as p', 'p.id', '=', 'oi.product_id')
-            ->join('orders as o', 'o.id', '=', 'oi.order_id')
-            ->leftJoin('categories as c', 'c.id', '=', 'p.category_id')
-            ->where("p.{$sellerCol}", $sellerId)->whereNull('p.deleted_at')
-            ->whereIn('o.status', ['completed', 'delivered'])
-            ->where('o.created_at', '>=', $now->copy()->subMonths(3))
-            ->selectRaw("
-                p.id as product_id, p.name as product_name, c.name as category_name, p.price,
-                SUM(oi.quantity) as total_units, SUM({$totalExpr}) as total_revenue,
-                SUM({$totalExpr}) - SUM(oi.quantity * p.price * 0.60) as estimated_profit,
-                (SUM({$totalExpr}) - SUM(oi.quantity * p.price * 0.60)) / NULLIF(SUM({$totalExpr}), 0) * 100 as margin_pct
-            ")
-            ->groupBy('p.id', 'p.name', 'c.name', 'p.price')
-            ->orderByDesc('total_revenue')->limit(20)->get()
-            ->map(function ($row) {
-                $marginLabel = (float) $row->margin_pct >= 35 ? 'excellent'
-                    : ((float) $row->margin_pct >= 25 ? 'good'
-                    : ((float) $row->margin_pct >= 15 ? 'fair' : 'low'));
-                return [
-                    'product_id'       => (int) $row->product_id,
-                    'product_name'     => $row->product_name,
-                    'category'         => $row->category_name,
-                    'price'            => (float) $row->price,
-                    'total_units'      => (int) $row->total_units,
-                    'total_revenue'    => round((float) $row->total_revenue, 3),
-                    'estimated_profit' => round((float) $row->estimated_profit, 3),
-                    'margin_pct'       => round((float) $row->margin_pct, 1),
-                    'margin_label'     => $marginLabel,
-                    'margin_human'     => match($marginLabel) {
-                        'excellent' => 'Great profit margin',
-                        'good'      => 'Good profit margin',
-                        'fair'      => 'Average profit margin',
-                        'low'       => 'Low profit product',
-                        default     => $marginLabel,
-                    },
-                ];
-            });
-
-        $n        = $dailyRevenue->count();
-        $forecast = null;
-
-        if ($n >= 7) {
-            $xMean = ($n - 1) / 2.0;
-            $yMean = $dailyRevenue->avg('revenue');
-            $numerator = $denominator = 0.0;
-
-            foreach ($dailyRevenue as $i => $row) {
-                $x = $i - $xMean; $y = (float)$row->revenue - $yMean;
-                $numerator += $x * $y; $denominator += $x * $x;
-            }
-
-            $slope = $denominator > 0 ? $numerator / $denominator : 0;
-            $intercept = $yMean - $slope * $xMean;
-            $forecastDays = [];
-
-            for ($d = 1; $d <= 30; $d++) {
-                $forecastDays[] = [
-                    'day'       => $now->copy()->addDays($d)->format('Y-m-d'),
-                    'predicted' => round(max(0, $intercept + $slope * ($n - 1 + $d)), 3),
-                ];
-            }
-
-            $totalForecast30 = round(collect($forecastDays)->sum('predicted'), 3);
-            $last30Actual    = round($dailyRevenue->take(-30)->sum('revenue'), 3);
-            $growthPct       = $last30Actual > 0 ? round(($totalForecast30 - $last30Actual) / $last30Actual * 100, 1) : 0;
-            $confidence      = $n >= 30 ? 'high' : ($n >= 14 ? 'medium' : 'low');
-
-            $forecast = [
-                'next_30_days'     => $totalForecast30,
-                'last_30_actual'   => $last30Actual,
-                'growth_pct'       => $growthPct,
-                'trend'            => $slope > 0.5 ? 'up' : ($slope < -0.5 ? 'down' : 'stable'),
-                'daily_points'     => $forecastDays,
-                'confidence'       => $confidence,
-                'confidence_human' => match($confidence) {
-                    'high'   => 'Very reliable forecast',
-                    'medium' => 'Fairly confident forecast',
-                    'low'    => 'Rough estimate — more data needed',
-                    default  => $confidence,
-                },
-            ];
-        }
-
-        $totalRevenue90d = round($dailyRevenue->sum('revenue'), 3);
-        $periodBreakdown = $monthlyRevenue->map(fn($row) => [
-            'month'            => $row->month,
-            'revenue'          => round((float)$row->revenue, 3),
-            'estimated_profit' => round((float)$row->revenue * 0.40, 3),
-            'units'            => (int)$row->units,
-            'orders'           => (int)$row->orders,
-            'avg_order_value'  => $row->orders > 0 ? round((float)$row->revenue / $row->orders, 3) : 0,
-        ]);
-
-        return response()->json([
-            'success' => true,
-            'data'    => [
-                'summary' => [
-                    'total_revenue_90d'    => $totalRevenue90d,
-                    'estimated_profit_90d' => round($totalRevenue90d * 0.40, 3),
-                    'estimated_margin_pct' => 40.0,
-                    'margin_disclaimer'    => 'Estimated margin assumes 60% cost ratio. Update when cost_price data becomes available.',
-                    'data_points'          => $n,
-                ],
-                'period_breakdown' => $periodBreakdown,
-                'product_margins'  => $productMargins,
-                'forecast'         => $forecast,
-                'daily_revenue'    => $dailyRevenue->map(fn($r) => [
-                    'day'     => $r->day,
-                    'revenue' => round((float)$r->revenue, 3),
-                    'orders'  => (int)$r->orders,
-                ]),
-            ],
-        ]);
+public function revenueGoals(Request $request): JsonResponse
+{
+    $sellerId  = auth()->id();
+    $sellerCol = $this->sellerCol();
+    $totalExpr = $this->totalExpr();
+    $now       = Carbon::now();
+ 
+    $currentMonth = $now->format('Y-m');
+    $lastMonth    = $now->copy()->subMonth()->format('Y-m');
+ 
+    // ── Revenue this month (so far) ───────────────────────────────────────
+    $currentRevenue = (float) DB::table('order_items as oi')
+        ->join('products as p', 'p.id', '=', 'oi.product_id')
+        ->join('orders as o',   'o.id', '=', 'oi.order_id')
+        ->where("p.{$sellerCol}", $sellerId)
+        ->whereNull('p.deleted_at')
+        ->whereIn('o.status', ['completed', 'delivered'])
+        ->whereRaw("DATE_FORMAT(o.created_at, '%Y-%m') = ?", [$currentMonth])
+        ->sum(DB::raw($totalExpr));
+ 
+    // ── Revenue last month (full) ─────────────────────────────────────────
+    $lastRevenue = (float) DB::table('order_items as oi')
+        ->join('products as p', 'p.id', '=', 'oi.product_id')
+        ->join('orders as o',   'o.id', '=', 'oi.order_id')
+        ->where("p.{$sellerCol}", $sellerId)
+        ->whereNull('p.deleted_at')
+        ->whereIn('o.status', ['completed', 'delivered'])
+        ->whereRaw("DATE_FORMAT(o.created_at, '%Y-%m') = ?", [$lastMonth])
+        ->sum(DB::raw($totalExpr));
+ 
+    // ── Revenue per month for last 6 months ───────────────────────────────
+    $monthlyRows = DB::table('order_items as oi')
+        ->join('products as p', 'p.id', '=', 'oi.product_id')
+        ->join('orders as o',   'o.id', '=', 'oi.order_id')
+        ->where("p.{$sellerCol}", $sellerId)
+        ->whereNull('p.deleted_at')
+        ->whereIn('o.status', ['completed', 'delivered'])
+        ->where('o.created_at', '>=', $now->copy()->subMonths(6)->startOfMonth())
+        ->selectRaw("DATE_FORMAT(o.created_at, '%Y-%m') as month, SUM({$totalExpr}) as revenue")
+        ->groupBy('month')
+        ->orderBy('month')
+        ->get()
+        ->keyBy('month');
+ 
+    // ── Goals for last 6 months ───────────────────────────────────────────
+    $months = collect();
+    for ($i = 5; $i >= 0; $i--) {
+        $months->push($now->copy()->subMonths($i)->format('Y-m'));
     }
+ 
+    $goals = \App\Models\RevenueGoal::where('seller_id', $sellerId)
+        ->whereIn('month', $months->toArray())
+        ->get()
+        ->keyBy('month');
+ 
+    // ── Current month goal ────────────────────────────────────────────────
+    $currentGoal = (float) ($goals[$currentMonth]->goal_amount ?? 0);
+ 
+    // ── Progress & projection ─────────────────────────────────────────────
+    $dayOfMonth  = (int) $now->format('j');
+    $daysInMonth = (int) $now->daysInMonth;
+    $daysLeft    = $daysInMonth - $dayOfMonth;
+    $dailyPace   = $dayOfMonth > 0 ? $currentRevenue / $dayOfMonth : 0;
+    $projected   = round($dailyPace * $daysInMonth, 3);
+    $progressPct = $currentGoal > 0
+        ? min(100, round(($currentRevenue / $currentGoal) * 100, 1))
+        : 0;
+    $onTrack     = $currentGoal > 0 && $projected >= $currentGoal;
+ 
+    // ── Streak: consecutive months where revenue >= goal ──────────────────
+    $streak = 0;
+    for ($i = 1; $i <= 5; $i++) {
+        $m   = $now->copy()->subMonths($i)->format('Y-m');
+        $rev = (float) ($monthlyRows[$m]->revenue ?? 0);
+        $g   = (float) ($goals[$m]->goal_amount    ?? 0);
+        if ($g > 0 && $rev >= $g) {
+            $streak++;
+        } else {
+            break;   // streak breaks on first miss
+        }
+    }
+ 
+    // ── Month history array ───────────────────────────────────────────────
+    $history = $months->map(function ($m) use ($monthlyRows, $goals) {
+        $rev  = (float) ($monthlyRows[$m]->revenue    ?? 0);
+        $goal = (float) ($goals[$m]->goal_amount      ?? 0);
+        return [
+            'month'      => $m,
+            'revenue'    => round($rev,  3),
+            'goal'       => round($goal, 3),
+            'hit'        => $goal > 0 && $rev >= $goal,
+            'pct'        => $goal > 0 ? min(100, round(($rev / $goal) * 100, 1)) : 0,
+        ];
+    })->values()->toArray();
+ 
+    // ── AI encouragement via Groq ─────────────────────────────────────────
+    $aiMessage = null;
+    $cacheKey  = "black_revenue_goals_ai_{$sellerId}_{$currentMonth}";
+    $cachePath = storage_path("app/cache/{$cacheKey}.json");
+ 
+    if (file_exists($cachePath)) {
+        $cached = json_decode(file_get_contents($cachePath), true);
+        if ($cached && isset($cached['expires_at']) && Carbon::parse($cached['expires_at'])->isFuture()) {
+            $aiMessage = $cached['content'];
+        }
+    }
+ 
+    if (!$aiMessage) {
+        $system = "You are a warm business coach for a Tunisian online seller. "
+            . "Write exactly ONE short sentence (max 20 words) in plain English. "
+            . "Be specific, warm, encouraging. No emojis. No jargon.";
+ 
+        $goalStr     = $currentGoal > 0 ? number_format($currentGoal, 0) . ' TND' : 'no goal set';
+        $currentStr  = number_format($currentRevenue, 0) . ' TND';
+        $projStr     = number_format($projected, 0) . ' TND';
+        $streakStr   = $streak > 0 ? "{$streak} month streak" : 'no streak yet';
+ 
+        $userMsg = "Seller on ChooseTounsi: goal this month = {$goalStr}, "
+            . "earned so far = {$currentStr}, projected = {$projStr}, "
+            . "streak = {$streakStr}, days left = {$daysLeft}. "
+            . "Write one warm encouraging sentence.";
+ 
+        $raw = $this->callGroq($system, $userMsg, 50);
+        if ($raw) {
+            $aiMessage = trim(trim($raw), '"\'');
+            @mkdir(storage_path('app/cache'), 0755, true);
+            file_put_contents($cachePath, json_encode([
+                'content'    => $aiMessage,
+                'expires_at' => now()->addHours(6)->toISOString(),
+            ]));
+        }
+ 
+        if (!$aiMessage) {
+            if ($onTrack && $currentGoal > 0) {
+                $aiMessage = "You're on track — keep this pace and you'll hit your goal.";
+            } elseif ($currentGoal > 0) {
+                $aiMessage = "Push a little harder this month — your goal is within reach.";
+            } else {
+                $aiMessage = "Set a monthly goal to stay motivated and track your progress.";
+            }
+        }
+    }
+ 
+    return response()->json([
+        'success' => true,
+        'data'    => [
+            'current_month'   => $currentMonth,
+            'current_revenue' => round($currentRevenue, 3),
+            'last_revenue'    => round($lastRevenue,    3),
+            'current_goal'    => round($currentGoal,    3),
+            'projected'       => $projected,
+            'progress_pct'    => $progressPct,
+            'on_track'        => $onTrack,
+            'days_left'       => $daysLeft,
+            'days_in_month'   => $daysInMonth,
+            'daily_pace'      => round($dailyPace, 3),
+            'streak'          => $streak,
+            'ai_message'      => $aiMessage,
+            'history'         => $history,
+        ],
+    ]);
+}
+ 
+// =========================================================================
+// 6b. SET REVENUE GOAL
+//     POST /api/seller/black/revenue-goals
+// =========================================================================
+public function setRevenueGoal(Request $request): JsonResponse
+{
+    $validated = $request->validate([
+        'month'  => 'required|string|regex:/^\d{4}-\d{2}$/',
+        'amount' => 'required|numeric|min:0|max:999999',
+    ]);
+ 
+    $sellerId = auth()->id();
+ 
+    \App\Models\RevenueGoal::updateOrCreate(
+        ['seller_id' => $sellerId, 'month' => $validated['month']],
+        ['goal_amount' => $validated['amount']]
+    );
+ 
+    // Bust AI cache so new message reflects new goal
+    $cachePath = storage_path("app/cache/black_revenue_goals_ai_{$sellerId}_{$validated['month']}.json");
+    if (file_exists($cachePath)) @unlink($cachePath);
+ 
+    return response()->json([
+        'success' => true,
+        'message' => 'Goal updated successfully.',
+        'data'    => [
+            'month'  => $validated['month'],
+            'amount' => (float) $validated['amount'],
+        ],
+    ]);
+}
 
     // =========================================================================
     // 7. TOGGLE SPONSORSHIP

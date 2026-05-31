@@ -10,6 +10,30 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
+/**
+ * FILE: app/Http/Controllers/Api/Delivery/RefundDeliveryController.php  ← REPLACE
+ *
+ * FIX applied to formatTask():
+ *
+ *   ROOT CAUSE: The items list was built from ALL order items:
+ *     $order->items->map(...)
+ *
+ *   This showed every item in the order to the delivery agent, even those
+ *   the customer did NOT complain about. If a complaint was filed for only
+ *   the Basketball in a Basketball + JBL Headphone order, the agent would
+ *   see (and collect) both items — which is wrong.
+ *
+ *   THE FIX: Filter order items to only those whose ID appears in
+ *   $complaint->order_item_ids (the JSON array stored on the complaint).
+ *
+ *   Backward compatibility:
+ *   - If order_item_ids is NULL (legacy complaint filed before this feature),
+ *     fall back to showing ALL items (original behavior — no regression).
+ *   - If order_item_ids is an empty array [], also fall back to all items.
+ *
+ *   No schema changes, no new relations, no migration needed.
+ *   All other methods are 100% unchanged.
+ */
 class RefundDeliveryController extends Controller
 {
     // ── Delivery Admin Endpoints ───────────────────────────────────────────
@@ -199,13 +223,15 @@ class RefundDeliveryController extends Controller
     /**
      * Format a RefundDeliveryTask for API response.
      *
-     * All data is resolved via relations — no snapshot columns exist anymore.
-     * Required eager loads:
-     *   complaint.order.user
-     *   complaint.order.items
-     *   complaint
-     *   seller.sellerApplication
-     *   deliveryGuy (optional, for admin views)
+     * FIX: Items are now filtered to only those the customer complained about.
+     *
+     * When complaint->order_item_ids is set (non-null, non-empty array),
+     * only items whose ID is in that array are returned to the delivery agent.
+     * This ensures the agent collects ONLY the specific complained items,
+     * not everything in the order.
+     *
+     * When order_item_ids is NULL or [] (legacy complaints), all order items
+     * are returned — backward-compatible with pre-fix complaints.
      */
     private function formatTask(RefundDeliveryTask $task, bool $detailed = false): array
     {
@@ -218,21 +244,41 @@ class RefundDeliveryController extends Controller
         $sellerUser = $task->seller;
         $sellerApp  = $sellerUser?->sellerApplication;
 
-        // ── Items ──────────────────────────────────────────────────────────
-        $items = $order?->relationLoaded('items')
-            ? $order->items->map(fn($i) => [
-                'product_name' => $i->product_name,
-                'quantity'     => (int) $i->quantity,
-              ])->values()
-            : [];
+        // ── Items — FIXED: filter to complained items only ─────────────────
+        //
+        // $complaint->order_item_ids is cast to array by the Complaint model.
+        // It contains the specific order_items.id values the customer selected
+        // when filing the complaint (e.g. [12] for just the Basketball).
+        //
+        // NULL or empty → legacy complaint → show all items (backward compat)
+        // [12, 15]      → show only those two items to the delivery agent
+        //
+        $complainedItemIds = $complaint?->order_item_ids; // array|null (cast on model)
 
+        $allItems = $order?->relationLoaded('items') ? $order->items : collect();
+
+        if (!empty($complainedItemIds)) {
+            // Filter to only the items the customer complained about
+            $filteredItems = $allItems->filter(
+                fn($i) => in_array($i->id, $complainedItemIds)
+            );
+        } else {
+            // Legacy complaint or no specific items selected — show everything
+            $filteredItems = $allItems;
+        }
+
+        $items = $filteredItems->map(fn($i) => [
+            'product_name' => $i->product_name,
+            'quantity'     => (int) $i->quantity,
+        ])->values();
+
+        // ── Build response ─────────────────────────────────────────────────
         $data = [
             'id'           => $task->id,
             'complaint_id' => $task->complaint_id,
             'status'       => $task->status,
             'created_at'   => $task->created_at,
 
-            // ── Customer (pickup location — agent goes TO collect item) ────
             'customer' => [
                 'name'    => $user?->name    ?? 'Unknown',
                 'phone'   => $order?->phone,
@@ -240,7 +286,6 @@ class RefundDeliveryController extends Controller
                 'address' => $order?->address,
             ],
 
-            // ── Seller (return location — agent brings item BACK here) ─────
             'seller' => [
                 'name'          => $sellerUser?->name          ?? 'Unknown',
                 'business_name' => $sellerApp?->business_name,
@@ -265,12 +310,11 @@ class RefundDeliveryController extends Controller
             'notes'        => $task->notes,
         ];
 
-        // ── Complaint context ──────────────────────────────────────────────
         if ($detailed) {
             $data['complaint'] = [
                 'type'        => $complaint?->complaint_type,
                 'description' => $complaint?->description,
-                'image_url'   => $complaint?->image_url, // uses getImageUrlAttribute()
+                'image_url'   => $complaint?->image_url,
             ];
         } else {
             $data['complaint_type'] = $complaint?->complaint_type;
