@@ -51,22 +51,23 @@ class SellerOrderController extends Controller
 
     /* ── GET /api/seller/orders/stats ── */
     public function stats(Request $request)
-    {
-        $sellerId = auth()->id();
-        $base     = SellerOrder::where('seller_id', $sellerId);
+{
+    $sellerId = auth()->id();
+    $base     = SellerOrder::where('seller_id', $sellerId);
 
-        return response()->json(['success' => true, 'data' => [
-            'total'     => (clone $base)->count(),
-            'pending'   => (clone $base)->where('status', 'pending')->count(),
-            'completed' => (clone $base)->where('status', 'completed')->count(),
-            'delivered' => (clone $base)->where('status', 'delivered')->count(),
-            'cancelled' => (clone $base)->where('status', 'cancelled')->count(),
-            'revenue'   => (clone $base)
-                ->whereIn('status', ['completed', 'delivered'])
-                ->sum('subtotal'),
-            'out_for_delivery' => (clone $base)->where('status', 'out_for_delivery')->count(),
-        ]]);
-    }
+    return response()->json(['success' => true, 'data' => [
+        'total'            => (clone $base)->count(),
+        'pending'          => (clone $base)->where('status', 'pending')->count(),
+        'confirmed'        => (clone $base)->where('status', 'confirmed')->count(), // ← was processing
+        'completed'        => (clone $base)->where('status', 'completed')->count(),
+        'delivered'        => (clone $base)->where('status', 'delivered')->count(),
+        'cancelled'        => (clone $base)->where('status', 'cancelled')->count(),
+        'out_for_delivery' => (clone $base)->where('status', 'out_for_delivery')->count(),
+        'revenue'          => (clone $base)
+            ->whereIn('status', ['completed', 'delivered'])
+            ->sum('subtotal'),
+    ]]);
+}
 
     /* ── GET /api/seller/orders ── */
     public function index(Request $request)
@@ -307,7 +308,7 @@ $totalSellerNet        = $hasAnyCommission
 public function updateStatus(Request $request, $id)
 {
     $request->validate([
-        'status' => 'required|in:pending,processing,out_for_delivery,completed,delivered,cancelled',
+'status' => 'required|in:pending,confirmed,out_for_delivery,completed,delivered,cancelled',
     ]);
 
     $sellerId    = auth()->id();
@@ -393,27 +394,28 @@ private function createReviewPrompts(\App\Models\SellerOrder $sellerOrder): void
      * Derive and write the correct aggregate status to orders.status
      * based on the current state of all seller_orders for that order.
      */
-     private function syncParentOrderStatus(int $orderId): void
-   {
-       $statuses = SellerOrder::where('order_id', $orderId)->pluck('status')->toArray();
-       if (empty($statuses)) return;
-       $unique = array_unique($statuses);
+ private function syncParentOrderStatus(int $orderId): void
+{
+    $statuses = SellerOrder::where('order_id', $orderId)->pluck('status')->toArray();
+    if (empty($statuses)) return;
+    $unique = array_unique($statuses);
 
-       $derived = match(true) {
-           $unique === ['cancelled']
-               => 'cancelled',
-           $unique === ['delivered']
-               => 'delivered',
-           in_array('out_for_delivery', $statuses)
-               => 'out_for_delivery',                   // ← NEW
-           count(array_diff($unique, ['completed', 'delivered'])) === 0
-               => 'completed',
-           default => 'processing',
-       };
+    $derived = match(true) {
+        $unique === ['cancelled']
+            => 'cancelled',
+        $unique === ['delivered']
+            => 'delivered',
+        in_array('out_for_delivery', $statuses)
+            => 'out_for_delivery',
+        count(array_diff($unique, ['completed', 'delivered'])) === 0
+            => 'completed',
+        in_array('confirmed', $statuses)
+            => 'confirmed',   // ← NEW: at least one seller confirmed
+        default => 'pending', // ← was 'processing'
+    };
 
-       Order::where('id', $orderId)->update(['status' => $derived]);
-   }
-
+    Order::where('id', $orderId)->update(['status' => $derived]);
+}
     /* ── PATCH /api/seller/orders/{id}/payment ── */
     /* ── PATCH /api/seller/orders/{id}/payment ── */
 public function updatePayment(Request $request, $id)

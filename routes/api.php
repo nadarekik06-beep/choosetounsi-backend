@@ -99,7 +99,7 @@ Route::post('/ai/chat', [\App\Http\Controllers\Api\AiChatController::class, 'han
 
 Route::post('/search/text',  [\App\Http\Controllers\Api\SearchController::class, 'searchText']);
 Route::post('/search/image', [\App\Http\Controllers\Api\SearchController::class, 'searchImage']);
-
+Route::get('/search/suggestions', [\App\Http\Controllers\Api\SearchController::class, 'suggestions']);
 Route::get('/brand-products',          [PublicBrandProductController::class, 'index']);
 Route::get('/brand-products/featured', [PublicBrandProductController::class, 'featured']);
 Route::get('/brand-products/{slug}',   [PublicBrandProductController::class, 'show']);
@@ -451,6 +451,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/orders/{id}/status',        [AdminOrderController::class, 'updateStatus']);
         Route::patch('/orders/{id}/payment-status',[AdminOrderController::class, 'updatePaymentStatus']);
         Route::patch('/orders/{id}/confirm-payment',  [\App\Http\Controllers\Admin\OrderController::class, 'confirmPayment']);
+        Route::patch('/orders/{id}/confirm-order',     [AdminOrderController::class, 'confirmOrder']);
+        Route::patch('/orders/{id}/note',              [AdminOrderController::class, 'saveNote']);
 
         // ── Admin Notifications ───────────────────────────────────────────
         Route::prefix('notifications')->group(function () {

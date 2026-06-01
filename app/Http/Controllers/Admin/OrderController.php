@@ -72,115 +72,110 @@ class OrderController extends Controller
     /**
      * GET /api/admin/orders/{id}
      */
-public function show($id)
-{
-    $order = Order::with([
-        'user:id,name,email',
-        'items',
-        'items.product:id,name,slug,is_platform_product',
-        'items.product.primaryImage',
-        'items.variant:id,product_id,sku',
-        'items.variant.images',
-        'items.variant.attributeOptions.attribute:id,slug,name,type',
-        'sellerOrders',
-        'sellerOrders.seller:id,name,email',
-    ])->findOrFail($id);
+    public function show($id)
+    {
+        $order = Order::with([
+            'user:id,name,email',
+            'items',
+            'items.product:id,name,slug,is_platform_product',
+            'items.product.primaryImage',
+            'items.variant:id,product_id,sku',
+            'items.variant.images',
+            'items.variant.attributeOptions.attribute:id,slug,name,type',
+            'sellerOrders',
+            'sellerOrders.seller:id,name,email',
+        ])->findOrFail($id);
 
-    // ── Step 1: Resolve image, variant_options, is_platform_item ──────────
-    $order->items->each(function ($item) {
-        $item->resolved_image_url = $this->resolveItemImage($item);
+        $order->items->each(function ($item) {
+            $item->resolved_image_url = $this->resolveItemImage($item);
 
-        if ($item->variant && $item->variant->relationLoaded('attributeOptions')) {
-            $item->variant_options = $item->variant->attributeOptions
-                ->mapWithKeys(fn($o) => [
-                    $o->attribute->slug => [
-                        'value'     => $o->value,
-                        'color_hex' => $o->color_hex,
-                    ],
-                ]);
-        } else {
-            $item->variant_options = [];
+            if ($item->variant && $item->variant->relationLoaded('attributeOptions')) {
+                $item->variant_options = $item->variant->attributeOptions
+                    ->mapWithKeys(fn($o) => [
+                        $o->attribute->slug => [
+                            'value'     => $o->value,
+                            'color_hex' => $o->color_hex,
+                        ],
+                    ]);
+            } else {
+                $item->variant_options = [];
+            }
+
+            $item->is_platform_item = (bool) optional($item->product)->is_platform_product;
+        });
+
+        $returnedItemIds   = collect();
+        $exchangedItemIds  = collect();
+        $allItemsReturned  = false;
+        $allItemsExchanged = false;
+
+        $complaints = \App\Models\Complaint::where('order_id', $id)
+            ->where('status', \App\Models\Complaint::STATUS_APPROVED)
+            ->where('refund_status', \App\Models\Complaint::REFUND_STATUS_COMPLETED)
+            ->get(['id', 'order_item_ids', 'resolution_type']);
+
+        foreach ($complaints as $complaint) {
+            $ids        = $complaint->order_item_ids;
+            $isExchange = $complaint->resolution_type === \App\Models\Complaint::RESOLUTION_EXCHANGE;
+
+            if (is_null($ids) || empty($ids)) {
+                if ($isExchange) { $allItemsExchanged = true; }
+                else             { $allItemsReturned  = true; }
+                continue;
+            }
+            if ($isExchange) {
+                $exchangedItemIds = $exchangedItemIds->merge($ids);
+            } else {
+                $returnedItemIds = $returnedItemIds->merge($ids);
+            }
         }
 
-        $item->is_platform_item = (bool) optional($item->product)->is_platform_product;
-    });
+        $returnedItemIds  = $returnedItemIds->unique()->toArray();
+        $exchangedItemIds = $exchangedItemIds->unique()->toArray();
 
-    // ── Step 2: Detect returned / exchanged items ──────────────────────────
-    $returnedItemIds   = collect();
-    $exchangedItemIds  = collect();
-    $allItemsReturned  = false;
-    $allItemsExchanged = false;
+        $order->items->each(function ($item) use (
+            $returnedItemIds, $allItemsReturned,
+            $exchangedItemIds, $allItemsExchanged
+        ) {
+            $isReturned  = $allItemsReturned  || in_array($item->id, $returnedItemIds);
+            $isExchanged = $allItemsExchanged || in_array($item->id, $exchangedItemIds);
+            $item->item_status = $isReturned ? 'returned' : ($isExchanged ? 'exchanged' : null);
+            $item->is_returned = $isReturned;
+        });
 
-    $complaints = \App\Models\Complaint::where('order_id', $id)
-        ->where('status', \App\Models\Complaint::STATUS_APPROVED)
-        ->where('refund_status', \App\Models\Complaint::REFUND_STATUS_COMPLETED)
-        ->get(['id', 'order_item_ids', 'resolution_type']);
+        $nonReturnedItems = $order->items->filter(fn($i) => $i->item_status !== 'returned');
 
-    foreach ($complaints as $complaint) {
-        $ids        = $complaint->order_item_ids;
-        $isExchange = $complaint->resolution_type === \App\Models\Complaint::RESOLUTION_EXCHANGE;
+        $commissionSummary = [
+            'gross_total'      => round($nonReturnedItems->sum('total'),             3),
+            'total_commission' => round($nonReturnedItems->sum('commission_amount'), 3),
+            'total_seller'     => round($nonReturnedItems->sum('seller_amount'),     3),
+        ];
+        $order->setAttribute('commission_summary', $commissionSummary);
 
-        if (is_null($ids) || empty($ids)) {
-            if ($isExchange) { $allItemsExchanged = true; }
-            else             { $allItemsReturned  = true; }
-            continue;
-        }
-        if ($isExchange) {
-            $exchangedItemIds = $exchangedItemIds->merge($ids);
-        } else {
-            $returnedItemIds = $returnedItemIds->merge($ids);
-        }
+        $activeSubtotal = $order->sellerOrders
+            ->where('status', '!=', 'cancelled')
+            ->sum(fn($so) => (float) $so->subtotal);
+
+        $order->total_amount = round(
+            $activeSubtotal + (float) ($order->shipping_fee ?? 0),
+            3
+        );
+
+        $platformUserId = PlatformUser::id();
+        $order->has_platform_items = $platformUserId
+            ? $order->sellerOrders->contains('seller_id', $platformUserId)
+            : false;
+
+        return response()->json(['success' => true, 'data' => $order]);
     }
 
-    $returnedItemIds  = $returnedItemIds->unique()->toArray();
-    $exchangedItemIds = $exchangedItemIds->unique()->toArray();
-
-    // ── Step 3: Tag each item with item_status ─────────────────────────────
-    $order->items->each(function ($item) use (
-        $returnedItemIds, $allItemsReturned,
-        $exchangedItemIds, $allItemsExchanged
-    ) {
-        $isReturned  = $allItemsReturned  || in_array($item->id, $returnedItemIds);
-        $isExchanged = $allItemsExchanged || in_array($item->id, $exchangedItemIds);
-        $item->item_status = $isReturned ? 'returned' : ($isExchanged ? 'exchanged' : null);
-        $item->is_returned = $isReturned;
-    });
-
-    // ── Step 4: Commission summary (exclude returned items) ────────────────
-    $nonReturnedItems = $order->items->filter(fn($i) => $i->item_status !== 'returned');
-
-    $commissionSummary = [
-        'gross_total'      => round($nonReturnedItems->sum('total'),             3),
-        'total_commission' => round($nonReturnedItems->sum('commission_amount'), 3),
-        'total_seller'     => round($nonReturnedItems->sum('seller_amount'),     3),
-    ];
-    $order->setAttribute('commission_summary', $commissionSummary);
-
-    // ── Step 5: Fix total_amount (active subtotals + shipping) ────────────
-    $activeSubtotal = $order->sellerOrders
-        ->where('status', '!=', 'cancelled')
-        ->sum(fn($so) => (float) $so->subtotal);
-
-    $order->total_amount = round(
-        $activeSubtotal + (float) ($order->shipping_fee ?? 0),
-        3
-    );
-
-    // ── Step 6: Platform badge ─────────────────────────────────────────────
-    $platformUserId = PlatformUser::id();
-    $order->has_platform_items = $platformUserId
-        ? $order->sellerOrders->contains('seller_id', $platformUserId)
-        : false;
-
-    return response()->json(['success' => true, 'data' => $order]);
-}
     /**
      * PATCH /api/admin/orders/{id}/status
      */
     public function updateStatus(Request $request, $id)
     {
         $request->validate([
-            'status' => 'required|string|in:pending,processing,completed,cancelled,delivered,refunded',
+            'status' => 'required|string|in:pending,confirmed,completed,cancelled,delivered,refunded,out_for_delivery',
             'scope'  => 'nullable|string|in:all,platform,sellers',
         ]);
 
@@ -222,6 +217,118 @@ public function show($id)
                 'success' => false,
                 'message' => 'Failed to update status: ' . $e->getMessage(),
             ], 500);
+        }
+    }
+
+    /**
+     * PATCH /api/admin/orders/{id}/confirm-order
+     *
+     * Admin calls the client, writes a note, then confirms or cancels.
+     * pending → confirmed  (or cancelled)
+     */
+    /**
+ * PATCH /api/admin/orders/{id}/confirm-order
+ */
+public function confirmOrder(Request $request, $id)
+{
+    $request->validate([
+        'action'     => 'required|in:confirmed,cancelled',
+        'admin_note' => 'nullable|string|max:1000',
+    ]);
+
+    try {
+        $order = Order::findOrFail($id);
+
+        if (!in_array($order->status, ['pending'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only pending orders can be confirmed or cancelled via this endpoint.',
+            ], 422);
+        }
+
+        $newStatus  = $request->action;
+        $updateData = [
+            'status'     => $newStatus,
+            'admin_note' => $request->admin_note ?? $order->admin_note,
+            'updated_at' => now(),
+        ];
+
+        if ($newStatus === 'confirmed') {
+            $updateData['confirmed_at'] = now();
+        }
+
+        DB::table('orders')->where('id', $id)->update($updateData);
+
+        // Cascade to all seller sub-orders
+        DB::table('seller_orders')
+            ->where('order_id', $id)
+            ->update(['status' => $newStatus, 'updated_at' => now()]);
+
+        // ── Notify each seller whose sub-order is affected ────────────────
+        if ($newStatus === 'confirmed') {
+            $sellerIds = DB::table('seller_orders')
+                ->where('order_id', $id)
+                ->pluck('seller_id')
+                ->unique();
+
+            $orderNumber = $order->order_number ?? "#{$order->id}";
+            $adminNote   = $request->admin_note ?? null;
+
+            foreach ($sellerIds as $sellerId) {
+                $seller = \App\Models\User::find($sellerId);
+                if ($seller) {
+                    $seller->notify(
+                        new \App\Notifications\OrderConfirmedNotification(
+                            $order,
+                            $orderNumber,
+                            $adminNote
+                        )
+                    );
+                }
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => $newStatus === 'confirmed'
+                ? 'Order confirmed. Sellers have been notified.'
+                : 'Order cancelled.',
+            'data'    => Order::findOrFail($id),
+        ]);
+
+    } catch (\Throwable $e) {
+        Log::error('[AdminOrder::confirmOrder] ' . $e->getMessage(), ['order_id' => $id]);
+        return response()->json([
+            'success' => false,
+            'message' => 'Failed: ' . $e->getMessage(),
+        ], 500);
+    }
+}
+    /**
+     * PATCH /api/admin/orders/{id}/note
+     *
+     * Save or update the admin note without changing status.
+     */
+    public function saveNote(Request $request, $id)
+    {
+        $request->validate([
+            'admin_note' => 'required|string|max:1000',
+        ]);
+
+        try {
+            DB::table('orders')
+                ->where('id', $id)
+                ->update(['admin_note' => $request->admin_note, 'updated_at' => now()]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Note saved.',
+                'data'    => Order::findOrFail($id),
+            ]);
+
+        } catch (\Throwable $e) {
+            Log::error('[AdminOrder::saveNote] ' . $e->getMessage(), ['order_id' => $id]);
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
     }
 
@@ -285,7 +392,6 @@ public function show($id)
 
             $updateData = [
                 'payment_status' => 'paid',
-                'status'         => 'processing',
                 'updated_at'     => now(),
             ];
 
@@ -313,9 +419,6 @@ public function show($id)
 
     /**
      * GET /api/admin/orders/stats
-     *
-     * UPDATED: 'revenue' is now platform commission from paid orders only.
-     * Added 'platform_commission' and 'seller_payouts' for the admin dashboard.
      */
     public function stats(Request $request)
     {
@@ -328,7 +431,6 @@ public function show($id)
               )->count()
             : 0;
 
-        // ── Check if commission columns exist ─────────────────────────────────
         try {
             $itemCols      = DB::select("SHOW COLUMNS FROM order_items");
             $itemColNames  = array_map(fn($c) => $c->Field, $itemCols);
@@ -337,7 +439,6 @@ public function show($id)
             $hasCommission = false;
         }
 
-        // ── Platform commission = what admin earns from paid orders ───────────
         $platformCommission = 0;
         $sellerPayouts      = 0;
 
@@ -358,22 +459,20 @@ public function show($id)
             }
         }
 
-        // Gross revenue (full order totals for paid orders — kept for reference)
         $grossRevenue = (clone $base)->where('payment_status', 'paid')->sum('total_amount');
 
         return response()->json(['success' => true, 'data' => [
             'total'               => Order::count(),
             'pending'             => (clone $base)->where('status', 'pending')->count(),
-            'processing'          => (clone $base)->where('status', 'processing')->count(),
+            'confirmed'           => (clone $base)->where('status', 'confirmed')->count(),
             'completed'           => (clone $base)->where('status', 'completed')->count(),
             'delivered'           => (clone $base)->where('status', 'delivered')->count(),
             'cancelled'           => (clone $base)->where('status', 'cancelled')->count(),
-            // ── Revenue split ─────────────────────────────────────────────────
-            'revenue'             => round((float) $platformCommission, 3), // ← admin's actual earnings
-            'gross_revenue'       => round((float) $grossRevenue, 3),       // ← full order totals (for reference)
-            'platform_commission' => round((float) $platformCommission, 3), // ← same as revenue, explicit
-            'seller_payouts'      => round((float) $sellerPayouts, 3),      // ← what sellers receive
-            // ── Other ─────────────────────────────────────────────────────────
+            'out_for_delivery'    => (clone $base)->where('status', 'out_for_delivery')->count(),
+            'revenue'             => round((float) $platformCommission, 3),
+            'gross_revenue'       => round((float) $grossRevenue, 3),
+            'platform_commission' => round((float) $platformCommission, 3),
+            'seller_payouts'      => round((float) $sellerPayouts, 3),
             'platform_orders'     => $platformOrdersCount,
         ]]);
     }

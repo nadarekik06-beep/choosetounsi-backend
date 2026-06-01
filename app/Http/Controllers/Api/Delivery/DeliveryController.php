@@ -41,9 +41,10 @@ class DeliveryController extends Controller
      * GET /api/delivery/orders
      */
     public function readyOrders(Request $request)
-    {
-        $orders = SellerOrder::whereIn('status', ['processing', 'completed'])
-            ->whereDoesntHave('deliveryAssignment')
+{
+    $orders = SellerOrder::where('status', 'completed')
+        ->whereDoesntHave('deliveryAssignment')
+
             ->with([
                 'order.user:id,name,email',
                 'items.product:id,name',
@@ -91,7 +92,7 @@ class DeliveryController extends Controller
         return response()->json([
             'success' => true,
             'data'    => [
-                'ready_for_pickup' => SellerOrder::whereIn('status', ['processing', 'completed'])
+                'ready_for_pickup' => SellerOrder::where('status', 'completed')
                     ->whereDoesntHave('deliveryAssignment')->count(),
                 'assigned'         => DeliveryAssignment::where('status', 'assigned')->count(),
                 'picked_up'        => DeliveryAssignment::where('status', 'picked_up')->count(),
@@ -117,10 +118,10 @@ class DeliveryController extends Controller
 
         $sellerOrder = SellerOrder::findOrFail($id);
 
-        if (!in_array($sellerOrder->status, ['processing', 'completed'])) {
+if ($sellerOrder->status !== 'completed') {
             return response()->json([
                 'success' => false,
-                'message' => 'Only orders with status "processing" or "completed" can be assigned.',
+                'message' => 'Only orders with status "completed" can be assigned.',
             ], 422);
         }
 
@@ -369,7 +370,7 @@ class DeliveryController extends Controller
             count(array_diff($unique, ['completed', 'delivered'])) === 0
                 => 'completed',
             default
-                => 'processing',
+                => 'pending',
         };
 
         Order::where('id', $orderId)->update(['status' => $derived]);
