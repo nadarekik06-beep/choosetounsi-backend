@@ -218,23 +218,26 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
     private function doStore(Request $request)
     {
         Log::info('[SellerProduct::store] START', [
-            'has_images'       => $request->hasFile('images'),
-            'has_color_images' => $request->hasFile('color_images'),
+            'has_images'       => !empty($allFiles['images']),
+            'has_color_images' => !empty($allFiles['color_images']),
             'has_variants'     => !empty($request->input('variants')),
             'name'             => $request->input('name'),
-        ]);
+]);
 
-        try {
-            $request->validate([
-                'name'        => 'required|string|max:255',
-                'price'       => 'required|numeric|min:0',
-                'stock'       => 'required|integer|min:0',
-                'category_id' => 'required|exists:categories,id',
-            ]);
-        } catch (\Throwable $e) {
-            Log::error('[SellerProduct::store] VALIDATION FAILED', ['error' => $e->getMessage()]);
-            throw $e;
-        }
+       try {
+    $request->validate([
+        'name'        => 'required|string|max:255',
+        'price'       => 'required|numeric|min:0',
+        'stock'       => 'required|integer|min:0',
+        'category_id' => 'required|exists:categories,id',
+    ]);
+} catch (\Throwable $e) {
+    Log::error('[SellerProduct::store] VALIDATION FAILED', ['error' => $e->getMessage()]);
+    throw $e;
+}
+
+// ── Image presence check (outside try/catch) ──────────────────────────────
+
 
         $seller   = $request->user();
         $isActive = filter_var($request->input('is_active', true), FILTER_VALIDATE_BOOLEAN);
@@ -823,6 +826,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         return $slug;
     }
 
+    
     private function notifyAdmins(string $action, $product, $seller): void
     {
         try {

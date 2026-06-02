@@ -49,7 +49,7 @@ class CheckoutController extends Controller
         $request->validate([
             'wilaya'         => 'required|string|max:255',
             'address'        => 'required|string|max:500',
-            'phone'          => 'required|string|max:30',
+            'phone' => ['required', 'string', 'regex:/^((\+216|00216)\s?)?[2459][0-9]{7}$/', 'max:20'],
             'notes'          => 'nullable|string|max:1000',
             'payment_method' => 'nullable|string|in:cod,card,d17,wallet',
             'item_ids'       => 'nullable|array',
@@ -453,8 +453,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             'quantity'       => 'required|integer|min:1|max:100',
             'wilaya'         => 'required|string|max:255',
             'address'        => 'required|string|max:500',
-            'phone'          => 'required|string|max:30',
-            'notes'          => 'nullable|string|max:1000',
+            'phone' => ['required', 'string', 'regex:/^((\+216|00216)\s?)?[2459][0-9]{7}$/', 'max:20'],            'notes'          => 'nullable|string|max:1000',
             'payment_method' => 'nullable|string|in:cod,card,d17,wallet',
         ]);
 
