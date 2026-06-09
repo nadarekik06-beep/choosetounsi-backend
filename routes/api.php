@@ -186,10 +186,12 @@ Route::middleware('auth:sanctum')->group(function () {
     |----------------------------------------------------------------------
     */
     Route::prefix('seller')->group(function () {
-
-        // ── Subscription ──────────────────────────────────────────────────
-        Route::get('/subscription',          [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'show']);
-        Route::post('/subscription/upgrade', [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'upgrade']);
+ // ── Subscription (full lifecycle) ─────────────────────────────────────
+    Route::get('/subscription',                [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'show']);
+    Route::post('/subscription/upgrade',       [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'upgrade']);
+    Route::post('/subscription/downgrade',     [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'downgrade']);    // NEW
+    Route::delete('/subscription/downgrade',   [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'cancelDowngrade']); // NEW
+    Route::get('/subscription/history',        [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'history']);
         //----─ Commission Calculation (for frontend preview) ─────────────────────────
         Route::post('/commission/calculate', [CommissionController::class, 'calculate']);
 
@@ -518,7 +520,17 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('{id}',         [SettlementController::class, 'show']);
         Route::post('{id}/confirm',[SettlementController::class, 'confirm']);
         Route::post('{id}/cancel', [SettlementController::class, 'cancel']);
+// ── Subscription Management (NEW) 
+        Route::prefix('subscriptions')->group(function () {
+        Route::get('/',                             [\App\Http\Controllers\Admin\AdminSubscriptionController::class, 'index']);
+        Route::get('/{sellerId}',                   [\App\Http\Controllers\Admin\AdminSubscriptionController::class, 'show']);
+        Route::post('/{sellerId}/force-plan',       [\App\Http\Controllers\Admin\AdminSubscriptionController::class, 'forcePlan']);
+        Route::post('/{sellerId}/suspend',          [\App\Http\Controllers\Admin\AdminSubscriptionController::class, 'suspend']);
+        Route::post('/{sellerId}/reinstate',        [\App\Http\Controllers\Admin\AdminSubscriptionController::class, 'reinstate']);
     });
+ 
+});
+    
 
     }); // ← admin group ends HERE
 

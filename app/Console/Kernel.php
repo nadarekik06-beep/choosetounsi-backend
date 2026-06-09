@@ -16,6 +16,8 @@ class Kernel extends ConsoleKernel
     protected $commands = [
         \App\Console\Commands\BlackDailyNotify::class,
         \App\Console\Commands\BackfillSellerOrderFinancials::class,
+        \App\Console\Commands\SubscriptionSchedulerCommand::class,
+        
 
     ];
 
@@ -23,7 +25,16 @@ class Kernel extends ConsoleKernel
      * Define the application's command schedule.
      */
     protected function schedule(Schedule $schedule)
-    {
+    {   $schedule->command('subscriptions:process')
+       ->dailyAt('02:00')          // run at 2am — low traffic time
+       ->withoutOverlapping()
+       ->runInBackground()
+       ->onSuccess(function () {
+           \Illuminate\Support\Facades\Log::info('[Kernel] subscriptions:process OK');
+       })
+       ->onFailure(function () {
+           \Illuminate\Support\Facades\Log::error('[Kernel] subscriptions:process FAILED');
+       });
         // ── Promotions sync (existing) ─────────────────────────────────────
         $schedule->command('promotions:sync')->everyMinute();
 
