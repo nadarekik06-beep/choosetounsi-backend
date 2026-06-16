@@ -325,33 +325,39 @@ class ProductRecommendationController extends Controller
 // AFTER — add variant_images before stripping variants:
 private function transformCollection($products): array
 {
-    // Collect all product IDs to batch-load their color images
     $productIds = $products->pluck('id')->toArray();
 
-    // Batch load all color-keyed images for these products in ONE query
     $allColorImages = \App\Models\ProductImage::whereIn('product_id', $productIds)
         ->whereNotNull('color_option_id')
         ->select('product_id', 'image_path')
         ->get()
         ->groupBy('product_id');
 
-    return $products->map(function ($p) use ($allColorImages) {
+    // Resolve once outside the loop
+    $promotionService = app(\App\Services\PromotionService::class);
+
+    return $products->map(function ($p) use ($allColorImages, $promotionService) {
         $p->primary_image_url  = $p->primaryImage
             ? Storage::url($p->primaryImage->image_path)
             : null;
         $p->is_sponsored       = (bool) ($p->is_sponsored ?? false);
         $p->sponsored_priority = (int)  ($p->sponsored_priority ?? 0);
 
-        // Collect unique variant image URLs from color_option_id images
+        // Variant images
         $variantImages = [];
-        $colorImgs = $allColorImages->get($p->id, collect());
-        foreach ($colorImgs as $img) {
+        foreach ($allColorImages->get($p->id, collect()) as $img) {
             $url = Storage::url($img->image_path);
             if (!in_array($url, $variantImages, true)) {
                 $variantImages[] = $url;
             }
         }
         $p->variant_images = $variantImages;
+
+        // Promotion data + effective price
+        $promoData          = $promotionService->getEffectivePrice($p);
+        $p->effective_price = $promoData['effective_price'];
+        $p->discount_amount = $promoData['discount_amount'];
+        $p->promotion       = $promoData['promotion'];
 
         if ($p->relationLoaded('variants')) {
             $p->setRelation(

@@ -68,11 +68,22 @@ class SellerPromotionController extends Controller
             return response()->json(['success' => false, 'errors' => $e->errors()], 422);
         }
 
-        // Business rule validation
-        $errors = $this->promoService->validate($validated, $validated['type']);
-        if (!empty($errors)) {
-            return response()->json(['success' => false, 'message' => implode(' ', $errors)], 422);
+        // Business rule validation — return as field-keyed errors so frontend shows inline
+$businessErrors = $this->promoService->validate($validated, $validated['type']);
+if (!empty($businessErrors)) {
+    // Map each error message to the relevant field
+    $fieldErrors = [];
+    foreach ($businessErrors as $msg) {
+        if (str_contains($msg, 'hour') || str_contains($msg, 'day') || str_contains($msg, 'exceed')) {
+            $fieldErrors['ends_at'][] = $msg;
+        } elseif (str_contains($msg, 'discount') || str_contains($msg, '%')) {
+            $fieldErrors['discount_value'][] = $msg;
+        } else {
+            $fieldErrors['general'][] = $msg;
         }
+    }
+    return response()->json(['success' => false, 'errors' => $fieldErrors], 422);
+}
 
         // Verify seller owns all products
         $productIds = array_unique($request->product_ids);

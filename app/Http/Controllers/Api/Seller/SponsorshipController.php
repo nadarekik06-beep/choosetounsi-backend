@@ -379,101 +379,116 @@ class SponsorshipController extends Controller
     // GET /api/sponsored-products  (PUBLIC — no auth)
     // =========================================================================
 
-    public function publicFeed(Request $request): JsonResponse
-    {
-        try { Sponsorship::expireOverdue(); } catch (\Throwable $e) {}
+// =========================================================================
+// GET /api/sponsored-products  (PUBLIC — no auth)
+// =========================================================================
 
-        $limit      = min((int) $request->query('limit', 12), 40);
-        $catSlug    = $request->query('category_slug');
-        $minResults = max(1, (int) $request->query('min_results', 2));
+public function publicFeed(Request $request): JsonResponse
+{
+    try { Sponsorship::expireOverdue(); } catch (\Throwable $e) {}
 
-        $user  = $request->user();
-        $prefs = null;
+    $limit      = min((int) $request->query('limit', 12), 40);
+    $catSlug    = $request->query('category_slug');
+    $minResults = max(1, (int) $request->query('min_results', 2));
 
-        if ($user) {
-            $prefs = \App\Models\UserPreference::where('user_id', $user->id)->first();
-        }
+    $user  = $request->user();
+    $prefs = null;
 
-        $query = Product::available()
-            ->where('is_sponsored', true)
-            ->with([
-                'category:id,name,slug',
-                'primaryImage',
-                'seller:id,name',
-                'sponsorships' => fn($q) => $q->where('status', 'active')
-                    ->select('id', 'product_id', 'ai_ad_copy', 'ai_tags', 'boost_score', 'end_at',
-                             'target_gender', 'target_wilaya_ids', 'target_category_ids',
-                             'target_price_min', 'target_price_max'),
-            ])
-            ->orderByDesc('sponsored_priority')
-            ->orderByDesc('sponsored_at');
-
-        if ($catSlug) {
-            $query->whereHas('category', fn($q) => $q->where('slug', $catSlug));
-        }
-
-        $allSponsored = $query->take(100)->get();
-
-        $targeted = $allSponsored->filter(function ($product) use ($user, $prefs) {
-            $sponsorship = $product->sponsorships->first();
-            if (!$sponsorship) return true;
-            return $sponsorship->matchesUser($user, $prefs);
-        })->values();
-
-        if ($targeted->count() < $minResults) {
-            $excludeIds = $targeted->pluck('id')->toArray();
-            $relaxed    = $allSponsored
-                ->whereNotIn('id', $excludeIds)
-                ->take($limit - $targeted->count())
-                ->values();
-            $targeted = $targeted->concat($relaxed)->values();
-        }
-
-        if ($targeted->count() < $minResults) {
-            $excludeIds   = $targeted->pluck('id')->toArray();
-            $nonSponsored = Product::available()
-                ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name'])
-                ->when($catSlug, fn($q) => $q->whereHas('category', fn($q2) => $q2->where('slug', $catSlug)))
-                ->whereNotIn('id', $excludeIds)
-                ->orderByDesc('views')
-                ->take($limit - $targeted->count())
-                ->get();
-            $targeted = $targeted->concat($nonSponsored)->values();
-        }
-
-    // AFTER:
-// Batch-load color images for all products in one query
-$productIds = $targeted->take($limit)->pluck('id')->toArray();
-$allColorImages = \App\Models\ProductImage::whereIn('product_id', $productIds)
-    ->whereNotNull('color_option_id')
-    ->select('product_id', 'image_path')
-    ->get()
-    ->groupBy('product_id');
-
-$products = $targeted->take($limit)->map(function ($p) use ($allColorImages) {
-    $p->primary_image_url = $p->primaryImage
-        ? Storage::url($p->primaryImage->image_path)
-        : null;
-    $p->is_sponsored = (bool) ($p->is_sponsored ?? false);
-    $p->sponsor_data = $p->sponsorships->first();
-    unset($p->sponsorships);
-
-    // Collect unique variant images from color-keyed images
-    $variantImages = [];
-    foreach ($allColorImages->get($p->id, collect()) as $img) {
-        $url = Storage::url($img->image_path);
-        if (!in_array($url, $variantImages, true)) {
-            $variantImages[] = $url;
-        }
-    }
-    $p->variant_images = $variantImages;
-
-    return $p;
-});
-
-        return response()->json(['success' => true, 'data' => $products]);
+    if ($user) {
+        $prefs = \App\Models\UserPreference::where('user_id', $user->id)->first();
     }
 
+    $query = Product::available()
+        ->where('is_sponsored', true)
+        ->with([
+            'category:id,name,slug',
+            'primaryImage',
+            'seller:id,name',
+            'sponsorships' => fn($q) => $q->where('status', 'active')
+                ->select('id', 'product_id', 'ai_ad_copy', 'ai_tags', 'boost_score', 'end_at',
+                         'target_gender', 'target_wilaya_ids', 'target_category_ids',
+                         'target_price_min', 'target_price_max'),
+        ])
+        ->orderByDesc('sponsored_priority')
+        ->orderByDesc('sponsored_at');
+
+    if ($catSlug) {
+        $query->whereHas('category', fn($q) => $q->where('slug', $catSlug));
+    }
+
+    $allSponsored = $query->take(100)->get();
+
+    $targeted = $allSponsored->filter(function ($product) use ($user, $prefs) {
+        $sponsorship = $product->sponsorships->first();
+        if (!$sponsorship) return true;
+        return $sponsorship->matchesUser($user, $prefs);
+    })->values();
+
+    if ($targeted->count() < $minResults) {
+        $excludeIds = $targeted->pluck('id')->toArray();
+        $relaxed    = $allSponsored
+            ->whereNotIn('id', $excludeIds)
+            ->take($limit - $targeted->count())
+            ->values();
+        $targeted = $targeted->concat($relaxed)->values();
+    }
+
+    if ($targeted->count() < $minResults) {
+        $excludeIds   = $targeted->pluck('id')->toArray();
+        $nonSponsored = Product::available()
+            ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name'])
+            ->when($catSlug, fn($q) => $q->whereHas('category', fn($q2) => $q2->where('slug', $catSlug)))
+            ->whereNotIn('id', $excludeIds)
+            ->orderByDesc('views')
+            ->take($limit - $targeted->count())
+            ->get();
+        $targeted = $targeted->concat($nonSponsored)->values();
+    }
+
+    // ── Batch-load color images once for all products ─────────────────────
+    $productIds = $targeted->take($limit)->pluck('id')->toArray();
+
+    $allColorImages = \App\Models\ProductImage::whereIn('product_id', $productIds)
+        ->whereNotNull('color_option_id')
+        ->select('product_id', 'image_path')
+        ->get()
+        ->groupBy('product_id');
+
+    // Resolve PromotionService once outside the loop
+    $promotionService = app(\App\Services\PromotionService::class);
+
+    // ── Map products ──────────────────────────────────────────────────────
+    $products = $targeted->take($limit)->map(
+        function ($p) use ($allColorImages, $promotionService) {
+
+        $p->primary_image_url = $p->primaryImage
+            ? Storage::url($p->primaryImage->image_path)
+            : null;
+        $p->is_sponsored  = (bool) ($p->is_sponsored ?? false);
+        $p->sponsor_data  = $p->sponsorships->first();
+        unset($p->sponsorships);
+
+        // Variant images
+        $variantImages = [];
+        foreach ($allColorImages->get($p->id, collect()) as $img) {
+            $url = Storage::url($img->image_path);
+            if (!in_array($url, $variantImages, true)) {
+                $variantImages[] = $url;
+            }
+        }
+        $p->variant_images = $variantImages;
+
+        // Promotion data + effective price
+        $promoData          = $promotionService->getEffectivePrice($p);
+        $p->effective_price = $promoData['effective_price'];
+        $p->discount_amount = $promoData['discount_amount'];
+        $p->promotion       = $promoData['promotion'];
+
+        return $p;
+    });
+
+    return response()->json(['success' => true, 'data' => $products]);
+}
     // =========================================================================
     // POST /api/seller/sponsorships/{id}/impression
     // =========================================================================
