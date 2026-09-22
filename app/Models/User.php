@@ -110,6 +110,31 @@ class User extends Authenticatable
                      ->get();
     }
 
+    /**
+     * Store branding for this seller — business_name, avatar and cover photo,
+     * resolved from the latest approved SellerApplication with a fallback to
+     * the plain account name/avatar. Single source of truth: every place that
+     * shows this seller's storefront identity (product pages, seller page,
+     * recommendations) must read it from here rather than re-deriving it.
+     */
+    public function storefrontBranding(): array
+    {
+        $application = SellerApplication::where('user_id', $this->id)
+            ->approved()
+            ->latest()
+            ->first();
+
+        return [
+            'business_name' => $application?->business_name ?? $this->name,
+            'avatar'        => $application?->profile_picture
+                ? \Illuminate\Support\Facades\Storage::url($application->profile_picture)
+                : $this->avatar,
+            'cover_photo'   => $application?->cover_photo
+                ? \Illuminate\Support\Facades\Storage::url($application->cover_photo)
+                : null,
+        ];
+    }
+
     public function deliveryCompanyProfile(): \Illuminate\Database\Eloquent\Relations\HasOne
     {
         return $this->hasOne(DeliveryCompanyProfile::class);

@@ -30,10 +30,14 @@ class SellerOrder extends Model
         'status',
         'payment_status',
         'subtotal',
+        'coupon_id',
+        'coupon_code',
+        'discount_amount',
     ];
 
     protected $casts = [
-        'subtotal' => 'decimal:3',
+        'subtotal'        => 'decimal:3',
+        'discount_amount' => 'decimal:3',
     ];
 
     // ── Relationships ──────────────────────────────────────────────────────
@@ -54,6 +58,11 @@ class SellerOrder extends Model
     public function items()
     {
         return $this->hasMany(OrderItem::class, 'seller_order_id');
+    }
+
+    public function coupon()
+    {
+        return $this->belongsTo(Coupon::class);
     }
 
     // ── Scopes ─────────────────────────────────────────────────────────────

@@ -28,10 +28,10 @@ return new class extends Migration
         DB::statement("SET SESSION sql_mode = ''");
 
         // Add 'confirmed' to the orders status ENUM
-        DB::statement("ALTER TABLE orders MODIFY COLUMN status ENUM(
-            'pending','confirmed','completed','delivered',
-            'out_for_delivery','cancelled','refunded'
-        ) NOT NULL DEFAULT 'pending'");
+       DB::statement("ALTER TABLE orders MODIFY COLUMN status ENUM(
+    'pending','processing','confirmed','completed','delivered',
+    'out_for_delivery','cancelled','refunded'
+) NOT NULL DEFAULT 'pending'");
 
         // Add 'confirmed' to seller_orders status ENUM too
         DB::statement("ALTER TABLE seller_orders MODIFY COLUMN status ENUM(

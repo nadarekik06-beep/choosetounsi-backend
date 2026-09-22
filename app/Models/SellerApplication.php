@@ -24,6 +24,7 @@ class SellerApplication extends Model
         'wilaya',
         'city',
         'profile_picture',
+        'cover_photo',
         'sample_images',
         'sample_captions',
         'facebook_url',

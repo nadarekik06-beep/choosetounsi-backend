@@ -12,6 +12,8 @@ use App\Http\Controllers\Api\Client\CartController;
 use App\Http\Controllers\Api\Client\FavoriteController;
 use App\Http\Controllers\Api\Client\CheckoutController;
 use App\Http\Controllers\Api\Seller\SellerDashboardController;
+use App\Http\Controllers\Api\Seller\SellerStoreProfileController;
+use App\Http\Controllers\Api\Client\SellerFollowController;
 use App\Http\Controllers\Api\Seller\SellerProductController;
 use App\Http\Controllers\Api\Seller\SellerOrderController;
 use App\Http\Controllers\Api\Seller\ProductUpdateRequestController as SellerProductUpdateRequestController;
@@ -47,7 +49,9 @@ use App\Http\Controllers\Api\ProductRecommendationController;
 use App\Http\Controllers\Api\Seller\SellerPackController;
 use App\Http\Controllers\Api\PublicPackController;
 use App\Http\Controllers\Api\Seller\SellerPromotionController;
+use App\Http\Controllers\Api\Seller\SellerCouponController;
 use App\Http\Controllers\Api\PublicPromotionController;
+use App\Http\Controllers\Api\PublicSellerController;
 use App\Http\Controllers\Api\Seller\CommissionController;
 use App\Http\Controllers\Api\Delivery\DeliveryAuthController;
 use App\Http\Controllers\Api\Seller\SellerForecastController;
@@ -120,6 +124,7 @@ Route::get('/packs/{slug}', [PublicPackController::class, 'show']);
 Route::get('/flash-sales', [PublicPromotionController::class, 'flashSales']);
 Route::get('/discounts', [PublicPromotionController::class, 'discounts']);
 Route::get('/promotions/product/{productId}', [PublicPromotionController::class, 'forProduct']);
+Route::get('/sellers/{id}', [PublicSellerController::class, 'show']);
 Route::post('/delivery/register', [DeliveryAuthController::class, 'register']);
 Route::post('/auth/forgot-password', [AuthController::class, 'forgotPassword']);
 Route::post('/auth/reset-password',  [AuthController::class, 'resetPassword']);
@@ -162,11 +167,18 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/{id}', [CartController::class, 'destroy']);
     });
 
+    Route::post('/coupons/validate', [\App\Http\Controllers\Api\Client\CouponController::class, 'preview']);
+
     Route::prefix('favorites')->group(function () {
         Route::get('/',                  [FavoriteController::class, 'index']);
         Route::post('/',                 [FavoriteController::class, 'store']);
         Route::delete('/{productId}',    [FavoriteController::class, 'destroy']);
         Route::get('/check/{productId}', [FavoriteController::class, 'check']);
+    });
+
+    Route::prefix('seller-follows')->group(function () {
+        Route::post('/{sellerId}',       [SellerFollowController::class, 'store']);
+        Route::get('/check/{sellerId}',  [SellerFollowController::class, 'check']);
     });
 
     Route::post('/checkout',         [CheckoutController::class, 'store']);
@@ -242,6 +254,10 @@ Route::middleware('auth:sanctum')->group(function () {
 
         Route::get('/dashboard', [SellerDashboardController::class, 'index']);
 
+        // ── Store profile (branding) ─────────────────────────────────────────
+        Route::get('/store-profile',              [SellerStoreProfileController::class, 'show']);
+        Route::post('/store-profile/cover-photo', [SellerStoreProfileController::class, 'updateCoverPhoto']);
+
         // ── Products ──────────────────────────────────────────────────────
         Route::get('/products/stats',   [SellerProductController::class, 'stats']);
         Route::get('/products',         [SellerProductController::class, 'index']);
@@ -301,6 +317,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/promotions/{id}',     [SellerPromotionController::class, 'show']);
         Route::put('/promotions/{id}',     [SellerPromotionController::class, 'update']);
         Route::delete('/promotions/{id}',  [SellerPromotionController::class, 'destroy']);
+
+        // ── Coupons ───────────────────────────────────────────────────────
+        Route::get('/coupons/stats',       [SellerCouponController::class, 'stats']);
+        Route::get('/coupons',             [SellerCouponController::class, 'index']);
+        Route::post('/coupons',            [SellerCouponController::class, 'store']);
+        Route::get('/coupons/{id}',        [SellerCouponController::class, 'show']);
+        Route::put('/coupons/{id}',        [SellerCouponController::class, 'update']);
+        Route::delete('/coupons/{id}',     [SellerCouponController::class, 'destroy']);
 
 
                 

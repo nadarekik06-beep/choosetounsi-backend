@@ -3,9 +3,12 @@
 namespace App\Services;
 
 use App\Models\Product;
+use App\Models\ProductImage;
 use App\Models\Promotion;
 use Carbon\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Storage;
 
 class PromotionService
 {
@@ -96,6 +99,96 @@ class PromotionService
             'flash_stock_remaining' => $promo->flashStockRemaining(),
             'is_flash_sale'         => $promo->type === 'flash_sale',
         ];
+    }
+
+    /**
+     * Active promotions (flash_sale + discount) with their products, formatted
+     * for public API responses. Shared by /flash-sales, /discounts, and the
+     * seller storefront endpoint so the discount/pricing shape is computed
+     * in exactly one place.
+     *
+     * @param \Closure|null $filter Optional extra constraint on the Promotion query,
+     *                              e.g. fn($q) => $q->where('type', 'flash_sale')
+     *                              or   fn($q) => $q->where('seller_id', $id)
+     */
+    public function getActivePromotionsFormatted(?\Closure $filter = null): Collection
+    {
+        $now = now();
+
+        $query = Promotion::where('status', 'active')
+            ->where('starts_at', '<=', $now)
+            ->where('ends_at', '>', $now)
+            ->with([
+                'products' => fn ($q) => $q
+                    ->where('is_approved', true)
+                    ->where('is_active', true)
+                    ->with(['primaryImage', 'seller:id,name']),
+            ]);
+
+        if ($filter) {
+            $filter($query);
+        }
+
+        $promotions = $query
+            ->orderByDesc('priority')
+            ->orderBy('ends_at')
+            ->get();
+
+        $allProductIds = $promotions->flatMap(fn ($promo) => $promo->products->pluck('id'))->unique()->toArray();
+        $allColorImages = ProductImage::whereIn('product_id', $allProductIds)
+            ->whereNotNull('color_option_id')
+            ->select('product_id', 'image_path')
+            ->get()
+            ->groupBy('product_id');
+
+        return $promotions->map(function ($promo) use ($allColorImages) {
+            $products = $promo->products->map(function ($product) use ($allColorImages) {
+                $promoData = $this->getEffectivePrice($product);
+
+                $variantImages = [];
+                foreach ($allColorImages->get($product->id, collect()) as $img) {
+                    $url = Storage::url($img->image_path);
+                    if (!in_array($url, $variantImages, true)) {
+                        $variantImages[] = $url;
+                    }
+                }
+
+                return [
+                    'id'                => $product->id,
+                    'name'              => $product->name,
+                    'slug'              => $product->slug,
+                    'price'             => (float) $product->price,
+                    'original_price'    => (float) $product->price,
+                    'effective_price'   => $promoData['effective_price'],
+                    'discount_amount'   => $promoData['discount_amount'],
+                    'primary_image_url' => $product->primary_image_url,
+                    'variant_images'    => $variantImages,
+                    'stock'             => $product->stock,
+                    'seller'            => $product->seller
+                        ? ['name' => $product->seller->name]
+                        : null,
+                ];
+            })->filter(fn ($p) => $p['stock'] > 0)->values();
+
+            if ($products->isEmpty()) return null;
+
+            return [
+                'id'                    => $promo->id,
+                'name'                  => $promo->name,
+                'type'                  => $promo->type,
+                'discount_type'         => $promo->discount_type,
+                'discount_value'        => (float) $promo->discount_value,
+                'discount_label'        => $promo->discount_type === 'percentage'
+                                             ? (int) $promo->discount_value . '% OFF'
+                                             : number_format($promo->discount_value, 3) . ' DT OFF',
+                'ends_at'               => $promo->ends_at->toISOString(),
+                'flash_stock'           => $promo->flash_stock,
+                'flash_stock_remaining' => $promo->flashStockRemaining(),
+                'products'              => $products,
+            ];
+        })
+        ->filter()
+        ->values();
     }
 
     /**

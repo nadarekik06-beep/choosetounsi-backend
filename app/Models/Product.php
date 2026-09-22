@@ -110,6 +110,16 @@ class Product extends Model
         return $this->hasMany(\App\Models\Sponsorship::class);
     }
 
+    public function coupons()
+    {
+        return $this->belongsToMany(Coupon::class, 'coupon_products');
+    }
+
+    public function reviews()
+    {
+        return $this->hasMany(\App\Models\Review::class);
+    }
+
     public function activeSponsorship()
     {
         return $this->hasOne(\App\Models\Sponsorship::class)

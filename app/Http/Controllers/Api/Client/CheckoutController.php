@@ -11,7 +11,9 @@ use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\SellerApplication;
 use App\Models\SellerOrder;
+use App\Models\Coupon;
 use App\Services\CommissionService;
+use App\Services\CouponService;
 use App\Services\FinancialSnapshotService;
 use App\Services\WalletService;
 use App\Services\StockAlertService;
@@ -33,6 +35,7 @@ class CheckoutController extends Controller
         private CommissionService        $commissionService,
         private FinancialSnapshotService $financialSnapshot,
         private UserPreferenceService    $preferenceService, // ← ADD THIS LINE
+        private CouponService            $couponService,
     ) {}
 
     /**
@@ -54,6 +57,8 @@ class CheckoutController extends Controller
             'payment_method' => 'nullable|string|in:cod,card,d17,wallet',
             'item_ids'       => 'nullable|array',
             'item_ids.*'     => 'integer',
+            'coupon_codes'   => 'nullable|array',
+            'coupon_codes.*' => 'string',
             ]);
 
         $user = $request->user();
@@ -113,8 +118,62 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         }
 
         $sellerCol       = $this->getSellerCol();
-        $total           = $this->calculateCartTotal($cartItems);
         $sellerPlanCache = [];
+
+        $productRows = $cartItems->filter(fn($i) => !$i->isPack());
+        $packRows    = $cartItems->filter(fn($i) =>  $i->isPack());
+
+        // Coupons never apply to packs (same precedent as Promotion pricing —
+        // packs are priced as a fixed bundle, not per-product).
+        $groupedBySeller = $productRows->groupBy(function ($item) use ($sellerCol) {
+            $sid = $item->product->{$sellerCol};
+            return $sid !== null ? $sid : 'platform';
+        });
+
+        // ── Resolve + validate any submitted coupon codes, one per seller ──────
+        // Rejects the whole checkout with a clear message if any code is invalid,
+        // rather than silently dropping it — the customer typed it expecting it
+        // to apply.
+        $resolvedCoupons = []; // sellerId => ['coupon' => Coupon, 'discount' => float]
+        $couponCodes = array_filter(array_unique($request->input('coupon_codes', [])));
+
+        foreach ($couponCodes as $rawCode) {
+            $code   = strtoupper($rawCode);
+            $coupon = Coupon::where('code', $code)->first();
+
+            if (!$coupon) {
+                return response()->json(['success' => false, 'message' => "Coupon \"{$rawCode}\" is invalid."], 422);
+            }
+            if (isset($resolvedCoupons[$coupon->seller_id])) {
+                return response()->json(['success' => false, 'message' => 'Only one coupon can be applied per seller.'], 422);
+            }
+
+            $sellerItems = $groupedBySeller->get($coupon->seller_id, collect());
+            $items = $sellerItems->map(function ($item) {
+                $basePrice = $item->variant
+                    ? (float) ($item->variant->price_override ?? $item->product->price)
+                    : (float) $item->product->price;
+                $priceData = $this->promoService->getEffectivePrice($item->product, $basePrice);
+                return [
+                    'product_id' => $item->product_id,
+                    'quantity'   => $item->quantity,
+                    'line_total' => round($priceData['effective_price'] * $item->quantity, 3),
+                ];
+            })->values()->all();
+
+            $result = $this->couponService->validateForSeller($code, $coupon->seller_id, $user->id, $items);
+            if (!$result['valid']) {
+                return response()->json(['success' => false, 'message' => $result['message']], 422);
+            }
+
+            $resolvedCoupons[$coupon->seller_id] = [
+                'coupon'   => $result['coupon'],
+                'discount' => $result['discount_amount'],
+            ];
+        }
+
+        $totalDiscount = round(array_sum(array_column($resolvedCoupons, 'discount')), 3);
+        $total = round($this->calculateCartTotal($cartItems) - $totalDiscount, 3);
 
         if ($paymentMethod === 'wallet') {
             if ((float) $user->wallet_balance < $total) {
@@ -140,17 +199,9 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 'notes'          => $request->notes ?? null,
             ]);
 
-            $productRows = $cartItems->filter(fn($i) => !$i->isPack());
-            $packRows    = $cartItems->filter(fn($i) =>  $i->isPack());
-
             // ── A) Regular product rows ───────────────────────────────────────
             // UNCHANGED — product commission logic is correct as-is.
             if ($productRows->isNotEmpty()) {
-                $groupedBySeller = $productRows->groupBy(function ($item) use ($sellerCol) {
-                    $sid = $item->product->{$sellerCol};
-                    return $sid !== null ? $sid : 'platform';
-                });
-
                 foreach ($groupedBySeller as $groupKey => $sellerItems) {
                     $sellerIdForDb = ($groupKey === 'platform') ? null : $groupKey;
 
@@ -169,12 +220,18 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                         return round($priceData['effective_price'] * $item->quantity, 3);
                     });
 
+                    $appliedCoupon  = $sellerIdForDb !== null ? ($resolvedCoupons[$sellerIdForDb]['coupon']   ?? null) : null;
+                    $couponDiscount = $sellerIdForDb !== null ? ($resolvedCoupons[$sellerIdForDb]['discount'] ?? 0.0) : 0.0;
+
                     $sellerOrder = SellerOrder::create([
-                        'order_id'       => $order->id,
-                        'seller_id'      => $sellerIdForDb,
-                        'status'         => 'pending',
-                        'payment_status' => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
-                        'subtotal'       => $sellerSubtotal,
+                        'order_id'         => $order->id,
+                        'seller_id'        => $sellerIdForDb,
+                        'status'           => 'pending',
+                        'payment_status'   => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
+                        'subtotal'         => $sellerSubtotal,
+                        'coupon_id'        => $appliedCoupon?->id,
+                        'coupon_code'      => $appliedCoupon?->code,
+                        'discount_amount'  => $couponDiscount,
                     ]);
 
                     foreach ($sellerItems as $item) {
@@ -217,6 +274,16 @@ $checkingOutIds = $cartItems->pluck('id')->all();
 
                     // Freeze financial snapshot AFTER all items for this seller_order are inserted
                     $this->financialSnapshot->freeze($sellerOrder->id);
+
+                    // Coupon discount comes entirely out of the seller's net payout —
+                    // platform commission is computed on the pre-discount item prices
+                    // and is left untouched, same as freeze() just calculated it.
+                    if ($couponDiscount > 0) {
+                        $sellerOrder->decrement('seller_net_amount', $couponDiscount);
+                    }
+                    if ($appliedCoupon) {
+                        $this->couponService->redeem($appliedCoupon, $sellerOrder, $order, $user->id, $couponDiscount);
+                    }
                 }
             }
 
@@ -436,6 +503,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             'order_number'  => $order->order_number,
             'order_id'      => $order->id,
             'total'         => $total,
+            'discount_amount' => $totalDiscount,
             'seller_count'  => $sellerCount,
             'needs_payment' => $paymentMethod === 'card',
         ], 201);
@@ -455,6 +523,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             'address'        => 'required|string|max:500',
             'phone' => ['required', 'string', 'regex:/^((\+216|00216)\s?)?[2459][0-9]{7}$/', 'max:20'],            'notes'          => 'nullable|string|max:1000',
             'payment_method' => 'nullable|string|in:cod,card,d17,wallet',
+            'coupon_code'    => 'nullable|string',
         ]);
 
         $user          = $request->user();
@@ -494,9 +563,41 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         $priceData    = $this->promoService->getEffectivePrice($product, $basePrice);
         $unitPrice    = $priceData['effective_price'];
         $commission   = $this->commissionService->calculate($unitPrice, $sellerPlan, $quantity);
-        $subtotal     = $commission['total_price'];
+
+        // ── Coupon (single seller, so no per-seller grouping needed) ───────────
+        $appliedCoupon  = null;
+        $discountAmount = 0.0;
+
+        if ($request->filled('coupon_code')) {
+            if ($sellerId === null) {
+                return response()->json(['success' => false, 'message' => 'Coupons are not available for platform products.'], 422);
+            }
+
+            $code   = strtoupper($request->coupon_code);
+            $coupon = Coupon::where('code', $code)->first();
+            if (!$coupon) {
+                return response()->json(['success' => false, 'message' => 'Invalid coupon code.'], 422);
+            }
+
+            $items = [[
+                'product_id' => $product->id,
+                'quantity'   => $quantity,
+                'line_total' => (float) $commission['total_price'],
+            ]];
+            $result = $this->couponService->validateForSeller($code, $sellerId, $user->id, $items);
+            if (!$result['valid']) {
+                return response()->json(['success' => false, 'message' => $result['message']], 422);
+            }
+
+            $appliedCoupon  = $result['coupon'];
+            $discountAmount = $result['discount_amount'];
+        }
+
+        // subtotal stays PRE-discount (matches store()'s convention — SellerOrder.subtotal
+        // is the gross item total, discount_amount is tracked separately).
+        $subtotal    = (float) $commission['total_price'];
         $deliveryFee = $product->getEffectiveDeliveryFee();
-        $total       = round($subtotal + $deliveryFee, 3);
+        $total       = round($subtotal - $discountAmount + $deliveryFee, 3);
 
         $variantLabel = $variant ? $variant->attributeOptions->pluck('value')->join(' / ') : null;
 
@@ -523,11 +624,14 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             ]);
 
             $sellerOrder = SellerOrder::create([
-                'order_id'       => $order->id,
-                'seller_id'      => $sellerId,
-                'status'         => 'pending',
-                'payment_status' => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
-                'subtotal'       => $subtotal,
+                'order_id'        => $order->id,
+                'seller_id'       => $sellerId,
+                'status'          => 'pending',
+                'payment_status'  => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
+                'subtotal'        => $subtotal,
+                'coupon_id'       => $appliedCoupon?->id,
+                'coupon_code'     => $appliedCoupon?->code,
+                'discount_amount' => $discountAmount,
             ]);
 
             OrderItem::create([
@@ -556,6 +660,13 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             }
 
             $this->financialSnapshot->freeze($sellerOrder->id);
+
+            if ($discountAmount > 0) {
+                $sellerOrder->decrement('seller_net_amount', $discountAmount);
+            }
+            if ($appliedCoupon) {
+                $this->couponService->redeem($appliedCoupon, $sellerOrder, $order, $user->id, $discountAmount);
+            }
 
             if ($paymentMethod === 'wallet') {
                 $this->walletService->deductForOrder($user, $order);
@@ -598,6 +709,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             'order_number'  => $order->order_number,
             'order_id'      => $order->id,
             'total'         => $total,
+            'discount_amount' => $discountAmount,
             'delivery_fee'  => $deliveryFee,
             'needs_payment' => $paymentMethod === 'card',
         ], 201);

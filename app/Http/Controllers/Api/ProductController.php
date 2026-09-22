@@ -66,6 +66,9 @@ class ProductController extends Controller
         } elseif ($subSlug = $request->query('subcategory_slug')) {
             $query->whereHas('subcategory', fn($q) => $q->where('slug', $subSlug));
         }
+        if ($sellerId = $request->query('seller_id')) {
+            $query->where('seller_id', $sellerId);
+        }
         if ($priceMin = $request->query('price_min')) {
             $query->where('price', '>=', (float) $priceMin);
         }
@@ -85,6 +88,23 @@ class ProductController extends Controller
         }
         if ($request->filled('is_platform_product')) {
             $query->where('is_platform_product', (bool) $request->boolean('is_platform_product'));
+        }
+        if ($minRating = $request->query('min_rating')) {
+            $query->withAvg(
+                ['reviews as avg_rating' => fn ($q) => $q->where('status', 'approved')],
+                'rating'
+            )->having('avg_rating', '>=', (float) $minRating);
+        }
+        if ($request->boolean('free_delivery')) {
+            // 0 = explicitly free; null means "platform default", NOT free — same
+            // rule Product::isFreeDelivery() already documents.
+            $query->where('delivery_fee', 0);
+        }
+        if ($request->boolean('has_coupon')) {
+            $query->whereHas('coupons', fn ($q) => $q
+                ->where('is_active', true)
+                ->where(fn ($q2) => $q2->whereNull('usage_limit')->orWhereColumn('usage_count', '<', 'usage_limit'))
+            );
         }
 
         // ── Scoring path (authenticated user, default sort) ───────────────
@@ -126,10 +146,15 @@ class ProductController extends Controller
         // ── Non-scoring path (guest, or explicit sort) ────────────────────
         $query->orderByDesc('is_sponsored')->orderByDesc('sponsored_priority');
         match ($sort) {
-            'price_asc'  => $query->orderBy('price'),
-            'price_desc' => $query->orderByDesc('price'),
-            'views'      => $query->orderByDesc('views'),
-            default      => $query->orderByDesc('created_at'),
+            'price_asc'    => $query->orderBy('price'),
+            'price_desc'   => $query->orderByDesc('price'),
+            'views'        => $query->orderByDesc('views'),
+            // Real sales ranking — sums order_items.quantity for completed/delivered
+            // orders only, same convention as SellerAnalyticsController. No fabricated data.
+            'best_selling' => $query->withSum(['orderItems as units_sold' => fn ($q) => $q
+                ->whereHas('order', fn ($oq) => $oq->whereIn('status', ['completed', 'delivered']))
+            ], 'quantity')->orderByDesc('units_sold'),
+            default        => $query->orderByDesc('created_at'),
         };
         $perPage  = (int) $request->query('per_page', 20);
         $products = $query->paginate(min($perPage, 60));
@@ -202,7 +227,7 @@ class ProductController extends Controller
             ->with([
                 'category:id,name,slug',
                 'subcategory:id,name,slug',
-                'seller:id,name',
+                'seller:id,name,avatar',
                 'images',
                 'primaryImage',
                 'attributeValues.attribute.options',
@@ -216,6 +241,12 @@ class ProductController extends Controller
 
         if (!$product) {
             return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
+        }
+
+        if ($product->seller) {
+            $branding = $product->seller->storefrontBranding();
+            $product->seller->business_name = $branding['business_name'];
+            $product->seller->avatar        = $branding['avatar'];
         }
 
         $product->incrementViews();
@@ -593,13 +624,14 @@ foreach ($product->variants as $v) {
         return response()->json(['success' => true, 'data' => $data]);
     }
 
-    public function filterAttributes($slug)
+    public function filterAttributes(Request $request, $slug)
     {
         $productIds = DB::table('products as p')
             ->join('categories as c', 'c.id', '=', 'p.category_id')
             ->where('c.slug', $slug)
             ->where('p.is_approved', true)
             ->where('p.is_active', true)
+            ->when($request->filled('seller_id'), fn ($q) => $q->where('p.seller_id', $request->query('seller_id')))
             ->pluck('p.id');
 
         if ($productIds->isEmpty()) {

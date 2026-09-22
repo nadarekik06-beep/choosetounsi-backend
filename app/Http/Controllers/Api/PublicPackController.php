@@ -19,6 +19,7 @@ class PublicPackController extends Controller
 
         $packs = Pack::where('is_active', true)
             ->where('is_approved', true)
+            ->when($request->filled('seller_id'), fn ($q) => $q->where('seller_id', $request->query('seller_id')))
             ->with([
                 'seller:id,name',
                 'items' => fn($q) => $q->orderBy('order')->with([
