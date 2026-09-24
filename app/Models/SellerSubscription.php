@@ -52,6 +52,13 @@ class SellerSubscription extends Model
         'last_payment_at',
         'suspended_by',
         'admin_note',
+        'billing_period',
+        'trial_ends_at',
+        'cancel_reason',
+        'commission_override',
+        'commission_override_expires_at',
+        'commission_override_reason',
+        'commission_override_set_by',
     ];
 
     protected $casts = [
@@ -61,15 +68,17 @@ class SellerSubscription extends Model
         'last_payment_at'      => 'datetime',
         'billing_cycle_start'  => 'date',
         'billing_cycle_end'    => 'date',
+        'trial_ends_at'        => 'datetime',
+        'commission_override'  => 'float',
+        'commission_override_expires_at' => 'datetime',
     ];
 
-    // ── Plan tier hierarchy (used for upgrade/downgrade comparisons) ──────────
+    // ── LEGACY seed values ────────────────────────────────────────────────────
+    // Plans now live in the `subscription_plans` table (admin-managed). These
+    // constants only document the original seed values — read plan data through
+    // SubscriptionPlan::forSlug() / $sub->plan() instead.
 
     public const PLAN_TIERS = ['free' => 0, 'red' => 1, 'black' => 2];
-
-    // ── Single source of truth for plan pricing and limits ────────────────────
-    // Read by the upgrade flow, downgrade rules, commission suggestions, the
-    // public /seller-plans endpoint (become-a-vendor page) and the chatbot.
 
     /** Monthly price in DT. */
     public const PLAN_PRICES = ['free' => 0.0, 'red' => 49.0, 'black' => 129.0];
@@ -121,27 +130,42 @@ class SellerSubscription extends Model
                  ->where('grace_period_ends_at', '<=', now());
     }
 
-    // ── Plan tier helpers ─────────────────────────────────────────────────────
+    // ── Plan helpers (backed by subscription_plans) ───────────────────────────
+
+    public function plan(): SubscriptionPlan
+    {
+        return SubscriptionPlan::forSlug($this->current_plan);
+    }
 
     public function currentTier(): int
     {
-        return self::PLAN_TIERS[$this->current_plan] ?? 0;
+        return $this->plan()->tier;
     }
 
     public function pendingTier(): int
     {
-        return self::PLAN_TIERS[$this->pending_plan ?? $this->current_plan] ?? 0;
+        return SubscriptionPlan::forSlug($this->pending_plan ?? $this->current_plan)->tier;
     }
 
     public function isUpgrade(string $targetPlan): bool
     {
-        return (self::PLAN_TIERS[$targetPlan] ?? 0) > $this->currentTier();
+        return SubscriptionPlan::forSlug($targetPlan)->isHigherThan($this->plan());
     }
 
     public function isDowngrade(string $targetPlan): bool
     {
-        return (self::PLAN_TIERS[$targetPlan] ?? 0) < $this->currentTier();
+        return $this->plan()->isHigherThan(SubscriptionPlan::forSlug($targetPlan));
     }
+
+    /** Active per-seller commission override (null when none or expired). */
+    public function activeCommissionOverride(): ?float
+    {
+        if ($this->commission_override === null) return null;
+        if ($this->commission_override_expires_at && $this->commission_override_expires_at->isPast()) return null;
+        return (float) $this->commission_override;
+    }
+
+    public function isTrial(): bool { return $this->status === 'trial'; }
 
     // ── Status helpers ────────────────────────────────────────────────────────
 
@@ -152,7 +176,7 @@ class SellerSubscription extends Model
     public function hasFeatureAccess(): bool
     {
         // Seller keeps features during active + grace + canceled (until cycle end)
-        return in_array($this->status, ['active', 'grace_period', 'canceled']);
+        return in_array($this->status, ['active', 'trial', 'grace_period', 'canceled']);
     }
 
     public function hasPendingDowngrade(): bool
@@ -164,9 +188,7 @@ class SellerSubscription extends Model
 
     public function maxProducts(): ?int
     {
-        return array_key_exists($this->current_plan, self::PLAN_MAX_PRODUCTS)
-            ? self::PLAN_MAX_PRODUCTS[$this->current_plan]
-            : self::PLAN_MAX_PRODUCTS['free'];
+        return $this->plan()->max_products;
     }
 
     // ── Days remaining in billing cycle ───────────────────────────────────────
@@ -181,8 +203,8 @@ class SellerSubscription extends Model
 
     public function proratedUpgradeAmount(string $targetPlan): float
     {
-        $targetPrice  = self::PLAN_PRICES[$targetPlan]  ?? 0;
-        $currentPrice = self::PLAN_PRICES[$this->current_plan] ?? 0;
+        $targetPrice  = SubscriptionPlan::forSlug($targetPlan)->price_monthly;
+        $currentPrice = $this->plan()->price_monthly;
 
         if (! $this->billing_cycle_end || ! $this->billing_cycle_start) {
             return $targetPrice;
@@ -202,6 +224,7 @@ class SellerSubscription extends Model
     {
         return match($this->status) {
             'active'       => 'Active',
+            'trial'        => 'Trial',
             'grace_period' => 'Grace Period',
             'past_due'     => 'Payment Overdue',
             'canceled'     => 'Canceled (runs to end of period)',

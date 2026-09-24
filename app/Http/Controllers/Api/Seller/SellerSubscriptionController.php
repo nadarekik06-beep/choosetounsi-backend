@@ -96,7 +96,28 @@ class SellerSubscriptionController extends Controller
                 'grace_period_ends_at'  => $sub->grace_period_ends_at?->format('Y-m-d\TH:i:s\Z'),
                 'has_pending_downgrade' => $sub->hasPendingDowngrade(),
                 'max_products'          => $sub->maxProducts(),
+                'billing_period'        => $sub->billing_period,
+                'trial_ends_at'         => $sub->trial_ends_at?->format('Y-m-d\TH:i:s\Z'),
             ];
+        }
+
+        // Plan definition (admin-managed) — the dashboard gates UI on these
+        $plan = \App\Models\SubscriptionPlan::forSlug($sub?->current_plan ?? $application->plan);
+        $responseData['plan_details'] = [
+            'slug'                   => $plan->slug,
+            'name'                   => $plan->name,
+            'badge_color'            => $plan->badge_color,
+            'tier'                   => $plan->tier,
+            'tier_key'               => $plan->tierKey(),
+            'price_monthly'          => (float) $plan->price_monthly,
+            'price_yearly'           => $plan->price_yearly,
+            'max_products'           => $plan->max_products,
+            'max_images_per_product' => $plan->max_images_per_product,
+            'max_sponsored_products' => $plan->max_sponsored_products,
+            'features'               => $plan->features,
+        ];
+        if ($sub) {
+            $responseData['commission'] = app(\App\Services\CommissionService::class)->effectiveSummary($sub);
         }
 
         return response()->json(['success' => true, 'data' => $responseData]);
@@ -117,7 +138,8 @@ class SellerSubscriptionController extends Controller
 
         // ── 1. Validate request payload ───────────────────────────────────────
         $validated = $request->validate([
-            'plan'            => ['required', Rule::in(['red', 'black'])],
+            'plan'            => ['required', 'string', Rule::exists('subscription_plans', 'slug')->whereNull('archived_at')->where('is_active', true)],
+            'billing_period'  => ['nullable', Rule::in(['monthly', 'yearly'])],
             'card_number'     => ['required', 'string', 'regex:/^\d{13,19}$/'],
             'expiry_date'     => ['required', 'string', 'regex:/^(0[1-9]|1[0-2])\/\d{2}$/'],
             'cvv'             => ['required', 'string', 'regex:/^\d{3,4}$/'],
@@ -140,20 +162,31 @@ class SellerSubscriptionController extends Controller
             ], 403);
         }
 
-        // ── 3. Validate upgrade direction ─────────────────────────────────────
-        $planHierarchy = ['free' => 0, 'red' => 1, 'black' => 2];
-        $currentLevel  = $planHierarchy[$application->plan] ?? 0;
-        $requestedLevel= $planHierarchy[$validated['plan']] ?? 0;
+        // ── 3. Validate upgrade direction (plans are admin-managed) ─────────────
+        $target  = \App\Models\SubscriptionPlan::forSlug($validated['plan']);
+        $sub     = $this->subscriptionService->getOrCreateSubscription($application);
+        $period  = $validated['billing_period'] ?? 'monthly';
 
-        if ($requestedLevel <= $currentLevel) {
+        if ($sub->isSuspended()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Your subscription is suspended. Please contact support.',
+                'code'    => 'SUBSCRIPTION_SUSPENDED',
+            ], 403);
+        }
+        $convertingTrial = $sub->isTrial() && $sub->current_plan === $target->slug;
+        if ($target->isFree() || (!$sub->isUpgrade($target->slug) && !$convertingTrial)) {
             return response()->json([
                 'success' => false,
                 'message' => 'You are already on this plan or a higher plan.',
             ], 422);
         }
+        if ($period === 'yearly' && $target->price_yearly === null) {
+            return response()->json(['success' => false, 'message' => "{$target->name} has no yearly billing."], 422);
+        }
 
         // ── 4. Determine amount ───────────────────────────────────────────────
-        $amount = \App\Models\SellerSubscription::PLAN_PRICES[$validated['plan']];
+        $amount = $target->priceFor($period);
 
         // ── 5. Mock payment + DB updates in a transaction ─────────────────────
         DB::beginTransaction();
@@ -171,7 +204,7 @@ class SellerSubscriptionController extends Controller
 
             // Update both seller_applications.plan AND the subscription lifecycle
             // SubscriptionService handles: application.plan + subscription row + audit log
-            $this->subscriptionService->upgrade($application, $validated['plan'], $payment, $user);
+            $this->subscriptionService->upgrade($application, $validated['plan'], $payment, $user, $period);
 
             DB::commit();
         } catch (\Throwable $e) {
@@ -194,10 +227,7 @@ class SellerSubscriptionController extends Controller
         }
 
         // ── 7. Return success response ────────────────────────────────────────
-        $planLabel = match($validated['plan']) {
-            'red'   => 'Red Pepper',
-            'black' => 'Black Pepper',
-        };
+        $planLabel = $target->name;
 
         return response()->json([
             'success' => true,
@@ -225,7 +255,7 @@ class SellerSubscriptionController extends Controller
         $user = $request->user();
 
         $validated = $request->validate([
-            'plan' => ['required', Rule::in(['free', 'red'])],
+            'plan' => ['required', 'string', Rule::exists('subscription_plans', 'slug')->whereNull('archived_at')],
         ]);
 
         $application = SellerApplication::where('user_id', $user->id)
@@ -239,11 +269,10 @@ class SellerSubscriptionController extends Controller
             ], 403);
         }
 
-        $planHierarchy  = ['free' => 0, 'red' => 1, 'black' => 2];
-        $currentLevel   = $planHierarchy[$application->plan] ?? 0;
-        $requestedLevel = $planHierarchy[$validated['plan']] ?? 0;
+        $current = \App\Models\SubscriptionPlan::forSlug($application->plan);
+        $target  = \App\Models\SubscriptionPlan::forSlug($validated['plan']);
 
-        if ($requestedLevel >= $currentLevel) {
+        if (!$current->isHigherThan($target)) {
             return response()->json([
                 'success' => false,
                 'message' => 'The requested plan is not a downgrade from your current plan.',
@@ -269,10 +298,7 @@ class SellerSubscriptionController extends Controller
             ], 422);
         }
 
-        $planLabel = match($validated['plan']) {
-            'free' => 'Green Pepper (Free)',
-            'red'  => 'Red Pepper',
-        };
+        $planLabel = $target->name;
 
         $effectiveDate = $sub->billing_cycle_end?->format('Y-m-d') ?? 'end of billing period';
 
@@ -314,11 +340,7 @@ class SellerSubscriptionController extends Controller
             return response()->json(['success' => false, 'message' => 'Failed to cancel downgrade.'], 500);
         }
 
-        $planLabel = match($sub->current_plan) {
-            'red'   => 'Red Pepper',
-            'black' => 'Black Pepper',
-            default => 'Green Pepper',
-        };
+        $planLabel = \App\Models\SubscriptionPlan::forSlug($sub->current_plan)->name;
 
         return response()->json([
             'success' => true,

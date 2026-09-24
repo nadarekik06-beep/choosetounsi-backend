@@ -244,7 +244,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                         $variant      = $item->variant;
                         $unitPrice    = $this->unitPrice($item);
                         $qty          = (int) $item->quantity;
-                        $commission   = $this->commissionService->calculate($unitPrice, $sellerPlan, $qty, $itemDiscounts[$item->id] ?? 0.0);
+                        $commission   = $this->commissionService->calculateForSeller($sellerIdForDb, $unitPrice, $qty, $itemDiscounts[$item->id] ?? 0.0);
                         $variantLabel = $variant ? $variant->attributeOptions->pluck('value')->join(' / ') : null;
 
                         OrderItem::create([
@@ -261,6 +261,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                             'discount_amount'       => $commission['discount_amount'],
                             'net_total'             => $commission['net_total'],
                             'commission_percentage' => $commission['commission_percentage'],
+                            'commission_source'     => $commission['commission_source'],
                             'commission_amount'     => $commission['commission_amount'],
                             'seller_amount'         => $commission['seller_amount'],
                             'plan_used'             => $commission['plan_used'],
@@ -340,9 +341,9 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                     //   → seller B: commission($packPrice × 0.5, $plan)
                     //
                     // quantity = 1 because pack_price already covers all items.
-                    $packCommission = $this->commissionService->calculate(
+                    $packCommission = $this->commissionService->calculateForSeller(
+                        $sellerIdForDb,
                         $sellerSubtotal,  // ← proportional share of pack_price
-                        $sellerPlan,
                         1                 // ← 1 pack unit
                     );
 
@@ -387,6 +388,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
 
                                 // Commission calculated on pack_price portion, not product price
                                 'commission_percentage' => $packCommission['commission_percentage'],
+                                'commission_source'     => $packCommission['commission_source'],
                                 'commission_amount'     => $packCommission['commission_amount'],
                                 'seller_amount'         => $packCommission['seller_amount'],
                                 'plan_used'             => $packCommission['plan_used'],
@@ -597,7 +599,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         }
 
         // Single line → the whole seller discount sits on it.
-        $commission = $this->commissionService->calculate($unitPrice, $sellerPlan, $quantity, $discountAmount);
+        $commission = $this->commissionService->calculateForSeller($sellerId, $unitPrice, $quantity, $discountAmount);
 
         // subtotal stays PRE-discount (matches store()'s convention — SellerOrder.subtotal
         // is the gross item total, discount_amount is tracked separately).
@@ -660,6 +662,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 'discount_amount'       => $commission['discount_amount'],
                 'net_total'             => $commission['net_total'],
                 'commission_percentage' => $commission['commission_percentage'],
+                            'commission_source'     => $commission['commission_source'],
                 'commission_amount'     => $commission['commission_amount'],
                 'seller_amount'         => $commission['seller_amount'],
                 'plan_used'             => $commission['plan_used'],

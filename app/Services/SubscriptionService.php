@@ -5,29 +5,32 @@ namespace App\Services;
 
 use App\Models\SellerApplication;
 use App\Models\SellerSubscription;
-use App\Models\SubscriptionPlanChange;
+use App\Models\SubscriptionAuditLog;
 use App\Models\SubscriptionPayment;
+use App\Models\SubscriptionPlan;
+use App\Models\SubscriptionPlanChange;
 use App\Models\User;
+use App\Notifications\SubscriptionUpdatedNotification;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Carbon\Carbon;
 
 /**
  * SubscriptionService
  *
- * Single source of truth for ALL plan change logic on ChooseTounsi.
+ * Single source of truth for ALL subscription lifecycle logic on ChooseTounsi.
  *
- * Public API:
- *   getOrCreateSubscription(SellerApplication)  → SellerSubscription
- *   upgrade(SellerApplication, plan, payment, User)   → SellerSubscription
- *   scheduleDowngrade(SellerApplication, plan, User)  → SellerSubscription
- *   cancelPendingDowngrade(SellerApplication, User)   → SellerSubscription
- *   adminForce(SellerApplication, plan, admin, reason) → SellerSubscription
- *   processExpiredCycles()   → int  (called by scheduler)
- *   processExpiredGrace()    → int  (called by scheduler)
+ * Seller-facing:   upgrade, scheduleDowngrade, cancelPendingDowngrade
+ * Admin-facing:    assignPlan (adminForce), changeEndDate, grantFreeDays, startTrial,
+ *                  suspend, reactivate, cancel, setCommissionOverride, removeCommissionOverride
+ * Scheduler:       sendExpiryReminders, processExpiredTrials, processExpiredCycles,
+ *                  processExpiredGrace, processExpiredOverrides
  *
- * INVARIANT: every plan change writes BOTH seller_applications.plan AND
- * seller_subscriptions.current_plan so existing middleware keeps working.
+ * INVARIANTS
+ *   - every plan change writes BOTH seller_applications.plan AND
+ *     seller_subscriptions.current_plan (middleware and checkout read both);
+ *   - every state change writes a subscription_audit_logs row;
+ *   - every admin / lifecycle change notifies the seller.
  */
 class SubscriptionService
 {
@@ -36,317 +39,523 @@ class SubscriptionService
     ) {}
 
     // ─────────────────────────────────────────────────────────────────────────
-    // GET OR CREATE SUBSCRIPTION ROW
-    // Called on every request that needs subscription data.
-    // Idempotent — safe to call multiple times.
+    // GET OR CREATE SUBSCRIPTION ROW (idempotent)
     // ─────────────────────────────────────────────────────────────────────────
 
     public function getOrCreateSubscription(SellerApplication $app): SellerSubscription
     {
         $sub = SellerSubscription::where('seller_application_id', $app->id)->first();
-
         if ($sub) return $sub;
+
+        $plan = SubscriptionPlan::forSlug($app->plan);
+        $paid = !$plan->isFree();
 
         return SellerSubscription::create([
             'seller_application_id' => $app->id,
             'user_id'               => $app->user_id,
-            'current_plan'          => $app->plan ?? 'free',
+            'current_plan'          => $plan->slug,
             'pending_plan'          => null,
             'status'                => 'active',
-            'billing_cycle_start'   => $app->plan !== 'free' ? today() : null,
-            'billing_cycle_end'     => $app->plan !== 'free' ? today()->addDays(30) : null,
+            'billing_period'        => 'monthly',
+            'billing_cycle_start'   => $paid ? today() : null,
+            'billing_cycle_end'     => $paid ? today()->addDays(30) : null,
         ]);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // UPGRADE — immediate effect
-    // Called when seller pays for a higher plan.
-    // ─────────────────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════════════════
+    // SELLER ACTIONS
+    // ═════════════════════════════════════════════════════════════════════════
 
+    /** Seller paid for a higher plan — immediate effect. */
     public function upgrade(
         SellerApplication $app,
         string $targetPlan,
         SubscriptionPayment $payment,
-        ?User $actor = null
+        ?User $actor = null,
+        string $billingPeriod = 'monthly'
     ): SellerSubscription {
-
         $sub = $this->getOrCreateSubscription($app);
 
-        if (! $sub->isUpgrade($targetPlan)) {
-            throw new \InvalidArgumentException(
-                "Cannot upgrade from {$sub->current_plan} to {$targetPlan}."
-            );
+        if ($sub->isSuspended()) {
+            throw new \LogicException('This subscription is suspended. Please contact support.');
+        }
+        // A trial of the same plan can be converted to a paid subscription
+        if (!$sub->isUpgrade($targetPlan) && !($sub->isTrial() && $sub->current_plan === $targetPlan)) {
+            throw new \InvalidArgumentException("Cannot upgrade from {$sub->current_plan} to {$targetPlan}.");
         }
 
-        $fromPlan = $sub->current_plan;
+        $before = $this->snapshot($sub);
 
-        DB::transaction(function () use ($sub, $app, $targetPlan, $fromPlan, $payment, $actor) {
-
-            // Calculate new billing cycle
-            $cycleStart = today();
-            $cycleEnd   = today()->addDays(30);
-
-            // 1. Update subscription row
+        DB::transaction(function () use ($sub, $app, $targetPlan, $payment, $actor, $billingPeriod, $before) {
             $sub->update([
-                'current_plan'        => $targetPlan,
-                'pending_plan'        => null,        // cancel any pending downgrade
-                'status'              => 'active',
-                'billing_cycle_start' => $cycleStart,
-                'billing_cycle_end'   => $cycleEnd,
-                'grace_period_ends_at'=> null,
-                'canceled_at'         => null,
-                'last_payment_at'     => now(),
+                'current_plan'         => $targetPlan,
+                'pending_plan'         => null,
+                'status'               => 'active',
+                'billing_period'       => $billingPeriod,
+                'billing_cycle_start'  => today(),
+                'billing_cycle_end'    => $this->cycleEnd(today(), $billingPeriod),
+                'trial_ends_at'        => null,
+                'grace_period_ends_at' => null,
+                'canceled_at'          => null,
+                'cancel_reason'        => null,
+                'last_payment_at'      => now(),
             ]);
-
-            // 2. Mirror on seller_applications (keeps SellerPlanMiddleware working)
             $app->update(['plan' => $targetPlan]);
 
-            // 3. Write audit log
-            SubscriptionPlanChange::create([
-                'seller_subscription_id' => $sub->id,
-                'changed_by_user_id'     => $actor?->id ?? $app->user_id,
-                'from_plan'              => $fromPlan,
-                'to_plan'                => $targetPlan,
-                'change_type'            => 'upgrade',
-                'effective_at'           => now(),
-                'reason'                 => "Payment #{$payment->id} — {$payment->amount} TND",
-                'amount_charged'         => $payment->amount,
-            ]);
+            $change = $this->planChange($sub, $before['plan'], $targetPlan, 'upgrade', $actor?->id ?? $app->user_id,
+                "Payment #{$payment->id} — {$payment->amount} TND", (float) $payment->amount);
 
-            // 4. Re-activate any products soft-hidden from a previous downgrade
-            DB::table('products')
-                ->where('seller_id', $app->user_id)
-                ->where('hidden_reason', 'over_plan_limit')
-                ->whereNull('deleted_at')
-                ->update(['hidden_reason' => null, 'is_active' => true]);
+            $this->downgradeService->applyUpgradeEffects($app->user_id, $targetPlan);
 
-            // 5. Resume paused sponsorships (they were paused due to plan downgrade)
-            DB::table('sponsorships')
-                ->where('seller_id', $app->user_id)
-                ->where('paused_reason', 'plan_downgrade')
-                ->update(['status' => 'active', 'paused_reason' => null, 'paused_at' => null]);
-
-            // 6. Resume paused promotions
-            DB::table('promotions')
-                ->where('seller_id', $app->user_id)
-                ->where('paused_reason', 'plan_downgrade')
-                ->where('ends_at', '>', now())  // only if not already expired
-                ->update(['status' => 'active', 'paused_reason' => null, 'paused_at' => null]);
-
-            Log::info("[SubscriptionService] Upgrade: user #{$app->user_id} {$fromPlan} → {$targetPlan}");
+            $this->audit($sub, 'upgraded', $actor, 'seller', "Payment #{$payment->id} ({$payment->amount} TND, {$billingPeriod})", $before, $change->id);
         });
 
         return $sub->fresh();
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // SCHEDULE DOWNGRADE — deferred to end of billing cycle
-    // The seller keeps their current plan features until billing_cycle_end.
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public function scheduleDowngrade(
-        SellerApplication $app,
-        string $targetPlan,
-        ?User $actor = null,
-        ?string $reason = null
-    ): SellerSubscription {
-
+    /** Seller schedules a downgrade for the end of the billing cycle. */
+    public function scheduleDowngrade(SellerApplication $app, string $targetPlan, ?User $actor = null, ?string $reason = null): SellerSubscription
+    {
         $sub = $this->getOrCreateSubscription($app);
 
-        if (! $sub->isDowngrade($targetPlan)) {
-            throw new \InvalidArgumentException(
-                "Cannot downgrade from {$sub->current_plan} to {$targetPlan}."
-            );
+        if (!$sub->isDowngrade($targetPlan)) {
+            throw new \InvalidArgumentException("Cannot downgrade from {$sub->current_plan} to {$targetPlan}.");
         }
-
         if ($sub->hasPendingDowngrade()) {
-            throw new \LogicException(
-                "A downgrade to {$sub->pending_plan} is already scheduled."
-            );
+            throw new \LogicException("A downgrade to {$sub->pending_plan} is already scheduled.");
         }
 
-        $sub->update([
-            'pending_plan' => $targetPlan,
-            'status'       => 'canceled',  // "canceled" = runs to end, then downgrades
-            'canceled_at'  => now(),
-        ]);
-
-        // Write audit log (effective_at = billing_cycle_end)
-        SubscriptionPlanChange::create([
-            'seller_subscription_id' => $sub->id,
-            'changed_by_user_id'     => $actor?->id ?? $app->user_id,
-            'from_plan'              => $sub->current_plan,
-            'to_plan'                => $targetPlan,
-            'change_type'            => 'downgrade',
-            'effective_at'           => $sub->billing_cycle_end ?? now(),
-            'reason'                 => $reason ?? 'Seller requested downgrade',
-            'amount_charged'         => 0,
-        ]);
-
-        Log::info("[SubscriptionService] Downgrade scheduled: user #{$app->user_id} {$sub->current_plan} → {$targetPlan} at {$sub->billing_cycle_end}");
+        $before = $this->snapshot($sub);
+        DB::transaction(function () use ($sub, $targetPlan, $actor, $reason, $app, $before) {
+            $sub->update([
+                'pending_plan' => $targetPlan,
+                'status'       => 'canceled',   // "canceled" = runs to end, then downgrades
+                'canceled_at'  => now(),
+            ]);
+            $change = $this->planChange($sub, $sub->current_plan, $targetPlan, 'downgrade', $actor?->id ?? $app->user_id,
+                $reason ?? 'Seller requested downgrade', 0, $sub->billing_cycle_end ?? now());
+            $this->audit($sub, 'downgrade_scheduled', $actor, 'seller', $reason ?? 'Seller requested downgrade', $before, $change->id);
+        });
 
         return $sub->fresh();
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // CANCEL PENDING DOWNGRADE
-    // Seller changes their mind before the cycle ends.
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public function cancelPendingDowngrade(
-        SellerApplication $app,
-        ?User $actor = null
-    ): SellerSubscription {
-
+    public function cancelPendingDowngrade(SellerApplication $app, ?User $actor = null): SellerSubscription
+    {
         $sub = $this->getOrCreateSubscription($app);
-
-        if (! $sub->hasPendingDowngrade()) {
+        if (!$sub->hasPendingDowngrade()) {
             throw new \LogicException('No pending downgrade to cancel.');
         }
 
-        $sub->update([
-            'pending_plan' => null,
-            'status'       => 'active',
-            'canceled_at'  => null,
-        ]);
-
-        Log::info("[SubscriptionService] Pending downgrade cancelled: user #{$app->user_id}");
+        $before = $this->snapshot($sub);
+        $sub->update(['pending_plan' => null, 'status' => 'active', 'canceled_at' => null, 'cancel_reason' => null]);
+        $this->audit($sub, 'downgrade_cancelled', $actor, 'seller', null, $before);
 
         return $sub->fresh();
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // ADMIN FORCE PLAN CHANGE — immediate, bypasses billing cycle
-    // ─────────────────────────────────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════════════════
+    // ADMIN ACTIONS
+    // ═════════════════════════════════════════════════════════════════════════
 
-    public function adminForce(
-        SellerApplication $app,
+    /** Legacy entry point (force-plan endpoint). */
+    public function adminForce(SellerApplication $app, string $targetPlan, User $admin, string $reason = 'Admin override'): SellerSubscription
+    {
+        return $this->assignPlan($this->getOrCreateSubscription($app), $targetPlan, $admin, $reason);
+    }
+
+    /**
+     * Assign any plan immediately (upgrade or downgrade). Paid plans start a
+     * new billing cycle ending on $endDate (or one billing period from today).
+     */
+    public function assignPlan(
+        SellerSubscription $sub,
         string $targetPlan,
         User $admin,
-        string $reason = 'Admin override'
+        string $reason,
+        string $billingPeriod = 'monthly',
+        ?Carbon $endDate = null
     ): SellerSubscription {
-
-        $sub      = $this->getOrCreateSubscription($app);
-        $fromPlan = $sub->current_plan;
-
-        if ($fromPlan === $targetPlan) {
-            throw new \InvalidArgumentException("Seller is already on {$targetPlan}.");
+        $plan = SubscriptionPlan::where('slug', $targetPlan)->firstOrFail();
+        if ($plan->isArchived()) {
+            throw new \InvalidArgumentException("The {$plan->name} plan is archived and can't be assigned.");
+        }
+        if ($sub->current_plan === $plan->slug && !$endDate && $sub->billing_period === $billingPeriod) {
+            throw new \InvalidArgumentException("Seller is already on {$plan->name}.");
         }
 
-        DB::transaction(function () use ($sub, $app, $targetPlan, $fromPlan, $admin, $reason) {
+        $from      = SubscriptionPlan::forSlug($sub->current_plan);
+        $isUpgrade = $plan->isHigherThan($from);
+        $before    = $this->snapshot($sub);
+        $app       = $sub->sellerApplication;
 
-            $isUpgrade = (SellerSubscription::PLAN_TIERS[$targetPlan] ?? 0) >
-                         (SellerSubscription::PLAN_TIERS[$fromPlan] ?? 0);
-
-            $updates = [
-                'current_plan' => $targetPlan,
-                'pending_plan' => null,
-                'status'       => 'active',
-                'canceled_at'  => null,
-                'admin_note'   => $reason,
-            ];
-
-            if ($isUpgrade) {
-                $updates['billing_cycle_start'] = today();
-                $updates['billing_cycle_end']   = today()->addDays(30);
-            } elseif ($targetPlan === 'free') {
-                // Forced to free — no billing cycle
-                $updates['billing_cycle_start'] = null;
-                $updates['billing_cycle_end']   = null;
-            }
-
-            $sub->update($updates);
-
-            // Mirror on seller_applications
-            $app->update(['plan' => $targetPlan]);
-
-            // Write audit log
-            SubscriptionPlanChange::create([
-                'seller_subscription_id' => $sub->id,
-                'changed_by_user_id'     => $admin->id,
-                'from_plan'              => $fromPlan,
-                'to_plan'                => $targetPlan,
-                'change_type'            => 'admin_force',
-                'effective_at'           => now(),
-                'reason'                 => $reason,
-                'amount_charged'         => 0,
+        DB::transaction(function () use ($sub, $plan, $admin, $reason, $billingPeriod, $endDate, $isUpgrade, $before, $app) {
+            $sub->update([
+                'current_plan'         => $plan->slug,
+                'pending_plan'         => null,
+                'status'               => $sub->isSuspended() ? 'suspended' : 'active',
+                'billing_period'       => $billingPeriod,
+                'billing_cycle_start'  => $plan->isFree() ? null : today(),
+                'billing_cycle_end'    => $plan->isFree() ? null : ($endDate ?? $this->cycleEnd(today(), $billingPeriod)),
+                'trial_ends_at'        => null,
+                'grace_period_ends_at' => null,
+                'canceled_at'          => null,
+                'cancel_reason'        => null,
+                'admin_note'           => $reason,
             ]);
+            $app?->update(['plan' => $plan->slug]);
 
-            // Apply ripple effects if this is a downgrade
-            if (! $isUpgrade) {
-                $this->downgradeService->applyRippleEffects($app, $targetPlan);
-            } else {
-                // Upgrade: re-activate anything paused
-                DB::table('products')
-                    ->where('seller_id', $app->user_id)
-                    ->where('hidden_reason', 'over_plan_limit')
-                    ->whereNull('deleted_at')
-                    ->update(['hidden_reason' => null, 'is_active' => true]);
+            $change = $this->planChange($sub, $before['plan'], $plan->slug, 'admin_force', $admin->id, $reason);
 
-                DB::table('sponsorships')
-                    ->where('seller_id', $app->user_id)
-                    ->where('paused_reason', 'plan_downgrade')
-                    ->update(['status' => 'active', 'paused_reason' => null, 'paused_at' => null]);
-
-                DB::table('promotions')
-                    ->where('seller_id', $app->user_id)
-                    ->where('paused_reason', 'plan_downgrade')
-                    ->where('ends_at', '>', now())
-                    ->update(['status' => 'active', 'paused_reason' => null, 'paused_at' => null]);
+            if ($app) {
+                $isUpgrade
+                    ? $this->downgradeService->applyUpgradeEffects($app->user_id, $plan->slug)
+                    : $this->downgradeService->applyRippleEffects($app, $plan->slug);
             }
 
-            Log::info("[SubscriptionService] Admin force: user #{$app->user_id} {$fromPlan} → {$targetPlan} by admin #{$admin->id}");
+            $this->audit($sub, 'plan_assigned', $admin, 'admin', $reason, $before, $change->id);
         });
 
-        return $sub->fresh();
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // SUSPEND — admin action, immediate
-    // ─────────────────────────────────────────────────────────────────────────
-
-    public function suspend(
-        SellerApplication $app,
-        User $admin,
-        string $reason = 'Admin suspension'
-    ): SellerSubscription {
-
-        $sub = $this->getOrCreateSubscription($app);
-
-        $sub->update([
-            'status'       => 'suspended',
-            'suspended_at' => now(),
-            'suspended_by' => $admin->id,
-            'admin_note'   => $reason,
-        ]);
-
-        // Suspend all sponsorships immediately
-        DB::table('sponsorships')
-            ->where('seller_id', $app->user_id)
-            ->where('status', 'active')
-            ->update(['status' => 'cancelled', 'paused_reason' => 'plan_downgrade', 'paused_at' => now()]);
-
-        Log::info("[SubscriptionService] Suspended: user #{$app->user_id} by admin #{$admin->id}");
+        $this->notify($sub, 'plan_assigned',
+            "Your plan is now {$plan->name}",
+            "An administrator moved your store to the {$plan->name} plan." . $this->endSentence($sub->fresh()) . " Reason: {$reason}");
 
         return $sub->fresh();
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // PROCESS EXPIRED CYCLES (called by SubscriptionSchedulerCommand daily)
-    // Moves active subscriptions whose billing_cycle_end has passed into
-    // grace_period and applies pending downgrades.
-    // Returns count of subscriptions processed.
-    // ─────────────────────────────────────────────────────────────────────────
+    /** Move the end of the current period (billing cycle or trial). */
+    public function changeEndDate(SellerSubscription $sub, Carbon $newEnd, User $admin, string $reason): SellerSubscription
+    {
+        if (SubscriptionPlan::forSlug($sub->current_plan)->isFree() && !$sub->isTrial()) {
+            throw new \InvalidArgumentException('The seller is on a free plan — there is no end date to change.');
+        }
+        if ($newEnd->lt(today())) {
+            throw new \InvalidArgumentException('The new end date cannot be in the past.');
+        }
 
+        $before = $this->snapshot($sub);
+        DB::transaction(function () use ($sub, $newEnd, $admin, $reason, $before) {
+            $updates = ['billing_cycle_end' => $newEnd->toDateString()];
+            if ($sub->isTrial()) $updates['trial_ends_at'] = $newEnd->copy()->endOfDay();
+            // Moving the end date out of an expired window brings the seller back to active
+            if (in_array($sub->status, ['grace_period', 'past_due'], true)) {
+                $updates['status'] = 'active';
+                $updates['grace_period_ends_at'] = null;
+            }
+            $sub->update($updates);
+            $this->audit($sub, 'end_date_changed', $admin, 'admin', $reason, $before);
+        });
+
+        $this->notify($sub, 'end_date_changed', 'Your subscription dates changed',
+            "Your current period now ends on {$newEnd->format('d M Y')}. Reason: {$reason}");
+
+        return $sub->fresh();
+    }
+
+    /** Add free days to the current period. */
+    public function grantFreeDays(SellerSubscription $sub, int $days, User $admin, string $reason): SellerSubscription
+    {
+        if (SubscriptionPlan::forSlug($sub->current_plan)->isFree() && !$sub->isTrial()) {
+            throw new \InvalidArgumentException('Free days only apply to a paid plan or a trial. Assign a plan or start a trial instead.');
+        }
+
+        $from   = $sub->billing_cycle_end && $sub->billing_cycle_end->gte(today()) ? $sub->billing_cycle_end->copy() : today();
+        $newEnd = $from->addDays($days);
+        $before = $this->snapshot($sub);
+
+        DB::transaction(function () use ($sub, $newEnd, $admin, $reason, $days, $before) {
+            $updates = ['billing_cycle_end' => $newEnd->toDateString()];
+            if ($sub->isTrial()) $updates['trial_ends_at'] = $newEnd->copy()->endOfDay();
+            if (in_array($sub->status, ['grace_period', 'past_due'], true)) {
+                $updates['status'] = 'active';
+                $updates['grace_period_ends_at'] = null;
+            }
+            $sub->update($updates);
+            $this->audit($sub, 'free_days_granted', $admin, 'admin', "+{$days} days — {$reason}", $before);
+        });
+
+        $this->notify($sub, 'free_days_granted', "You received {$days} free days",
+            "{$days} free days were added to your subscription. It now runs until {$newEnd->format('d M Y')}.");
+
+        return $sub->fresh();
+    }
+
+    /** Start a trial of $planSlug. At the end, without payment, the seller returns to the default plan. */
+    public function startTrial(SellerSubscription $sub, string $planSlug, int $days, User $admin, string $reason): SellerSubscription
+    {
+        $plan = SubscriptionPlan::where('slug', $planSlug)->firstOrFail();
+        if ($plan->isArchived() || $plan->isFree()) {
+            throw new \InvalidArgumentException('Trials are only available for active paid plans.');
+        }
+        if ($sub->isSuspended()) {
+            throw new \LogicException('Reactivate the subscription before starting a trial.');
+        }
+
+        $before = $this->snapshot($sub);
+        $app    = $sub->sellerApplication;
+        $endsAt = now()->addDays($days)->endOfDay();
+
+        DB::transaction(function () use ($sub, $plan, $days, $admin, $reason, $before, $app, $endsAt) {
+            $sub->update([
+                'current_plan'         => $plan->slug,
+                'pending_plan'         => null,
+                'status'               => 'trial',
+                'billing_cycle_start'  => today(),
+                'billing_cycle_end'    => $endsAt->toDateString(),
+                'trial_ends_at'        => $endsAt,
+                'grace_period_ends_at' => null,
+                'canceled_at'          => null,
+                'admin_note'           => $reason,
+            ]);
+            $app?->update(['plan' => $plan->slug]);
+
+            $change = $this->planChange($sub, $before['plan'], $plan->slug, 'admin_force', $admin->id, "Trial ({$days} days) — {$reason}");
+            if ($app) $this->downgradeService->applyUpgradeEffects($app->user_id, $plan->slug);
+
+            $this->audit($sub, 'trial_started', $admin, 'admin', "{$days}-day trial — {$reason}", $before, $change->id);
+        });
+
+        $this->notify($sub, 'trial_started', "Your {$plan->name} trial has started",
+            "Enjoy {$plan->name} free for {$days} days, until {$endsAt->format('d M Y')}. Subscribe before then to keep its features.");
+
+        return $sub->fresh();
+    }
+
+    public function suspend(SellerSubscription|SellerApplication $target, User $admin, string $reason = 'Admin suspension'): SellerSubscription
+    {
+        $sub = $target instanceof SellerApplication ? $this->getOrCreateSubscription($target) : $target;
+        if ($sub->isSuspended()) {
+            throw new \LogicException('Subscription is already suspended.');
+        }
+
+        $before = $this->snapshot($sub);
+        DB::transaction(function () use ($sub, $admin, $reason, $before) {
+            $sub->update([
+                'status'       => 'suspended',
+                'suspended_at' => now(),
+                'suspended_by' => $admin->id,
+                'admin_note'   => $reason,
+            ]);
+            // Sponsorships are paused (restored on reactivation), never deleted
+            $this->downgradeService->pauseSponsorships($sub->user_id, 0);
+            $this->audit($sub, 'suspended', $admin, 'admin', $reason, $before);
+        });
+
+        $this->notify($sub, 'suspended', 'Your subscription has been suspended',
+            "Premium features are disabled until further notice. Reason: {$reason}", ['icon' => 'alert-triangle']);
+
+        return $sub->fresh();
+    }
+
+    public function reactivate(SellerSubscription $sub, User $admin, string $reason): SellerSubscription
+    {
+        if (!$sub->isSuspended()) {
+            throw new \LogicException('Subscription is not suspended.');
+        }
+
+        $before = $this->snapshot($sub);
+        DB::transaction(function () use ($sub, $admin, $reason, $before) {
+            $status = 'active';
+            if ($sub->trial_ends_at && $sub->trial_ends_at->isFuture()) {
+                $status = 'trial';
+            } elseif ($sub->billing_cycle_end && $sub->billing_cycle_end->lt(today())) {
+                // Period ran out while suspended — the scheduler's grace logic takes over
+                $status = 'grace_period';
+            }
+            $sub->update([
+                'status'               => $status,
+                'grace_period_ends_at' => $status === 'grace_period'
+                    ? now()->addDays(SellerSubscription::GRACE_PERIOD_DAYS) : $sub->grace_period_ends_at,
+                'suspended_at'         => null,
+                'suspended_by'         => null,
+                'admin_note'           => $reason,
+            ]);
+            if (SubscriptionPlan::forSlug($sub->current_plan)->hasFeature('sponsorships')) {
+                $this->downgradeService->resumeSponsorships($sub->user_id);
+            }
+            $this->audit($sub, 'reactivated', $admin, 'admin', $reason, $before);
+        });
+
+        $this->notify($sub, 'reactivated', 'Your subscription is active again',
+            "Your plan features have been restored. {$reason}");
+
+        return $sub->fresh();
+    }
+
+    /**
+     * Cancel a subscription. Immediate: back to the default plan now.
+     * Otherwise it runs to the end of the period, then moves to the default plan.
+     */
+    public function cancel(SellerSubscription $sub, User $admin, string $reason, bool $immediate = false): SellerSubscription
+    {
+        $default = SubscriptionPlan::defaultPlan();
+        $plan    = SubscriptionPlan::forSlug($sub->current_plan);
+
+        if ($plan->slug === $default->slug && !$sub->isTrial()) {
+            throw new \InvalidArgumentException("The seller is already on the default plan ({$default->name}).");
+        }
+
+        $before = $this->snapshot($sub);
+        $app    = $sub->sellerApplication;
+        $runsUntil = $sub->billing_cycle_end;
+
+        DB::transaction(function () use ($sub, $admin, $reason, $immediate, $default, $before, $app, $runsUntil) {
+            if ($immediate || !$runsUntil || $runsUntil->lt(today())) {
+                $sub->update([
+                    'current_plan'         => $default->slug,
+                    'pending_plan'         => null,
+                    'status'               => 'canceled',
+                    'billing_cycle_start'  => null,
+                    'billing_cycle_end'    => null,
+                    'trial_ends_at'        => null,
+                    'grace_period_ends_at' => null,
+                    'canceled_at'          => now(),
+                    'cancel_reason'        => $reason,
+                ]);
+                $app?->update(['plan' => $default->slug]);
+                $change = $this->planChange($sub, $before['plan'], $default->slug, 'admin_force', $admin->id, "Cancelled — {$reason}");
+                if ($app) $this->downgradeService->applyRippleEffects($app, $default->slug);
+                $this->audit($sub, 'cancelled', $admin, 'admin', "Immediate — {$reason}", $before, $change->id);
+            } else {
+                $sub->update([
+                    'pending_plan'  => $default->slug,
+                    'status'        => 'canceled',
+                    'canceled_at'   => now(),
+                    'cancel_reason' => $reason,
+                ]);
+                $this->audit($sub, 'cancelled', $admin, 'admin', "At period end ({$runsUntil->format('Y-m-d')}) — {$reason}", $before);
+            }
+        });
+
+        $fresh = $sub->fresh();
+        $this->notify($sub, 'cancelled', 'Your subscription was cancelled',
+            ($fresh->pending_plan
+                ? "You keep your current plan until {$fresh->billing_cycle_end->format('d M Y')}, then move to {$default->name}."
+                : "Your store is now on the {$default->name} plan.") . " Reason: {$reason}",
+            ['icon' => 'alert-triangle']);
+
+        return $fresh;
+    }
+
+    public function setCommissionOverride(SellerSubscription $sub, float $rate, ?Carbon $expiresAt, User $admin, string $reason): SellerSubscription
+    {
+        $before = $this->snapshot($sub);
+        DB::transaction(function () use ($sub, $rate, $expiresAt, $admin, $reason, $before) {
+            $sub->update([
+                'commission_override'            => $rate,
+                'commission_override_expires_at' => $expiresAt?->copy()->endOfDay(),
+                'commission_override_reason'     => $reason,
+                'commission_override_set_by'     => $admin->id,
+            ]);
+            $this->audit($sub, 'commission_override_set', $admin, 'admin', $reason, $before);
+        });
+
+        $rateLabel = rtrim(rtrim(number_format($rate, 2), '0'), '.');
+        $this->notify($sub, 'commission_override_set', "Your commission rate is now {$rateLabel}%",
+            "A custom commission of {$rateLabel}% applies to your new orders" .
+            ($expiresAt ? " until {$expiresAt->format('d M Y')}." : '.') . ' Existing orders are not affected.');
+
+        return $sub->fresh();
+    }
+
+    public function removeCommissionOverride(SellerSubscription $sub, User $admin, string $reason): SellerSubscription
+    {
+        if ($sub->commission_override === null) {
+            throw new \LogicException('This seller has no commission override.');
+        }
+
+        $before = $this->snapshot($sub);
+        DB::transaction(function () use ($sub, $admin, $reason, $before) {
+            $this->clearOverride($sub);
+            $this->audit($sub, 'commission_override_removed', $admin, 'admin', $reason, $before);
+        });
+
+        $this->notify($sub, 'commission_override_removed', 'Your custom commission rate ended',
+            'Your new orders now use your plan\'s standard commission rate. Existing orders are not affected.');
+
+        return $sub->fresh();
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // SCHEDULER (subscriptions:process)
+    // ═════════════════════════════════════════════════════════════════════════
+
+    /** Reminders N days before a paid period or trial ends. Deduplicated per sub/date/day-count. */
+    public function sendExpiryReminders(array $days = [7, 1]): int
+    {
+        $sent = 0;
+        foreach ($days as $n) {
+            $target = today()->addDays($n)->toDateString();
+
+            SellerSubscription::whereIn('status', ['active', 'trial', 'canceled'])
+                ->where('billing_cycle_end', $target)
+                ->with('user')
+                ->get()
+                ->each(function (SellerSubscription $sub) use ($n, &$sent) {
+                    $plan = SubscriptionPlan::forSlug($sub->current_plan);
+                    if ($plan->isFree() && !$sub->isTrial()) return;
+
+                    $already = SubscriptionAuditLog::where('seller_subscription_id', $sub->id)
+                        ->where('action', 'expiry_reminder')
+                        ->whereDate('created_at', today())
+                        ->where('reason', "{$n}d")
+                        ->exists();
+                    if ($already) return;
+
+                    $when = $n === 1 ? 'tomorrow' : "in {$n} days";
+                    if ($sub->isTrial()) {
+                        $title = "Your {$plan->name} trial ends {$when}";
+                        $body  = "Subscribe before {$sub->billing_cycle_end->format('d M Y')} to keep {$plan->name} features.";
+                    } elseif ($sub->hasPendingDowngrade()) {
+                        $to    = SubscriptionPlan::forSlug($sub->pending_plan)->name;
+                        $title = "Your {$plan->name} plan ends {$when}";
+                        $body  = "On {$sub->billing_cycle_end->format('d M Y')} your store moves to {$to}.";
+                    } else {
+                        $price = number_format($plan->priceFor($sub->billing_period ?? 'monthly'), 0);
+                        $title = "Your {$plan->name} plan renews {$when}";
+                        $body  = "Your subscription ({$price} DT/" . ($sub->billing_period === 'yearly' ? 'year' : 'month') .
+                                 ") is due on {$sub->billing_cycle_end->format('d M Y')}. Renew to avoid losing features.";
+                    }
+
+                    $this->notify($sub, 'expiry_reminder', $title, $body,
+                        ['source' => 'subscription_renewal_reminder', 'days_remaining' => $n]);
+                    $this->audit($sub, 'expiry_reminder', null, 'system', "{$n}d");
+                    $sent++;
+                });
+        }
+        return $sent;
+    }
+
+    /** Trials whose end has passed → default plan. */
+    public function processExpiredTrials(): int
+    {
+        $count = 0;
+        SellerSubscription::where('status', 'trial')
+            ->where('trial_ends_at', '<=', now())
+            ->with('sellerApplication')
+            ->get()
+            ->each(function (SellerSubscription $sub) use (&$count) {
+                try {
+                    $plan = SubscriptionPlan::forSlug($sub->current_plan)->name;
+                    $this->revertToDefault($sub, 'trial_ended', 'trial_end', "Trial of {$plan} ended without payment");
+                    $count++;
+                } catch (\Throwable $e) {
+                    Log::error("[SubscriptionService] processExpiredTrials failed for sub #{$sub->id}: " . $e->getMessage());
+                }
+            });
+        return $count;
+    }
+
+    /**
+     * Paid periods that ended: apply scheduled downgrades / cancellations, or
+     * start the grace period when nothing was paid.
+     */
     public function processExpiredCycles(): int
     {
         $count = 0;
-
-        // Find all active/canceled subscriptions whose billing cycle has ended
-        SellerSubscription::where('billing_cycle_end', '<=', now()->toDateString())
-            ->whereIn('status', ['active', 'canceled'])
+        SellerSubscription::whereIn('status', ['active', 'canceled'])
             ->whereNotNull('billing_cycle_end')
-            ->whereIn('current_plan', ['red', 'black'])
+            ->where('billing_cycle_end', '<', today()->toDateString())
             ->with('sellerApplication')
             ->get()
             ->each(function (SellerSubscription $sub) use (&$count) {
@@ -357,131 +566,197 @@ class SubscriptionService
                     Log::error("[SubscriptionService] processExpiredCycles failed for sub #{$sub->id}: " . $e->getMessage());
                 }
             });
-
         return $count;
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // APPLY END OF CYCLE
-    // Called when billing_cycle_end is reached.
-    // ─────────────────────────────────────────────────────────────────────────
 
     private function applyEndOfCycle(SellerSubscription $sub): void
     {
         $app = $sub->sellerApplication;
-        if (! $app) return;
+        if (!$app) return;
 
         if ($sub->hasPendingDowngrade()) {
-            // Seller had scheduled a downgrade — apply it now
-            $targetPlan = $sub->pending_plan;
+            $target = SubscriptionPlan::forSlug($sub->pending_plan);
+            $before = $this->snapshot($sub);
 
-            DB::transaction(function () use ($sub, $app, $targetPlan) {
-                $fromPlan = $sub->current_plan;
-
+            DB::transaction(function () use ($sub, $app, $target, $before) {
                 $sub->update([
-                    'current_plan'        => $targetPlan,
+                    'current_plan'        => $target->slug,
                     'pending_plan'        => null,
-                    'status'              => $targetPlan === 'free' ? 'expired' : 'active',
-                    'billing_cycle_start' => $targetPlan === 'free' ? null : today(),
-                    'billing_cycle_end'   => $targetPlan === 'free' ? null : today()->addDays(30),
+                    'status'              => $target->isFree() ? 'expired' : 'active',
+                    'billing_cycle_start' => $target->isFree() ? null : today(),
+                    'billing_cycle_end'   => $target->isFree() ? null : $this->cycleEnd(today(), $sub->billing_period ?? 'monthly'),
                     'canceled_at'         => null,
                 ]);
-
-                $app->update(['plan' => $targetPlan]);
-
-                SubscriptionPlanChange::create([
-                    'seller_subscription_id' => $sub->id,
-                    'changed_by_user_id'     => null,
-                    'from_plan'              => $fromPlan,
-                    'to_plan'                => $targetPlan,
-                    'change_type'            => 'downgrade',
-                    'effective_at'           => now(),
-                    'reason'                 => 'Scheduled downgrade applied at end of billing cycle',
-                    'amount_charged'         => 0,
-                ]);
-
-                // Apply all ripple effects now that the downgrade is live
-                $this->downgradeService->applyRippleEffects($app, $targetPlan);
-
-                Log::info("[SubscriptionService] Scheduled downgrade applied: user #{$app->user_id} {$fromPlan} → {$targetPlan}");
+                $app->update(['plan' => $target->slug]);
+                $change = $this->planChange($sub, $before['plan'], $target->slug, 'downgrade', null,
+                    'Scheduled change applied at end of billing cycle');
+                $this->downgradeService->applyRippleEffects($app, $target->slug);
+                $this->audit($sub, 'downgraded', null, 'system', 'Scheduled change applied at end of billing cycle', $before, $change->id);
             });
 
-        } else {
-            // No payment received for renewal — enter grace period
-            $graceEndsAt = Carbon::parse($sub->billing_cycle_end)
-                                 ->addDays(SellerSubscription::GRACE_PERIOD_DAYS);
-
-            $sub->update([
-                'status'               => 'grace_period',
-                'grace_period_ends_at' => $graceEndsAt,
-            ]);
-
-            Log::info("[SubscriptionService] Grace period started: user #{$app->user_id} — ends {$graceEndsAt->toDateString()}");
+            $this->notify($sub, 'downgraded', "Your store is now on {$target->name}",
+                "Your previous plan ended. Products above the {$target->name} limit are hidden (never deleted) until you upgrade again.");
+            return;
         }
+
+        // No payment for renewal — grace period
+        $graceEndsAt = Carbon::parse($sub->billing_cycle_end)->addDays(SellerSubscription::GRACE_PERIOD_DAYS)->endOfDay();
+        $before = $this->snapshot($sub);
+        $sub->update(['status' => 'grace_period', 'grace_period_ends_at' => $graceEndsAt]);
+        $this->audit($sub, 'grace_started', null, 'system', 'Billing period ended without renewal', $before);
+
+        $plan = SubscriptionPlan::forSlug($sub->current_plan)->name;
+        $this->notify($sub, 'grace_started', "Your {$plan} plan has expired",
+            "You keep your features until {$graceEndsAt->format('d M Y')}. Renew before then or your store moves to " .
+            SubscriptionPlan::defaultPlan()->name . '.', ['icon' => 'alert-triangle']);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // PROCESS EXPIRED GRACE PERIODS (called by scheduler daily)
-    // Sellers in grace_period whose grace window has passed → revert to free.
-    // ─────────────────────────────────────────────────────────────────────────
-
+    /** Grace periods that ran out → default plan. */
     public function processExpiredGrace(): int
     {
         $count = 0;
-
         SellerSubscription::graceExpired()
             ->with('sellerApplication')
             ->get()
             ->each(function (SellerSubscription $sub) use (&$count) {
                 try {
-                    $this->revertToFree($sub, 'Payment not received — grace period expired');
+                    $this->revertToDefault($sub, 'expired', 'payment_failure', 'Payment not received — grace period expired');
                     $count++;
                 } catch (\Throwable $e) {
                     Log::error("[SubscriptionService] processExpiredGrace failed for sub #{$sub->id}: " . $e->getMessage());
                 }
             });
-
         return $count;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // REVERT TO FREE — used when grace period expires or payment permanently fails
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private function revertToFree(SellerSubscription $sub, string $reason): void
+    /** Clear commission overrides whose expiry passed (they already stopped applying). */
+    public function processExpiredOverrides(): int
     {
-        $app = $sub->sellerApplication;
-        if (! $app) return;
+        $count = 0;
+        SellerSubscription::whereNotNull('commission_override')
+            ->whereNotNull('commission_override_expires_at')
+            ->where('commission_override_expires_at', '<=', now())
+            ->get()
+            ->each(function (SellerSubscription $sub) use (&$count) {
+                $before = $this->snapshot($sub);
+                $this->clearOverride($sub);
+                $this->audit($sub, 'commission_override_expired', null, 'system', null, $before);
+                $this->notify($sub, 'commission_override_expired', 'Your custom commission rate has ended',
+                    'Your new orders now use your plan\'s standard commission rate.');
+                $count++;
+            });
+        return $count;
+    }
 
-        $fromPlan = $sub->current_plan;
+    private function revertToDefault(SellerSubscription $sub, string $auditAction, string $changeType, string $reason): void
+    {
+        $app     = $sub->sellerApplication;
+        $default = SubscriptionPlan::defaultPlan();
+        $before  = $this->snapshot($sub);
 
-        DB::transaction(function () use ($sub, $app, $fromPlan, $reason) {
+        DB::transaction(function () use ($sub, $app, $default, $auditAction, $changeType, $reason, $before) {
             $sub->update([
-                'current_plan'        => 'free',
-                'pending_plan'        => null,
-                'status'              => 'expired',
-                'billing_cycle_start' => null,
-                'billing_cycle_end'   => null,
-                'grace_period_ends_at'=> null,
+                'current_plan'         => $default->slug,
+                'pending_plan'         => null,
+                'status'               => 'expired',
+                'billing_cycle_start'  => null,
+                'billing_cycle_end'    => null,
+                'trial_ends_at'        => null,
+                'grace_period_ends_at' => null,
             ]);
-
-            $app->update(['plan' => 'free']);
-
-            SubscriptionPlanChange::create([
-                'seller_subscription_id' => $sub->id,
-                'changed_by_user_id'     => null,
-                'from_plan'              => $fromPlan,
-                'to_plan'                => 'free',
-                'change_type'            => 'payment_failure',
-                'effective_at'           => now(),
-                'reason'                 => $reason,
-                'amount_charged'         => 0,
-            ]);
-
-            // Apply ripple effects for downgrade to free
-            $this->downgradeService->applyRippleEffects($app, 'free');
-
-            Log::info("[SubscriptionService] Reverted to free: user #{$app->user_id} — {$reason}");
+            $app?->update(['plan' => $default->slug]);
+            $change = $this->planChange($sub, $before['plan'], $default->slug, $changeType, null, $reason);
+            if ($app) $this->downgradeService->applyRippleEffects($app, $default->slug);
+            $this->audit($sub, $auditAction, null, 'system', $reason, $before, $change->id);
         });
+
+        $this->notify($sub, $auditAction, "Your store is now on {$default->name}",
+            "{$reason}. Products above the {$default->name} limit are hidden (never deleted) — upgrade anytime to restore them.",
+            ['icon' => 'alert-triangle']);
+        Log::info("[SubscriptionService] Reverted to default: user #{$sub->user_id} — {$reason}");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // INTERNALS
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public function cycleEnd(Carbon $start, string $period): Carbon
+    {
+        return $period === 'yearly' ? $start->copy()->addYear() : $start->copy()->addDays(30);
+    }
+
+    private function clearOverride(SellerSubscription $sub): void
+    {
+        $sub->update([
+            'commission_override'            => null,
+            'commission_override_expires_at' => null,
+            'commission_override_reason'     => null,
+            'commission_override_set_by'     => null,
+        ]);
+    }
+
+    private function planChange(SellerSubscription $sub, string $from, string $to, string $type, ?int $by, ?string $reason, float $amount = 0, $effectiveAt = null): SubscriptionPlanChange
+    {
+        return SubscriptionPlanChange::create([
+            'seller_subscription_id' => $sub->id,
+            'changed_by_user_id'     => $by,
+            'from_plan'              => $from,
+            'to_plan'                => $to,
+            'change_type'            => $type,
+            'effective_at'           => $effectiveAt ?? now(),
+            'reason'                 => $reason,
+            'amount_charged'         => $amount,
+        ]);
+    }
+
+    /** Fields worth diffing in the audit log. */
+    private function snapshot(SellerSubscription $sub): array
+    {
+        return [
+            'plan'                => $sub->current_plan,
+            'pending_plan'        => $sub->pending_plan,
+            'status'              => $sub->status,
+            'billing_period'      => $sub->billing_period,
+            'billing_cycle_end'   => optional($sub->billing_cycle_end)->toDateString(),
+            'trial_ends_at'       => optional($sub->trial_ends_at)->toISOString(),
+            'commission_override' => $sub->commission_override,
+            'commission_override_expires_at' => optional($sub->commission_override_expires_at)->toISOString(),
+        ];
+    }
+
+    public function audit(SellerSubscription $sub, string $action, ?User $actor, string $role, ?string $reason = null, ?array $before = null, ?int $planChangeId = null): void
+    {
+        try {
+            $fresh = $sub->fresh() ?? $sub;
+            SubscriptionAuditLog::create([
+                'seller_subscription_id' => $sub->id,
+                'seller_id'              => $sub->user_id,
+                'subscription_plan_id'   => optional(SubscriptionPlan::where('slug', $fresh->current_plan)->first())->id,
+                'actor_id'               => $actor?->id,
+                'actor_role'             => $actor ? $role : 'system',
+                'action'                 => $action,
+                'reason'                 => $reason,
+                'before'                 => $before,
+                'after'                  => $this->snapshot($fresh),
+                'plan_change_id'         => $planChangeId,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('[SubscriptionService] audit failed: ' . $e->getMessage());
+        }
+    }
+
+    private function notify(SellerSubscription $sub, string $action, string $title, string $body, array $meta = []): void
+    {
+        try {
+            $user = $sub->user ?? User::find($sub->user_id);
+            $user?->notify(new SubscriptionUpdatedNotification($action, $title, $body, $meta));
+        } catch (\Throwable $e) {
+            Log::warning('[SubscriptionService] notify failed: ' . $e->getMessage());
+        }
+    }
+
+    private function endSentence(SellerSubscription $sub): string
+    {
+        return $sub->billing_cycle_end ? " It runs until {$sub->billing_cycle_end->format('d M Y')}." : '';
     }
 }

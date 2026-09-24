@@ -44,10 +44,24 @@ class FinancialSnapshotService
             $deliveryFee      = $this->deliveryFeeFor($sellerOrderId);
             $platformProfit   = round($commissionAmount + $deliveryFee, 3);
 
+            // Snapshot which rate applied and where it came from (items with
+            // commission only — pack follower rows carry 0 by design).
+            $rated = DB::table('order_items')
+                ->where('seller_order_id', $sellerOrderId)
+                ->where('commission_amount', '>', 0)
+                ->get(['commission_percentage', 'commission_source', 'plan_used', 'net_total', 'commission_amount']);
+            $ratedNet  = (float) $rated->sum('net_total');
+            $sources   = $rated->pluck('commission_source')->filter()->unique();
+
             DB::table('seller_orders')
                 ->where('id', $sellerOrderId)
                 ->update([
                     'commission_amount' => $commissionAmount,
+                    'commission_rate'   => $ratedNet > 0
+                        ? round((float) $rated->sum('commission_amount') / $ratedNet * 100, 2)
+                        : optional($rated->first())->commission_percentage,
+                    'commission_source' => $sources->count() > 1 ? 'mixed' : $sources->first(),
+                    'plan_used'         => optional($rated->first())->plan_used,
                     'seller_net_amount' => $sellerNetAmount,
                     'delivery_fee'      => $deliveryFee,
                     'platform_profit'   => $platformProfit,

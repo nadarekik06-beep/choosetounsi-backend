@@ -23,13 +23,19 @@ class PlatformFacts
     public function plans(): array
     {
         $plans = [];
-        foreach (SellerSubscription::PLAN_PRICES as $key => $price) {
-            $range = $this->commission->rateRangeForPlan($key);
-            $plans[$key] = [
-                'key'            => $key,
-                'name'           => SellerSubscription::PLAN_NAMES[$key],
-                'price'          => (float) $price,
-                'max_products'   => SellerSubscription::PLAN_MAX_PRODUCTS[$key],
+        foreach (\App\Models\SubscriptionPlan::offered()->ordered()->get() as $plan) {
+            $range = $this->commission->rateRangeForPlan($plan->slug);
+            $plans[$plan->slug] = [
+                'key'            => $plan->slug,
+                'name'           => $plan->name,
+                'description'    => $plan->description,
+                'badge_color'    => $plan->badge_color,
+                'tier'           => $plan->tier,
+                'price'          => (float) $plan->price_monthly,
+                'price_yearly'   => $plan->price_yearly,
+                'trial_days'     => $plan->trial_days,
+                'max_products'   => $plan->max_products,
+                'features'       => $plan->features,
                 'commission_min' => $range['min'],
                 'commission_max' => $range['max'],
             ];

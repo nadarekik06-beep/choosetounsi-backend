@@ -320,9 +320,12 @@ class SellerApplicationController extends Controller
     {
         $application->update([
             'status'      => 'approved',
-            'plan'        => 'free',
+            'plan'        => \App\Models\SubscriptionPlan::defaultPlan()->slug,
             'reviewed_at' => now(),
         ]);
+
+        // Every approved seller has a subscription row (admin list, audit, limits)
+        app(\App\Services\SubscriptionService::class)->getOrCreateSubscription($application);
 
         $application->user->update([
             'role'        => 'seller',

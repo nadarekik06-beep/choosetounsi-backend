@@ -20,6 +20,8 @@ use App\Http\Controllers\Api\Seller\ProductUpdateRequestController as SellerProd
 use App\Http\Controllers\Api\Seller\RestockController;
 use App\Http\Controllers\Admin\SellerController;
 use App\Http\Controllers\Admin\ProductController as AdminProductController;
+use App\Http\Controllers\Admin\AdminSubscriptionController;
+use App\Http\Controllers\Admin\AdminPlanController;
 use App\Http\Controllers\Admin\OrderController as AdminOrderController;
 use App\Http\Controllers\Admin\ProductUpdateRequestController as AdminProductUpdateRequestController;
 use App\Http\Controllers\Api\NotificationController;
@@ -212,7 +214,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // ── Advanced Analytics (Red Pepper +) ─────────────────────────────
         Route::prefix('analytics')
-            ->middleware('seller.plan:red')
+            ->middleware('seller.feature:analytics')
             ->group(function () {
                 Route::get('/overview',  [SellerAnalyticsController::class, 'overview']);
                 Route::get('/products',  [SellerAnalyticsController::class, 'products']);
@@ -229,7 +231,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // ── AI Business Tools (Red Pepper +) ──────────────────────────────
         Route::prefix('ai')
-            ->middleware('seller.plan:red')
+            ->middleware('seller.feature:ai_tools')
             ->group(function () {
                 Route::post('/price-optimizer',       [SellerAIController::class, 'priceOptimizer']);
                 Route::post('/sales-predictor',       [SellerAIController::class, 'salesPredictor']);
@@ -240,7 +242,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // ── Black Pepper ───────────────────────────────────────────────────
         Route::prefix('black')
-            ->middleware('seller.plan:black')
+            ->middleware('seller.feature:black_hub')
             ->group(function () {
                 Route::get('/ai-hub',          [BlackPepperController::class, 'aiHub']);
                 Route::get('/revenue-goals',  [BlackPepperController::class, 'revenueGoals']);
@@ -316,17 +318,17 @@ Route::middleware('auth:sanctum')->group(function () {
         // stats MUST come before {id} to avoid being matched as an ID
         Route::get('/promotions/stats',    [SellerPromotionController::class, 'stats']);
         Route::get('/promotions',          [SellerPromotionController::class, 'index']);
-        Route::post('/promotions',         [SellerPromotionController::class, 'store']);
+        Route::post('/promotions',         [SellerPromotionController::class, 'store'])->middleware('seller.feature:promotions');
         Route::get('/promotions/{id}',     [SellerPromotionController::class, 'show']);
-        Route::put('/promotions/{id}',     [SellerPromotionController::class, 'update']);
+        Route::put('/promotions/{id}',     [SellerPromotionController::class, 'update'])->middleware('seller.feature:promotions');
         Route::delete('/promotions/{id}',  [SellerPromotionController::class, 'destroy']);
 
         // ── Coupons ───────────────────────────────────────────────────────
         Route::get('/coupons/stats',       [SellerCouponController::class, 'stats']);
         Route::get('/coupons',             [SellerCouponController::class, 'index']);
-        Route::post('/coupons',            [SellerCouponController::class, 'store']);
+        Route::post('/coupons',            [SellerCouponController::class, 'store'])->middleware('seller.feature:coupons');
         Route::get('/coupons/{id}',        [SellerCouponController::class, 'show']);
-        Route::put('/coupons/{id}',        [SellerCouponController::class, 'update']);
+        Route::put('/coupons/{id}',        [SellerCouponController::class, 'update'])->middleware('seller.feature:coupons');
         Route::delete('/coupons/{id}',     [SellerCouponController::class, 'destroy']);
 
 
@@ -434,6 +436,9 @@ Route::middleware('auth:sanctum')->group(function () {
         // ── Products ──────────────────────────────────────────────────────
         Route::get('/products',                [AdminProductController::class, 'index']);
         Route::get('/products/{id}',           [AdminProductController::class, 'show']);
+        Route::get('/products/{id}/review',    [AdminProductController::class, 'review']);
+        Route::patch('/products/{id}/request-changes', [AdminProductController::class, 'requestChanges']);
+        Route::patch('/products/{id}/featured',        [AdminProductController::class, 'toggleFeatured']);
         Route::put('/products/{id}',           [AdminProductController::class, 'update']);
         Route::patch('/products/{id}/approve', [AdminProductController::class, 'approve']);
         Route::patch('/products/{id}/reject',  [AdminProductController::class, 'reject']);
@@ -547,17 +552,41 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('{id}',         [SettlementController::class, 'show']);
         Route::post('{id}/confirm',[SettlementController::class, 'confirm']);
         Route::post('{id}/cancel', [SettlementController::class, 'cancel']);
-// ── Subscription Management (NEW) 
-        Route::prefix('subscriptions')->group(function () {
-        Route::get('/',                             [\App\Http\Controllers\Admin\AdminSubscriptionController::class, 'index']);
-        Route::get('/{sellerId}',                   [\App\Http\Controllers\Admin\AdminSubscriptionController::class, 'show']);
-        Route::post('/{sellerId}/force-plan',       [\App\Http\Controllers\Admin\AdminSubscriptionController::class, 'forcePlan']);
-        Route::post('/{sellerId}/suspend',          [\App\Http\Controllers\Admin\AdminSubscriptionController::class, 'suspend']);
-        Route::post('/{sellerId}/reinstate',        [\App\Http\Controllers\Admin\AdminSubscriptionController::class, 'reinstate']);
     });
- 
-});
-    
+
+    // ── Subscription Management ──────────────────────────────────────────
+    // (Was nested inside the settlements prefix → served at
+    //  /admin/settlements/subscriptions/* while the admin panel called
+    //  /admin/subscriptions/* — every request 404'd.)
+    Route::prefix('subscriptions')->group(function () {
+        Route::get('/',                                 [AdminSubscriptionController::class, 'index']);
+        Route::get('/stats',                            [AdminSubscriptionController::class, 'stats']);
+        Route::get('/{sellerId}',                       [AdminSubscriptionController::class, 'show'])->whereNumber('sellerId');
+        Route::post('/{sellerId}/assign-plan',          [AdminSubscriptionController::class, 'assignPlan']);
+        Route::post('/{sellerId}/force-plan',           [AdminSubscriptionController::class, 'assignPlan']);   // legacy alias
+        Route::post('/{sellerId}/end-date',             [AdminSubscriptionController::class, 'changeEndDate']);
+        Route::post('/{sellerId}/free-days',            [AdminSubscriptionController::class, 'grantFreeDays']);
+        Route::post('/{sellerId}/trial',                [AdminSubscriptionController::class, 'startTrial']);
+        Route::post('/{sellerId}/suspend',              [AdminSubscriptionController::class, 'suspend']);
+        Route::post('/{sellerId}/reinstate',            [AdminSubscriptionController::class, 'reinstate']);
+        Route::post('/{sellerId}/cancel',               [AdminSubscriptionController::class, 'cancel']);
+        Route::put('/{sellerId}/commission-override',   [AdminSubscriptionController::class, 'setCommissionOverride']);
+        Route::delete('/{sellerId}/commission-override',[AdminSubscriptionController::class, 'removeCommissionOverride']);
+    });
+
+    // ── Subscription plans + platform default commission ─────────────────
+    Route::prefix('subscription-plans')->group(function () {
+        Route::get('/',              [AdminPlanController::class, 'index']);
+        Route::post('/',             [AdminPlanController::class, 'store']);
+        Route::put('/{id}',          [AdminPlanController::class, 'update']);
+        Route::patch('/{id}/toggle', [AdminPlanController::class, 'toggle']);
+        Route::patch('/{id}/default',[AdminPlanController::class, 'makeDefault']);
+        Route::delete('/{id}',       [AdminPlanController::class, 'destroy']);
+        Route::post('/{id}/restore', [AdminPlanController::class, 'restore']);
+    });
+    Route::get('/commission-settings', [AdminPlanController::class, 'commissionSettings']);
+    Route::put('/commission-settings', [AdminPlanController::class, 'updateCommissionSettings']);
+
 
     }); // ← admin group ends HERE
 

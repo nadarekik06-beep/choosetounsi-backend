@@ -24,6 +24,7 @@ class Product extends Model
         'price', 'delivery_fee', 'stock', 'sku',
         'is_approved', 'is_active', 'is_platform_product', 'featured', 'views',
         'is_pack', 'season', 'rejection_reason', 'deleted_by_seller',
+        'changes_requested_at',
     ];
 
     protected $casts = [
@@ -36,6 +37,7 @@ class Product extends Model
         'is_pack'             => 'boolean',
         'season'              => 'array',
         'deleted_by_seller'   => 'boolean',
+        'changes_requested_at' => 'datetime',
     ];
 
     public const SEASONS = [
@@ -113,6 +115,16 @@ class Product extends Model
     public function coupons()
     {
         return $this->belongsToMany(Coupon::class, 'coupon_products');
+    }
+
+    public function promotions()
+    {
+        return $this->belongsToMany(Promotion::class, 'promotion_products');
+    }
+
+    public function moderationLogs()
+    {
+        return $this->hasMany(ProductModerationLog::class)->orderByDesc('created_at')->orderByDesc('id');
     }
 
     public function reviews()
@@ -255,6 +267,28 @@ class Product extends Model
     }
 
     // ── Other Helpers ──────────────────────────────────────────────────────────
+
+    /**
+     * Admin moderation status, derived from product fields.
+     *
+     * deleted_by_seller → soft-deleted by the seller
+     * changes_requested → not approved + changes_requested_at set (waiting on seller)
+     * rejected          → not approved + rejection_reason set
+     * pending           → not approved, never reviewed (or resubmitted)
+     * disabled          → approved + not active
+     * approved          → approved + active
+     */
+    public function moderationStatus(): string
+    {
+        if ($this->deleted_by_seller) return 'deleted_by_seller';
+        if (!$this->is_approved) {
+            if ($this->rejection_reason) return 'rejected';
+            if ($this->changes_requested_at) return 'changes_requested';
+            return 'pending';
+        }
+        if (!$this->is_active) return 'disabled';
+        return 'approved';
+    }
 
     public function isAvailable(): bool
     {

@@ -860,6 +860,11 @@ public function setRevenueGoal(Request $request): JsonResponse
             return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
         }
 
+        if ($request->action === 'activate' && !$product->is_sponsored
+            && ($deny = app(\App\Services\PlanGate::class)->canSponsor($request->user()->id))) {
+            return $deny;
+        }
+
         if ($request->action === 'activate') {
             $product->update([
                 'is_sponsored'       => true,

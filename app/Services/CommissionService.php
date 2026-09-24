@@ -2,150 +2,201 @@
 
 namespace App\Services;
 
+use App\Models\PlatformSetting;
+use App\Models\SellerSubscription;
+use App\Models\SubscriptionPlan;
+
 /**
  * CommissionService
  *
  * Single source of truth for all commission math on ChooseTounsi.
+ *
+ * Rate resolution (resolveForSeller), highest priority first:
+ *   1. override — seller_subscriptions.commission_override (while not expired)
+ *   2. plan     — subscription_plans.commission_rate (flat %), or the platform
+ *                 tier table minus subscription_plans.commission_reduction
+ *   3. default  — platform tier table (platform_settings 'commission.default')
+ *
  * Used in:
- *   - CheckoutController   → FINAL stored calculation (order_items columns)
+ *   - CheckoutController   → FINAL stored calculation (order_items + seller_orders snapshot)
  *   - CommissionController → live preview for seller dashboard
+ *   - Admin views          → "effective rate" display
  *
- * NEVER recalculate from order_items — always read stored values.
- *
- * Tiers (price-based):
- *   0   – 100  DT → 15%
- *   101 – 200  DT → 12%
- *   201 – 300  DT → 10%
- *   301 – 500  DT →  8%
- *   501 – 1000 DT →  5%
- *   1000+      DT →  3%
- *
- * Plan reductions:
- *   free  (Green)  → 0%
- *   red   (Red)    → −3 percentage points
- *   black (Black)  → −6 percentage points
- *
- * Final = max(base − reduction, MIN_COMMISSION)
+ * NEVER recalculate from order_items — always read stored values. Changing a
+ * plan / override / default only affects orders placed afterwards.
  */
 class CommissionService
 {
-    // ── Commission tiers ──────────────────────────────────────────────────────
-    // [min_price, max_price, base_pct]
-    private const TIERS = [
-        [0,       100,          15],
-        [100.01,  200,          12],
-        [200.01,  300,          10],
-        [300.01,  500,           8],
-        [500.01,  1000,          5],
-        [1000.01, PHP_FLOAT_MAX, 3],
+    public const SETTING_KEY = 'commission.default';
+
+    /** Fallback if the platform setting row is missing. */
+    private const FALLBACK = [
+        'tiers' => [
+            ['min' => 0,       'max' => 100,  'rate' => 15],
+            ['min' => 100.01,  'max' => 200,  'rate' => 12],
+            ['min' => 200.01,  'max' => 300,  'rate' => 10],
+            ['min' => 300.01,  'max' => 500,  'rate' => 8],
+            ['min' => 500.01,  'max' => 1000, 'rate' => 5],
+            ['min' => 1000.01, 'max' => null, 'rate' => 3],
+        ],
+        'floor' => 3,
     ];
 
-    // ── Plan reductions (percentage points knocked off base rate) ─────────────
-    private const PLAN_REDUCTION = [
-        'free'  => 0,
-        'red'   => 3,
-        'black' => 6,
-    ];
+    // ── Platform default table ────────────────────────────────────────────────
 
-    // ── Floor — never go below this regardless of plan ────────────────────────
-    private const MIN_COMMISSION = 3.0;
-
-    // ── Public: Base rate for a given unit price ──────────────────────────────
+    public function defaultTable(): array
+    {
+        $value = PlatformSetting::getValue(self::SETTING_KEY);
+        return is_array($value) && !empty($value['tiers']) ? $value : self::FALLBACK;
+    }
 
     public function getBaseRate(float $price): float
     {
-        foreach (self::TIERS as [$min, $max, $rate]) {
-            if ($price >= $min && $price <= $max) {
-                return (float) $rate;
+        $tiers = $this->defaultTable()['tiers'];
+        foreach ($tiers as $t) {
+            $max = $t['max'] ?? null;
+            if ($price >= (float) $t['min'] && ($max === null || $price <= (float) $max)) {
+                return (float) $t['rate'];
             }
         }
-        return (float) self::TIERS[count(self::TIERS) - 1][2];
+        // Gaps between tiers (e.g. 100.005) → the closest lower tier
+        $lower = array_filter($tiers, fn($t) => $price >= (float) $t['min']);
+        return (float) (end($lower)['rate'] ?? end($tiers)['rate']);
     }
 
-    // ── Public: How many percentage points the plan reduces ───────────────────
+    public function floor(): float
+    {
+        return (float) ($this->defaultTable()['floor'] ?? 0);
+    }
+
+    // ── Plan-level rates ──────────────────────────────────────────────────────
 
     public function getPlanReduction(string $plan): float
     {
-        return (float) (self::PLAN_REDUCTION[$plan] ?? 0);
+        return (float) SubscriptionPlan::forSlug($plan)->commission_reduction;
     }
 
-    // ── Public: Final effective commission rate ───────────────────────────────
-
+    /** Rate a plan pays at a given price (ignores seller overrides). */
     public function getFinalRate(float $price, string $plan): float
     {
-        $base      = $this->getBaseRate($price);
-        $reduction = $this->getPlanReduction($plan);
-        return max($base - $reduction, self::MIN_COMMISSION);
+        return $this->planRate($price, SubscriptionPlan::forSlug($plan))['rate'];
     }
 
-    // ── Public: Lowest / highest rate a plan can pay ──────────────────────────
-    //
-    // Derived from TIERS + PLAN_REDUCTION + MIN_COMMISSION so marketing copy
-    // (become-a-vendor page, chatbot) can never drift from what is charged.
-    //
-    // @return array{min: float, max: float}
+    /** @return array{rate: float, source: string} */
+    private function planRate(float $price, SubscriptionPlan $plan): array
+    {
+        if ($plan->commission_rate !== null) {
+            return ['rate' => (float) $plan->commission_rate, 'source' => 'plan'];
+        }
+        $reduction = (float) $plan->commission_reduction;
+        $rate      = max($this->getBaseRate($price) - $reduction, $this->floor());
+        return ['rate' => $rate, 'source' => $reduction > 0 ? 'plan' : 'default'];
+    }
+
+    // ── Seller-level resolution ───────────────────────────────────────────────
 
     /**
-     * Price tiers, plan reductions and floor, for display.
-     *
-     * @return array{tiers: array<array{min: float, max: ?float, rate: float}>, reductions: array<string, float>, floor: float}
+     * Always read fresh — this service lives inside controllers that Laravel
+     * reuses within a process (queue workers, tests), and a stale override or
+     * plan here would be snapshotted onto real orders.
      */
-    public function rateTable(): array
+    private function subscriptionFor(?int $sellerId): ?SellerSubscription
     {
+        return $sellerId ? SellerSubscription::where('user_id', $sellerId)->first() : null;
+    }
+
+    /**
+     * Resolve the rate for a seller at a unit price.
+     *
+     * @return array{rate: float, source: 'override'|'plan'|'default', plan: string}
+     */
+    public function resolveForSeller(?int $sellerId, float $price): array
+    {
+        $sub  = $this->subscriptionFor($sellerId);
+        $plan = $sub
+            ? SubscriptionPlan::forSlug($sub->current_plan)
+            : ($sellerId
+                ? SubscriptionPlan::forSlug(optional(\App\Models\SellerApplication::where('user_id', $sellerId)->first())->plan)
+                : SubscriptionPlan::defaultPlan());
+
+        if ($sub && ($override = $sub->activeCommissionOverride()) !== null) {
+            return ['rate' => $override, 'source' => 'override', 'plan' => $plan->slug];
+        }
+
+        return $this->planRate($price, $plan) + ['plan' => $plan->slug];
+    }
+
+    /**
+     * Human-readable summary of what a seller currently pays (admin UI).
+     */
+    public function effectiveSummary(SellerSubscription $sub): array
+    {
+        $plan     = SubscriptionPlan::forSlug($sub->current_plan);
+        $override = $sub->activeCommissionOverride();
+
+        if ($override !== null) {
+            return [
+                'source'     => 'override',
+                'rate'       => $override,
+                'label'      => rtrim(rtrim(number_format($override, 2), '0'), '.') . '% (seller override)',
+                'expires_at' => optional($sub->commission_override_expires_at)->toISOString(),
+            ];
+        }
+        if ($plan->commission_rate !== null) {
+            return [
+                'source' => 'plan',
+                'rate'   => (float) $plan->commission_rate,
+                'label'  => rtrim(rtrim(number_format($plan->commission_rate, 2), '0'), '.') . "% ({$plan->name} flat rate)",
+            ];
+        }
+        $range = $this->rateRangeForPlan($plan->slug);
+        $reduction = (float) $plan->commission_reduction;
         return [
-            'tiers' => array_map(fn (array $t) => [
-                'min'  => (float) $t[0],
-                'max'  => $t[1] === PHP_FLOAT_MAX ? null : (float) $t[1],
-                'rate' => (float) $t[2],
-            ], self::TIERS),
-            'reductions' => array_map('floatval', self::PLAN_REDUCTION),
-            'floor'      => self::MIN_COMMISSION,
+            'source' => $reduction > 0 ? 'plan' : 'default',
+            'rate'   => null,
+            'range'  => $range,
+            'label'  => "{$range['min']}–{$range['max']}% by price" . ($reduction > 0 ? " ({$plan->name}: −{$reduction} pts)" : ' (platform default)'),
         ];
     }
 
-    public function rateRangeForPlan(string $plan): array
-    {
-        $rates = array_map(
-            fn (array $tier) => max($tier[2] - $this->getPlanReduction($plan), self::MIN_COMMISSION),
-            self::TIERS
-        );
+    // ── Calculation ───────────────────────────────────────────────────────────
 
-        return ['min' => (float) min($rates), 'max' => (float) max($rates)];
+    /**
+     * Full breakdown for a seller — resolves override / plan / default.
+     * Used by checkout; the returned rate + source are snapshotted on the order.
+     */
+    public function calculateForSeller(?int $sellerId, float $unitPrice, int $quantity = 1, float $discount = 0.0): array
+    {
+        $resolved = $this->resolveForSeller($sellerId, $unitPrice);
+        return $this->breakdown($unitPrice, $resolved['rate'], $resolved['plan'], $quantity, $discount)
+            + ['commission_source' => $resolved['source']];
     }
 
-    // ── Public: Full breakdown — PRIMARY method ───────────────────────────────
-    //
-    // @param float  $unitPrice  Product/variant selling price
-    // @param string $plan       Seller's active plan ('free'|'red'|'black')
-    // @param int    $quantity   Units in this line item (default: 1)
-    // @param float  $discount   Seller-funded coupon discount on this line (default: 0)
-    //
-    // Coupon rule: the rate is picked from the ORIGINAL unit price (a discount
-    // can never move an item into another tier), but it is applied to the
-    // line total AFTER the discount. The seller funds the discount:
-    //   net_total     = total_price − discount
-    //   commission    = rate × net_total
-    //   seller_amount = net_total − commission
-    //
-    // @return array {
-    //   unit_price, quantity, total_price, discount_amount, net_total,
-    //   commission_percentage, commission_amount, seller_amount,
-    //   plan_used, base_rate, plan_reduction, saved_with_plan
-    // }
-
+    /**
+     * Full breakdown for a plan (no seller override) — previews and marketing.
+     *
+     * Coupon rule: the rate is picked from the ORIGINAL unit price (a discount
+     * can never move an item into another tier), but it is applied to the line
+     * total AFTER the discount. The seller funds the discount.
+     */
     public function calculate(float $unitPrice, string $plan, int $quantity = 1, float $discount = 0.0): array
     {
-        $finalRate        = $this->getFinalRate($unitPrice, $plan);
+        $resolved = $this->planRate($unitPrice, SubscriptionPlan::forSlug($plan));
+        return $this->breakdown($unitPrice, $resolved['rate'], $plan, $quantity, $discount)
+            + ['commission_source' => $resolved['source']];
+    }
+
+    private function breakdown(float $unitPrice, float $rate, string $plan, int $quantity, float $discount): array
+    {
         $totalPrice       = round($unitPrice * $quantity, 3);
         $discount         = round(min(max($discount, 0), $totalPrice), 3);
         $netTotal         = round($totalPrice - $discount, 3);
-        $commissionAmount = round($netTotal * ($finalRate / 100), 3);
+        $commissionAmount = round($netTotal * ($rate / 100), 3);
         $sellerAmount     = round($netTotal - $commissionAmount, 3);
 
-        // How much the seller saves vs the free plan (for upgrade nudge)
-        $freeRate         = $this->getFinalRate($unitPrice, 'free');
-        $freeCommission   = round($netTotal * ($freeRate / 100), 3);
-        $savedWithPlan    = round($freeCommission - $commissionAmount, 3);
+        // How much the seller saves vs the default plan (for upgrade nudge)
+        $defaultRate    = $this->planRate($unitPrice, SubscriptionPlan::defaultPlan())['rate'];
+        $savedWithPlan  = round($netTotal * ($defaultRate / 100) - $commissionAmount, 3);
 
         return [
             'unit_price'             => $unitPrice,
@@ -153,7 +204,7 @@ class CommissionService
             'total_price'            => $totalPrice,
             'discount_amount'        => $discount,
             'net_total'              => $netTotal,
-            'commission_percentage'  => $finalRate,
+            'commission_percentage'  => $rate,
             'commission_amount'      => $commissionAmount,
             'seller_amount'          => $sellerAmount,
             'plan_used'              => $plan,
@@ -163,45 +214,68 @@ class CommissionService
         ];
     }
 
-    // ── Public: What each upgrade plan would save per this line item ──────────
-    //
-    // Used by CommissionController to show upgrade suggestions.
-    //
-    // @return array[]  Each element: { plan, plan_name, monthly_cost,
-    //                                   saved_per_sale, new_rate, new_seller_amount }
+    // ── Display helpers ───────────────────────────────────────────────────────
 
+    /**
+     * Price tiers, plan reductions and floor, for display.
+     *
+     * @return array{tiers: array<array{min: float, max: ?float, rate: float}>, reductions: array<string, float>, floor: float}
+     */
+    public function rateTable(): array
+    {
+        $table = $this->defaultTable();
+        return [
+            'tiers' => array_map(fn(array $t) => [
+                'min'  => (float) $t['min'],
+                'max'  => isset($t['max']) ? (float) $t['max'] : null,
+                'rate' => (float) $t['rate'],
+            ], $table['tiers']),
+            'reductions' => SubscriptionPlan::notArchived()->ordered()->get()
+                ->mapWithKeys(fn($p) => [$p->slug => (float) $p->commission_reduction])->all(),
+            'floor' => (float) ($table['floor'] ?? 0),
+        ];
+    }
+
+    /** Lowest / highest rate a plan can pay. @return array{min: float, max: float} */
+    public function rateRangeForPlan(string $plan): array
+    {
+        $p = SubscriptionPlan::forSlug($plan);
+        if ($p->commission_rate !== null) {
+            return ['min' => (float) $p->commission_rate, 'max' => (float) $p->commission_rate];
+        }
+        $rates = array_map(
+            fn(array $t) => max((float) $t['rate'] - (float) $p->commission_reduction, $this->floor()),
+            $this->defaultTable()['tiers']
+        );
+        return ['min' => (float) min($rates), 'max' => (float) max($rates)];
+    }
+
+    /**
+     * What each higher plan would save per this line item.
+     *
+     * @return array[] { plan, plan_name, monthly_cost, saved_per_sale, new_rate, new_seller_amount, message }
+     */
     public function getUpgradeSavings(float $unitPrice, string $currentPlan, int $quantity = 1): array
     {
-        $planHierarchy = ['free' => 0, 'red' => 1, 'black' => 2];
-        $currentLevel  = $planHierarchy[$currentPlan] ?? 0;
-
-        $upgrades = [];
-        foreach (['red', 'black'] as $paidPlan) {
-            $upgrades[$paidPlan] = [
-                'name'    => \App\Models\SellerSubscription::PLAN_NAMES[$paidPlan],
-                'monthly' => \App\Models\SellerSubscription::PLAN_PRICES[$paidPlan],
-            ];
-        }
-
+        $current     = SubscriptionPlan::forSlug($currentPlan);
+        $currentCalc = $this->calculate($unitPrice, $currentPlan, $quantity);
         $suggestions = [];
-        $current     = $this->calculate($unitPrice, $currentPlan, $quantity);
 
-        foreach ($upgrades as $plan => $info) {
-            if (($planHierarchy[$plan] ?? 0) <= $currentLevel) continue;
+        foreach (SubscriptionPlan::offered()->ordered()->get() as $plan) {
+            if (!$plan->isHigherThan($current)) continue;
 
-            $upgraded     = $this->calculate($unitPrice, $plan, $quantity);
-            $savedPerSale = round($current['commission_amount'] - $upgraded['commission_amount'], 3);
-
+            $upgraded     = $this->calculate($unitPrice, $plan->slug, $quantity);
+            $savedPerSale = round($currentCalc['commission_amount'] - $upgraded['commission_amount'], 3);
             if ($savedPerSale <= 0) continue;
 
             $suggestions[] = [
-                'plan'              => $plan,
-                'plan_name'         => $info['name'],
-                'monthly_cost'      => $info['monthly'],
+                'plan'              => $plan->slug,
+                'plan_name'         => $plan->name,
+                'monthly_cost'      => (float) $plan->price_monthly,
                 'saved_per_sale'    => $savedPerSale,
                 'new_rate'          => $upgraded['commission_percentage'],
                 'new_seller_amount' => $upgraded['seller_amount'],
-                'message'           => "Upgrade to {$info['name']} → save {$savedPerSale} TND per sale",
+                'message'           => "Upgrade to {$plan->name} → save {$savedPerSale} TND per sale",
             ];
         }
 

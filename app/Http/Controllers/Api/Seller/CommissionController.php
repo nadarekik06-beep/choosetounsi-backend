@@ -44,7 +44,8 @@ class CommissionController extends Controller
         $price    = (float) $request->price;
         $quantity = (int)   ($request->quantity ?? 1);
 
-        $breakdown        = $this->commission->calculate($price, $plan, $quantity);
+        // Same resolution as checkout (seller override → plan → default)
+        $breakdown        = $this->commission->calculateForSeller($user->id, $price, $quantity);
         $upgradeSuggestions = $this->commission->getUpgradeSavings($price, $plan, $quantity);
 
         return response()->json([

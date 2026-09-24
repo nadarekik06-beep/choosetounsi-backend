@@ -7,6 +7,12 @@ use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\ProductAttributeValue;
 use App\Models\Attribute;
+use App\Models\ProductModerationLog;
+use App\Models\Review;
+use App\Models\SellerSubscription;
+use App\Http\Requests\Admin\RejectProductRequest;
+use App\Http\Requests\Admin\RequestProductChangesRequest;
+use App\Http\Resources\Admin\ProductReviewResource;
 use App\Notifications\ProductReviewedNotification;
 use App\Notifications\ProductActionNotification;
 use Illuminate\Http\Request;
@@ -52,10 +58,11 @@ public function index(Request $request)
     ]);
 
     if ($status === 'pending') {
+        $this->scopePendingQueue($query);
+    } elseif ($status === 'changes_requested') {
         $query->where('is_approved', false)
               ->whereNull('rejection_reason')
-              ->where(fn($q) => $q->where('deleted_by_seller', false)
-                                  ->orWhereNull('deleted_by_seller'));
+              ->whereNotNull('changes_requested_at');
     } elseif ($status === 'rejected') {
         $query->where('is_approved', false)
               ->whereNotNull('rejection_reason');
@@ -317,13 +324,62 @@ public function index(Request $request)
         return response()->json(['success' => true, 'message' => 'Product updated.', 'data' => $product]);
     }
 
-    public function approve($id)
+    /**
+     * GET /api/admin/products/{id}/review
+     * Complete moderation payload (see ProductReviewResource). Kept separate from
+     * show(), whose shape AdminEditProductModal depends on.
+     */
+    public function review(Request $request, $id)
+    {
+        $product = Product::withTrashed()->with([
+            'seller:id,name,email,is_active,is_approved,created_at',
+            'seller.sellerApplication',
+            'category:id,name,slug',
+            'subcategory:id,name,slug,category_id',
+            'images.colorOption:id,value,color_hex',
+            'attributeValues.attribute.options',
+            'variants' => fn($q) => $q->with([
+                'attributeOptions.attribute:id,slug,name,type',
+                'images',
+            ]),
+            'promotions',
+            'coupons',
+            'moderationLogs.admin:id,name',
+        ])->findOrFail($id);
+
+        $sellerId     = $product->seller_id;
+        $subscription = $sellerId ? SellerSubscription::where('user_id', $sellerId)->first() : null;
+        $plan         = optional($subscription)->current_plan
+            ?? optional(optional($product->seller)->sellerApplication)->plan
+            ?? 'free';
+
+        $resource = new ProductReviewResource($product, [
+            'seller_plan'    => \App\Models\SubscriptionPlan::forSlug($plan)->slug,
+            'subscription'   => $subscription,
+            'seller_stats'   => $sellerId ? $this->sellerStats($sellerId) : [],
+            'performance'    => $this->performance($product),
+            'duplicate_skus' => $this->duplicateSkus($product),
+            'queue'          => $this->queue($product),
+        ]);
+
+        return response()->json(['success' => true, 'data' => $resource->resolve($request)]);
+    }
+
+    public function approve(Request $request, $id)
     {
         $product = Product::with('seller')->findOrFail($id);
+        $from    = $product->moderationStatus();
 
-        // Clear rejection reason on approval so the product goes back to clean state
-        $product->update(['is_approved' => true, 'rejection_reason' => null]);
-        $product->fresh()->syncActiveStatusFromVariants();
+        // Clear rejection / change-request state so the product goes back to a clean state
+        $product->update(['is_approved' => true, 'rejection_reason' => null, 'changes_requested_at' => null]);
+        $product = $product->fresh('seller');
+        $product->syncActiveStatusFromVariants();
+
+        ProductModerationLog::record($product, 'approved', [
+            'admin_id'    => $request->user()->id,
+            'from_status' => $from,
+            'to_status'   => $product->moderationStatus(),
+        ]);
 
         if ($product->seller) {
             $product->seller->notify(new ProductReviewedNotification('approved', $product->id, $product->name));
@@ -331,28 +387,210 @@ public function index(Request $request)
         return response()->json(['success' => true, 'message' => 'Product approved.']);
     }
 
-    public function reject(Request $request, $id)
+    /**
+     * PATCH /api/admin/products/{id}/reject
+     * Body: { reasons: string[] (codes), note?: string } — legacy { reason } still accepted.
+     */
+    public function reject(RejectProductRequest $request, $id)
     {
-        $request->validate(['reason' => 'nullable|string|max:1000']);
         $product = Product::with('seller')->findOrFail($id);
+        $from    = $product->moderationStatus();
+        $reasons = $request->input('reasons', []);
+        $note    = trim((string) $request->input('note')) ?: null;
+        $labels  = ProductModerationLog::labelsFor(array_values(array_diff($reasons, ['other'])));
+
+        // rejection_reason doubles as the pending/rejected discriminator — never empty here
+        $summary = implode('; ', $labels);
+        if ($note) $summary = $summary ? $summary . ' — ' . $note : $note;
 
         $product->update([
-            'is_approved'      => false,
-            'is_active'        => false,
-            'rejection_reason' => $request->reason ?? null,
+            'is_approved'          => false,
+            'is_active'            => false,
+            'rejection_reason'     => $summary ?: 'Other',
+            'changes_requested_at' => null,
+        ]);
+
+        ProductModerationLog::record($product, 'rejected', [
+            'admin_id'    => $request->user()->id,
+            'from_status' => $from,
+            'to_status'   => 'rejected',
+            'reasons'     => $reasons,
+            'note'        => $note,
         ]);
 
         if ($product->seller) {
             $product->seller->notify(
-                new ProductReviewedNotification('rejected', $product->id, $product->name, $request->reason)
+                new ProductReviewedNotification('rejected', $product->id, $product->name, $note, $labels)
             );
         }
         return response()->json(['success' => true, 'message' => 'Product rejected.']);
     }
 
-    public function disable($id)
+    /**
+     * PATCH /api/admin/products/{id}/request-changes
+     * Sends a product awaiting review back to the seller with notes. It returns
+     * to `pending` automatically when the seller edits it.
+     */
+    public function requestChanges(RequestProductChangesRequest $request, $id)
     {
-        Product::findOrFail($id)->update(['is_active' => false]);
+        $product = Product::with('seller')->findOrFail($id);
+        $from    = $product->moderationStatus();
+
+        if (!in_array($from, ['pending', 'changes_requested'], true)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Changes can only be requested on products awaiting review.',
+            ], 422);
+        }
+
+        $reasons = $request->input('reasons', []) ?: [];
+        $note    = trim((string) $request->input('note'));
+        $labels  = ProductModerationLog::labelsFor(array_values(array_diff($reasons, ['other'])));
+
+        $product->update([
+            'is_approved'          => false,
+            'rejection_reason'     => null,
+            'changes_requested_at' => now(),
+        ]);
+
+        ProductModerationLog::record($product, 'changes_requested', [
+            'admin_id'    => $request->user()->id,
+            'from_status' => $from,
+            'to_status'   => 'changes_requested',
+            'reasons'     => $reasons,
+            'note'        => $note,
+        ]);
+
+        if ($product->seller) {
+            $product->seller->notify(
+                new ProductReviewedNotification('changes_requested', $product->id, $product->name, $note, $labels)
+            );
+        }
+        return response()->json(['success' => true, 'message' => 'Changes requested from the seller.']);
+    }
+
+    /**
+     * PATCH /api/admin/products/{id}/featured   Body: { featured: bool }
+     */
+    public function toggleFeatured(Request $request, $id)
+    {
+        $request->validate(['featured' => 'required|boolean']);
+        $product  = Product::findOrFail($id);
+        $featured = $request->boolean('featured');
+
+        if ($product->featured !== $featured) {
+            $product->update(['featured' => $featured]);
+            $status = $product->moderationStatus();
+            ProductModerationLog::record($product, $featured ? 'featured' : 'unfeatured', [
+                'admin_id'    => $request->user()->id,
+                'from_status' => $status,
+                'to_status'   => $status,
+            ]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => $featured ? 'Product featured.' : 'Product removed from featured.',
+            'data'    => ['featured' => $featured],
+        ]);
+    }
+
+    // ── Review payload helpers ─────────────────────────────────────────────────
+
+    private function sellerStats(int $sellerId): array
+    {
+        $counts = Product::where('seller_id', $sellerId)
+            ->selectRaw('COUNT(*) AS total')
+            ->selectRaw('SUM(is_approved = 1) AS approved')
+            ->selectRaw('SUM(is_approved = 0 AND rejection_reason IS NOT NULL) AS rejected')
+            ->selectRaw('SUM(is_approved = 0 AND rejection_reason IS NULL) AS pending')
+            ->first();
+
+        $rating = Review::where('seller_id', $sellerId)->where('status', 'approved')
+            ->selectRaw('AVG(rating) AS avg_rating, COUNT(*) AS review_count')
+            ->first();
+
+        return [
+            'total_products'    => (int) ($counts->total ?? 0),
+            'approved_products' => (int) ($counts->approved ?? 0),
+            'rejected_products' => (int) ($counts->rejected ?? 0),
+            'pending_products'  => (int) ($counts->pending ?? 0),
+            'rating_avg'        => $rating && $rating->avg_rating !== null ? round((float) $rating->avg_rating, 2) : null,
+            'review_count'      => (int) ($rating->review_count ?? 0),
+        ];
+    }
+
+    private function performance(Product $product): array
+    {
+        $sales = DB::table('order_items')
+            ->join('orders', 'orders.id', '=', 'order_items.order_id')
+            ->where('order_items.product_id', $product->id)
+            ->whereNotIn('orders.status', ['cancelled', 'refunded'])
+            ->selectRaw('COUNT(DISTINCT order_items.order_id) AS orders_count')
+            ->selectRaw('COALESCE(SUM(order_items.quantity), 0) AS units_sold')
+            ->selectRaw('COALESCE(SUM(order_items.total), 0) AS revenue')
+            ->first();
+
+        $reviews = Review::where('product_id', $product->id)->where('status', 'approved')
+            ->selectRaw('AVG(rating) AS avg_rating, COUNT(*) AS review_count')
+            ->first();
+
+        return [
+            'views'        => (int) $product->views,
+            'orders_count' => (int) ($sales->orders_count ?? 0),
+            'units_sold'   => (int) ($sales->units_sold ?? 0),
+            'revenue'      => round((float) ($sales->revenue ?? 0), 3),
+            'rating_avg'   => $reviews && $reviews->avg_rating !== null ? round((float) $reviews->avg_rating, 2) : null,
+            'review_count' => (int) ($reviews->review_count ?? 0),
+        ];
+    }
+
+    /** SKUs of this product that repeat within it or appear on another product / variant. */
+    private function duplicateSkus(Product $product): array
+    {
+        $skus = collect([$product->sku])
+            ->merge($product->variants->pluck('sku'))
+            ->map(fn($s) => is_string($s) ? trim($s) : $s)
+            ->filter();
+
+        if ($skus->isEmpty()) return [];
+
+        $unique = $skus->unique()->values();
+
+        return $skus->duplicates()
+            ->merge(Product::withTrashed()->where('id', '!=', $product->id)->whereIn('sku', $unique)->pluck('sku'))
+            ->merge(ProductVariant::where('product_id', '!=', $product->id)->whereIn('sku', $unique)->pluck('sku'))
+            ->unique()->values()->all();
+    }
+
+    /** Position in the pending queue (same order as the list: newest first). */
+    private function queue(Product $product): array
+    {
+        $pending = fn() => $this->scopePendingQueue(Product::query())->where('id', '!=', $product->id);
+
+        $next = $pending()
+            ->where(fn($q) => $q->where('created_at', '<', $product->created_at)
+                ->orWhere(fn($q2) => $q2->where('created_at', $product->created_at)->where('id', '<', $product->id)))
+            ->orderByDesc('created_at')->orderByDesc('id')
+            ->value('id')
+            ?? $pending()->orderByDesc('created_at')->orderByDesc('id')->value('id');
+
+        return [
+            'next_pending_id' => $next,
+            'pending_count'   => $this->scopePendingQueue(Product::query())->count(),
+        ];
+    }
+
+    public function disable(Request $request, $id)
+    {
+        $product = Product::findOrFail($id);
+        $from    = $product->moderationStatus();
+        $product->update(['is_active' => false]);
+        ProductModerationLog::record($product, 'disabled', [
+            'admin_id'    => $request->user()->id,
+            'from_status' => $from,
+            'to_status'   => $product->moderationStatus(),
+        ]);
         return response()->json(['success' => true, 'message' => 'Product disabled.']);
     }
 
@@ -388,15 +626,21 @@ public function index(Request $request)
  * POST /api/admin/products/{id}/restore
  * Restores a seller-deleted product back to pending review.
  */
-public function restore($id)
+public function restore(Request $request, $id)
 {
     $product = Product::onlyTrashed()->findOrFail($id);
     $product->restore();
     $product->update([
-        'is_approved'       => false,
-        'is_active'         => false,
-        'deleted_by_seller' => false, // ← clear flag
-        'rejection_reason'  => null,
+        'is_approved'          => false,
+        'is_active'            => false,
+        'deleted_by_seller'    => false, // ← clear flag
+        'rejection_reason'     => null,
+        'changes_requested_at' => null,
+    ]);
+    ProductModerationLog::record($product, 'restored', [
+        'admin_id'    => $request->user()->id,
+        'from_status' => 'deleted_by_seller',
+        'to_status'   => 'pending',
     ]);
     return response()->json(['success' => true, 'message' => 'Product restored to pending review.']);
 }
@@ -430,22 +674,19 @@ public function forceDestroy($id)
     ]);
 }
 
-    /**
-     * Derives the display status from product fields.
-     * Uses rejection_reason as the discriminator between pending and rejected.
-     *
-     * pending  → not approved + no rejection_reason (never reviewed)
-     * rejected → not approved + has rejection_reason (explicitly rejected)
-     * disabled → approved + not active
-     * approved → approved + active
-     */
+    /** Display status — single source of truth lives on the model. */
     private function deriveStatus(Product $product): string
-{
-    if ($product->deleted_by_seller) return 'deleted_by_seller';
-    if (!$product->is_approved) {
-        return $product->rejection_reason ? 'rejected' : 'pending';
+    {
+        return $product->moderationStatus();
     }
-    if (!$product->is_active) return 'disabled';
-    return 'approved';
-}
+
+    /** Products waiting for a first (or renewed) review. */
+    private function scopePendingQueue($query)
+    {
+        return $query->where('is_approved', false)
+            ->whereNull('rejection_reason')
+            ->whereNull('changes_requested_at')
+            ->where(fn($q) => $q->where('deleted_by_seller', false)
+                                ->orWhereNull('deleted_by_seller'));
+    }
 }

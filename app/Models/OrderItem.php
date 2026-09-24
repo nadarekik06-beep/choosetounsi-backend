@@ -28,6 +28,7 @@ class OrderItem extends Model
         'image_url',
         // ── Commission columns (populated at checkout) ─────────────────────
         'commission_percentage',
+        'commission_source',
         'commission_amount',
         'seller_amount',
         'plan_used',

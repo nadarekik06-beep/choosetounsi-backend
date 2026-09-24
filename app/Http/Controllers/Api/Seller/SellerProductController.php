@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\AttributeOption;
 use App\Models\Product;
 use App\Models\ProductImage;
+use App\Models\ProductModerationLog;
 use App\Models\ProductVariant;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -173,6 +174,19 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
             ];
         });
 
+        $product->moderation_status = $product->moderationStatus();
+        $product->changes_request   = null;
+        if ($product->changes_requested_at) {
+            $log = $product->moderationLogs()->where('action', 'changes_requested')->first();
+            if ($log) {
+                $product->changes_request = [
+                    'reasons'      => $log->reason_labels,
+                    'note'         => $log->note,
+                    'requested_at' => optional($log->created_at)->toISOString(),
+                ];
+            }
+        }
+
         return response()->json(['success' => true, 'data' => $product]);
     }
 
@@ -242,6 +256,11 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         $seller   = $request->user();
         $isActive = filter_var($request->input('is_active', true), FILTER_VALIDATE_BOOLEAN);
 
+        // ── Plan limits (subscription_plans) ─────────────────────────────────
+        $gate = app(\App\Services\PlanGate::class);
+        if ($deny = $gate->canAddProduct($seller->id)) return $deny;
+        if ($deny = $gate->imagesWithinLimit($seller->id, $this->imageCountAfterSave(null, $request))) return $deny;
+
         try {
             $product = $seller->products()->create([
                 'name'              => $request->name,
@@ -303,6 +322,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
             throw $e;
         }
 
+        ProductModerationLog::record($product, 'submitted', ['to_status' => 'pending']);
         $this->notifyAdmins('created', $product, $seller);
         if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class, 'clearSellerCache')) {
             \App\Http\Controllers\Api\Seller\BlackPepperController::clearSellerCache($seller->id);
@@ -325,9 +345,18 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
         Log::info('[SellerProduct::update] START', ['id' => $id]);
 
+        // Only uploads are checked, so products already above a lowered limit stay editable
+        if ($this->countUploads($request) > 0
+            && ($deny = app(\App\Services\PlanGate::class)->imagesWithinLimit($seller->id, $this->imageCountAfterSave($product, $request)))) {
+            return $deny;
+        }
+
         $isActive = $request->has('is_active')
             ? filter_var($request->is_active, FILTER_VALIDATE_BOOLEAN)
             : $product->is_active;
+
+        // Admin requested changes → any seller edit sends it back to the review queue
+        $resubmitting = !$product->is_approved && $product->changes_requested_at !== null;
 
         try {
             $product->update([
@@ -347,7 +376,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                 // ── FIX: read 'seasons' (array from frontend), fall back to existing value
                 'season'            => $this->parseSeasons($request, $product->season),
                 'delivery_fee' => $this->parseDeliveryFee($request, $product->delivery_fee),
-            ]);
+            ] + ($resubmitting ? ['changes_requested_at' => null] : []));
             Log::info('[SellerProduct::update] Product updated');
         } catch (\Throwable $e) {
             Log::error('[SellerProduct::update] PRODUCT UPDATE FAILED', ['error' => $e->getMessage()]);
@@ -396,6 +425,12 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
             throw $e;
         }
 
+        if ($resubmitting) {
+            ProductModerationLog::record($product, 'resubmitted', [
+                'from_status' => 'changes_requested',
+                'to_status'   => 'pending',
+            ]);
+        }
         $this->notifyAdmins('updated', $product, $seller);
         if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class, 'clearSellerCache')) {
             \App\Http\Controllers\Api\Seller\BlackPepperController::clearSellerCache($seller->id);
@@ -808,6 +843,33 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         ]);
     }
 }
+    /** Image files uploaded in this request (general, color and variant images). */
+    private function countUploads(Request $request): int
+    {
+        $files = $request->allFiles();
+        $count = function ($v) use (&$count) {
+            if (is_array($v)) return array_sum(array_map($count, $v));
+            return $v instanceof \Illuminate\Http\UploadedFile ? 1 : 0;
+        };
+        return $count($files['images'] ?? []) + $count($files['color_images'] ?? []) + $count($files['variant_images'] ?? []);
+    }
+
+    /** Distinct images the product will have once this request is saved. */
+    private function imageCountAfterSave(?Product $product, Request $request): int
+    {
+        $incoming = $this->countUploads($request);
+        if (!$product) return $incoming;
+
+        $existing = $product->images()->get(['id', 'image_path', 'color_option_id']);
+        $deleted  = array_map('intval', (array) $request->input('delete_image_ids', []));
+        $existing = $existing->reject(fn($img) => in_array($img->id, $deleted, true));
+        // saveColorImages() replaces every color image when new ones are uploaded
+        if (!empty($request->allFiles()['color_images'])) {
+            $existing = $existing->whereNull('color_option_id');
+        }
+        return $existing->unique('image_path')->count() + $incoming;
+    }
+
     private function uniqueSlug(string $base, ?int $excludeId = null): string
     {
         $slug     = Str::slug($base);

@@ -85,7 +85,13 @@ class SponsorshipController extends Controller
         $application = SellerApplication::where('user_id', $sellerId)
             ->where('status', 'approved')
             ->first();
-        $plan = $application ? ($application->plan ?? 'free') : 'free';
+        // Pricing / quotas follow the plan's tier (free | red | black), so
+        // admin-created plans price like the tier they belong to.
+        $plan = \App\Models\SubscriptionPlan::forSlug($application->plan ?? null)->tierKey();
+
+        if ($deny = app(\App\Services\PlanGate::class)->canSponsor($sellerId)) {
+            return $deny;
+        }
 
         // Ownership check
         $product = Product::with(['category:id,name'])

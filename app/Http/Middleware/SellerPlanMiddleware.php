@@ -71,22 +71,24 @@ class SellerPlanMiddleware
         // have full feature access — only check plan tier.
 
         // ── Plan tier check ────────────────────────────────────────────────────
-        $currentTier  = self::TIERS[$application->plan] ?? 0;
+        // Tiers come from subscription_plans (admin-managed); feature-level
+        // gating should prefer the seller.feature middleware.
+        $plan         = \App\Models\SubscriptionPlan::forSlug($sub?->current_plan ?? $application->plan);
+        $currentTier  = $plan->tier;
         $requiredTier = self::TIERS[$requiredPlan] ?? 1;
 
         if ($currentTier < $requiredTier) {
-            $planLabel = match($requiredPlan) {
-                'red'   => 'Red Pepper (49 DT/month)',
-                'black' => 'Black Pepper (129 DT/month)',
-                default => 'a paid plan',
-            };
+            $required = \App\Models\SubscriptionPlan::offered()->where('tier', '>=', $requiredTier)->ordered()->first();
+            $planLabel = $required
+                ? "{$required->name} (" . rtrim(rtrim(number_format($required->price_monthly, 3), '0'), '.') . ' DT/month)'
+                : 'a paid plan';
 
             return response()->json([
                 'success'       => false,
                 'message'       => "This feature requires {$planLabel}. Please upgrade your subscription.",
                 'code'          => 'PLAN_REQUIRED',
-                'required_plan' => $requiredPlan,
-                'current_plan'  => $application->plan,
+                'required_plan' => $required->slug ?? $requiredPlan,
+                'current_plan'  => $plan->slug,
             ], 403);
         }
 
