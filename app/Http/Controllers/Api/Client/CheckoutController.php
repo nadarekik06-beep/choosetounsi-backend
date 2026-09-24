@@ -135,6 +135,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         // rather than silently dropping it — the customer typed it expecting it
         // to apply.
         $resolvedCoupons = []; // sellerId => ['coupon' => Coupon, 'discount' => float]
+        $itemDiscounts   = []; // cart row id => discount share
         $couponCodes = array_filter(array_unique($request->input('coupon_codes', [])));
 
         foreach ($couponCodes as $rawCode) {
@@ -149,17 +150,11 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             }
 
             $sellerItems = $groupedBySeller->get($coupon->seller_id, collect());
-            $items = $sellerItems->map(function ($item) {
-                $basePrice = $item->variant
-                    ? (float) ($item->variant->price_override ?? $item->product->price)
-                    : (float) $item->product->price;
-                $priceData = $this->promoService->getEffectivePrice($item->product, $basePrice);
-                return [
-                    'product_id' => $item->product_id,
-                    'quantity'   => $item->quantity,
-                    'line_total' => round($priceData['effective_price'] * $item->quantity, 3),
-                ];
-            })->values()->all();
+            $items = $sellerItems->map(fn($item) => [
+                'product_id' => $item->product_id,
+                'quantity'   => $item->quantity,
+                'line_total' => $this->lineTotal($item),
+            ])->values()->all();
 
             $result = $this->couponService->validateForSeller($code, $coupon->seller_id, $user->id, $items);
             if (!$result['valid']) {
@@ -170,10 +165,20 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 'coupon'   => $result['coupon'],
                 'discount' => $result['discount_amount'],
             ];
+
+            // Split the seller's discount across ITS eligible lines only
+            // (keyed by cart row id) — stored per order_item below.
+            $eligibleLines = $sellerItems
+                ->filter(fn($item) => in_array($item->product_id, $result['eligible_product_ids']))
+                ->mapWithKeys(fn($item) => [$item->id => $this->lineTotal($item)])
+                ->all();
+            $itemDiscounts += $this->couponService->allocateDiscount($eligibleLines, $result['discount_amount']);
         }
 
         $totalDiscount = round(array_sum(array_column($resolvedCoupons, 'discount')), 3);
-        $total = round($this->calculateCartTotal($cartItems) - $totalDiscount, 3);
+        $subtotal      = $this->calculateCartSubtotal($cartItems);
+        $shippingFee   = $this->resolveCartDeliveryFee($cartItems);
+        $total         = round($subtotal - $totalDiscount + $shippingFee, 3);
 
         if ($paymentMethod === 'wallet') {
             if ((float) $user->wallet_balance < $total) {
@@ -191,12 +196,16 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 'order_number'   => 'ORD-' . strtoupper(Str::random(8)),
                 'status'         => 'pending',
                 'payment_status' => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
-                'payment_method' => $paymentMethod,
-                'total_amount'   => $total,
-                'wilaya'         => $request->wilaya,
-                'address'        => $request->address,
-                'phone'          => $request->phone,
-                'notes'          => $request->notes ?? null,
+                'payment_method'  => $paymentMethod,
+                'subtotal'        => $subtotal,
+                'discount_amount' => $totalDiscount,
+                'coupon_codes'    => collect($resolvedCoupons)->map(fn($c) => $c['coupon']->code)->values()->all() ?: null,
+                'shipping_fee'    => $shippingFee,
+                'total_amount'    => $total,
+                'wilaya'          => $request->wilaya,
+                'address'         => $request->address,
+                'phone'           => $request->phone,
+                'notes'           => $request->notes ?? null,
             ]);
 
             // ── A) Regular product rows ───────────────────────────────────────
@@ -212,13 +221,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                     }
                     $sellerPlan = $sellerPlanCache[$groupKey];
 
-                    $sellerSubtotal = $sellerItems->sum(function ($item) {
-                        $basePrice = $item->variant
-                            ? (float) ($item->variant->price_override ?? $item->product->price)
-                            : (float) $item->product->price;
-                        $priceData = $this->promoService->getEffectivePrice($item->product, $basePrice);
-                        return round($priceData['effective_price'] * $item->quantity, 3);
-                    });
+                    $sellerSubtotal = round($sellerItems->sum(fn($item) => $this->lineTotal($item)), 3);
 
                     $appliedCoupon  = $sellerIdForDb !== null ? ($resolvedCoupons[$sellerIdForDb]['coupon']   ?? null) : null;
                     $couponDiscount = $sellerIdForDb !== null ? ($resolvedCoupons[$sellerIdForDb]['discount'] ?? 0.0) : 0.0;
@@ -231,19 +234,17 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                         'subtotal'         => $sellerSubtotal,
                         'coupon_id'        => $appliedCoupon?->id,
                         'coupon_code'      => $appliedCoupon?->code,
+                        'coupon_type'      => $appliedCoupon?->discount_type,
+                        'coupon_value'     => $appliedCoupon?->discount_value,
                         'discount_amount'  => $couponDiscount,
                     ]);
 
                     foreach ($sellerItems as $item) {
                         $product      = $item->product;
                         $variant      = $item->variant;
-                        $basePrice    = $variant
-                            ? (float) ($variant->price_override ?? $product->price)
-                            : (float) $product->price;
-                        $priceData    = $this->promoService->getEffectivePrice($product, $basePrice);
-                        $unitPrice    = $priceData['effective_price'];
+                        $unitPrice    = $this->unitPrice($item);
                         $qty          = (int) $item->quantity;
-                        $commission   = $this->commissionService->calculate($unitPrice, $sellerPlan, $qty);
+                        $commission   = $this->commissionService->calculate($unitPrice, $sellerPlan, $qty, $itemDiscounts[$item->id] ?? 0.0);
                         $variantLabel = $variant ? $variant->attributeOptions->pluck('value')->join(' / ') : null;
 
                         OrderItem::create([
@@ -257,6 +258,8 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                             'unit_price'            => $unitPrice,
                             'price'                 => $unitPrice,
                             'total'                 => $commission['total_price'],
+                            'discount_amount'       => $commission['discount_amount'],
+                            'net_total'             => $commission['net_total'],
                             'commission_percentage' => $commission['commission_percentage'],
                             'commission_amount'     => $commission['commission_amount'],
                             'seller_amount'         => $commission['seller_amount'],
@@ -272,15 +275,11 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                         }
                     }
 
-                    // Freeze financial snapshot AFTER all items for this seller_order are inserted
+                    // Freeze financial snapshot AFTER all items for this seller_order are inserted.
+                    // Items already carry the post-discount commission/seller_amount, so the
+                    // seller-funded coupon is reflected without any further adjustment.
                     $this->financialSnapshot->freeze($sellerOrder->id);
 
-                    // Coupon discount comes entirely out of the seller's net payout —
-                    // platform commission is computed on the pre-discount item prices
-                    // and is left untouched, same as freeze() just calculated it.
-                    if ($couponDiscount > 0) {
-                        $sellerOrder->decrement('seller_net_amount', $couponDiscount);
-                    }
                     if ($appliedCoupon) {
                         $this->couponService->redeem($appliedCoupon, $sellerOrder, $order, $user->id, $couponDiscount);
                     }
@@ -384,6 +383,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                                 'unit_price'            => $packCommission['unit_price'],
                                 'price'                 => $packCommission['unit_price'],
                                 'total'                 => $packCommission['total_price'],
+                                'net_total'             => $packCommission['net_total'],
 
                                 // Commission calculated on pack_price portion, not product price
                                 'commission_percentage' => $packCommission['commission_percentage'],
@@ -409,6 +409,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                                 'unit_price'            => 0,  // financial data is on the first row
                                 'price'                 => 0,
                                 'total'                 => 0,
+                                'net_total'             => 0,
                                 'commission_percentage' => 0,  // intentionally zero
                                 'commission_amount'     => 0,  // intentionally zero
                                 'seller_amount'         => 0,  // intentionally zero
@@ -502,8 +503,10 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             'message'       => 'Order placed successfully!',
             'order_number'  => $order->order_number,
             'order_id'      => $order->id,
-            'total'         => $total,
+            'subtotal'      => $subtotal,
             'discount_amount' => $totalDiscount,
+            'shipping_fee'  => $shippingFee,
+            'total'         => $total,
             'seller_count'  => $sellerCount,
             'needs_payment' => $paymentMethod === 'card',
         ], 201);
@@ -562,7 +565,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         $basePrice    = $variant ? (float) ($variant->price_override ?? $product->price) : (float) $product->price;
         $priceData    = $this->promoService->getEffectivePrice($product, $basePrice);
         $unitPrice    = $priceData['effective_price'];
-        $commission   = $this->commissionService->calculate($unitPrice, $sellerPlan, $quantity);
+        $lineTotal    = round($unitPrice * $quantity, 3);
 
         // ── Coupon (single seller, so no per-seller grouping needed) ───────────
         $appliedCoupon  = null;
@@ -582,7 +585,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             $items = [[
                 'product_id' => $product->id,
                 'quantity'   => $quantity,
-                'line_total' => (float) $commission['total_price'],
+                'line_total' => $lineTotal,
             ]];
             $result = $this->couponService->validateForSeller($code, $sellerId, $user->id, $items);
             if (!$result['valid']) {
@@ -592,6 +595,9 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             $appliedCoupon  = $result['coupon'];
             $discountAmount = $result['discount_amount'];
         }
+
+        // Single line → the whole seller discount sits on it.
+        $commission = $this->commissionService->calculate($unitPrice, $sellerPlan, $quantity, $discountAmount);
 
         // subtotal stays PRE-discount (matches store()'s convention — SellerOrder.subtotal
         // is the gross item total, discount_amount is tracked separately).
@@ -615,12 +621,16 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 'order_number'   => 'ORD-' . strtoupper(Str::random(8)),
                 'status'         => 'pending',
                 'payment_status' => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
-                'payment_method' => $paymentMethod,
-                'total_amount'   => $total,
-                'wilaya'         => $request->wilaya,
-                'address'        => $request->address,
-                'phone'          => $request->phone,
-                'notes'          => $request->notes ?? null,
+                'payment_method'  => $paymentMethod,
+                'subtotal'        => $subtotal,
+                'discount_amount' => $discountAmount,
+                'coupon_codes'    => $appliedCoupon ? [$appliedCoupon->code] : null,
+                'shipping_fee'    => $deliveryFee,
+                'total_amount'    => $total,
+                'wilaya'          => $request->wilaya,
+                'address'         => $request->address,
+                'phone'           => $request->phone,
+                'notes'           => $request->notes ?? null,
             ]);
 
             $sellerOrder = SellerOrder::create([
@@ -631,6 +641,8 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 'subtotal'        => $subtotal,
                 'coupon_id'       => $appliedCoupon?->id,
                 'coupon_code'     => $appliedCoupon?->code,
+                'coupon_type'     => $appliedCoupon?->discount_type,
+                'coupon_value'    => $appliedCoupon?->discount_value,
                 'discount_amount' => $discountAmount,
             ]);
 
@@ -645,6 +657,8 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 'unit_price'            => $unitPrice,
                 'price'                 => $unitPrice,
                 'total'                 => $commission['total_price'],
+                'discount_amount'       => $commission['discount_amount'],
+                'net_total'             => $commission['net_total'],
                 'commission_percentage' => $commission['commission_percentage'],
                 'commission_amount'     => $commission['commission_amount'],
                 'seller_amount'         => $commission['seller_amount'],
@@ -661,9 +675,6 @@ $checkingOutIds = $cartItems->pluck('id')->all();
 
             $this->financialSnapshot->freeze($sellerOrder->id);
 
-            if ($discountAmount > 0) {
-                $sellerOrder->decrement('seller_net_amount', $discountAmount);
-            }
             if ($appliedCoupon) {
                 $this->couponService->redeem($appliedCoupon, $sellerOrder, $order, $user->id, $discountAmount);
             }
@@ -708,9 +719,11 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             'message'       => 'Order placed successfully!',
             'order_number'  => $order->order_number,
             'order_id'      => $order->id,
-            'total'         => $total,
+            'subtotal'      => $subtotal,
             'discount_amount' => $discountAmount,
             'delivery_fee'  => $deliveryFee,
+            'shipping_fee'  => $deliveryFee,
+            'total'         => $total,
             'needs_payment' => $paymentMethod === 'card',
         ], 201);
     }
@@ -738,23 +751,29 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         }
     }
 
-    private function calculateCartTotal($cartItems): float
+    /** Post-promotion unit price for a regular (non-pack) cart row. */
+    private function unitPrice($item): float
     {
-        $subtotal = $cartItems->sum(function ($item) {
-            if ($item->isPack()) {
-                return (float) $item->pack_price_snapshot;
-            }
-            $basePrice = $item->variant
-                ? (float) ($item->variant->price_override ?? $item->product->price)
-                : (float) $item->product->price;
-            $priceData = $this->promoService->getEffectivePrice($item->product, $basePrice);
-            return round($priceData['effective_price'] * $item->quantity, 3);
-        });
- 
-        $deliveryFee = $this->resolveCartDeliveryFee($cartItems);
- 
-        return round($subtotal + $deliveryFee, 3);
+        $basePrice = $item->variant
+            ? (float) ($item->variant->price_override ?? $item->product->price)
+            : (float) $item->product->price;
+        return $this->promoService->getEffectivePrice($item->product, $basePrice)['effective_price'];
     }
+
+    private function lineTotal($item): float
+    {
+        return round($this->unitPrice($item) * $item->quantity, 3);
+    }
+
+    /** Items total before coupon discount and shipping. */
+    private function calculateCartSubtotal($cartItems): float
+    {
+        return round($cartItems->sum(fn($item) => $item->isPack()
+            ? (float) $item->pack_price_snapshot
+            : $this->lineTotal($item)
+        ), 3);
+    }
+
     private function resolveCartDeliveryFee($cartItems): float
     {
         // Packs always require delivery

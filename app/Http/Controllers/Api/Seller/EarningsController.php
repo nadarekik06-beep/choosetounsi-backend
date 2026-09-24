@@ -26,7 +26,7 @@ class EarningsController extends Controller
 
         $totals = (clone $base)
             ->selectRaw(
-                'COALESCE(SUM(subtotal), 0) as gross_revenue,' .
+                'COALESCE(SUM(subtotal - discount_amount), 0) as gross_revenue,' .
                 'COALESCE(SUM(commission_amount), 0) as total_commission,' .
                 'COALESCE(SUM(seller_net_amount), 0) as total_net,' .
                 'COUNT(*) as orders_count,' .
@@ -44,7 +44,7 @@ class EarningsController extends Controller
             ->selectRaw(
                 'DATE(created_at) as day,' .
                 'COUNT(*) as orders,' .
-                'COALESCE(SUM(subtotal), 0) as gross,' .
+                'COALESCE(SUM(subtotal - discount_amount), 0) as gross,' .
                 'COALESCE(SUM(commission_amount), 0) as commission,' .
                 'COALESCE(SUM(seller_net_amount), 0) as net_earnings'
             )
@@ -99,7 +99,7 @@ class EarningsController extends Controller
         ->where('seller_id', $sellerId)
         ->where('status', '!=', 'cancelled')
         ->selectRaw('
-            COALESCE(SUM(subtotal), 0) as gross_revenue,
+            COALESCE(SUM(subtotal - discount_amount), 0) as gross_revenue,
             COALESCE(SUM(commission_amount), 0) as total_commission,
             COALESCE(SUM(seller_net_amount), 0) as total_net,
             COUNT(*) as orders_count,
@@ -166,7 +166,8 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
         ->select([
             'so.id',
             'o.order_number',
-            'so.subtotal',
+            DB::raw('(so.subtotal - so.discount_amount) as subtotal'),
+            'so.discount_amount',
             'so.commission_amount',
             'so.seller_net_amount',
             'so.delivery_fee',
@@ -193,7 +194,9 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
                 'o.order_number',
                 'so.status',
                 'so.payout_status',
-                'so.subtotal as gross',
+                DB::raw('(so.subtotal - so.discount_amount) as gross'),
+                'so.discount_amount',
+                'so.coupon_code',
                 'so.commission_amount',
                 'so.seller_net_amount as net_earnings',
                 'so.delivery_fee',

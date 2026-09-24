@@ -17,7 +17,7 @@ class OrderController extends Controller
      */
     public function index(Request $request)
     {
-        $query = Order::with(['user:id,name,email']);
+        $query = Order::with(['user:id,name,email', 'sellerOrders:id,order_id,seller_id,status,subtotal,coupon_code,discount_amount']);
 
         if ($s = $request->query('status')) {
             $query->where('status', $s);
@@ -57,14 +57,20 @@ class OrderController extends Controller
         $orders = $query->orderByDesc('created_at')
             ->paginate((int) $request->query('per_page', 15));
 
-        if ($platformUserId) {
-            $orders->getCollection()->transform(function ($order) use ($platformUserId) {
-                $order->has_platform_items = $order->sellerOrders()
-                    ->where('seller_id', $platformUserId)
-                    ->exists();
-                return $order;
-            });
-        }
+        $orders->getCollection()->transform(function ($order) use ($platformUserId) {
+            // Same figure as the detail drawer: what the customer pays
+            $money = $order->moneySummary();
+            $order->subtotal        = $money['subtotal'];
+            $order->discount_amount = $money['discount_amount'];
+            $order->coupon_codes    = $money['coupon_codes'];
+            $order->total_amount    = $money['total'];
+
+            $order->has_platform_items = $platformUserId
+                ? $order->sellerOrders->contains('seller_id', $platformUserId)
+                : false;
+            $order->unsetRelation('sellerOrders');
+            return $order;
+        });
 
         return response()->json(['success' => true, 'data' => $orders]);
     }
@@ -145,21 +151,24 @@ class OrderController extends Controller
 
         $nonReturnedItems = $order->items->filter(fn($i) => $i->item_status !== 'returned');
 
+        // Revenue split on item prices AFTER the seller's coupon (commission base).
+        // gross_total = items before discount, net_total = what the customer paid for items.
         $commissionSummary = [
-            'gross_total'      => round($nonReturnedItems->sum('total'),             3),
+            'gross_total'      => round($nonReturnedItems->sum('total'),                                  3),
+            'total_discount'   => round($nonReturnedItems->sum(fn($i) => (float) $i->discount_amount),    3),
+            'net_total'        => round($nonReturnedItems->sum(fn($i) => (float) ($i->net_total ?? $i->total)), 3),
             'total_commission' => round($nonReturnedItems->sum('commission_amount'), 3),
             'total_seller'     => round($nonReturnedItems->sum('seller_amount'),     3),
         ];
         $order->setAttribute('commission_summary', $commissionSummary);
 
-        $activeSubtotal = $order->sellerOrders
-            ->where('status', '!=', 'cancelled')
-            ->sum(fn($so) => (float) $so->subtotal);
-
-        $order->total_amount = round(
-            $activeSubtotal + (float) ($order->shipping_fee ?? 0),
-            3
-        );
+        // subtotal − discount + shipping, live from non-cancelled seller_orders
+        $money = $order->moneySummary();
+        $order->subtotal        = $money['subtotal'];
+        $order->discount_amount = $money['discount_amount'];
+        $order->coupon_codes    = $money['coupon_codes'];
+        $order->shipping_fee    = $money['shipping_fee'];
+        $order->total_amount    = $money['total'];
 
         $platformUserId = PlatformUser::id();
         $order->has_platform_items = $platformUserId

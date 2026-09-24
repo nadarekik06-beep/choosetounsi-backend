@@ -36,6 +36,7 @@ class SellerAIController extends Controller
     {
         $cols  = array_map(fn($c) => $c->Field, DB::select('SHOW COLUMNS FROM order_items'));
         $parts = [];
+        if (in_array('net_total', $cols))  $parts[] = 'oi.net_total'; // after seller coupon
         if (in_array('total',      $cols)) $parts[] = 'oi.total';
         if (in_array('subtotal',   $cols)) $parts[] = 'oi.subtotal';
         if (in_array('unit_price', $cols) && in_array('quantity', $cols))

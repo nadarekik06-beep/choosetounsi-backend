@@ -67,6 +67,18 @@ class SellerSubscription extends Model
 
     public const PLAN_TIERS = ['free' => 0, 'red' => 1, 'black' => 2];
 
+    // ── Single source of truth for plan pricing and limits ────────────────────
+    // Read by the upgrade flow, downgrade rules, commission suggestions, the
+    // public /seller-plans endpoint (become-a-vendor page) and the chatbot.
+
+    /** Monthly price in DT. */
+    public const PLAN_PRICES = ['free' => 0.0, 'red' => 49.0, 'black' => 129.0];
+
+    /** Max products per plan; null = unlimited. */
+    public const PLAN_MAX_PRODUCTS = ['free' => 30, 'red' => 150, 'black' => null];
+
+    public const PLAN_NAMES = ['free' => 'Green Pepper', 'red' => 'Red Pepper', 'black' => 'Black Pepper'];
+
     public const GRACE_PERIOD_DAYS = 7;   // How long after billing_cycle_end features stay on
 
     // ── Relationships ─────────────────────────────────────────────────────────
@@ -152,12 +164,9 @@ class SellerSubscription extends Model
 
     public function maxProducts(): ?int
     {
-        return match($this->current_plan) {
-            'free'  => 30,
-            'red'   => 150,
-            'black' => null,  // unlimited
-            default => 30,
-        };
+        return array_key_exists($this->current_plan, self::PLAN_MAX_PRODUCTS)
+            ? self::PLAN_MAX_PRODUCTS[$this->current_plan]
+            : self::PLAN_MAX_PRODUCTS['free'];
     }
 
     // ── Days remaining in billing cycle ───────────────────────────────────────
@@ -172,9 +181,8 @@ class SellerSubscription extends Model
 
     public function proratedUpgradeAmount(string $targetPlan): float
     {
-        $planPrices = ['red' => 49.0, 'black' => 129.0];
-        $targetPrice  = $planPrices[$targetPlan]  ?? 0;
-        $currentPrice = $planPrices[$this->current_plan] ?? 0;
+        $targetPrice  = self::PLAN_PRICES[$targetPlan]  ?? 0;
+        $currentPrice = self::PLAN_PRICES[$this->current_plan] ?? 0;
 
         if (! $this->billing_cycle_end || ! $this->billing_cycle_start) {
             return $targetPrice;

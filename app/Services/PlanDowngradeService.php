@@ -26,11 +26,7 @@ use Illuminate\Support\Facades\Log;
 class PlanDowngradeService
 {
     /** Max products allowed per plan */
-    private const PLAN_LIMITS = [
-        'free'  => 30,
-        'red'   => 150,
-        'black' => null,  // unlimited
-    ];
+    private const PLAN_LIMITS = \App\Models\SellerSubscription::PLAN_MAX_PRODUCTS;
 
     /**
      * Apply all ripple effects for a downgrade to $targetPlan.

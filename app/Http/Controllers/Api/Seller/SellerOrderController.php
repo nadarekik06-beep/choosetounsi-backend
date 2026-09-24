@@ -65,7 +65,7 @@ class SellerOrderController extends Controller
         'out_for_delivery' => (clone $base)->where('status', 'out_for_delivery')->count(),
         'revenue'          => (clone $base)
             ->whereIn('status', ['completed', 'delivered'])
-            ->sum('subtotal'),
+            ->sum(DB::raw('subtotal - discount_amount')),
     ]]);
 }
 
@@ -235,6 +235,8 @@ $itemStatus  = $isReturned ? 'returned' : ($isExchanged ? 'exchanged' : null);  
                 'quantity'              => (int)   $item->quantity,
                 'unit_price'            => (float) $item->unit_price,
                 'total'                 => (float) $item->total,
+                'discount_amount'       => round((float) $item->discount_amount, 3),
+                'net_total'             => round((float) ($item->net_total ?? $item->total), 3),
 
                 // ── Variant fields ────────────────────────────────────────
                 'variant_id'            => $item->variant_id,
@@ -268,6 +270,8 @@ $hasAnyCommission = $commissionItems->isNotEmpty();
 
 // seller_subtotal is already adjusted by MarkOrderRefunded (returned items subtracted)
 $totalGross            = round((float) $sellerOrder->subtotal, 3);
+$totalDiscount         = round((float) ($sellerOrder->discount_amount ?? 0), 3);
+$totalNet              = round($totalGross - $totalDiscount, 3); // what the customer paid for this seller's items
 $totalCommissionAmount = $hasAnyCommission
     ? round($commissionItems->sum(fn($i) => (float) $i->commission_amount), 3)
     : null;
@@ -291,6 +295,11 @@ $totalSellerNet        = $hasAnyCommission
                 ]),
                 'items'           => $mappedItems->values(),
                 'seller_subtotal' => $totalGross,
+                'discount_amount' => $totalDiscount,
+                'coupon_code'     => $sellerOrder->coupon_code,
+                'coupon_type'     => $sellerOrder->coupon_type,
+                'coupon_value'    => $sellerOrder->coupon_value !== null ? (float) $sellerOrder->coupon_value : null,
+                'seller_total'    => $totalNet,
 
                 // ── Commission summary block ───────────────────────────────
                 // Frontend reads detail.commission.has_commission to decide
@@ -298,6 +307,8 @@ $totalSellerNet        = $hasAnyCommission
                 'commission' => [
                     'has_commission'          => $hasAnyCommission,
                     'total_gross'             => $totalGross,
+                    'total_discount'          => $totalDiscount,
+                    'total_net'               => $totalNet,   // commission base
                     'total_commission_amount' => $totalCommissionAmount,
                     'total_seller_net'        => $totalSellerNet,
                 ],
@@ -482,7 +493,10 @@ public function updatePayment(Request $request, $id)
             'status'          => $so->status,
             'payment_status'  => $so->payment_status,
             'payment_method'  => $order?->payment_method,
-            'total_amount'    => (float) $so->subtotal,
+            'total_amount'    => round((float) $so->subtotal - (float) ($so->discount_amount ?? 0), 3),
+            'subtotal'        => (float) $so->subtotal,
+            'discount_amount' => round((float) ($so->discount_amount ?? 0), 3),
+            'coupon_code'     => $so->coupon_code,
             'wilaya'          => $order?->wilaya ?? $order?->shipping_address ?? null,
             'created_at'      => $so->created_at,
             'updated_at'      => $so->updated_at,

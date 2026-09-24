@@ -99,7 +99,10 @@ Route::get('/categories/{slug}/products', [CategoryController::class, 'products'
 Route::get('/categories/{slug}/subcategories',     [SubcategoryController::class, 'index']);
 Route::get('/subcategories/{id}/attributes',       [SubcategoryController::class, 'attributes']);
 Route::get('/categories/{slug}/filter-attributes', [ProductController::class, 'filterAttributes']);
-Route::post('/ai/chat', [\App\Http\Controllers\Api\AiChatController::class, 'handle']);
+Route::post('/ai/chat', [\App\Http\Controllers\Api\AiChatController::class, 'handle'])
+    ->middleware('throttle:20,1');
+Route::get('/seller-plans',          [\App\Http\Controllers\Api\PlatformInfoController::class, 'sellerPlans']);
+Route::get('/checkout/payment-info', [\App\Http\Controllers\Api\PlatformInfoController::class, 'paymentInfo']);
 
 Route::post('/search/text',  [\App\Http\Controllers\Api\SearchController::class, 'searchText']);
 Route::post('/search/image', [\App\Http\Controllers\Api\SearchController::class, 'searchImage']);

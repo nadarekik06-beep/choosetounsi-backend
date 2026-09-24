@@ -22,8 +22,8 @@ namespace App\Services;
  *
  * Plan reductions:
  *   free  (Green)  → 0%
- *   red   (Red)    → −4%
- *   black (Black)  → −8%
+ *   red   (Red)    → −3 percentage points
+ *   black (Black)  → −6 percentage points
  *
  * Final = max(base − reduction, MIN_COMMISSION)
  */
@@ -78,34 +78,81 @@ class CommissionService
         return max($base - $reduction, self::MIN_COMMISSION);
     }
 
+    // ── Public: Lowest / highest rate a plan can pay ──────────────────────────
+    //
+    // Derived from TIERS + PLAN_REDUCTION + MIN_COMMISSION so marketing copy
+    // (become-a-vendor page, chatbot) can never drift from what is charged.
+    //
+    // @return array{min: float, max: float}
+
+    /**
+     * Price tiers, plan reductions and floor, for display.
+     *
+     * @return array{tiers: array<array{min: float, max: ?float, rate: float}>, reductions: array<string, float>, floor: float}
+     */
+    public function rateTable(): array
+    {
+        return [
+            'tiers' => array_map(fn (array $t) => [
+                'min'  => (float) $t[0],
+                'max'  => $t[1] === PHP_FLOAT_MAX ? null : (float) $t[1],
+                'rate' => (float) $t[2],
+            ], self::TIERS),
+            'reductions' => array_map('floatval', self::PLAN_REDUCTION),
+            'floor'      => self::MIN_COMMISSION,
+        ];
+    }
+
+    public function rateRangeForPlan(string $plan): array
+    {
+        $rates = array_map(
+            fn (array $tier) => max($tier[2] - $this->getPlanReduction($plan), self::MIN_COMMISSION),
+            self::TIERS
+        );
+
+        return ['min' => (float) min($rates), 'max' => (float) max($rates)];
+    }
+
     // ── Public: Full breakdown — PRIMARY method ───────────────────────────────
     //
     // @param float  $unitPrice  Product/variant selling price
     // @param string $plan       Seller's active plan ('free'|'red'|'black')
     // @param int    $quantity   Units in this line item (default: 1)
+    // @param float  $discount   Seller-funded coupon discount on this line (default: 0)
+    //
+    // Coupon rule: the rate is picked from the ORIGINAL unit price (a discount
+    // can never move an item into another tier), but it is applied to the
+    // line total AFTER the discount. The seller funds the discount:
+    //   net_total     = total_price − discount
+    //   commission    = rate × net_total
+    //   seller_amount = net_total − commission
     //
     // @return array {
-    //   unit_price, quantity, total_price,
+    //   unit_price, quantity, total_price, discount_amount, net_total,
     //   commission_percentage, commission_amount, seller_amount,
     //   plan_used, base_rate, plan_reduction, saved_with_plan
     // }
 
-    public function calculate(float $unitPrice, string $plan, int $quantity = 1): array
+    public function calculate(float $unitPrice, string $plan, int $quantity = 1, float $discount = 0.0): array
     {
         $finalRate        = $this->getFinalRate($unitPrice, $plan);
         $totalPrice       = round($unitPrice * $quantity, 3);
-        $commissionAmount = round($totalPrice * ($finalRate / 100), 3);
-        $sellerAmount     = round($totalPrice - $commissionAmount, 3);
+        $discount         = round(min(max($discount, 0), $totalPrice), 3);
+        $netTotal         = round($totalPrice - $discount, 3);
+        $commissionAmount = round($netTotal * ($finalRate / 100), 3);
+        $sellerAmount     = round($netTotal - $commissionAmount, 3);
 
         // How much the seller saves vs the free plan (for upgrade nudge)
         $freeRate         = $this->getFinalRate($unitPrice, 'free');
-        $freeCommission   = round($totalPrice * ($freeRate / 100), 3);
+        $freeCommission   = round($netTotal * ($freeRate / 100), 3);
         $savedWithPlan    = round($freeCommission - $commissionAmount, 3);
 
         return [
             'unit_price'             => $unitPrice,
             'quantity'               => $quantity,
             'total_price'            => $totalPrice,
+            'discount_amount'        => $discount,
+            'net_total'              => $netTotal,
             'commission_percentage'  => $finalRate,
             'commission_amount'      => $commissionAmount,
             'seller_amount'          => $sellerAmount,
@@ -128,10 +175,13 @@ class CommissionService
         $planHierarchy = ['free' => 0, 'red' => 1, 'black' => 2];
         $currentLevel  = $planHierarchy[$currentPlan] ?? 0;
 
-        $upgrades = [
-            'red'   => ['name' => 'Red Pepper',  'monthly' => 49],
-            'black' => ['name' => 'Black Pepper', 'monthly' => 129],
-        ];
+        $upgrades = [];
+        foreach (['red', 'black'] as $paidPlan) {
+            $upgrades[$paidPlan] = [
+                'name'    => \App\Models\SellerSubscription::PLAN_NAMES[$paidPlan],
+                'monthly' => \App\Models\SellerSubscription::PLAN_PRICES[$paidPlan],
+            ];
+        }
 
         $suggestions = [];
         $current     = $this->calculate($unitPrice, $currentPlan, $quantity);

@@ -18,7 +18,8 @@ use Illuminate\Database\Eloquent\Model;
  * @property int    $seller_id
  * @property string $status          pending|processing|completed|delivered|cancelled
  * @property string $payment_status  unpaid|paid|refunded
- * @property float  $subtotal
+ * @property float  $subtotal         items total BEFORE the seller's coupon
+ * @property float  $discount_amount  seller-funded coupon discount (0 when none)
  */
 class SellerOrder extends Model
 {
@@ -32,11 +33,14 @@ class SellerOrder extends Model
         'subtotal',
         'coupon_id',
         'coupon_code',
+        'coupon_type',
+        'coupon_value',
         'discount_amount',
     ];
 
     protected $casts = [
         'subtotal'        => 'decimal:3',
+        'coupon_value'    => 'decimal:3',
         'discount_amount' => 'decimal:3',
     ];
 

@@ -36,7 +36,7 @@ class DashboardController extends Controller
         // Reads from seller_orders (same source as FinanceController)
         // to stay in sync with the Finance dashboard.
         //
-        // gross_revenue  = what customers paid (seller_orders.subtotal)
+        // gross_revenue  = what customers paid for items (seller_orders.subtotal − coupon discount_amount)
         // platform_profit = commission + delivery fee (what platform earns)
         //
         // We show gross_revenue on the dashboard KPI so the number is
@@ -47,7 +47,7 @@ class DashboardController extends Controller
             $revenueRow = DB::table('seller_orders')
                 ->where('status', '!=', 'cancelled')
                 ->selectRaw('
-                    COALESCE(SUM(subtotal), 0)          as gross_revenue,
+                    COALESCE(SUM(subtotal - discount_amount), 0) as gross_revenue,
                     COALESCE(SUM(platform_profit), 0)   as platform_profit,
                     COALESCE(SUM(commission_amount), 0) as total_commission
                 ')
@@ -87,7 +87,7 @@ $totalRevenue = round((float) ($revenueRow->platform_profit ?? 0), 3);        } 
                 ->where('created_at', '>=', $now->copy()->subMonths(6))
                 ->select(
                     DB::raw("DATE_FORMAT(created_at, '%Y-%m') as month"),
-                    DB::raw('COALESCE(SUM(subtotal), 0) as revenue')
+                    DB::raw('COALESCE(SUM(subtotal - discount_amount), 0) as revenue')
                 )
                 ->groupBy('month')
                 ->orderBy('month')

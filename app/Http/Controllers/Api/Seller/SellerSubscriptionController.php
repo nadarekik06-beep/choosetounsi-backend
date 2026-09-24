@@ -153,8 +153,7 @@ class SellerSubscriptionController extends Controller
         }
 
         // ── 4. Determine amount ───────────────────────────────────────────────
-        $amounts = ['red' => 49.00, 'black' => 129.00];
-        $amount  = $amounts[$validated['plan']];
+        $amount = \App\Models\SellerSubscription::PLAN_PRICES[$validated['plan']];
 
         // ── 5. Mock payment + DB updates in a transaction ─────────────────────
         DB::beginTransaction();

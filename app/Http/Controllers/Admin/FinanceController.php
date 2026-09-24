@@ -48,7 +48,7 @@ class FinanceController extends Controller
         $totals = (clone $base)
             ->where('so.status', '!=', 'cancelled')
             ->selectRaw('
-                COALESCE(SUM(so.subtotal), 0)          as gross_revenue,
+                COALESCE(SUM(so.subtotal - so.discount_amount), 0) as gross_revenue,
                 COALESCE(SUM(so.commission_amount), 0) as total_commission,
                 COALESCE(SUM(so.seller_net_amount), 0) as total_seller_payouts,
                 COALESCE(SUM(so.delivery_fee), 0)      as total_delivery_fees,
@@ -75,7 +75,7 @@ class FinanceController extends Controller
             ->selectRaw('
                 DATE(money_received_at)               as collection_date,
                 COUNT(*)                              as orders,
-                COALESCE(SUM(subtotal), 0)            as gross,
+                COALESCE(SUM(subtotal - discount_amount), 0) as gross,
                 COALESCE(SUM(commission_amount), 0)   as commission,
                 COALESCE(SUM(delivery_fee), 0)        as delivery_fees,
                 COALESCE(SUM(seller_net_amount), 0)   as seller_payouts,
@@ -141,7 +141,9 @@ class FinanceController extends Controller
                 'so.status',
                 'so.payout_status',
                 'so.payment_status',
-                'so.subtotal',
+                DB::raw('(so.subtotal - so.discount_amount) as subtotal'),
+                'so.discount_amount',
+                'so.coupon_code',
                 'so.commission_amount',
                 'so.seller_net_amount',
                 'so.delivery_fee',
@@ -201,7 +203,7 @@ class FinanceController extends Controller
                 'u.email as seller_email',
                 'sa.phone_number as seller_phone',
                 DB::raw('COUNT(so.id) as orders_count'),
-                DB::raw('COALESCE(SUM(so.subtotal), 0) as gross_revenue'),
+                DB::raw('COALESCE(SUM(so.subtotal - so.discount_amount), 0) as gross_revenue'),
                 DB::raw('COALESCE(SUM(so.commission_amount), 0) as total_commission'),
                 DB::raw('COALESCE(SUM(so.seller_net_amount), 0) as total_net'),
                 DB::raw('COALESCE(SUM(CASE WHEN so.payout_status = "paid" THEN so.seller_net_amount ELSE 0 END), 0) as total_paid_out'),
@@ -250,7 +252,9 @@ class FinanceController extends Controller
                 's.email as seller_email',
                 'sa.phone_number as seller_phone',
                 'so.seller_id',
-                'so.subtotal',
+                DB::raw('(so.subtotal - so.discount_amount) as subtotal'),
+                'so.discount_amount',
+                'so.coupon_code',
                 'so.commission_amount',
                 'so.seller_net_amount',
                 'so.delivery_fee',

@@ -36,6 +36,7 @@ class SellerDashboardController extends Controller
 
         // ── Gross total expression (fallback for pre-commission orders) ────────
         $grossParts = [];
+        if (in_array('net_total', $itemColNames))  $grossParts[] = 'oi.net_total'; // after seller coupon
         if (in_array('total', $itemColNames))      $grossParts[] = 'oi.total';
         if (in_array('subtotal', $itemColNames))   $grossParts[] = 'oi.subtotal';
         if (in_array('line_total', $itemColNames)) $grossParts[] = 'oi.line_total';

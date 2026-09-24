@@ -90,6 +90,37 @@ class CouponService
     }
 
     /**
+     * Split a seller coupon's discount across the eligible lines, proportional
+     * to each line's total. Rounded to the millime; the rounding remainder goes
+     * to the last line so the shares always sum exactly to $discount.
+     *
+     * @param array<int|string, float> $lineTotals key => line_total of ELIGIBLE lines only
+     * @return array<int|string, float>             key => discount share
+     */
+    public function allocateDiscount(array $lineTotals, float $discount): array
+    {
+        $base = array_sum($lineTotals);
+        if ($discount <= 0 || $base <= 0) {
+            return array_map(fn () => 0.0, $lineTotals);
+        }
+
+        $shares    = [];
+        $allocated = 0.0;
+        $lastKey   = array_key_last($lineTotals);
+
+        foreach ($lineTotals as $key => $lineTotal) {
+            $share = $key === $lastKey
+                ? round($discount - $allocated, 3)
+                : round($discount * ($lineTotal / $base), 3);
+            $share        = min($share, round((float) $lineTotal, 3));
+            $shares[$key] = $share;
+            $allocated    = round($allocated + $share, 3);
+        }
+
+        return $shares;
+    }
+
+    /**
      * Record a redemption and increment usage_count atomically.
      * Re-checks the total usage limit under a row lock — the per-customer
      * limit is re-validated by the caller re-running validateForSeller()

@@ -113,7 +113,7 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
         DB::beginTransaction();
         try {
             // Compute batch totals
-            $grossRevenue       = $orders->sum('subtotal');
+            $grossRevenue       = $orders->sum(fn($o) => (float) $o->subtotal - (float) $o->discount_amount);
             $totalCommission    = $orders->sum('commission_amount');
             $totalDeliveryFees  = $orders->sum('delivery_fee');
             $totalSellerPayout  = $orders->sum('seller_net_amount');
@@ -194,7 +194,8 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
             ->select([
                 'so.id',
                 'o.order_number',
-                'so.subtotal',
+                DB::raw('(so.subtotal - so.discount_amount) as subtotal'),
+                'so.discount_amount',
                 'so.commission_amount',
                 'so.seller_net_amount',
                 'so.delivery_fee',

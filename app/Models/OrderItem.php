@@ -23,6 +23,8 @@ class OrderItem extends Model
         'unit_price',
         'price',
         'total',
+        'discount_amount',   // share of the seller's coupon discount on this line
+        'net_total',         // total − discount_amount (commission base)
         'image_url',
         // ── Commission columns (populated at checkout) ─────────────────────
         'commission_percentage',
@@ -33,6 +35,8 @@ class OrderItem extends Model
 
     protected $casts = [
         'quantity'              => 'integer',
+        'discount_amount'       => 'decimal:3',
+        'net_total'             => 'decimal:3',
         'commission_percentage' => 'decimal:2',
         'commission_amount'     => 'decimal:3',
         'seller_amount'         => 'decimal:3',
@@ -57,7 +61,7 @@ class OrderItem extends Model
         if ($value) return (float) $value;
         $u = (float) ($this->attributes['unit_price'] ?? 0);
         $q = (int)   ($this->attributes['quantity']   ?? 1);
-        return round($u * $q, 2);
+        return round($u * $q, 3);
     }
 
     /**

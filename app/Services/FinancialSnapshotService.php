@@ -18,8 +18,6 @@ use Illuminate\Support\Facades\Log;
  */
 class FinancialSnapshotService
 {
-    private const DELIVERY_FEE = 8.000;
-
     /**
      * Compute and store financial snapshot on a seller_order.
      *
@@ -43,7 +41,7 @@ class FinancialSnapshotService
 
             $commissionAmount = round((float) ($totals->total_commission ?? 0), 3);
             $sellerNetAmount  = round((float) ($totals->total_seller_net  ?? 0), 3);
-            $deliveryFee      = self::DELIVERY_FEE;
+            $deliveryFee      = $this->deliveryFeeFor($sellerOrderId);
             $platformProfit   = round($commissionAmount + $deliveryFee, 3);
 
             DB::table('seller_orders')
@@ -60,6 +58,22 @@ class FinancialSnapshotService
         } catch (\Throwable $e) {
             Log::error('[FinancialSnapshotService::freeze] seller_order_id=' . $sellerOrderId . ' — ' . $e->getMessage());
         }
+    }
+
+    /**
+     * The customer pays shipping ONCE per order (orders.shipping_fee), so it is
+     * booked on the order's first seller_order only — the others get 0.
+     * Prevents a multi-seller order from counting the fee once per seller.
+     */
+    public function deliveryFeeFor(int $sellerOrderId): float
+    {
+        $orderId = DB::table('seller_orders')->where('id', $sellerOrderId)->value('order_id');
+        if (!$orderId) return 0.0;
+
+        $firstId = DB::table('seller_orders')->where('order_id', $orderId)->min('id');
+        if ((int) $firstId !== $sellerOrderId) return 0.0;
+
+        return round((float) (DB::table('orders')->where('id', $orderId)->value('shipping_fee') ?? 0), 3);
     }
 
     /**

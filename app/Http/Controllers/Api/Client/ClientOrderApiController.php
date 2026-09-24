@@ -180,6 +180,8 @@ class ClientOrderApiController extends Controller
                 'status'          => $so->status,
                 'payment_status'  => $so->payment_status,
                 'subtotal'        => (float) $so->subtotal,
+                'coupon_code'     => $so->coupon_code,
+                'discount_amount' => round((float) ($so->discount_amount ?? 0), 3),
                 'items'           => $groupItems,
                 'tracking'        => $tracking,
             ];
@@ -189,15 +191,15 @@ class ClientOrderApiController extends Controller
         $arr['items']         = $enrichedItems->values();
         $arr['seller_groups'] = $sellerGroups;
 
-        // Override total_amount with live sum from active seller_orders
-        // (orders.total_amount may be stale if a partial return reduced a seller subtotal)
-        $arr['total_amount'] = round(
-    $order->sellerOrders
-        ->where('status', '!=', 'cancelled')
-        ->sum(fn($so) => (float) $so->subtotal)
-    + (float) ($order->shipping_fee ?? 0),
-    3
-);
+        // Live breakdown from active seller_orders (orders.total_amount may be
+        // stale if a partial return reduced a seller subtotal):
+        //   total = subtotal − discount_amount + shipping_fee
+        $money = $order->moneySummary();
+        $arr['subtotal']        = $money['subtotal'];
+        $arr['discount_amount'] = $money['discount_amount'];
+        $arr['coupon_codes']    = $money['coupon_codes'];
+        $arr['shipping_fee']    = $money['shipping_fee'];
+        $arr['total_amount']    = $money['total'];
 
         return $arr;
     }

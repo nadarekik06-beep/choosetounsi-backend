@@ -176,7 +176,11 @@ class MarkOrderRefunded
             }
 
             // ── 2. Calculate financial impact of returned items ────────────
+            // subtotal is gross (pre-coupon); the coupon share on each returned
+            // line is reversed separately so seller_order.discount_amount stays
+            // consistent with the remaining items.
             $returnedSubtotal   = $returnedItems->sum(fn($i) => (float) $i->total);
+            $returnedDiscount   = $returnedItems->sum(fn($i) => (float) ($i->discount_amount ?? 0));
             $returnedCommission = $returnedItems->sum(fn($i) => (float) ($i->commission_amount ?? 0));
             $returnedSellerNet  = $returnedItems->sum(fn($i) => (float) ($i->seller_amount ?? $i->total));
 
@@ -203,6 +207,7 @@ class MarkOrderRefunded
                 // Partial return → keep seller_order as 'delivered' for remaining items
                 // Adjust subtotal and commission to exclude returned items
                 $newSubtotal        = max(0, (float) $sellerOrder->subtotal - $returnedSubtotal);
+                $newDiscount        = max(0, (float) $sellerOrder->discount_amount - $returnedDiscount);
                 $newCommission      = max(0, (float) $sellerOrder->commission_amount - $returnedCommission);
                 $newSellerNet       = max(0, (float) $sellerOrder->seller_net_amount - $returnedSellerNet);
 
@@ -210,6 +215,7 @@ class MarkOrderRefunded
                     // status stays 'delivered' — remaining items are fine
                     'payment_status'    => 'refunded',   // partial refund
                     'subtotal'          => round($newSubtotal,   3),
+                    'discount_amount'   => round($newDiscount,   3),
                     'commission_amount' => round($newCommission,  3),
                     'seller_net_amount' => round($newSellerNet,   3),
                 ]);
@@ -221,9 +227,10 @@ class MarkOrderRefunded
             Complaint::where('id', $complaint->id)
                 ->update(['refund_status' => Complaint::REFUND_STATUS_COMPLETED]);
                 // ── 5. Sync orders.total_amount from sum of seller_orders.subtotal ─────
+                   // What the customer still pays: items after coupon, excluding cancelled sub-orders
                    $newOrderTotal = SellerOrder::where('order_id', $orderId)
                         ->where('status', '!=', 'cancelled')
-                        ->sum('subtotal');
+                        ->sum(DB::raw('subtotal - discount_amount'));
 
                     $shippingFee = Order::where('id', $orderId)->value('shipping_fee') ?? 0;
 

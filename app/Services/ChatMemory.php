@@ -5,79 +5,77 @@ namespace App\Services;
 use Illuminate\Support\Facades\Cache;
 
 /**
- * Session-scoped conversation memory.
+ * Session-scoped memory for the shopping chatbot, stored in the Laravel cache.
  *
- * Stores the last N turns per session_id in Laravel cache.
- * Completely isolated: session A's history is invisible to session B.
+ * Keeps what follow-up questions need ("cheaper ones", "in red?"):
+ *   turns     last 6 user/assistant turns (trimmed)
+ *   filters   the last search filters (keywords, category, price range, sort)
+ *   shown     ids and prices of the products shown last
+ *   language  the language of the last reply
+ *   user_id   who the conversation belongs to (null = guest)
  *
- * Used by AiRouter to:
- *   1. Prepend history to every AI call (context window)
- *   2. Retrieve the last assistant turn as a graceful-degrade response
- *      when both Gemini and DeepSeek are unavailable
+ * Memory is bound to the logged-in user: if a different user (or a guest
+ * after logout) shows up with the same session id, they start fresh and
+ * never see the previous user's conversation. Personal data (orders) is
+ * never written here — callers store a placeholder instead.
+ *
+ * Expires after 30 minutes of inactivity. Sessions never see each other.
  */
 class ChatMemory
 {
-    private const MAX_TURNS      = 6;   // 3 user + 3 assistant turns kept
-    private const TTL_SECONDS    = 1800; // 30 minutes of inactivity clears memory
-    private const MAX_CHAR_PER_TURN = 500; // cap token cost per stored turn
+    private const MAX_TURNS         = 6;
+    private const TTL_SECONDS       = 1800;
+    private const MAX_CHAR_PER_TURN = 300;
 
-    // ── Public API ────────────────────────────────────────────────────────
-
-    /**
-     * Returns the full conversation history for a session.
-     * Each entry: ['role' => 'user'|'model'|'assistant', 'content' => string]
-     */
-    public function get(string $sessionId): array
+    public function get(string $sessionId, ?int $userId = null): array
     {
-        return Cache::get($this->key($sessionId), []);
-    }
+        $memory = Cache::get($this->key($sessionId));
 
-    /**
-     * Appends one turn and trims to MAX_TURNS pairs.
-     * $role: 'user' | 'model' (Gemini) | 'assistant' (DeepSeek/OpenAI-compat)
-     */
-    public function append(string $sessionId, string $role, string $content): void
-    {
-        $history   = $this->get($sessionId);
-        $history[] = [
-            'role'    => $role,
-            'content' => mb_substr($content, 0, self::MAX_CHAR_PER_TURN),
-        ];
-
-        // Keep only the last MAX_TURNS * 2 entries (pairs of user+assistant)
-        if (count($history) > self::MAX_TURNS * 2) {
-            $history = array_slice($history, -(self::MAX_TURNS * 2));
+        if (!is_array($memory) || ($memory['user_id'] ?? null) !== $userId) {
+            return $this->fresh($userId);
         }
 
-        Cache::put($this->key($sessionId), $history, self::TTL_SECONDS);
+        return $memory;
     }
 
     /**
-     * Returns the most recent assistant/model response stored in memory.
-     * Used as a graceful-degrade fallback when all AI providers are unavailable.
+     * @param array      $shown   [['id' => int, 'price' => float], ...] of the products just shown
+     * @param array|null $filters null keeps the previous filters (e.g. after a greeting)
      */
-    public function lastAssistantTurn(string $sessionId): ?string
-    {
-        $history = $this->get($sessionId);
+    public function remember(
+        string $sessionId, ?int $userId, string $userMessage, string $reply,
+        string $language, ?array $filters, array $shown
+    ): void {
+        $memory = $this->get($sessionId, $userId);
 
-        foreach (array_reverse($history) as $turn) {
-            if (in_array($turn['role'], ['model', 'assistant'], true)) {
-                return $turn['content'];
-            }
+        $memory['turns'][] = ['role' => 'user', 'content' => mb_substr($userMessage, 0, self::MAX_CHAR_PER_TURN)];
+        $memory['turns'][] = ['role' => 'assistant', 'content' => mb_substr($reply, 0, self::MAX_CHAR_PER_TURN)];
+        $memory['turns']    = array_slice($memory['turns'], -self::MAX_TURNS);
+        $memory['language'] = $language;
+
+        if ($filters !== null) {
+            $memory['filters'] = $filters;
+            $memory['shown']   = $shown;
         }
 
-        return null;
+        Cache::put($this->key($sessionId), $memory, self::TTL_SECONDS);
     }
 
-    /**
-     * Clears a session's memory (e.g. on explicit reset from frontend).
-     */
     public function clear(string $sessionId): void
     {
         Cache::forget($this->key($sessionId));
     }
 
-    // ── Internals ─────────────────────────────────────────────────────────
+    private function fresh(?int $userId): array
+    {
+        return [
+            'turns'    => [],
+            'filters'  => null,
+            'shown'    => [],
+            'language' => null,
+            'user_id'  => $userId,
+        ];
+    }
 
     private function key(string $sessionId): string
     {

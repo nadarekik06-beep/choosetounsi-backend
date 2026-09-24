@@ -21,7 +21,7 @@ use Illuminate\Support\Facades\Storage;
  *   - order meta (number, date, wilaya, address, payment, shipping)
  *   - customer name only (no email — privacy)
  *   - items with full variant attributes + resolved image
- *   - totals (subtotal, shipping_fee, grand total)
+ *   - totals (subtotal, coupon discount, shipping_fee, grand total)
  */
 class SellerInvoiceController extends Controller
 {
@@ -127,6 +127,8 @@ class SellerInvoiceController extends Controller
                 'quantity'           => (int) $item->quantity,
                 'unit_price'         => (float) $item->unit_price,
                 'total'              => (float) $item->total,
+                'discount_amount'    => round((float) $item->discount_amount, 3),
+                'net_total'          => round((float) ($item->net_total ?? $item->total), 3),
                 'variant_id'         => $item->variant_id,
                 'variant_label'      => $variantLabel,
                 'variant_attributes' => $variantAttributes,
@@ -135,9 +137,13 @@ class SellerInvoiceController extends Controller
         });
 
         // ── Totals ──────────────────────────────────────────────────────────
+        // Shipping is charged once per order and booked on the first seller_order
+        // (see FinancialSnapshotService::deliveryFeeFor), so a multi-seller order
+        // doesn't bill the customer's shipping on every seller's invoice.
         $subtotal    = round((float) $sellerOrder->subtotal, 3);
-        $shippingFee = round((float) ($order->shipping_fee ?? 8.000), 3);
-        $grandTotal  = round($subtotal + $shippingFee, 3);
+        $discount    = round((float) ($sellerOrder->discount_amount ?? 0), 3);
+        $shippingFee = round((float) ($sellerOrder->delivery_fee ?? 0), 3);
+        $grandTotal  = round($subtotal - $discount + $shippingFee, 3);
 
         return response()->json([
             'success' => true,
@@ -167,6 +173,8 @@ class SellerInvoiceController extends Controller
 
                 // Money
                 'subtotal'        => $subtotal,
+                'discount_amount' => $discount,
+                'coupon_code'     => $sellerOrder->coupon_code,
                 'shipping_fee'    => $shippingFee,
                 'grand_total'     => $grandTotal,
             ],
