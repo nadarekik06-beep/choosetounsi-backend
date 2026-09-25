@@ -6,22 +6,34 @@ namespace App\Support;
  * Request-wide switch for translated database content (category / attribute names,
  * product names and descriptions).
  *
- * It is turned on by the SetLocale middleware for storefront requests only. Admin, seller
- * and delivery APIs keep the original values, so edit forms never save a translation over
- * the source text.
+ * Two switches, set by the SetLocale middleware:
+ *  - catalog  (category / subcategory / attribute / option names): storefront and seller
+ *    dashboard. These names are picked by id and never saved back from those screens.
+ *  - products (product name / descriptions): storefront only. Seller and admin screens edit
+ *    products, so they always get the seller's original text.
+ * Admin and delivery APIs get neither.
  */
 class Localization
 {
-    private static bool $enabled = false;
+    private static bool $enabled = false;   // product texts
+    private static bool $catalog = false;   // taxonomy names
 
-    public static function enable(bool $on = true): void
+    public static function enable(bool $products = true, ?bool $catalog = null): void
     {
-        self::$enabled = $on;
+        self::$enabled = $products;
+        self::$catalog = $catalog ?? $products;
     }
 
+    /** Product texts are translated (storefront). */
     public static function active(): bool
     {
         return self::$enabled;
+    }
+
+    /** Category / attribute names are translated (storefront + seller dashboard). */
+    public static function catalogActive(): bool
+    {
+        return self::$catalog;
     }
 
     public static function locale(): string
@@ -32,12 +44,12 @@ class Localization
     /** Run $callback with translations off (e.g. to snapshot source text into an order). */
     public static function original(callable $callback)
     {
-        $was = self::$enabled;
-        self::$enabled = false;
+        [$was, $wasCatalog] = [self::$enabled, self::$catalog];
+        self::$enabled = self::$catalog = false;
         try {
             return $callback();
         } finally {
-            self::$enabled = $was;
+            [self::$enabled, self::$catalog] = [$was, $wasCatalog];
         }
     }
 
@@ -69,7 +81,7 @@ class Localization
     {
         $prefix = $prefix ?? $base;
         $value  = $row->{$base} ?? null;
-        if (!self::$enabled) {
+        if (!self::$catalog) {
             return $value;
         }
 

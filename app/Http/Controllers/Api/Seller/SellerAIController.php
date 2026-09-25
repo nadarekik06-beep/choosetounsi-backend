@@ -1110,7 +1110,7 @@ EOT;
         ));
 
         $tone     = $request->input('tone',     'professional');
-        $language = $request->input('language', 'fr');
+        $language = $request->input('language') ?: app()->getLocale();
 
         $catLower    = mb_strtolower(($product->category_name ?? '') . ' ' . ($product->subcategory_name ?? ''));
         $productName = $product->name;
@@ -1422,7 +1422,7 @@ EOT;
         $variants    = array_slice((array) $request->input('variants', []), 0, 12);
         $imageCount  = (int)    $request->input('image_count', 0);
         $sellerTone  = $request->input('tone', 'professional');
-        $language    = $request->input('language', 'fr');
+        $language    = $request->input('language') ?: app()->getLocale();
 
         $priceLabel = match (true) {
             $price >= 500 => 'Luxury / Ultra-premium',

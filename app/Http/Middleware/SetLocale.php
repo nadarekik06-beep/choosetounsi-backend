@@ -29,9 +29,12 @@ class SetLocale
         App::setLocale($locale);
         Carbon::setLocale($locale);
 
-        // Translated catalog content (category names, product texts) only on storefront routes:
-        // admin / seller / delivery screens edit the original values.
-        \App\Support\Localization::enable(!self::isBackOffice($request));
+        // Translated catalog content: product texts on the storefront only (seller and admin
+        // screens edit them); category / attribute names also on the seller dashboard.
+        \App\Support\Localization::enable(
+            products: !self::isBackOffice($request),
+            catalog:  !self::isBackOffice($request) || $request->is('api/seller', 'api/seller/*'),
+        );
 
         $response = $next($request);
 

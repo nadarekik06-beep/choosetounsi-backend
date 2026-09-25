@@ -17,6 +17,12 @@ use App\Support\Localization;
  */
 trait HasTranslations
 {
+    /** Whether translations apply to this model right now (products override this). */
+    protected function localizationActive(): bool
+    {
+        return Localization::catalogActive();
+    }
+
     public function translatableAttributes(): array
     {
         return property_exists($this, 'translatable') ? $this->translatable : [];
@@ -40,7 +46,7 @@ trait HasTranslations
     {
         $value = parent::getAttributeValue($key);
 
-        if (Localization::active() && in_array($key, $this->translatableAttributes(), true)) {
+        if ($this->localizationActive() && in_array($key, $this->translatableAttributes(), true)) {
             return $this->translateAttribute($key, $value);
         }
 
@@ -51,7 +57,7 @@ trait HasTranslations
     {
         $array = parent::attributesToArray();
 
-        if (!Localization::active()) {
+        if (!$this->localizationActive()) {
             return $array;
         }
 

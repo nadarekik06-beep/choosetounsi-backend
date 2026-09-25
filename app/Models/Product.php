@@ -97,6 +97,12 @@ class Product extends Model
         });
     }
 
+    /** Product texts are only translated on the storefront (seller/admin screens edit them). */
+    protected function localizationActive(): bool
+    {
+        return \App\Support\Localization::active();
+    }
+
     /** Products are written in any language, so every locale (English too) reads `translations`. */
     protected function translateAttribute(string $key, $value)
     {
