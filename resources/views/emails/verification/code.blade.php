@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<html lang="{{ str_replace('_', '-', app()->getLocale()) }}" dir="{{ app()->getLocale() === 'ar' ? 'rtl' : 'ltr' }}" xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-  <title>Verify Your Email — ChooseTounsi</title>
+  <title>{!! __('emails.verification.title') !!}</title>
   <style>
     body, table, td, a { -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
     body { margin:0; padding:0; background-color:#f1f5f9; font-family:Arial,sans-serif; }
@@ -69,7 +69,7 @@
                         padding:5px 16px; margin-bottom:28px;">
               <span style="font-family:Arial,sans-serif; font-size:11px; font-weight:700;
                            color:#db142e; letter-spacing:2px; text-transform:uppercase;">
-                Email Verification
+                {!! __('emails.verification.badge') !!}
               </span>
             </div>
           </td>
@@ -80,12 +80,11 @@
           <td class="inner" style="padding:0 48px 24px; text-align:center;">
             <h1 style="margin:0 0 12px; font-family:Arial,sans-serif; font-size:26px;
                        font-weight:900; color:#ffffff; line-height:1.2;">
-              Hello, {{ $user->name }}!
+              {!! __('emails.verification.hello', ['name' => e($user->name)]) !!}
             </h1>
             <p style="margin:0; font-family:Arial,sans-serif; font-size:15px;
                       color:#9ca3af; line-height:1.6;">
-              Enter the code below to verify your email address<br>
-              and complete your registration.
+              {!! __('emails.verification.intro') !!}
             </p>
           </td>
         </tr>
@@ -101,11 +100,11 @@
               <div style="font-family:Arial,sans-serif; font-size:11px; font-weight:700;
                           color:#6b7280; letter-spacing:2.5px; text-transform:uppercase;
                           margin-bottom:20px;">
-                Your verification code
+                {!! __('emails.verification.code_label') !!}
               </div>
 
               <!-- Digit boxes -->
-              <div style="text-align:center;">
+              <div dir="ltr" style="text-align:center;">
                 @foreach(str_split($code) as $digit)
                   <span class="digit-box">{{ $digit }}</span>
                 @endforeach
@@ -114,7 +113,7 @@
               <!-- Expiry warning -->
               <div style="margin-top:20px; font-family:Arial,sans-serif; font-size:13px;
                           color:#f97316; font-weight:600;">
-                ⏱ Expires in <strong>10 minutes</strong>
+                {!! __('emails.verification.expires') !!}
               </div>
 
             </div>
@@ -133,11 +132,10 @@
           <td style="padding:28px 48px; text-align:center;">
             <p style="margin:0 0 10px; font-family:Arial,sans-serif; font-size:13px;
                       color:#6b7280; line-height:1.6;">
-              If you didn't create an account on ChooseTounsi,
-              you can safely ignore this email.
+              {!! __('emails.verification.ignore') !!}
             </p>
             <p style="margin:0; font-family:Arial,sans-serif; font-size:12px; color:#4b5563;">
-              🔒 Never share this code with anyone.
+              {!! __('emails.verification.never_share') !!}
             </p>
           </td>
         </tr>
@@ -151,7 +149,7 @@
         <tr>
           <td style="background:#080b12; padding:20px 48px; text-align:center;">
             <p style="margin:0; font-family:Arial,sans-serif; font-size:11px; color:#374151;">
-              © {{ date('Y') }} ChooseTounsi · Tunisia's Local Marketplace
+              {!! __('emails.footer_short', ['year' => date('Y')]) !!}
             </p>
           </td>
         </tr>

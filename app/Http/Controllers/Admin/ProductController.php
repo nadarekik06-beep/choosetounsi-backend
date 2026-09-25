@@ -29,7 +29,7 @@ public function index(Request $request)
     if ($status === 'deleted_by_seller') {
         $query = Product::onlyTrashed()
             ->where('deleted_by_seller', true)
-            ->with(['seller:id,name,email', 'category:id,name', 'primaryImage']);
+            ->with(['seller:id,name,email', 'category:id,name,name_fr,name_ar', 'primaryImage']);
 
         if ($search = $request->query('search'))
             $query->where('name', 'like', '%' . $search . '%');
@@ -53,7 +53,7 @@ public function index(Request $request)
     // Normal statuses — SoftDeletes automatically excludes deleted_at IS NOT NULL
     $query = Product::with([
         'seller:id,name,email',
-        'category:id,name',
+        'category:id,name,name_fr,name_ar',
         'primaryImage',
     ]);
 
@@ -98,13 +98,13 @@ public function index(Request $request)
     {
         $product = Product::with([
             'seller:id,name,email',
-            'category:id,name,slug',
-            'subcategory:id,name,slug,category_id',
+            'category:id,name,name_fr,name_ar,slug',
+            'subcategory:id,name,name_fr,name_ar,slug,category_id',
             'images',
             'primaryImage',
             'attributeValues.attribute',
             'variants' => fn($q) => $q->with([
-                'attributeOptions.attribute:id,slug,name,type',
+                'attributeOptions.attribute:id,slug,name,name_fr,name_ar,type',
                 'images',
             ]),
         ])->findOrFail($id);
@@ -292,8 +292,8 @@ public function index(Request $request)
 
         $product->load([
             'seller:id,name,email',
-            'category:id,name,slug',
-            'subcategory:id,name,slug,category_id',
+            'category:id,name,name_fr,name_ar,slug',
+            'subcategory:id,name,name_fr,name_ar,slug,category_id',
             'images',
             'primaryImage',
             'attributeValues.attribute',
@@ -334,12 +334,12 @@ public function index(Request $request)
         $product = Product::withTrashed()->with([
             'seller:id,name,email,is_active,is_approved,created_at',
             'seller.sellerApplication',
-            'category:id,name,slug',
-            'subcategory:id,name,slug,category_id',
+            'category:id,name,name_fr,name_ar,slug',
+            'subcategory:id,name,name_fr,name_ar,slug,category_id',
             'images.colorOption:id,value,color_hex',
             'attributeValues.attribute.options',
             'variants' => fn($q) => $q->with([
-                'attributeOptions.attribute:id,slug,name,type',
+                'attributeOptions.attribute:id,slug,name,name_fr,name_ar,type',
                 'images',
             ]),
             'promotions',

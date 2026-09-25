@@ -45,7 +45,7 @@ public function show(Request $request, int $id)
                 'product.primaryImage',
                 'product.variants' => fn($q) => $q
                     ->where('is_active', true)
-                    ->with(['attributeOptions.attribute:id,slug,name,type']),
+                    ->with(['attributeOptions.attribute:id,slug,name,name_fr,name_ar,type']),
             ]),
         ])
         ->findOrFail($id);
@@ -220,7 +220,7 @@ public function show(Request $request, int $id)
             ->with([
                 'primaryImage',
                 'variants:id,product_id,stock,price_override,is_active',
-                'variants.attributeOptions.attribute:id,slug,name',
+                'variants.attributeOptions.attribute:id,slug,name,name_fr,name_ar',
             ])
             ->orderBy('name')
             ->limit(50)
@@ -330,7 +330,7 @@ public function show(Request $request, int $id)
                 'product.primaryImage',
                 'product.variants' => fn($q) => $q
                     ->where('is_active', true)
-                    ->with(['attributeOptions.attribute:id,slug,name,type']),
+                    ->with(['attributeOptions.attribute:id,slug,name,name_fr,name_ar,type']),
             ])->orderBy('order')->get();
 
         $minUnits = PHP_INT_MAX;

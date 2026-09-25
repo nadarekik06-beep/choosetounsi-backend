@@ -68,7 +68,7 @@ class PaymentController extends Controller
                       ->firstOrFail();
 
         if ($order->payment_status === 'paid') {
-            return response()->json(['success' => false, 'message' => 'Order already paid.'], 400);
+            return response()->json(['success' => false, 'message' => __('messages.payment.already_paid')], 400);
         }
 
         try {
@@ -99,7 +99,7 @@ class PaymentController extends Controller
                 'order_id' => $order->id,
                 'error'    => $e->getMessage(),
             ]);
-            return response()->json(['success' => false, 'message' => 'Payment setup failed.'], 500);
+            return response()->json(['success' => false, 'message' => __('messages.payment.setup_failed')], 500);
         }
     }
 

@@ -6,10 +6,11 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Laravel\Sanctum\HasApiTokens;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Contracts\Translation\HasLocalePreference;
 use App\Models\DeliveryCompanyProfile;
 use App\Models\DeliveryGuyProfile;
 
-class User extends Authenticatable
+class User extends Authenticatable implements HasLocalePreference
 {
     use HasFactory, Notifiable, HasApiTokens;
 
@@ -23,6 +24,7 @@ class User extends Authenticatable
         'google_id',
         'avatar',
         'onboarding_completed',
+        'locale',
         // email_verified_at is set only at creation time via verifyEmail()
         // or immediately for Google OAuth users. It is intentionally NOT
         // in fillable for bulk-assignment safety.
@@ -143,5 +145,15 @@ class User extends Authenticatable
     public function deliveryGuyProfile(): \Illuminate\Database\Eloquent\Relations\HasOne
     {
         return $this->hasOne(DeliveryGuyProfile::class);
+    }
+
+    /**
+     * Language used for this user's notifications and e-mails (saved from the storefront).
+     */
+    public function preferredLocale()
+    {
+        return in_array($this->locale, \App\Http\Middleware\SetLocale::SUPPORTED, true)
+            ? $this->locale
+            : \App\Http\Middleware\SetLocale::DEFAULT;
     }
 }

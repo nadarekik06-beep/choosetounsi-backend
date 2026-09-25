@@ -55,7 +55,14 @@ class ReviewController extends Controller
     // ── GET /api/client/reviews/tags ─────────────────────────────────────────
     public function tags()
     {
-        $tags = ReviewTag::active()->get(['id', 'label', 'label_fr', 'sentiment', 'icon']);
+        $tags = ReviewTag::active()->get(['id', 'label', 'label_fr', 'label_ar', 'sentiment', 'icon'])
+            ->map(fn ($t) => [
+                'id'        => $t->id,
+                'label'     => ReviewTag::localizedLabel($t),
+                'label_fr'  => $t->label_fr,
+                'sentiment' => $t->sentiment,
+                'icon'      => $t->icon,
+            ])->values();
         return response()->json(['success' => true, 'data' => $tags]);
     }
 
@@ -90,7 +97,7 @@ class ReviewController extends Controller
         if (!$orderItem->sellerOrder || $orderItem->sellerOrder->status !== 'delivered') {
             return response()->json([
                 'success' => false,
-                'message' => 'You can only review products from delivered orders.',
+                'message' => __('messages.review.only_delivered'),
             ], 422);
         }
 
@@ -102,7 +109,7 @@ class ReviewController extends Controller
         if ($exists) {
             return response()->json([
                 'success' => false,
-                'message' => 'You have already reviewed this product.',
+                'message' => __('messages.review.already_reviewed'),
             ], 409);
         }
 
@@ -152,14 +159,14 @@ class ReviewController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'Review submitted successfully!',
+                'message' => __('messages.review.submitted'),
                 'data'    => ['review_id' => $review->id],
             ], 201);
 
         } catch (\Exception $e) {
             DB::rollBack();
             Log::error('[ReviewController::store] ' . $e->getMessage());
-            return response()->json(['success' => false, 'message' => 'Failed to submit review.'], 500);
+            return response()->json(['success' => false, 'message' => __('messages.review.failed')], 500);
         }
     }
 
@@ -210,7 +217,7 @@ class ReviewController extends Controller
 
         $exists = ReviewReport::where('review_id', $id)->where('reported_by', $user->id)->exists();
         if ($exists) {
-            return response()->json(['success' => false, 'message' => 'Already reported.'], 409);
+            return response()->json(['success' => false, 'message' => __('messages.review.already_reported')], 409);
         }
 
         ReviewReport::create([
@@ -221,7 +228,7 @@ class ReviewController extends Controller
             'status'      => 'pending',
         ]);
 
-        return response()->json(['success' => true, 'message' => 'Review reported.']);
+        return response()->json(['success' => true, 'message' => __('messages.review.reported')]);
     }
 
     // ── GET /api/client/reviews/prompts ──────────────────────────────────────

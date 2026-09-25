@@ -87,7 +87,7 @@ class OrderController extends Controller
             'items.product.primaryImage',
             'items.variant:id,product_id,sku',
             'items.variant.images',
-            'items.variant.attributeOptions.attribute:id,slug,name,type',
+            'items.variant.attributeOptions.attribute:id,slug,name,name_fr,name_ar,type',
             'sellerOrders',
             'sellerOrders.seller:id,name,email',
         ])->findOrFail($id);

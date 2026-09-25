@@ -62,7 +62,7 @@ class AddressController extends Controller
         if ($count >= self::MAX_ADDRESSES) {
             return response()->json([
                 'success' => false,
-                'message' => 'You can save a maximum of ' . self::MAX_ADDRESSES . ' addresses.',
+                'message' => __('messages.address.max_reached', ['max' => self::MAX_ADDRESSES]),
             ], 422);
         }
 
@@ -95,7 +95,7 @@ class AddressController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'Address saved.',
+                'message' => __('messages.address.saved'),
                 'data'    => $address,
             ], 201);
 
@@ -103,7 +103,7 @@ class AddressController extends Controller
             DB::rollBack();
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to save address.',
+                'message' => __('messages.address.save_failed'),
             ], 500);
         }
     }
@@ -127,7 +127,7 @@ class AddressController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Address updated.',
+            'message' => __('messages.address.updated'),
             'data'    => $address->fresh(),
         ]);
     }
@@ -155,7 +155,7 @@ class AddressController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Address deleted.',
+            'message' => __('messages.address.deleted'),
         ]);
     }
 
@@ -176,7 +176,7 @@ class AddressController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'Default address updated.',
+                'message' => __('messages.address.default_updated'),
                 'data'    => $address->fresh(),
             ]);
 
@@ -184,7 +184,7 @@ class AddressController extends Controller
             DB::rollBack();
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to update default address.',
+                'message' => __('messages.address.default_failed'),
             ], 500);
         }
     }

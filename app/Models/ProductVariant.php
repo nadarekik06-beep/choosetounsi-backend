@@ -51,7 +51,7 @@ class ProductVariant extends Model
             'attribute_option_id'
         )
         ->distinct()                              // ← FIX 1
-        ->with('attribute:id,slug,name,type');
+        ->with('attribute:id,slug,name,name_fr,name_ar,type');
     }
 
     /**

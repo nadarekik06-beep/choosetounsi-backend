@@ -21,4 +21,16 @@ class ReviewTag extends Model
     {
         return $query->where('is_active', true)->orderBy('sort_order');
     }
+
+    /**
+     * Label in the current locale (label_fr / label_ar), falling back to the base English label.
+     * Accepts a model or a plain query-builder row.
+     */
+    public static function localizedLabel($tag): string
+    {
+        $locale = app()->getLocale();
+        $col    = 'label_' . $locale;
+
+        return ($locale !== 'en' && !empty($tag->{$col} ?? null)) ? $tag->{$col} : (string) $tag->label;
+    }
 }

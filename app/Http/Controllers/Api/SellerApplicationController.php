@@ -161,7 +161,7 @@ class SellerApplicationController extends Controller
         if ($existing) {
             return response()->json([
                 'success' => false,
-                'message' => 'You already have a pending application.',
+                'message' => __('messages.seller_application.pending_exists'),
                 'data'    => $this->formatForFrontend($existing),
             ], 422);
         }
@@ -211,7 +211,7 @@ class SellerApplicationController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Your application has been submitted successfully.',
+            'message' => __('messages.seller_application.submitted'),
             'data'    => $this->formatForFrontend($application),
         ], 201);
     }
@@ -233,7 +233,7 @@ class SellerApplicationController extends Controller
         if ($application->status === 'approved') {
             return response()->json([
                 'success' => false,
-                'message' => 'Approved applications cannot be edited.',
+                'message' => __('messages.seller_application.approved_locked'),
             ], 422);
         }
 
@@ -277,7 +277,7 @@ class SellerApplicationController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Application updated and resubmitted for review.',
+            'message' => __('messages.seller_application.resubmitted'),
             'data'    => $this->formatForFrontend($application->fresh()),
         ]);
     }

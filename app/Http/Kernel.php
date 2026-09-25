@@ -39,6 +39,7 @@ class Kernel extends HttpKernel
         ],
 
         'api' => [
+            \App\Http\Middleware\SetLocale::class, // Accept-Language → app locale (fr | ar | en)
             \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class, // ✅ Sanctum
             'throttle:api',
             \Illuminate\Routing\Middleware\SubstituteBindings::class,

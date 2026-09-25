@@ -4,13 +4,16 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use App\Models\Concerns\HasTranslations;
 
 class Subcategory extends Model
 {
-    use HasFactory;
+    use HasFactory, HasTranslations;
+
+    protected $translatable = ['name'];
 
     protected $fillable = [
-        'category_id', 'name', 'name_ar', 'slug', 'icon', 'is_active', 'order',
+        'category_id', 'name', 'name_ar', 'name_fr', 'slug', 'icon', 'is_active', 'order',
     ];
 
     protected $casts = [

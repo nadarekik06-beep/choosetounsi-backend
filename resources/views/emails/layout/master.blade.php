@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<html lang="{{ str_replace('_', '-', app()->getLocale()) }}" dir="{{ app()->getLocale() === 'ar' ? 'rtl' : 'ltr' }}" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -99,7 +99,7 @@
                     </table>
                   </td>
                   <td align="right" style="vertical-align:middle;">
-                    <span style="font-family:'Barlow',Arial,sans-serif;font-size:12px;color:#9ca3af;letter-spacing:0.5px;">MADE IN TUNISIA 🤝</span>
+                    <span style="font-family:'Barlow',Arial,sans-serif;font-size:12px;color:#9ca3af;letter-spacing:0.5px;">{!! __('emails.layout.tagline_top') !!}</span>
                   </td>
                 </tr>
               </table>
@@ -112,10 +112,10 @@
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
                 <tr>
                   <td align="center">
-                    <a href="{{ config('app.url') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#9ca3af;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">SHOP</a>
-                    <a href="{{ config('app.url') }}/sellers" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#9ca3af;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">SELLERS</a>
-                    <a href="{{ config('app.url') }}/deals" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#db142e;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">DEALS</a>
-                    <a href="{{ config('app.url') }}/categories" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#9ca3af;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">CATEGORIES</a>
+                    <a href="{{ config('app.url') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#9ca3af;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">{!! __('emails.layout.shop') !!}</a>
+                    <a href="{{ config('app.url') }}/sellers" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#9ca3af;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">{!! __('emails.layout.sellers') !!}</a>
+                    <a href="{{ config('app.url') }}/deals" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#db142e;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">{!! __('emails.layout.deals') !!}</a>
+                    <a href="{{ config('app.url') }}/categories" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#9ca3af;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">{!! __('emails.layout.categories') !!}</a>
                   </td>
                 </tr>
               </table>
@@ -140,7 +140,7 @@
                 <!-- Tagline -->
                 <tr>
                   <td align="center" style="padding-bottom:24px;">
-                    <span style="font-family:'Barlow',Arial,sans-serif;font-size:13px;color:#6b7280;letter-spacing:0.5px;">Tunisia's Marketplace — Supporting Local Commerce</span>
+                    <span style="font-family:'Barlow',Arial,sans-serif;font-size:13px;color:#6b7280;letter-spacing:0.5px;">{!! __('emails.layout.tagline') !!}</span>
                   </td>
                 </tr>
 
@@ -159,16 +159,16 @@
                     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
                       <tr>
                         <td align="center" style="padding-bottom:8px;">
-                          <a href="{{ $unsubscribeUrl ?? '#' }}" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">Unsubscribe</a>
+                          <a href="{{ $unsubscribeUrl ?? '#' }}" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">{!! __('emails.layout.unsubscribe') !!}</a>
                           <span style="color:#4b5563;font-size:11px;">|</span>
-                          <a href="{{ config('app.url') }}/privacy" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">Privacy Policy</a>
+                          <a href="{{ config('app.url') }}/privacy" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">{!! __('emails.layout.privacy') !!}</a>
                           <span style="color:#4b5563;font-size:11px;">|</span>
-                          <a href="{{ config('app.url') }}/contact" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">Contact</a>
+                          <a href="{{ config('app.url') }}/contact" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">{!! __('emails.layout.contact') !!}</a>
                         </td>
                       </tr>
                       <tr>
                         <td align="center">
-                          <span style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#374151;">© {{ date('Y') }} ChooseTounsi — Sfax, Tunisia. All rights reserved.</span>
+                          <span style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#374151;">{!! __('emails.layout.rights', ['year' => date('Y')]) !!}</span>
                         </td>
                       </tr>
                     </table>

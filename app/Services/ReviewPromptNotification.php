@@ -29,7 +29,7 @@ class ReviewPromptNotification extends Notification
     public function toArray($notifiable): array
     {
         $productNames = $this->items
-            ->map(fn($i) => $i->product_name ?? $i->product?->name ?? 'Product')
+            ->map(fn($i) => $i->product_name ?? $i->product?->name ?? __('notifications.review_prompt.product'))
             ->filter()
             ->take(2)
             ->join(', ');
@@ -38,8 +38,8 @@ class ReviewPromptNotification extends Notification
 
         return [
             'type'            => 'review_prompt',
-            'title'           => 'How was your order?',
-            'message'         => "Share your experience with {$productNames}",
+            'title'           => __('notifications.review_prompt.title'),
+            'message'         => __('notifications.review_prompt.message', ['products' => $productNames]),
             'order_id'        => $this->sellerOrder->order_id,
             'seller_order_id' => $this->sellerOrder->id,
             'product_image'   => $firstItem?->product?->primary_image_url,

@@ -94,7 +94,7 @@ class SponsorshipController extends Controller
         }
 
         // Ownership check
-        $product = Product::with(['category:id,name'])
+        $product = Product::with(['category:id,name,name_fr,name_ar'])
             ->where('id', $request->product_id)
             ->where('seller_id', $sellerId)
             ->first();
@@ -407,7 +407,7 @@ public function publicFeed(Request $request): JsonResponse
     $query = Product::available()
         ->where('is_sponsored', true)
         ->with([
-            'category:id,name,slug',
+            'category:id,name,name_fr,name_ar,slug',
             'primaryImage',
             'seller:id,name',
             'sponsorships' => fn($q) => $q->where('status', 'active')
@@ -442,7 +442,7 @@ public function publicFeed(Request $request): JsonResponse
     if ($targeted->count() < $minResults) {
         $excludeIds   = $targeted->pluck('id')->toArray();
         $nonSponsored = Product::available()
-            ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name'])
+            ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name'])
             ->when($catSlug, fn($q) => $q->whereHas('category', fn($q2) => $q2->where('slug', $catSlug)))
             ->whereNotIn('id', $excludeIds)
             ->orderByDesc('views')

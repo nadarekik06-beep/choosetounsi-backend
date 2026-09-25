@@ -59,6 +59,7 @@ class AiChatController extends Controller
         $request->validate([
             'message'    => 'required|string|max:500',
             'session_id' => ['required', 'string', 'max:120', 'regex:/^[A-Za-z0-9_\-]+$/'],
+            'locale'     => 'nullable|string|in:fr,ar,en',
         ]);
 
         $started   = microtime(true);
@@ -71,9 +72,10 @@ class AiChatController extends Controller
         $userId = $user?->id;
 
         $memory   = $this->memory->get($sessionId, $userId);
-        $language = $this->extractor->detectLanguage($message)
-            ?? $memory['language']
-            ?? config('services.groq.default_language', 'fr');
+        // The storefront language chosen by the customer decides the reply language
+        // (body `locale`, else Accept-Language via SetLocale). The message language is
+        // still used by the extractor to understand the query.
+        $language = $this->uiLanguage($request);
 
         $limitKey = 'chat:session:' . $sessionId;
         if (RateLimiter::tooManyAttempts($limitKey, self::SESSION_MAX_PER_MINUTE)) {
@@ -85,6 +87,7 @@ class AiChatController extends Controller
             // Identical question in the same conversation state → no Groq call.
             // Never holds personal data: track_order answers are not cached.
             $cacheKey = 'chat:resp:' . md5(implode('|', [
+                $language,
                 $this->extractor->normalize($message),
                 json_encode($memory['filters']),
                 json_encode(array_column($memory['shown'], 'id')),
@@ -97,7 +100,7 @@ class AiChatController extends Controller
             }
 
             $intent   = $this->extractor->extract($message, $memory);
-            $language = $intent['language'];
+            $intent['language'] = $language;
 
             $out = match ($intent['intent']) {
                 'greeting'          => $this->greeting($language),
@@ -165,6 +168,13 @@ class AiChatController extends Controller
 
     // ── Intents ───────────────────────────────────────────────────────────
 
+    private function uiLanguage(Request $request): string
+    {
+        $locale = $request->input('locale') ?: app()->getLocale();
+
+        return in_array($locale, ['fr', 'ar', 'en'], true) ? $locale : 'fr';
+    }
+
     private function greeting(string $lang): array
     {
         return ['reply' => $this->composer->greeting($lang), 'actions' => $this->kb->starterActions($lang)];
@@ -231,11 +241,11 @@ class AiChatController extends Controller
     private function categories(string $lang): array
     {
         $categories = Cache::remember('chat:categories', 3600, fn () => DB::table('categories')
-            ->where('is_active', true)->orderBy('order')->get(['name', 'name_ar', 'slug'])->all());
+            ->where('is_active', true)->orderBy('order')->get(['name', 'name_ar', 'name_fr', 'slug'])->all());
 
         $actions = [];
         foreach ($categories as $c) {
-            $label     = $lang === 'ar' && $c->name_ar ? $c->name_ar : $c->name;
+            $label     = ($lang !== 'en' ? $c->{"name_{$lang}"} : null) ?: $c->name;
             $actions[] = $this->actions->link($label, '/category/' . $c->slug);
         }
 
@@ -261,7 +271,7 @@ class AiChatController extends Controller
             if ($nearest['count'] === 0 && $intent['source'] === 'rules') {
                 $llmIntent = $this->extractor->extract($message, $memory, true);
                 if ($llmIntent['source'] === 'llm' && in_array($llmIntent['intent'], ['search', 'product_question', 'other'], true)) {
-                    $intent  = $llmIntent;
+                    $intent  = ['language' => $intent['language']] + $llmIntent; // keep the UI language
                     $filters = $this->filtersFrom($intent, $memory);
                     $exclude = $this->applyRefine($filters, $intent['refine'] ?? null, $shown);
                     $result  = $this->retriever->search($filters, $exclude);
@@ -274,7 +284,7 @@ class AiChatController extends Controller
 
         if (!$result['products']) {
             $refine = $shown ? ($intent['refine'] ?? null) : null;
-            $label  = $lang === 'ar' ? ($nearest['category_ar'] ?? $nearest['category']) : $nearest['category'];
+            $label  = ($lang !== 'en' ? ($nearest["category_{$lang}"] ?? null) : null) ?: $nearest['category'];
 
             return [
                 'reply'    => $this->composer->noResults($lang, $filters, $nearest, $refine),
@@ -291,7 +301,7 @@ class AiChatController extends Controller
 
         $products = $result['products'];
         $category = $products[0]['category'] ?? null;
-        $catLabel = $category ? ($lang === 'ar' && $category['name_ar'] ? $category['name_ar'] : $category['name']) : null;
+        $catLabel = $category ? ((($lang !== 'en') ? ($category["name_{$lang}"] ?? null) : null) ?: $category['name']) : null;
 
         return [
             'reply'    => $this->composer->products($lang, $message, $products, $filters, $memory['turns'] ?? []),

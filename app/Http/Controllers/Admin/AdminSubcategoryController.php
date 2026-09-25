@@ -19,7 +19,7 @@ class AdminSubcategoryController extends Controller
 
     public function index(Request $request)
     {
-        $query = Subcategory::with('category:id,name,slug')
+        $query = Subcategory::with('category:id,name,name_fr,name_ar,slug')
             ->orderBy('category_id')
             ->orderBy('order')
             ->orderBy('name');
@@ -41,7 +41,7 @@ class AdminSubcategoryController extends Controller
 
     public function show($id)
     {
-        $sub = Subcategory::with('category:id,name,slug')
+        $sub = Subcategory::with('category:id,name,name_fr,name_ar,slug')
             ->withCount('products')
             ->findOrFail($id);
 
@@ -56,6 +56,7 @@ class AdminSubcategoryController extends Controller
             'category_id' => 'required|exists:categories,id',
             'name'        => 'required|string|max:255',
             'name_ar'     => 'nullable|string|max:255',
+            'name_fr'     => 'nullable|string|max:255',
             'icon'        => 'nullable|string|max:100',
             'order'       => 'sometimes|integer|min:0',
         ]);
@@ -64,6 +65,7 @@ class AdminSubcategoryController extends Controller
             'category_id' => (int) $request->input('category_id'),
             'name'        => $request->input('name'),
             'name_ar'     => $request->input('name_ar') ?: null,
+            'name_fr'     => $request->input('name_fr') ?: null,
             'slug'        => $this->uniqueSlug(
                                 Str::slug($request->input('name')),
                                 (int) $request->input('category_id')
@@ -73,7 +75,7 @@ class AdminSubcategoryController extends Controller
             'order'       => (int) $request->input('order', 0),
         ]);
 
-        $sub->load('category:id,name,slug');
+        $sub->load('category:id,name,name_fr,name_ar,slug');
 
         return response()->json([
             'success' => true,
@@ -92,6 +94,7 @@ class AdminSubcategoryController extends Controller
             'category_id' => 'sometimes|exists:categories,id',
             'name'        => 'sometimes|string|max:255',
             'name_ar'     => 'nullable|string|max:255',
+            'name_fr'     => 'nullable|string|max:255',
             'icon'        => 'nullable|string|max:100',
             'is_active'   => 'sometimes',   // accept any truthy/falsy value
             'order'       => 'sometimes|integer|min:0',
@@ -113,6 +116,7 @@ class AdminSubcategoryController extends Controller
 
         if ($request->has('category_id'))  $data['category_id'] = (int) $request->input('category_id');
         if ($request->has('name_ar'))       $data['name_ar']     = $request->input('name_ar') ?: null;
+        if ($request->has('name_fr'))       $data['name_fr']     = $request->input('name_fr') ?: null;
         if ($request->has('icon'))          $data['icon']        = $request->input('icon') ?: null;
         if ($request->has('order'))         $data['order']       = (int) $request->input('order', 0);
 
@@ -123,7 +127,7 @@ class AdminSubcategoryController extends Controller
         }
 
         $sub->update($data);
-        $sub->load('category:id,name,slug');
+        $sub->load('category:id,name,name_fr,name_ar,slug');
 
         return response()->json([
             'success' => true,

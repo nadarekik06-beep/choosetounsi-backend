@@ -37,5 +37,27 @@ class Handler extends ExceptionHandler
         $this->reportable(function (Throwable $e) {
             //
         });
+
+        // Localized framework messages for the API (locale set by SetLocale middleware).
+        $this->renderable(function (\Illuminate\Http\Exceptions\ThrottleRequestsException $e, $request) {
+            if ($request->expectsJson() || $request->is('api/*')) {
+                return response()->json(['message' => __('messages.generic.too_many_requests')], 429, $e->getHeaders());
+            }
+        });
+    }
+
+    protected function invalidJson($request, \Illuminate\Validation\ValidationException $exception)
+    {
+        return response()->json([
+            'message' => __('messages.generic.validation_failed'),
+            'errors'  => $exception->errors(),
+        ], $exception->status);
+    }
+
+    protected function unauthenticated($request, \Illuminate\Auth\AuthenticationException $exception)
+    {
+        return $request->expectsJson() || $request->is('api/*')
+            ? response()->json(['message' => __('messages.auth.unauthenticated')], 401)
+            : redirect()->guest($exception->redirectTo() ?? route('login'));
     }
 }

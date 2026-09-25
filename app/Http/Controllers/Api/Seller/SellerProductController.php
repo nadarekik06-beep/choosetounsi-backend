@@ -23,8 +23,8 @@ class SellerProductController extends Controller
     {
         $seller = $request->user();
         $query  = $seller->products()->with([
-            'category:id,name,slug',
-            'subcategory:id,name,slug',
+            'category:id,name,name_fr,name_ar,slug',
+            'subcategory:id,name,name_fr,name_ar,slug',
             'primaryImage',
         ]);
 
@@ -76,8 +76,8 @@ class SellerProductController extends Controller
     {
         $product = $request->user()->products()
             ->with([
-                'category:id,name,slug',
-                'subcategory:id,name,slug',
+                'category:id,name,name_fr,name_ar,slug',
+                'subcategory:id,name,name_fr,name_ar,slug',
                 'images',
                 'primaryImage',
                 'attributeValues.attribute',

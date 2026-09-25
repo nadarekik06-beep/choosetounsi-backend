@@ -158,6 +158,36 @@ return [
     |
     */
 
-    'attributes' => [],
+    'attributes' => [
+        'name'                 => 'name',
+        'email'                => 'email address',
+        'password'             => 'password',
+        'current_password'     => 'current password',
+        'phone'                => 'phone number',
+        'address'              => 'address',
+        'wilaya'               => 'governorate',
+        'label'                => 'label',
+        'notes'                => 'order notes',
+        'code'                 => 'code',
+        'coupon_code'          => 'coupon code',
+        'quantity'             => 'quantity',
+        'variant_id'           => 'variant',
+        'payment_method'       => 'payment method',
+        'message'              => 'message',
+        'description'          => 'description',
+        'complaint_type'       => 'complaint type',
+        'resolution_type'      => 'requested resolution',
+        'item_ids'             => 'items',
+        'rating'               => 'rating',
+        'comment'              => 'comment',
+        'image'                => 'image',
+        'profile_picture'      => 'profile picture',
+        'gender'               => 'gender',
+        'business_description' => 'business description',
+        'business_categories'  => 'business categories',
+        'website_url'          => 'website',
+        'facebook_url'         => 'Facebook page',
+        'instagram_url'        => 'Instagram account',
+    ],
 
 ];

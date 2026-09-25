@@ -30,7 +30,7 @@ class AdminCategoryController extends Controller
     public function show($id)
     {
         $category = Category::withCount(['products', 'subcategories'])
-            ->with('subcategories:id,category_id,name,name_ar,slug,icon,is_active,order')
+            ->with('subcategories:id,category_id,name,name_ar,name_fr,slug,icon,is_active,order')
             ->findOrFail($id);
 
         return response()->json(['success' => true, 'data' => $category]);
@@ -41,6 +41,7 @@ class AdminCategoryController extends Controller
         $validated = $request->validate([
             'name'        => 'required|string|max:255|unique:categories,name',
             'name_ar'     => 'nullable|string|max:255',
+            'name_fr'     => 'nullable|string|max:255',
             'description' => 'nullable|string',
             'icon'        => 'nullable|string|max:100',
             'image'       => 'nullable|string|max:500',
@@ -51,6 +52,7 @@ class AdminCategoryController extends Controller
         $category = Category::create([
             'name'        => $validated['name'],
             'name_ar'     => $validated['name_ar']     ?? null,
+            'name_fr'     => $validated['name_fr']     ?? null,
             'slug'        => $this->uniqueSlug(Str::slug($validated['name'])),
             'description' => $validated['description'] ?? null,
             'icon'        => $validated['icon']        ?? null,
@@ -73,6 +75,7 @@ class AdminCategoryController extends Controller
         $validated = $request->validate([
             'name'        => 'sometimes|string|max:255|unique:categories,name,' . $id,
             'name_ar'     => 'nullable|string|max:255',
+            'name_fr'     => 'nullable|string|max:255',
             'description' => 'nullable|string',
             'icon'        => 'nullable|string|max:100',
             'image'       => 'nullable|string|max:500',

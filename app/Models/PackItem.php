@@ -46,7 +46,7 @@ class PackItem extends Model
         $query = ProductVariant::where('product_id', $this->product_id)
             ->where('is_active', true)
             ->where('stock', '>', 0)
-            ->with(['attributeOptions.attribute:id,slug,name,type']);
+            ->with(['attributeOptions.attribute:id,slug,name,name_fr,name_ar,type']);
 
         if (!empty($this->allowed_variant_ids)) {
             $query->whereIn('id', $this->allowed_variant_ids);

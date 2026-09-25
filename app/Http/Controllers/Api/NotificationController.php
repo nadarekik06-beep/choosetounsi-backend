@@ -22,7 +22,7 @@ class NotificationController extends Controller
             $user = $request->user();
 
             if (!$user) {
-                return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
+                return response()->json(['success' => false, 'message' => __('messages.auth.unauthenticated')], 401);
             }
 
             $perPage       = min((int) $request->query('per_page', 20), 100);
@@ -66,7 +66,7 @@ class NotificationController extends Controller
             $user = $request->user();
 
             if (!$user) {
-                return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
+                return response()->json(['success' => false, 'message' => __('messages.auth.unauthenticated')], 401);
             }
 
             return response()->json([
@@ -92,7 +92,7 @@ class NotificationController extends Controller
             return response()->json(['success' => true]);
 
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json(['success' => false, 'message' => 'Notification not found.'], 404);
+            return response()->json(['success' => false, 'message' => __('messages.notification.not_found')], 404);
         } catch (\Exception $e) {
             Log::error('[Api\NotificationController::markRead] ' . $e->getMessage());
             return response()->json(['success' => false], 500);

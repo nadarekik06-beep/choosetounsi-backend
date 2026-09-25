@@ -98,6 +98,7 @@ class ProductRetriever
             'max'           => $rows->isEmpty() ? null : (float) $rows->max('final_price'),
             'category'      => $top->category_name ?? null,
             'category_ar'   => $top->category_name_ar ?? null,
+            'category_fr'   => $top->category_name_fr ?? null,
             'category_slug' => $topSlug,
         ];
     }
@@ -124,7 +125,7 @@ class ProductRetriever
                         ->where('v.stock', '>', 0);
                 });
             })
-            ->select('p.id', 'p.name', 'p.slug', 'p.seller_id', 'p.price', 'p.views', 'c.name as category_name', 'c.name_ar as category_name_ar', 'c.slug as category_slug')
+            ->select('p.id', 'p.name', 'p.translations', 'p.slug', 'p.seller_id', 'p.price', 'p.views', 'c.name as category_name', 'c.name_ar as category_name_ar', 'c.name_fr as category_name_fr', 'c.slug as category_slug')
             ->selectRaw('(SELECT MIN(COALESCE(v.price_override, p.price)) FROM product_variants v
                           WHERE v.product_id = p.id AND v.is_active = 1 AND v.stock > 0) AS variant_min')
             ->selectRaw('(SELECT COUNT(DISTINCT COALESCE(v.price_override, p.price)) FROM product_variants v
@@ -172,7 +173,9 @@ class ProductRetriever
                     $q->orWhere('p.name', 'like', $like)
                       ->orWhere('p.short_description', 'like', $like)
                       ->orWhere('p.description', 'like', $like)
+                      ->orWhere('p.translations', 'like', $like)
                       ->orWhere('c.name', 'like', $like)
+                      ->orWhere('c.name_fr', 'like', $like)
                       ->orWhere('c.name_ar', 'like', $like)
                       ->orWhere('sc.name', 'like', $like)
                       ->orWhere('sc.name_ar', 'like', $like);
@@ -282,6 +285,7 @@ class ProductRetriever
         return $rows->map(function ($r) use ($images, $sellers) {
             $final = (float) $r->final_price;
             $base  = (float) $r->base_price;
+            $r     = \App\Support\Localization::productRow($r, ['name']);
 
             return [
                 'id'           => (int) $r->id,
@@ -297,7 +301,7 @@ class ProductRetriever
                 'flash_ends_at' => $r->promo_type === 'flash_sale' && $r->promo_ends_at
                     ? Carbon::parse($r->promo_ends_at)->toISOString()
                     : null,
-                'category'     => $r->category_name ? ['name' => $r->category_name, 'name_ar' => $r->category_name_ar, 'slug' => $r->category_slug] : null,
+                'category'     => $r->category_name ? ['name' => $r->category_name, 'name_ar' => $r->category_name_ar, 'name_fr' => $r->category_name_fr, 'slug' => $r->category_slug] : null,
                 'url'          => '/products/' . $r->slug,
             ];
         })->values()->all();

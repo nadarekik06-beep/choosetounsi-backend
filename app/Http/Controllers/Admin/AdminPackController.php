@@ -101,7 +101,7 @@ class AdminPackController extends Controller
                 'product.primaryImage',
                 'product.variants' => fn($q) => $q
                     ->where('is_active', true)
-                    ->with(['attributeOptions.attribute:id,slug,name,type']),
+                    ->with(['attributeOptions.attribute:id,slug,name,name_fr,name_ar,type']),
             ]),
         ])->findOrFail($id);
 
@@ -237,7 +237,7 @@ class AdminPackController extends Controller
                     'product.primaryImage',
                     'product.variants' => fn($q) => $q
                         ->where('is_active', true)
-                        ->with(['attributeOptions.attribute:id,slug,name,type']),
+                        ->with(['attributeOptions.attribute:id,slug,name,name_fr,name_ar,type']),
                 ])->orderBy('order')->get();
 
             $data['items'] = $items->map(function ($item) {

@@ -39,8 +39,8 @@ class BrandProductController extends Controller
     public function index(Request $request)
     {
         $query = Product::platform()->with([
-            'category:id,name,slug',
-            'subcategory:id,name,slug',
+            'category:id,name,name_fr,name_ar,slug',
+            'subcategory:id,name,name_fr,name_ar,slug',
             'primaryImage',
         ]);
 
@@ -99,8 +99,8 @@ $products->getCollection()->transform(function ($p) use ($allColorImages) {
     {
         $product = Product::platform()
             ->with([
-                'category:id,name,slug',
-                'subcategory:id,name,slug',
+                'category:id,name,name_fr,name_ar,slug',
+                'subcategory:id,name,name_fr,name_ar,slug',
                 'images',
                 'primaryImage',
                 'attributeValues.attribute',

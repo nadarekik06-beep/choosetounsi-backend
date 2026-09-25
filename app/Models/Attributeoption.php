@@ -4,12 +4,15 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use App\Models\Concerns\HasTranslations;
 
 class AttributeOption extends Model
 {
-    use HasFactory;
+    use HasFactory, HasTranslations;
 
-    protected $fillable = ['attribute_id', 'value', 'value_ar', 'color_hex', 'order'];
+    protected $translatable = ['value'];
+
+    protected $fillable = ['attribute_id', 'value', 'value_ar', 'value_fr', 'color_hex', 'order'];
 
     // ── Relationships ──────────────────────────────────────────────────────
 

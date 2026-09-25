@@ -41,12 +41,12 @@ class UserPreferenceController extends Controller
         // Active categories
         $categories = Category::active()
             ->ordered()
-            ->select('id', 'name', 'slug', 'icon')
+            ->select('id', 'name', 'name_ar', 'name_fr', 'slug', 'icon')
             ->get();
 
         // Brand attribute options — find the 'brand' attribute and its options
         $brandAttribute = Attribute::where('slug', 'brand')
-            ->with(['options' => fn($q) => $q->orderBy('order')->select('id', 'attribute_id', 'value')])
+            ->with(['options' => fn($q) => $q->orderBy('order')->select('id', 'attribute_id', 'value', 'value_ar', 'value_fr')])
             ->first();
 
         $brands = $brandAttribute
@@ -59,16 +59,16 @@ class UserPreferenceController extends Controller
                 'categories' => $categories,
                 'brands'     => $brands,
                 'genders'    => [
-                    ['value' => 'male',   'label' => 'Men'],
-                    ['value' => 'female', 'label' => 'Women'],
-                    ['value' => 'unisex', 'label' => 'Everyone'],
+                    ['value' => 'male',   'label' => __('messages.onboarding.gender_male')],
+                    ['value' => 'female', 'label' => __('messages.onboarding.gender_female')],
+                    ['value' => 'unisex', 'label' => __('messages.onboarding.gender_unisex')],
                 ],
                 'price_ranges' => [
-                    ['label' => 'Under 50 DT',   'min' => 0,   'max' => 50],
-                    ['label' => '50 – 100 DT',   'min' => 50,  'max' => 100],
-                    ['label' => '100 – 200 DT',  'min' => 100, 'max' => 200],
-                    ['label' => '200 – 500 DT',  'min' => 200, 'max' => 500],
-                    ['label' => 'Over 500 DT',   'min' => 500, 'max' => null],
+                    ['label' => __('messages.onboarding.price_under', ['max' => 50]),                  'min' => 0,   'max' => 50],
+                    ['label' => __('messages.onboarding.price_between', ['min' => 50, 'max' => 100]),  'min' => 50,  'max' => 100],
+                    ['label' => __('messages.onboarding.price_between', ['min' => 100, 'max' => 200]), 'min' => 100, 'max' => 200],
+                    ['label' => __('messages.onboarding.price_between', ['min' => 200, 'max' => 500]), 'min' => 200, 'max' => 500],
+                    ['label' => __('messages.onboarding.price_over', ['min' => 500]),                  'min' => 500, 'max' => null],
                 ],
             ],
         ]);
@@ -97,7 +97,7 @@ class UserPreferenceController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Preferences saved successfully.',
+            'message' => __('messages.preferences.saved'),
             'data'    => [
                 'preferences'          => $prefs,
                 'onboarding_completed' => true,
@@ -116,7 +116,7 @@ class UserPreferenceController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Onboarding skipped.',
+            'message' => __('messages.preferences.skipped'),
             'data'    => ['onboarding_completed' => true],
         ]);
     }
@@ -157,7 +157,7 @@ class UserPreferenceController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Preferences updated.',
+            'message' => __('messages.preferences.updated'),
             'data'    => $prefs,
         ]);
     }

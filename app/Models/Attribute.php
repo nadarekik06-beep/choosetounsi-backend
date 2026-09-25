@@ -4,13 +4,16 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use App\Models\Concerns\HasTranslations;
 
 class Attribute extends Model
 {
-    use HasFactory;
+    use HasFactory, HasTranslations;
+
+    protected $translatable = ['name'];
 
     protected $fillable = [
-        'name', 'name_ar', 'slug', 'type',
+        'name', 'name_ar', 'name_fr', 'slug', 'type',
         'is_required', 'is_filterable', 'is_visible', 'order',
     ];
 

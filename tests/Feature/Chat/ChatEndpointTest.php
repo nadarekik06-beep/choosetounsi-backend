@@ -34,7 +34,7 @@ class ChatEndpointTest extends TestCase
         });
     }
 
-    private function chat(string $message, ?string $token = null, ?string $session = null)
+    private function chat(string $message, ?string $token = null, ?string $session = null, ?string $locale = null)
     {
         // Sanctum's guard caches the resolved user, and withHeaders() persists
         // across requests in a test — reset both so a "guest" call is really anonymous.
@@ -45,7 +45,7 @@ class ChatEndpointTest extends TestCase
             ->postJson('/api/ai/chat', [
                 'message'    => $message,
                 'session_id' => $session ?? 'test_' . Str::random(12),
-            ]);
+            ] + ($locale ? ['locale' => $locale] : []));
     }
 
     private function makeUser(string $role = 'client'): User
@@ -165,10 +165,17 @@ class ChatEndpointTest extends TestCase
 
     public function test_search_still_replies_when_groq_is_down(): void
     {
-        $res = $this->chat('robe entre 20 et 50 dt')->assertOk();
+        $res = $this->chat('robe entre 20 et 50 dt', null, null, 'fr')->assertOk();
 
         $this->assertNotEmpty($res->json('reply'));
         $this->assertSame('fr', $res->json('language'));
+    }
+
+    public function test_reply_uses_the_storefront_language(): void
+    {
+        // French message, Arabic storefront → the assistant answers in Arabic.
+        $this->assertSame('ar', $this->chat('bonjour', null, null, 'ar')->assertOk()->json('language'));
+        $this->assertSame('en', $this->chat('bonjour', null, null, 'en')->assertOk()->json('language'));
     }
 
     /**

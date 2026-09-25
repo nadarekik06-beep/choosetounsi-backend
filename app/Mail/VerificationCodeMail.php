@@ -26,7 +26,7 @@ class VerificationCodeMail extends Mailable
     public function build(): self
     {
         return $this
-            ->subject('Your ChooseTounsi Verification Code')
+            ->subject(__('emails.verification.subject'))
             ->view('emails.verification.code');
     }
 }

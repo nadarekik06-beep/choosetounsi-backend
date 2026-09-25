@@ -33,7 +33,7 @@ class WelcomeUserMail extends Mailable
     public function build(): self
     {
         return $this
-            ->subject("Welcome to ChooseTounsi 🇹🇳 — Tunisia's Local Marketplace")
+            ->subject(__('emails.welcome.subject'))
             ->view('emails.welcome.user')
             ->with([
                 'user'             => $this->user,

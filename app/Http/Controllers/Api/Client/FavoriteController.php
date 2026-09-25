@@ -56,7 +56,7 @@ class FavoriteController extends Controller
 
         if ($existing) {
             $existing->delete();
-            return response()->json(['success' => true, 'data' => null, 'message' => 'Removed from favorites.']);
+            return response()->json(['success' => true, 'data' => null, 'message' => __('messages.favorite.removed')]);
         }
 
         $fav = Favorite::create([
@@ -75,7 +75,7 @@ class FavoriteController extends Controller
         return response()->json([
             'success' => true,
             'data'    => $this->formatFavorite($fav),
-            'message' => 'Added to favorites.',
+            'message' => __('messages.favorite.added'),
         ]);
     }
 
@@ -99,7 +99,7 @@ class FavoriteController extends Controller
 
         $query->delete();
 
-        return response()->json(['success' => true, 'message' => 'Removed from favorites.']);
+        return response()->json(['success' => true, 'message' => __('messages.favorite.removed')]);
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────

@@ -38,7 +38,7 @@ class CartController extends Controller
                 // Product row relations (only loaded when product_id is set)
                 'product.images',
                 'product.primaryImage',
-                'product.category:id,name',
+                'product.category:id,name,name_fr,name_ar',
                 'product.seller:id,name',
                 'variant.attributeOptions.attribute',
                 'variant.images',
@@ -98,7 +98,7 @@ class CartController extends Controller
         if ($product->variants()->exists() && !$variantId) {
             return response()->json([
                 'success' => false,
-                'message' => 'Please select a variant.',
+                'message' => __('messages.cart.select_variant'),
             ], 422);
         }
 
@@ -118,7 +118,7 @@ class CartController extends Controller
             if ($variant->product_id !== $product->id) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Invalid variant for this product.',
+                    'message' => __('messages.cart.invalid_variant'),
                 ], 422);
             }
 
@@ -130,8 +130,8 @@ class CartController extends Controller
                 return response()->json([
                     'success'   => false,
                     'message'   => $canAdd > 0
-                        ? "Only {$canAdd} more item(s) can be added (stock: {$available}, in cart: {$existingQty})."
-                        : "You already have all available stock ({$available}) in your cart.",
+                        ? __('messages.cart.can_add_more', ['count' => $canAdd, 'available' => $available, 'in_cart' => $existingQty])
+                        : __('messages.cart.all_stock_in_cart', ['available' => $available]),
                     'available' => $available,
                     'in_cart'   => $existingQty,
                     'can_add'   => max(0, $canAdd),
@@ -146,8 +146,8 @@ class CartController extends Controller
                 return response()->json([
                     'success'   => false,
                     'message'   => $canAdd > 0
-                        ? "Only {$canAdd} more item(s) can be added (stock: {$available}, in cart: {$existingQty})."
-                        : "You already have all available stock ({$available}) in your cart.",
+                        ? __('messages.cart.can_add_more', ['count' => $canAdd, 'available' => $available, 'in_cart' => $existingQty])
+                        : __('messages.cart.all_stock_in_cart', ['available' => $available]),
                     'available' => $available,
                     'in_cart'   => $existingQty,
                     'can_add'   => max(0, $canAdd),
@@ -270,14 +270,14 @@ class CartController extends Controller
                 if (!$variant || $variant->product_id !== $item->product_id) {
                     return response()->json([
                         'success' => false,
-                        'message' => "Invalid variant selected for \"{$item->product->name}\".",
+                        'message' => __('messages.cart.item_invalid_variant', ['product' => $item->product->name]),
                     ], 422);
                 }
 
                 if ($variant->stock < $item->quantity) {
                     return response()->json([
                         'success' => false,
-                        'message' => "Not enough stock for \"{$item->product->name}\" ({$variant->label}). Only {$variant->stock} available.",
+                        'message' => __('messages.cart.item_variant_stock', ['product' => $item->product->name, 'variant' => $variant->label, 'stock' => $variant->stock]),
                     ], 422);
                 }
             } else {
@@ -285,14 +285,14 @@ class CartController extends Controller
                 if ($item->product->variants()->exists()) {
                     return response()->json([
                         'success' => false,
-                        'message' => "Please select a variant for \"{$item->product->name}\".",
+                        'message' => __('messages.cart.item_select_variant', ['product' => $item->product->name]),
                     ], 422);
                 }
 
                 if ($item->product->stock < $item->quantity) {
                     return response()->json([
                         'success' => false,
-                        'message' => "Not enough stock for \"{$item->product->name}\".",
+                        'message' => __('messages.cart.item_stock', ['product' => $item->product->name]),
                     ], 422);
                 }
             }

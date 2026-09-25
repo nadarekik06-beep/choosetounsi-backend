@@ -30,7 +30,7 @@ class CouponController extends Controller
 
         $coupon = Coupon::where('code', $code)->first();
         if (!$coupon) {
-            return response()->json(['success' => false, 'message' => 'Invalid coupon code.'], 404);
+            return response()->json(['success' => false, 'message' => __('messages.coupon.invalid')], 404);
         }
 
         // Non-pack cart rows for this coupon's seller only — packs never

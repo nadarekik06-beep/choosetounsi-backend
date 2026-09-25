@@ -31,8 +31,8 @@ class ProductController extends Controller
 
         $query = Product::available()
             ->with([
-                'category:id,name,slug',
-                'subcategory:id,name,slug',
+                'category:id,name,name_fr,name_ar,slug',
+                'subcategory:id,name,name_fr,name_ar,slug',
                 'primaryImage',
                 'seller:id,name',
                 'variants' => fn($q) => $q
@@ -178,7 +178,7 @@ class ProductController extends Controller
 
         if ($catSlug || $catId) {
             $fallback = Product::available()
-                ->with(['category:id,name,slug', 'subcategory:id,name,slug', 'primaryImage', 'seller:id,name', 'variants' => fn($q) => $q->where('is_active', true)->with(['attributeOptions' => fn($q2) => $q2->with('attribute:id,slug,type')]), 'attributeValues.attribute'])
+                ->with(['category:id,name,name_fr,name_ar,slug', 'subcategory:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name', 'variants' => fn($q) => $q->where('is_active', true)->with(['attributeOptions' => fn($q2) => $q2->with('attribute:id,slug,type')]), 'attributeValues.attribute'])
                 ->when($catSlug, fn($q) => $q->whereHas('category', fn($q2) => $q2->where('slug', $catSlug)))
                 ->when(!$catSlug && $catId, fn($q) => $q->where('category_id', $catId))
                 ->orderByDesc('is_sponsored')
@@ -191,7 +191,7 @@ class ProductController extends Controller
         }
 
         $popular = Product::available()
-            ->with(['category:id,name,slug', 'subcategory:id,name,slug', 'primaryImage', 'seller:id,name', 'variants' => fn($q) => $q->where('is_active', true)->with(['attributeOptions' => fn($q2) => $q2->with('attribute:id,slug,type')]), 'attributeValues.attribute'])
+            ->with(['category:id,name,name_fr,name_ar,slug', 'subcategory:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name', 'variants' => fn($q) => $q->where('is_active', true)->with(['attributeOptions' => fn($q2) => $q2->with('attribute:id,slug,type')]), 'attributeValues.attribute'])
             ->orderByDesc('is_sponsored')
             ->orderByDesc('views')
             ->limit(60)
@@ -203,7 +203,7 @@ class ProductController extends Controller
     public function featured()
     {
         $products = Product::available()->featured()->inStock()
-            ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name'])
+            ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name'])
             ->orderByDesc('created_at')
             ->take(12)
             ->get()
@@ -225,22 +225,22 @@ class ProductController extends Controller
         $product = Product::where('slug', $slug)
             ->available()
             ->with([
-                'category:id,name,slug',
-                'subcategory:id,name,slug',
+                'category:id,name,name_fr,name_ar,slug',
+                'subcategory:id,name,name_fr,name_ar,slug',
                 'seller:id,name,avatar',
                 'images',
                 'primaryImage',
                 'attributeValues.attribute.options',
                 'variants' => fn($q) => $q->where('is_active', true)
                     ->with([
-                        'attributeOptions.attribute:id,slug,name,type',
+                        'attributeOptions.attribute:id,slug,name,name_fr,name_ar,type',
                         'images',
                     ]),
             ])
             ->first();
 
         if (!$product) {
-            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
+            return response()->json(['success' => false, 'message' => __('messages.not_found.product')], 404);
         }
 
         if ($product->seller) {
@@ -673,10 +673,12 @@ foreach ($product->variants as $v) {
         $ids  = $request->input('ids');
         $rows = DB::table('products as p')
             ->select([
-                'p.id','p.name','p.slug','p.description','p.price','p.stock',
+                'p.id','p.name','p.slug','p.description','p.translations','p.price','p.stock',
                 'p.views','p.featured',
                 'c.name as category_name','c.slug as category_slug',
+                'c.name_fr as category_name_fr','c.name_ar as category_name_ar',
                 's.name as subcategory_name','s.slug as subcategory_slug',
+                's.name_fr as subcategory_name_fr','s.name_ar as subcategory_name_ar',
                 'pi.image_path as primary_image',
             ])
             ->leftJoin('categories as c',     'c.id',  '=', 'p.category_id')
@@ -694,6 +696,9 @@ foreach ($product->variants as $v) {
         $ordered = collect($ids)->map(function ($id) use ($indexed) {
             $p = $indexed->get($id);
             if (!$p) return null;
+            $p->category_name    = \App\Support\Localization::column($p, 'category_name');
+            $p->subcategory_name = \App\Support\Localization::column($p, 'subcategory_name');
+            $p = \App\Support\Localization::productRow($p, ['name', 'description']);
             return [
                 'id'               => $p->id,
                 'name'             => $p->name,

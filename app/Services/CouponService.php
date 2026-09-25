@@ -33,20 +33,20 @@ class CouponService
         $coupon = Coupon::where('code', $code)->where('seller_id', $sellerId)->first();
 
         if (!$coupon) {
-            return $invalid('Invalid coupon code for this seller.');
+            return $invalid(__('messages.coupon.invalid_for_seller'));
         }
         if (!$coupon->is_active) {
-            return $invalid('This coupon is no longer active.');
+            return $invalid(__('messages.coupon.inactive'));
         }
         if (!$coupon->hasUsesRemaining()) {
-            return $invalid('This coupon has reached its usage limit.');
+            return $invalid(__('messages.coupon.limit_reached'));
         }
         if ($coupon->usage_limit_per_customer !== null) {
             $customerUses = CouponRedemption::where('coupon_id', $coupon->id)
                 ->where('user_id', $userId)
                 ->count();
             if ($customerUses >= $coupon->usage_limit_per_customer) {
-                return $invalid('You have already used this coupon the maximum number of times.');
+                return $invalid(__('messages.coupon.customer_limit'));
             }
         }
 
@@ -57,23 +57,20 @@ class CouponService
         );
 
         if ($eligibleItems->isEmpty()) {
-            return $invalid('None of your items from this seller are eligible for this coupon.');
+            return $invalid(__('messages.coupon.no_eligible_items'));
         }
 
         $promoService = app(PromotionService::class);
         foreach ($eligibleItems as $item) {
             if ($promoService->getActivePromotionForProduct($item['product_id'])) {
-                return $invalid('This coupon cannot be combined with an active promotion on one of its eligible items.');
+                return $invalid(__('messages.coupon.not_with_promotion'));
             }
         }
 
         $eligibleSubtotal = (float) $eligibleItems->sum('line_total');
 
         if ($coupon->min_order_amount !== null && $eligibleSubtotal < (float) $coupon->min_order_amount) {
-            return $invalid(sprintf(
-                'A minimum order of %s DT (eligible items) is required for this coupon.',
-                number_format((float) $coupon->min_order_amount, 3)
-            ));
+            return $invalid(__('messages.coupon.min_order', ['amount' => number_format((float) $coupon->min_order_amount, 3)]));
         }
 
         $discount = $coupon->discount_type === 'percentage'
@@ -82,7 +79,7 @@ class CouponService
 
         return [
             'valid'                 => true,
-            'message'               => 'Coupon applied.',
+            'message'               => __('messages.coupon.applied'),
             'coupon'                => $coupon,
             'discount_amount'       => round($discount, 3),
             'eligible_product_ids'  => $eligibleItems->pluck('product_id')->values()->toArray(),

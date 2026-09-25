@@ -78,7 +78,7 @@ if (!empty($selectedIds)) {
 $cartItems      = $cartQuery->get();
 $checkingOutIds = $cartItems->pluck('id')->all();
         if ($cartItems->isEmpty()) {
-            return response()->json(['success' => false, 'message' => 'Your cart is empty.'], 422);
+            return response()->json(['success' => false, 'message' => __('messages.checkout.cart_empty')], 422);
         }
 
         $paymentMethod = $request->payment_method ?? 'cod';
@@ -88,7 +88,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             if ($item->isPack()) {
                 $pack = $item->pack;
                 if (!$pack || !$pack->is_active || !$pack->is_approved) {
-                    return response()->json(['success' => false, 'message' => "The bundle \"{$item->pack_name}\" is no longer available."], 422);
+                    return response()->json(['success' => false, 'message' => __('messages.checkout.pack_unavailable', ['pack' => $item->pack_name])], 422);
                 }
                 $selectionMap = collect($item->pack_selections ?? [])->keyBy('pack_item_id');
                 foreach ($pack->items as $packItem) {
@@ -96,23 +96,23 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                     $variantId = $sel['variant_id'] ?? null;
                     $product   = $packItem->product;
                     if (!$product || !$product->is_approved || !$product->is_active) {
-                        return response()->json(['success' => false, 'message' => "A product in bundle \"{$pack->name}\" is no longer available."], 422);
+                        return response()->json(['success' => false, 'message' => __('messages.checkout.pack_product_unavailable', ['pack' => $pack->name])], 422);
                     }
                     $stock = $variantId ? (ProductVariant::find($variantId)?->stock ?? 0) : $product->stock;
                     if ($stock < $packItem->quantity) {
-                        return response()->json(['success' => false, 'message' => "\"{$product->name}\" in bundle \"{$pack->name}\" only has {$stock} item(s) in stock."], 422);
+                        return response()->json(['success' => false, 'message' => __('messages.checkout.pack_product_stock', ['product' => $product->name, 'pack' => $pack->name, 'stock' => $stock])], 422);
                     }
                 }
             } else {
                 $product = $item->product;
                 if (!$product || !$product->is_approved || !$product->is_active) {
-                    return response()->json(['success' => false, 'message' => "\"$product->name\" is no longer available."], 422);
+                    return response()->json(['success' => false, 'message' => __('messages.checkout.product_unavailable_named', ['product' => $product->name])], 422);
                 }
                 $this->ensureNotProductOwner($request, $product);
                 $stockPool = $item->variant ? $item->variant->stock : $product->stock;
                 if ($stockPool < $item->quantity) {
                     $label = $item->variant ? "\"{$product->name}\" ({$item->variant->label})" : "\"{$product->name}\"";
-                    return response()->json(['success' => false, 'message' => "{$label} only has {$stockPool} item(s) in stock but {$item->quantity} were requested."], 422);
+                    return response()->json(['success' => false, 'message' => __('messages.checkout.stock_requested', ['label' => $label, 'stock' => $stockPool, 'requested' => $item->quantity])], 422);
                 }
             }
         }
@@ -143,10 +143,10 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             $coupon = Coupon::where('code', $code)->first();
 
             if (!$coupon) {
-                return response()->json(['success' => false, 'message' => "Coupon \"{$rawCode}\" is invalid."], 422);
+                return response()->json(['success' => false, 'message' => __('messages.checkout.coupon_invalid_named', ['code' => $rawCode])], 422);
             }
             if (isset($resolvedCoupons[$coupon->seller_id])) {
-                return response()->json(['success' => false, 'message' => 'Only one coupon can be applied per seller.'], 422);
+                return response()->json(['success' => false, 'message' => __('messages.checkout.one_coupon_per_seller')], 422);
             }
 
             $sellerItems = $groupedBySeller->get($coupon->seller_id, collect());
@@ -182,7 +182,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
 
         if ($paymentMethod === 'wallet') {
             if ((float) $user->wallet_balance < $total) {
-                return response()->json(['success' => false, 'message' => 'Insufficient wallet balance.', 'data' => ['wallet_balance' => (float) $user->wallet_balance, 'required' => $total]], 422);
+                return response()->json(['success' => false, 'message' => __('messages.checkout.insufficient_wallet'), 'data' => ['wallet_balance' => (float) $user->wallet_balance, 'required' => $total]], 422);
             }
         }
 
@@ -245,7 +245,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                         $unitPrice    = $this->unitPrice($item);
                         $qty          = (int) $item->quantity;
                         $commission   = $this->commissionService->calculateForSeller($sellerIdForDb, $unitPrice, $qty, $itemDiscounts[$item->id] ?? 0.0);
-                        $variantLabel = $variant ? $variant->attributeOptions->pluck('value')->join(' / ') : null;
+                        $variantLabel = $variant ? $variant->attributeOptions->map(fn ($o) => $o->getAttributes()['value'])->join(' / ') : null;
 
                         OrderItem::create([
                             'order_id'              => $order->id,
@@ -253,7 +253,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                             'product_id'            => $product->id,
                             'variant_id'            => $variant?->id,
                             'variant_label'         => $variantLabel,
-                            'product_name'          => $product->name,
+                            'product_name'          => $product->getAttributes()['name'], // order snapshot keeps the seller's original text
                             'quantity'              => $qty,
                             'unit_price'            => $unitPrice,
                             'price'                 => $unitPrice,
@@ -364,7 +364,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                         $variantId    = $sel['variant_id'] ?? null;
                         $variant      = $variantId ? $product->variants->firstWhere('id', $variantId) : null;
                         $qty          = (int) $packItem->quantity;
-                        $variantLabel = $variant ? $variant->attributeOptions->pluck('value')->join(' / ') : null;
+                        $variantLabel = $variant ? $variant->attributeOptions->map(fn ($o) => $o->getAttributes()['value'])->join(' / ') : null;
 
                         if (!$commissionWritten) {
                             // ── FIRST item: carries ALL commission for this pack+seller ──
@@ -376,7 +376,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                                 'product_id'            => $product->id,
                                 'variant_id'            => $variantId,
                                 'variant_label'         => $variantLabel,
-                                'product_name'          => $product->name . ' (Bundle: ' . $pack->name . ')',
+                                'product_name'          => $product->getAttributes()['name'] . ' (Bundle: ' . $pack->name . ')',
                                 'quantity'              => $qty,
 
                                 // unit_price = seller's portion of pack_price
@@ -406,7 +406,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                                 'product_id'            => $product->id,
                                 'variant_id'            => $variantId,
                                 'variant_label'         => $variantLabel,
-                                'product_name'          => $product->name . ' (Bundle: ' . $pack->name . ')',
+                                'product_name'          => $product->getAttributes()['name'] . ' (Bundle: ' . $pack->name . ')',
                                 'quantity'              => $qty,
                                 'unit_price'            => 0,  // financial data is on the first row
                                 'price'                 => 0,
@@ -473,7 +473,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         } catch (\Throwable $e) {
             DB::rollBack();
             Log::error('[Checkout] store failed: ' . $e->getMessage(), ['file' => $e->getFile(), 'line' => $e->getLine()]);
-            return response()->json(['success' => false, 'message' => 'Failed to place order. Please try again.'], 500);
+            return response()->json(['success' => false, 'message' => __('messages.checkout.order_failed')], 500);
         }
 
         // ── Stock alerts ──────────────────────────────────────────────────────
@@ -502,7 +502,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
 
         return response()->json([
             'success'       => true,
-            'message'       => 'Order placed successfully!',
+            'message'       => __('messages.checkout.order_placed'),
             'order_number'  => $order->order_number,
             'order_id'      => $order->id,
             'subtotal'      => $subtotal,
@@ -537,7 +537,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         $product       = Product::find($request->product_id);
 
         if (!$product || !$product->is_approved || !$product->is_active) {
-            return response()->json(['success' => false, 'message' => 'This product is no longer available.'], 422);
+            return response()->json(['success' => false, 'message' => __('messages.checkout.product_unavailable')], 422);
         }
 
         $variant = null;
@@ -547,14 +547,14 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 ->where('product_id', $product->id)
                 ->first();
             if (!$variant || !$variant->is_active) {
-                return response()->json(['success' => false, 'message' => 'Selected variant is not available.'], 422);
+                return response()->json(['success' => false, 'message' => __('messages.checkout.variant_unavailable')], 422);
             }
         }
 
         $stockPool = $variant ? $variant->stock : $product->stock;
         if ($stockPool < $quantity) {
             $label = $variant ? "\"{$product->name}\" ({$variant->label})" : "\"{$product->name}\"";
-            return response()->json(['success' => false, 'message' => "{$label} only has {$stockPool} item(s) in stock."], 422);
+            return response()->json(['success' => false, 'message' => __('messages.checkout.stock_only', ['label' => $label, 'stock' => $stockPool])], 422);
         }
 
         $sellerCol  = $this->getSellerCol();
@@ -575,13 +575,13 @@ $checkingOutIds = $cartItems->pluck('id')->all();
 
         if ($request->filled('coupon_code')) {
             if ($sellerId === null) {
-                return response()->json(['success' => false, 'message' => 'Coupons are not available for platform products.'], 422);
+                return response()->json(['success' => false, 'message' => __('messages.checkout.no_coupon_platform')], 422);
             }
 
             $code   = strtoupper($request->coupon_code);
             $coupon = Coupon::where('code', $code)->first();
             if (!$coupon) {
-                return response()->json(['success' => false, 'message' => 'Invalid coupon code.'], 422);
+                return response()->json(['success' => false, 'message' => __('messages.coupon.invalid')], 422);
             }
 
             $items = [[
@@ -607,10 +607,10 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         $deliveryFee = $product->getEffectiveDeliveryFee();
         $total       = round($subtotal - $discountAmount + $deliveryFee, 3);
 
-        $variantLabel = $variant ? $variant->attributeOptions->pluck('value')->join(' / ') : null;
+        $variantLabel = $variant ? $variant->attributeOptions->map(fn ($o) => $o->getAttributes()['value'])->join(' / ') : null;
 
         if ($paymentMethod === 'wallet' && (float) $user->wallet_balance < $total) {
-            return response()->json(['success' => false, 'message' => 'Insufficient wallet balance.', 'data' => ['wallet_balance' => (float) $user->wallet_balance, 'required' => $total]], 422);
+            return response()->json(['success' => false, 'message' => __('messages.checkout.insufficient_wallet'), 'data' => ['wallet_balance' => (float) $user->wallet_balance, 'required' => $total]], 422);
         }
 
         $decrementedVariants = [];
@@ -654,7 +654,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 'product_id'            => $product->id,
                 'variant_id'            => $variant?->id,
                 'variant_label'         => $variantLabel,
-                'product_name'          => $product->name,
+                'product_name'          => $product->getAttributes()['name'], // order snapshot keeps the seller's original text
                 'quantity'              => $quantity,
                 'unit_price'            => $unitPrice,
                 'price'                 => $unitPrice,
@@ -704,7 +704,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         } catch (\Throwable $e) {
             DB::rollBack();
             Log::error('[Checkout] buyNow failed: ' . $e->getMessage(), ['file' => $e->getFile(), 'line' => $e->getLine()]);
-            return response()->json(['success' => false, 'message' => 'Failed to place order. Please try again.'], 500);
+            return response()->json(['success' => false, 'message' => __('messages.checkout.order_failed')], 500);
         }
 
         $this->fireStockAlerts($decrementedVariants, $decrementedProducts);
@@ -719,7 +719,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
 
         return response()->json([
             'success'       => true,
-            'message'       => 'Order placed successfully!',
+            'message'       => __('messages.checkout.order_placed'),
             'order_number'  => $order->order_number,
             'order_id'      => $order->id,
             'subtotal'      => $subtotal,
@@ -808,7 +808,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         $sellerId  = $product->{$sellerCol};
         if ($sellerId === null) return;
         if ($sellerId === $request->user()->id) {
-            abort(422, 'You cannot purchase your own product.');
+            abort(422, __('messages.checkout.own_product'));
         }
     }
 

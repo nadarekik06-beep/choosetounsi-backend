@@ -109,7 +109,7 @@ class AuthController extends Controller
         // ── Guard: block re-registration while a pending attempt is active ──
         if (Cache::has($this->pendingCacheKey($email))) {
             return response()->json([
-                'message'            => 'A verification code was already sent to this email. Please check your inbox or request a new code.',
+                'message'            => __('messages.auth.code_already_sent'),
                 'needs_verification' => true,
                 'email'              => $email,
             ], 409);
@@ -148,12 +148,12 @@ class AuthController extends Controller
             \Log::error('VerificationCodeMail failed (register): ' . $e->getMessage());
 
             return response()->json([
-                'message' => 'Failed to send verification email. Please try again.',
+                'message' => __('messages.auth.verification_send_failed'),
             ], 500);
         }
 
         return response()->json([
-            'message'            => 'Registration initiated. Please check your email for the 6-digit verification code.',
+            'message'            => __('messages.auth.registration_started'),
             'needs_verification' => true,
             'email'              => $email,
         ], 201);
@@ -176,7 +176,7 @@ class AuthController extends Controller
         if (RateLimiter::tooManyAttempts($ipKey, 10)) {
             $seconds = RateLimiter::availableIn($ipKey);
             return response()->json([
-                'message' => "Too many attempts. Try again in {$seconds} second(s).",
+                'message' => __('messages.auth.too_many_attempts_seconds', ['seconds' => $seconds]),
             ], 429);
         }
         RateLimiter::hit($ipKey, 60);
@@ -188,7 +188,7 @@ class AuthController extends Controller
             $existingUser->tokens()->delete();
             $token = $existingUser->createToken('api-token')->plainTextToken;
             return response()->json([
-                'message' => 'Email already verified.',
+                'message' => __('messages.auth.email_already_verified'),
                 'token'   => $token,
                 'user'    => $this->userResponse($existingUser),
             ]);
@@ -200,7 +200,7 @@ class AuthController extends Controller
 
         if (!$pending) {
             return response()->json([
-                'message'      => 'No pending registration found for this email. Please register again.',
+                'message'      => __('messages.auth.no_pending_registration'),
                 'needs_resend' => true,
             ], 404);
         }
@@ -209,7 +209,7 @@ class AuthController extends Controller
         if (now()->isAfter($pending['expires_at'])) {
             Cache::forget($cacheKey);
             return response()->json([
-                'message'      => 'Verification code has expired. Please register again.',
+                'message'      => __('messages.auth.code_expired'),
                 'needs_resend' => true,
             ], 422);
         }
@@ -218,7 +218,7 @@ class AuthController extends Controller
         if ($pending['attempts'] >= self::MAX_ATTEMPTS) {
             Cache::forget($cacheKey);
             return response()->json([
-                'message'      => 'Too many incorrect attempts. Please register again.',
+                'message'      => __('messages.auth.too_many_incorrect'),
                 'needs_resend' => true,
             ], 422);
         }
@@ -230,7 +230,7 @@ class AuthController extends Controller
             if ($pending['attempts'] >= self::MAX_ATTEMPTS) {
                 Cache::forget($cacheKey);
                 return response()->json([
-                    'message'      => 'Too many incorrect attempts. Please register again.',
+                    'message'      => __('messages.auth.too_many_incorrect'),
                     'needs_resend' => true,
                 ], 422);
             }
@@ -241,7 +241,7 @@ class AuthController extends Controller
 
             $remaining = self::MAX_ATTEMPTS - $pending['attempts'];
             return response()->json([
-                'message' => "Incorrect code. {$remaining} attempt(s) remaining.",
+                'message' => __('messages.auth.incorrect_code', ['remaining' => $remaining]),
             ], 422);
         }
 
@@ -275,7 +275,7 @@ class AuthController extends Controller
         $token = $user->createToken('api-token')->plainTextToken;
 
         return response()->json([
-            'message' => 'Email verified successfully! Welcome to ChooseTounsi.',
+            'message' => __('messages.auth.email_verified_welcome'),
             'token'   => $token,
             'user'    => $this->userResponse($user),
         ]);
@@ -296,7 +296,7 @@ class AuthController extends Controller
             $seconds = RateLimiter::availableIn($emailKey);
             $minutes = (int) ceil($seconds / 60);
             return response()->json([
-                'message' => "Too many resend requests. Try again in {$minutes} minute(s).",
+                'message' => __('messages.auth.too_many_resends', ['minutes' => $minutes]),
             ], 429);
         }
 
@@ -304,7 +304,7 @@ class AuthController extends Controller
         $existingUser = User::where('email', $email)->first();
         if ($existingUser && $existingUser->email_verified_at) {
             return response()->json([
-                'message' => 'This email address is already verified.',
+                'message' => __('messages.auth.email_address_already_verified'),
             ], 400);
         }
 
@@ -316,7 +316,7 @@ class AuthController extends Controller
             // Don't leak whether email is registered — always consume a rate-limit hit
             RateLimiter::hit($emailKey, 3600);
             return response()->json([
-                'message' => 'No pending registration found. Please register again.',
+                'message' => __('messages.auth.no_pending_registration_short'),
             ], 404);
         }
 
@@ -339,12 +339,12 @@ class AuthController extends Controller
         } catch (\Exception $e) {
             \Log::error('VerificationCodeMail (resend) failed: ' . $e->getMessage());
             return response()->json([
-                'message' => 'Failed to send the verification email. Please try again.',
+                'message' => __('messages.auth.verification_send_failed'),
             ], 500);
         }
 
         return response()->json([
-            'message' => 'A new verification code has been sent to your email.',
+            'message' => __('messages.auth.new_code_sent'),
         ]);
     }
 
@@ -361,17 +361,17 @@ class AuthController extends Controller
         $user = User::where('email', $request->email)->first();
 
         if (!$user || !Hash::check($request->password, $user->password)) {
-            return response()->json(['message' => 'Wrong email or password.'], 401);
+            return response()->json(['message' => __('messages.auth.wrong_credentials')], 401);
         }
 
         if (!$user->is_active) {
-            return response()->json(['message' => 'Your account is deactivated.'], 403);
+            return response()->json(['message' => __('messages.auth.account_deactivated')], 403);
         }
 
         // Block unverified email/password accounts from logging in
         if (!$user->email_verified_at) {
             return response()->json([
-                'message'            => 'Please verify your email address before logging in.',
+                'message'            => __('messages.auth.verify_before_login'),
                 'needs_verification' => true,
                 'email'              => $user->email,
             ], 403);
@@ -381,7 +381,7 @@ class AuthController extends Controller
         $token = $user->createToken('api-token')->plainTextToken;
 
         return response()->json([
-            'message' => 'Login successful',
+            'message' => __('messages.auth.login_success'),
             'token'   => $token,
             'user'    => $this->userResponse($user),
         ]);
@@ -418,7 +418,7 @@ class AuthController extends Controller
     public function logout(Request $request)
     {
         $request->user()->tokens()->delete();
-        return response()->json(['message' => 'Logged out successfully']);
+        return response()->json(['message' => __('messages.auth.logout_success')]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -506,7 +506,7 @@ class AuthController extends Controller
             $seconds = RateLimiter::availableIn($rateLimitKey);
             $minutes = (int) ceil($seconds / 60);
             return response()->json([
-                'message' => "Too many requests. Please try again in {$minutes} minute(s).",
+                'message' => __('messages.auth.too_many_requests_minutes', ['minutes' => $minutes]),
             ], 429);
         }
         RateLimiter::hit($rateLimitKey, 3600);
@@ -518,14 +518,14 @@ class AuthController extends Controller
         // This is a security best practice.
         if (!$user) {
             return response()->json([
-                'message' => 'If this email is registered, you will receive a password reset link shortly.',
+                'message' => __('messages.auth.reset_link_maybe_sent'),
             ]);
         }
  
         // ── Block Google-only accounts (no password set) ───────────────────
         if ($user->google_id && !$user->password) {
             return response()->json([
-                'message' => 'This account uses Google sign-in. Please continue with Google.',
+                'message' => __('messages.auth.google_account'),
             ], 400);
         }
  
@@ -539,12 +539,12 @@ class AuthController extends Controller
         } catch (\Exception $e) {
             \Log::error('PasswordResetMail failed for user #' . $user->id . ': ' . $e->getMessage());
             return response()->json([
-                'message' => 'Failed to send reset email. Please try again.',
+                'message' => __('messages.auth.reset_send_failed'),
             ], 500);
         }
  
         return response()->json([
-            'message' => 'If this email is registered, you will receive a password reset link shortly.',
+            'message' => __('messages.auth.reset_link_maybe_sent'),
         ]);
     }
  
@@ -575,19 +575,19 @@ class AuthController extends Controller
         // ── Handle broker response ─────────────────────────────────────────
         if ($status === Password::PASSWORD_RESET) {
             return response()->json([
-                'message' => 'Password reset successfully. You can now log in with your new password.',
+                'message' => __('messages.auth.password_reset_success'),
             ]);
         }
  
         // Map Laravel broker status to human-readable errors
         $errors = [
-            Password::INVALID_TOKEN => 'This reset link is invalid or has already been used.',
-            Password::INVALID_USER  => 'No account found with this email address.',
-            Password::RESET_THROTTLED => 'Too many reset attempts. Please wait before trying again.',
+            Password::INVALID_TOKEN => __('messages.auth.reset_invalid_token'),
+            Password::INVALID_USER  => __('messages.auth.reset_invalid_user'),
+            Password::RESET_THROTTLED => __('messages.auth.reset_throttled'),
         ];
  
         return response()->json([
-            'message' => $errors[$status] ?? 'Failed to reset password. Please request a new link.',
+            'message' => $errors[$status] ?? __('messages.auth.reset_failed'),
         ], 422);
     }
 }

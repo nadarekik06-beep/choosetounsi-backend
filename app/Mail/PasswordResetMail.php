@@ -33,7 +33,7 @@ class PasswordResetMail extends Mailable
     public function build(): self
     {
         return $this
-            ->subject('Reset Your ChooseTounsi Password')
+            ->subject(__('emails.reset.subject'))
             ->view('emails.auth.password-reset');
     }
 }

@@ -4,14 +4,17 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use App\Models\Concerns\HasTranslations;
 use Illuminate\Support\Str;
 
 class Category extends Model
 {
-    use HasFactory;
+    use HasFactory, HasTranslations;
+
+    protected $translatable = ['name'];
 
     protected $fillable = [
-        'name', 'name_ar', 'slug', 'description', 'icon', 'image', 'is_active', 'order',
+        'name', 'name_ar', 'name_fr', 'slug', 'description', 'icon', 'image', 'is_active', 'order',
     ];
 
     protected $casts = ['is_active' => 'boolean'];

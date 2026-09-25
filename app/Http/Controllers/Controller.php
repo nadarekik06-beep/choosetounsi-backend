@@ -26,7 +26,7 @@ class Controller extends BaseController
         if ($request->user() && $request->user()->id === $product->seller_id) {
             abort(response()->json([
                 'success' => false,
-                'message' => 'You cannot purchase or save your own product.',
+                'message' => __('messages.checkout.own_product_save'),
                 'code'    => 'OWN_PRODUCT',
             ], 403));
         }

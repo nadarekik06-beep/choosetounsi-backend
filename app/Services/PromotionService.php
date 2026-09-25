@@ -93,8 +93,8 @@ class PromotionService
             'discount_type'         => $promo->discount_type,
             'discount_value'        => (float) $promo->discount_value,
             'discount_label'        => $promo->discount_type === 'percentage'
-                                          ? (int) $promo->discount_value . '% OFF'
-                                          : number_format($promo->discount_value, 3) . ' DT OFF',
+                                          ? __('messages.discount.percent_off', ['value' => (int) $promo->discount_value])
+                                          : __('messages.discount.amount_off', ['value' => number_format($promo->discount_value, 3)]),
             'ends_at'               => $endsAt->toISOString(),
             'flash_stock_remaining' => $promo->flashStockRemaining(),
             'is_flash_sale'         => $promo->type === 'flash_sale',

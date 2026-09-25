@@ -16,7 +16,7 @@ class CategoryController extends Controller
     public function index()
     {
         $categories = Category::active()->ordered()
-            ->select(['id', 'name', 'name_ar', 'slug', 'icon', 'image'])
+            ->select(['id', 'name', 'name_ar', 'name_fr', 'slug', 'icon', 'image'])
             ->get();
 
         return response()->json(['success' => true, 'data' => $categories]);
@@ -28,7 +28,7 @@ class CategoryController extends Controller
     public function withProducts()
     {
         $categories = Category::active()->ordered()
-            ->select(['id', 'name', 'name_ar', 'slug', 'icon', 'image'])
+            ->select(['id', 'name', 'name_ar', 'name_fr', 'slug', 'icon', 'image'])
             ->whereHas('activeProducts')
             ->with([
                 'activeProducts' => function ($query) {

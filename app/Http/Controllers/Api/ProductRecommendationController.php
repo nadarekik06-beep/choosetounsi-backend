@@ -36,7 +36,7 @@ class ProductRecommendationController extends Controller
             $candidates = Product::available()
                 // AFTER:
                 ->with([
-                    'category:id,name,slug',
+                    'category:id,name,name_fr,name_ar,slug',
                     'primaryImage',
                     'seller:id,name',
                     'variants'          => fn($q) => $q->where('is_active', true)
@@ -61,7 +61,7 @@ class ProductRecommendationController extends Controller
                 $existingIds = $candidates->pluck('id')->toArray();
                 $backfill = Product::available()
     ->with([
-        'category:id,name,slug', 'primaryImage', 'seller:id,name',
+        'category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name',
         'variants' => fn($q) => $q->where('is_active', true)->with('images'),  // ← ADD
         'attributeValues.attribute',
     ])
@@ -84,7 +84,7 @@ class ProductRecommendationController extends Controller
         }
 
         $products = Product::available()
-          ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
+          ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name',
         'variants' => fn($q) => $q->where('is_active', true)->with('images')]) // ← ADD
 
             ->orderByDesc('is_sponsored')
@@ -119,7 +119,7 @@ class ProductRecommendationController extends Controller
         }
 
         $candidates = Product::available()
-            ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
+            ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name',
                     'variants' => fn($q) => $q->where('is_active', true),
                     'attributeValues.attribute'])
             ->where('category_id', $source->category_id)
@@ -130,7 +130,7 @@ class ProductRecommendationController extends Controller
         if ($candidates->count() < $limit) {
             $existingIds  = $candidates->pluck('id')->push($source->id)->toArray();
             $supplemental = Product::available()
-                ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
+                ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name',
                         'variants' => fn($q) => $q->where('is_active', true),
                         'attributeValues.attribute'])
                 ->whereNotIn('id', $existingIds)
@@ -178,7 +178,7 @@ class ProductRecommendationController extends Controller
 
             if (!empty($explicitIds)) {
                 $products = Product::available()
-                    ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
+                    ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name',
                             'variants' => fn($q) => $q->where('is_active', true)])
                     ->whereIn('id', $explicitIds)
                     ->get()
@@ -194,7 +194,7 @@ class ProductRecommendationController extends Controller
 
         // Fallback: cross-sell from different categories, scored by user interest
         $candidates = Product::available()
-            ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
+            ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name',
                     'variants' => fn($q) => $q->where('is_active', true),
                     'attributeValues.attribute'])
             ->where('category_id', '!=', $source->category_id)
@@ -254,7 +254,7 @@ class ProductRecommendationController extends Controller
         ];
 
         $products = Product::available()
-            ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
+            ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name',
                     'variants' => fn($q) => $q->where('is_active', true)])
             ->where('seller_id', $sellerId)
             ->where('id', '!=', $source->id)
@@ -293,7 +293,7 @@ class ProductRecommendationController extends Controller
         $activityWeights = $user ? $this->preferenceService->getActivityWeights($user->id) : [];
 
         $candidates = Product::available()
-            ->with(['category:id,name,slug', 'primaryImage', 'seller:id,name',
+            ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name',
                     'variants' => fn($q) => $q->where('is_active', true),
                     'attributeValues.attribute'])
             ->where('id', '!=', $source->id)

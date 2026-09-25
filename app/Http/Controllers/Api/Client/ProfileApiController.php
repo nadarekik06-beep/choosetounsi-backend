@@ -42,7 +42,7 @@ class ProfileApiController extends Controller
         $user->update($validated);
 
         return response()->json([
-            'message' => 'Profile updated successfully.',
+            'message' => __('messages.profile.updated'),
             'user' => $user,
         ]);
     }
@@ -62,7 +62,7 @@ class ProfileApiController extends Controller
         // Verify current password
         if (!Hash::check($validated['current_password'], $user->password)) {
             return response()->json([
-                'message' => 'Current password is incorrect.',
+                'message' => __('messages.profile.wrong_current_password'),
                 'errors' => [
                     'current_password' => ['Current password is incorrect.']
                 ]
@@ -75,7 +75,7 @@ class ProfileApiController extends Controller
         ]);
 
         return response()->json([
-            'message' => 'Password updated successfully.',
+            'message' => __('messages.profile.password_updated'),
         ]);
     }
 
@@ -89,7 +89,7 @@ class ProfileApiController extends Controller
         // Check if already a seller
         if ($user->isSeller()) {
             return response()->json([
-                'message' => 'You are already a seller.',
+                'message' => __('messages.profile.already_seller'),
             ], 400);
         }
 
@@ -100,7 +100,7 @@ class ProfileApiController extends Controller
         ]);
 
         return response()->json([
-            'message' => 'Seller application submitted successfully. Awaiting admin approval.',
+            'message' => __('messages.profile.seller_application_submitted'),
             'user' => $user,
         ]);
     }

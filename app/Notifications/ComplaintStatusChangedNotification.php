@@ -41,11 +41,11 @@ class ComplaintStatusChangedNotification extends Notification
         return [
             // ── Fields read by NotificationBell.tsx ──────────────────────
             'title'  => $isApproved
-                ? 'Complaint Approved ✅'
-                : 'Complaint Rejected ❌',
+                ? __('notifications.complaint_approved.title')
+                : __('notifications.complaint_rejected.title'),
             'body'   => $isApproved
-                ? 'Your complaint has been approved. We will contact you about next steps.'
-                : "Your complaint was not approved. Reason: {$this->complaint->rejection_reason}",
+                ? __('notifications.complaint_approved.body')
+                : __('notifications.complaint_rejected.body', ['reason' => $this->complaint->rejection_reason]),
             'icon'   => $isApproved ? 'check-circle' : 'x-circle',
             'action' => $isApproved ? 'approved' : 'rejected',
             'link'   => '/complaints',
@@ -56,8 +56,8 @@ class ComplaintStatusChangedNotification extends Notification
             'new_status'       => $this->complaint->status,
             'rejection_reason' => $this->complaint->rejection_reason,
             'message'          => $isApproved
-                ? 'Your complaint has been approved. Please check your email for next steps.'
-                : "Your complaint was not approved. Reason: {$this->complaint->rejection_reason}",
+                ? __('notifications.complaint_approved.message')
+                : __('notifications.complaint_rejected.body', ['reason' => $this->complaint->rejection_reason]),
             'created_at'       => now()->format('Y-m-d\TH:i:s\Z'),
         ];
     }
@@ -73,25 +73,25 @@ class ComplaintStatusChangedNotification extends Notification
 
         $mail = (new MailMessage)
             ->subject($isApproved
-                ? "✅ Your Complaint Has Been Approved — Order {$orderNumber}"
-                : "❌ Update on Your Complaint — Order {$orderNumber}"
+                ? __('notifications.complaint_approved.subject', ['order' => $orderNumber])
+                : __('notifications.complaint_rejected.subject', ['order' => $orderNumber])
             )
-            ->greeting("Hello {$notifiable->name},");
+            ->greeting(__('notifications.mail.greeting', ['name' => $notifiable->name]));
 
         if ($isApproved) {
             $mail
-                ->line("Great news! Your complaint for order **{$orderNumber}** has been **approved**.")
-                ->line("Our team will contact you shortly regarding the next steps (refund or replacement).")
-                ->action('View My Complaints', url('/orders'));
+                ->line(__('notifications.complaint_approved.line1', ['order' => $orderNumber]))
+                ->line(__('notifications.complaint_approved.line2'))
+                ->action(__('notifications.complaint_approved.action'), url('/orders'));
         } else {
             $mail
-                ->line("We have reviewed your complaint for order **{$orderNumber}**.")
-                ->line("Unfortunately, after careful review, your complaint could not be approved.")
-                ->line("**Reason:** {$this->complaint->rejection_reason}")
-                ->line("If you believe this is incorrect, please contact our support team.")
-                ->action('Contact Support', url('/support'));
+                ->line(__('notifications.complaint_rejected.line1', ['order' => $orderNumber]))
+                ->line(__('notifications.complaint_rejected.line2'))
+                ->line(__('notifications.complaint_rejected.reason', ['reason' => $this->complaint->rejection_reason]))
+                ->line(__('notifications.complaint_rejected.line3'))
+                ->action(__('notifications.complaint_rejected.action'), url('/support'));
         }
 
-        return $mail->line("Thank you for shopping with ChooseTounsi.");
+        return $mail->line(__('notifications.mail.thanks'));
     }
 }

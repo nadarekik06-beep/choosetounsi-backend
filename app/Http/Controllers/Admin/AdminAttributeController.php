@@ -55,6 +55,7 @@ class AdminAttributeController extends Controller
         $validated = $request->validate([
             'name'          => 'required|string|max:255',
             'name_ar'       => 'nullable|string|max:255',
+            'name_fr'       => 'nullable|string|max:255',
             'type'          => 'required|in:select,multiselect,text,number,boolean,color',
             'is_filterable' => 'sometimes|boolean',
             'is_visible'    => 'sometimes|boolean',
@@ -67,6 +68,7 @@ class AdminAttributeController extends Controller
         $attribute = Attribute::create([
             'name'          => $validated['name'],
             'name_ar'       => $validated['name_ar']       ?? null,
+            'name_fr'       => $validated['name_fr']       ?? null,
             'slug'          => $slug,
             'type'          => $validated['type'],
             'is_required'   => false,
@@ -92,6 +94,7 @@ class AdminAttributeController extends Controller
         $validated = $request->validate([
             'name'          => 'sometimes|string|max:255',
             'name_ar'       => 'nullable|string|max:255',
+            'name_fr'       => 'nullable|string|max:255',
             'is_filterable' => 'sometimes|boolean',
             'is_visible'    => 'sometimes|boolean',
             'order'         => 'sometimes|integer|min:0',
@@ -138,6 +141,7 @@ class AdminAttributeController extends Controller
         $validated = $request->validate([
             'value'     => 'required|string|max:255',
             'value_ar'  => 'nullable|string|max:255',
+            'value_fr'  => 'nullable|string|max:255',
             'color_hex' => 'nullable|string|max:7|regex:/^#[0-9A-Fa-f]{6}$/',
             'order'     => 'sometimes|integer|min:0',
         ]);
@@ -146,6 +150,7 @@ class AdminAttributeController extends Controller
             'attribute_id' => $attribute->id,
             'value'        => $validated['value'],
             'value_ar'     => $validated['value_ar']  ?? null,
+            'value_fr'     => $validated['value_fr']  ?? null,
             'color_hex'    => $validated['color_hex'] ?? null,
             'order'        => $validated['order']     ?? ($attribute->options()->max('order') + 1),
         ]);
@@ -167,6 +172,7 @@ class AdminAttributeController extends Controller
         $validated = $request->validate([
             'value'     => 'sometimes|string|max:255',
             'value_ar'  => 'nullable|string|max:255',
+            'value_fr'  => 'nullable|string|max:255',
             'color_hex' => 'nullable|string|max:7|regex:/^#[0-9A-Fa-f]{6}$/',
             'order'     => 'sometimes|integer|min:0',
         ]);
@@ -221,6 +227,7 @@ class AdminAttributeController extends Controller
                 'id'            => $attr->id,
                 'name'          => $attr->name,
                 'name_ar'       => $attr->name_ar,
+                'name_fr'       => $attr->name_fr,
                 'slug'          => $attr->slug,
                 'type'          => $attr->type,
                 'is_filterable' => $attr->is_filterable,
@@ -231,6 +238,7 @@ class AdminAttributeController extends Controller
                     'id'        => $o->id,
                     'value'     => $o->value,
                     'value_ar'  => $o->value_ar,
+                    'value_fr'  => $o->value_fr,
                     'color_hex' => $o->color_hex,
                     'order'     => $o->order,
                 ])->values(),

@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use App\Support\Localization;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Cache;
@@ -223,7 +224,7 @@ class SearchController extends Controller
                 return response()->json([
                     'success' => true, 'source' => 'ai', 'query' => '[image search]',
                     'count' => 0, 'products' => [],
-                    'message' => 'No similar products found for this image.',
+                    'message' => __('messages.search.no_similar'),
                 ]);
             }
 
@@ -231,7 +232,7 @@ class SearchController extends Controller
 
         } catch (\Exception $e) {
             Log::error("Image search failed: " . $e->getMessage());
-            return response()->json(['success' => false, 'message' => 'Image search is temporarily unavailable.'], 503);
+            return response()->json(['success' => false, 'message' => __('messages.search.image_unavailable')], 503);
         }
     }
 
@@ -387,10 +388,12 @@ class SearchController extends Controller
 
         $query = DB::table('products as p')
             ->select([
-                'p.id', 'p.name', 'p.slug', 'p.description',
+                'p.id', 'p.name', 'p.slug', 'p.description', 'p.translations',
                 'p.price', 'p.stock', 'p.views', 'p.featured',
                 'c.name as category_name',      'c.slug as category_slug',
+                'c.name_fr as category_name_fr', 'c.name_ar as category_name_ar',
                 'sub.name as subcategory_name', 'sub.slug as subcategory_slug',
+                'sub.name_fr as subcategory_name_fr', 'sub.name_ar as subcategory_name_ar',
                 'pi.image_path as primary_image',
             ])
             ->leftJoin('categories as c',     'c.id',   '=', 'p.category_id')
@@ -429,6 +432,10 @@ class SearchController extends Controller
 
     private function formatProduct(object $product): array
     {
+        $product->category_name    = Localization::column($product, 'category_name');
+        $product->subcategory_name = Localization::column($product, 'subcategory_name');
+        $product = Localization::productRow($product, ['name', 'description']);
+
         return [
             'id'               => $product->id,
             'name'             => $product->name,
@@ -454,10 +461,12 @@ class SearchController extends Controller
 
         $dbQuery = DB::table('products as p')
             ->select([
-                'p.id', 'p.name', 'p.slug', 'p.description',
+                'p.id', 'p.name', 'p.slug', 'p.description', 'p.translations',
                 'p.price', 'p.stock', 'p.views', 'p.featured',
                 'c.name as category_name',      'c.slug as category_slug',
+                'c.name_fr as category_name_fr', 'c.name_ar as category_name_ar',
                 'sub.name as subcategory_name', 'sub.slug as subcategory_slug',
+                'sub.name_fr as subcategory_name_fr', 'sub.name_ar as subcategory_name_ar',
                 'pi.image_path as primary_image',
                 DB::raw("(
                     CASE WHEN p.name        LIKE ? THEN 60 ELSE 0 END +
@@ -475,7 +484,8 @@ class SearchController extends Controller
             })
             ->where('p.is_approved', 1)->where('p.is_active', 1)->whereNull('p.deleted_at')
             ->where(function ($q) use ($terms, $query) {
-                $q->where('p.name', 'LIKE', "%{$query}%")->orWhere('p.description', 'LIKE', "%{$query}%");
+                $q->where('p.name', 'LIKE', "%{$query}%")->orWhere('p.description', 'LIKE', "%{$query}%")
+                  ->orWhere('p.translations', 'LIKE', '%' . trim(json_encode($query), '"') . '%');
                 foreach ($terms as $term) $q->orWhere('p.name', 'LIKE', "%{$term}%");
             });
 

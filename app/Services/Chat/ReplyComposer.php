@@ -196,9 +196,11 @@ class ReplyComposer
             }
         }
 
-        $category = $lang === 'ar'
-            ? ($nearest['category_ar'] ?? $nearest['category'] ?? null)
-            : ($nearest['category'] ?? null);
+        $category = match ($lang) {
+            'ar'    => $nearest['category_ar'] ?? $nearest['category'] ?? null,
+            'fr'    => $nearest['category_fr'] ?? $nearest['category'] ?? null,
+            default => $nearest['category'] ?? null,
+        };
         switch ($lang) {
             case 'fr':
                 return "Désolé, je n'ai trouvé aucun produit" . ($what ? " pour « {$what} »" : '') . ($range ? " {$range}" : '') . ". "

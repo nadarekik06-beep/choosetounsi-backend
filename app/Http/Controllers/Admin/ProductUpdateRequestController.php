@@ -22,7 +22,7 @@ class ProductUpdateRequestController extends Controller
     {
         $query = ProductUpdateRequest::with([
             'product:id,name,slug,price,stock,category_id,is_approved,is_active',
-            'product.category:id,name',
+            'product.category:id,name,name_fr,name_ar',
             'product.primaryImage',
             'seller:id,name,email',
         ]);
@@ -59,8 +59,8 @@ class ProductUpdateRequestController extends Controller
     public function show(int $id)
     {
         $updateRequest = ProductUpdateRequest::with([
-            'product.category:id,name',
-            'product.subcategory:id,name',
+            'product.category:id,name,name_fr,name_ar',
+            'product.subcategory:id,name,name_fr,name_ar',
             'product.images',
             'product.variants.attributeOptions.attribute',
             'seller:id,name,email',

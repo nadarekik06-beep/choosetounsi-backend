@@ -45,8 +45,8 @@ class RefundCompletedNotification extends Notification implements ShouldQueue
     {
         return [
             'type'          => 'refund_completed',
-            'title'         => '✅ Your refund has been processed',
-            'message'       => "The refund for order #{$this->order->order_number} has been completed. Your order status has been updated to Refunded.",
+            'title'         => __('notifications.refund_completed.title'),
+            'message'       => __('notifications.refund_completed.message', ['order' => $this->order->order_number]),
             'order_id'      => $this->order->id,
             'order_number'  => $this->order->order_number,
             'complaint_id'  => $this->task->complaint_id,
@@ -59,12 +59,12 @@ class RefundCompletedNotification extends Notification implements ShouldQueue
     public function toMail($notifiable): MailMessage
     {
         return (new MailMessage)
-            ->subject("✅ Refund Completed — Order #{$this->order->order_number}")
-            ->greeting("Hello {$notifiable->name},")
-            ->line("We are pleased to inform you that the refund for your order **#{$this->order->order_number}** has been successfully processed.")
-            ->line("Our delivery agent has picked up the item and the return has been confirmed.")
-            ->line("Your order status has been updated to **Refunded**.")
-            ->action('View My Orders', url('/orders'))
-            ->line("Thank you for shopping with Choose'Tounsi. We apologize for any inconvenience caused.");
+            ->subject(__('notifications.refund_completed.subject', ['order' => $this->order->order_number]))
+            ->greeting(__('notifications.mail.greeting', ['name' => $notifiable->name]))
+            ->line(__('notifications.refund_completed.line1', ['order' => $this->order->order_number]))
+            ->line(__('notifications.refund_completed.line2'))
+            ->line(__('notifications.refund_completed.line3'))
+            ->action(__('notifications.refund_completed.action'), url('/orders'))
+            ->line(__('notifications.refund_completed.thanks'));
     }
 }

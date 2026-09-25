@@ -34,7 +34,7 @@ class PublicSellerController extends Controller
         $seller = User::approvedSellers()->where('id', $id)->first();
 
         if (!$seller) {
-            return response()->json(['success' => false, 'message' => 'Seller not found.'], 404);
+            return response()->json(['success' => false, 'message' => __('messages.not_found.seller')], 404);
         }
 
         $application = SellerApplication::where('user_id', $seller->id)

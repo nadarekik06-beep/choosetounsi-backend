@@ -23,7 +23,7 @@ class BrandProductController extends Controller
     public function index(Request $request)
     {
         $query = Product::availableBrand()
-            ->with(['category:id,name,slug', 'primaryImage']);
+            ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage']);
 
         if ($s = $request->query('search')) {
             $query->where(fn($q) =>
@@ -58,7 +58,7 @@ class BrandProductController extends Controller
     public function featured()
     {
         $products = Product::availableBrand()->featured()->inStock()
-            ->with(['category:id,name,slug', 'primaryImage'])
+            ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage'])
             ->orderByDesc('created_at')
             ->take(12)->get()
             ->map(fn($p) => $this->transformListItem($p));
@@ -71,18 +71,18 @@ class BrandProductController extends Controller
         $product = Product::availableBrand()
             ->where('slug', $slug)
             ->with([
-                'category:id,name,slug',
-                'subcategory:id,name,slug',
+                'category:id,name,name_fr,name_ar,slug',
+                'subcategory:id,name,name_fr,name_ar,slug',
                 'images',
                 'primaryImage',
                 'attributeValues.attribute.options',
                 'variants' => fn($q) => $q->where('is_active', true)
-                    ->with(['attributeOptions.attribute:id,slug,name,type', 'images']),
+                    ->with(['attributeOptions.attribute:id,slug,name,name_fr,name_ar,type', 'images']),
             ])
             ->first();
 
         if (!$product) {
-            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
+            return response()->json(['success' => false, 'message' => __('messages.not_found.product')], 404);
         }
 
         $product->incrementViews();

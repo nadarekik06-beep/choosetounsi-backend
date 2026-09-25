@@ -56,13 +56,18 @@ class ProductReviewController extends Controller
             ->where('r.product_id', $product->id)
             ->where('r.status', 'approved')
             ->select(
-                'rt.id', 'rt.label', 'rt.label_fr', 'rt.sentiment', 'rt.icon',
+                'rt.id', 'rt.label', 'rt.label_fr', 'rt.label_ar', 'rt.sentiment', 'rt.icon',
                 DB::raw('COUNT(*) as usage_count')
             )
-            ->groupBy('rt.id', 'rt.label', 'rt.label_fr', 'rt.sentiment', 'rt.icon')
+            ->groupBy('rt.id', 'rt.label', 'rt.label_fr', 'rt.label_ar', 'rt.sentiment', 'rt.icon')
             ->orderByDesc('usage_count')
             ->limit(10)
-            ->get();
+            ->get()
+            ->map(function ($t) {
+                $t->label = \App\Models\ReviewTag::localizedLabel($t);
+                unset($t->label_ar);
+                return $t;
+            });
 
         // Recent customer photos (approved media from approved reviews)
         $recentPhotos = ReviewMedia::whereHas('review', function ($q) use ($product) {
@@ -153,7 +158,7 @@ class ProductReviewController extends Controller
 
                 'tags' => $r->tags->map(fn($t) => [
                     'id'        => $t->id,
-                    'label'     => $t->label,
+                    'label'     => \App\Models\ReviewTag::localizedLabel($t),
                     'label_fr'  => $t->label_fr,
                     'sentiment' => $t->sentiment,
                     'icon'      => $t->icon,
@@ -171,7 +176,7 @@ class ProductReviewController extends Controller
                     'created_at'  => $r->reply->created_at->format('Y-m-d'),
                 ] : null,
 
-                'created_at' => $r->created_at->format('M d, Y'),
+                'created_at' => $r->created_at->translatedFormat('j M Y'),
             ];
         });
 

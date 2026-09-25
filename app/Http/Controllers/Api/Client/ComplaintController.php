@@ -167,7 +167,7 @@ class ComplaintController extends Controller
             ->first();
 
         if (!$order) {
-            return response()->json(['success' => false, 'message' => 'Order not found.'], 404);
+            return response()->json(['success' => false, 'message' => __('messages.complaint.order_not_found')], 404);
         }
 
         // ── 3. Eligibility — at least one seller_order delivered ──────────
@@ -178,7 +178,7 @@ class ComplaintController extends Controller
         if ($order->status !== 'delivered' && !$hasDeliveredSellerOrder) {
             return response()->json([
                 'success' => false,
-                'message' => 'You can only file a complaint on a delivered order.',
+                'message' => __('messages.complaint.only_delivered'),
             ], 422);
         }
 
@@ -187,7 +187,7 @@ class ComplaintController extends Controller
         if ($hoursElapsed > Complaint::COMPLAINT_WINDOW_HOURS) {
             return response()->json([
                 'success' => false,
-                'message' => 'The 48-hour complaint window has passed for this order.',
+                'message' => __('messages.complaint.window_passed'),
             ], 422);
         }
 
@@ -195,7 +195,7 @@ class ComplaintController extends Controller
         if (Complaint::where('user_id', $user->id)->where('order_id', $order->id)->exists()) {
             return response()->json([
                 'success' => false,
-                'message' => 'You have already filed a complaint for this order.',
+                'message' => __('messages.complaint.already_filed'),
             ], 422);
         }
 
@@ -207,7 +207,7 @@ class ComplaintController extends Controller
             if (!empty($invalid)) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'One or more selected items do not belong to this order.',
+                    'message' => __('messages.complaint.items_not_in_order'),
                     'errors'  => ['item_ids' => ['Invalid item selection.']],
                 ], 422);
             }
@@ -265,7 +265,7 @@ class ComplaintController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Your complaint has been submitted.',
+            'message' => __('messages.complaint.submitted'),
             'data'    => $complaint->load('order:id,order_number', 'complainedItems'),
         ], 201);
     }

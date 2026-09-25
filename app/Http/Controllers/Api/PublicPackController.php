@@ -58,13 +58,13 @@ class PublicPackController extends Controller
                     'product.primaryImage',
                     'product.variants' => fn($q) => $q
                         ->where('is_active', true)
-                        ->with(['attributeOptions.attribute:id,slug,name,type']),
+                        ->with(['attributeOptions.attribute:id,slug,name,name_fr,name_ar,type']),
                 ]),
             ])
             ->first();
 
         if (!$pack) {
-            return response()->json(['success' => false, 'message' => 'Pack not found.'], 404);
+            return response()->json(['success' => false, 'message' => __('messages.not_found.pack')], 404);
         }
 
         // Increment views

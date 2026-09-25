@@ -8,10 +8,17 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use App\Models\Concerns\HasTranslations;
 
 class Product extends Model
 {
-    use HasFactory, SoftDeletes;
+    use HasFactory, SoftDeletes, HasTranslations;
+
+    // Served in the storefront language from `translations` (filled by ProductTranslator).
+    protected $translatable     = ['name', 'description', 'short_description'];
+    protected $translatableBase = ['name'];
+
+    protected $hidden = ['translations', 'translations_hash'];
 
     // ── Platform-level delivery constants ──────────────────────────────────────
     // Change this ONE constant when the platform delivery fee changes.
@@ -38,6 +45,8 @@ class Product extends Model
         'season'              => 'array',
         'deleted_by_seller'   => 'boolean',
         'changes_requested_at' => 'datetime',
+        'translations'        => 'array',
+        'translated_at'       => 'datetime',
     ];
 
     public const SEASONS = [
@@ -64,7 +73,7 @@ class Product extends Model
 
         static::creating(function ($product) {
             if (empty($product->slug)) {
-                $product->slug = Str::slug($product->name);
+                $product->slug = Str::slug($product->getAttributes()['name'] ?? '');
             }
             if (empty($product->season)) {
                 $product->season = ['all_seasons'];
@@ -77,6 +86,27 @@ class Product extends Model
                 $product->variants()->pluck('id')
             )->update(['variant_id' => null]);
         });
+
+        // Translate name / descriptions with Groq once the product is live or its text changed.
+        // Runs after the response is sent; the storefront only ever reads the cached result.
+        static::saved(function ($product) {
+            if (\App\Services\ProductTranslator::needsTranslation($product)) {
+                $id = $product->id;
+                dispatch(fn () => app(\App\Services\ProductTranslator::class)->translateById($id))->afterResponse();
+            }
+        });
+    }
+
+    /** Products are written in any language, so every locale (English too) reads `translations`. */
+    protected function translateAttribute(string $key, $value)
+    {
+        $translations = $this->getAttributeFromArray('translations');
+        if (!$translations) {
+            return $value;
+        }
+        $translations = is_array($translations) ? $translations : json_decode($translations, true);
+
+        return ($translations[\App\Support\Localization::locale()][$key] ?? null) ?: $value;
     }
 
     // ── Relationships ──────────────────────────────────────────────────────────
@@ -97,14 +127,14 @@ class Product extends Model
     public function variants()
     {
         return $this->hasMany(ProductVariant::class)
-            ->with(['attributeOptions.attribute:id,slug,name,type']);
+            ->with(['attributeOptions.attribute:id,slug,name,name_fr,name_ar,type']);
     }
 
     public function activeVariants()
     {
         return $this->hasMany(ProductVariant::class)
             ->where('is_active', true)
-            ->with(['attributeOptions.attribute:id,slug,name,type']);
+            ->with(['attributeOptions.attribute:id,slug,name,name_fr,name_ar,type']);
     }
 
     public function sponsorships()

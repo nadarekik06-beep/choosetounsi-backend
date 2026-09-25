@@ -52,7 +52,7 @@ class Coupon extends Model
     public function getDiscountLabelAttribute(): string
     {
         return $this->discount_type === 'percentage'
-            ? (int) $this->discount_value . '% OFF'
-            : number_format((float) $this->discount_value, 3) . ' DT OFF';
+            ? __('messages.discount.percent_off', ['value' => (int) $this->discount_value])
+            : __('messages.discount.amount_off', ['value' => number_format((float) $this->discount_value, 3)]);
     }
 }
