@@ -122,7 +122,7 @@ class SellerAnalyticsController extends Controller
         for ($i = 7; $i >= 0; $i--) {
             $start = $now->copy()->subWeeks($i)->startOfWeek();
             $end   = $now->copy()->subWeeks($i)->endOfWeek();
-            $label = $start->format('d M');
+            $label = $start->translatedFormat('d M');
 
             if ($sellerOrderIds->isEmpty()) {
                 $weeklyRevenue->push(['week' => $label, 'revenue' => 0, 'orders' => 0]);

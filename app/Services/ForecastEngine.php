@@ -234,7 +234,7 @@ class ForecastEngine
             $targetDate  = $startMonth->copy()->addMonths($i);
             $monthNum    = (int) $targetDate->format('n');
             $yearMonth   = $targetDate->format('Y-m');
-            $label       = $targetDate->format('M Y');
+            $label       = $targetDate->translatedFormat('M Y');
 
             $trendedBase = max(0, $baseUnit + $trendSlope * ($i + 1));
 
@@ -330,7 +330,7 @@ class ForecastEngine
             'data_points'             => $totalHistoryOrders,
             'history'                 => $history->map(fn($r) => [
                 'month'   => $r->month,
-                'label'   => Carbon::createFromFormat('Y-m', $r->month)->format('M Y'),
+                'label'   => Carbon::createFromFormat('Y-m', $r->month)->translatedFormat('M Y'),
                 'units'   => (int) $r->units,
                 'revenue' => round((float) $r->revenue, 3),
                 'orders'  => (int) $r->orders,

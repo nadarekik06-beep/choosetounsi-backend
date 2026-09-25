@@ -187,7 +187,7 @@ class SellerDashboardController extends Controller
 
                 for ($i = 11; $i >= 0; $i--) {
                     $key   = $now->copy()->subMonths($i)->format('Y-m');
-                    $label = $now->copy()->subMonths($i)->format('M Y');
+                    $label = $now->copy()->subMonths($i)->translatedFormat('M Y');
                     $monthlyRevenue->push([
                         'month'   => $label,
                         'revenue' => isset($rawMonthly[$key]) ? round((float) $rawMonthly[$key]->revenue, 3) : 0,
@@ -197,7 +197,7 @@ class SellerDashboardController extends Controller
             } catch (\Exception $e) {
                 for ($i = 11; $i >= 0; $i--) {
                     $monthlyRevenue->push([
-                        'month'   => $now->copy()->subMonths($i)->format('M Y'),
+                        'month'   => $now->copy()->subMonths($i)->translatedFormat('M Y'),
                         'revenue' => 0,
                         'orders'  => 0,
                     ]);
@@ -206,7 +206,7 @@ class SellerDashboardController extends Controller
         } else {
             for ($i = 11; $i >= 0; $i--) {
                 $monthlyRevenue->push([
-                    'month'   => $now->copy()->subMonths($i)->format('M Y'),
+                    'month'   => $now->copy()->subMonths($i)->translatedFormat('M Y'),
                     'revenue' => 0,
                     'orders'  => 0,
                 ]);
