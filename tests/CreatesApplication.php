@@ -17,6 +17,14 @@ trait CreatesApplication
 
         $app->make(Kernel::class)->bootstrap();
 
+        // Hard stop before RefreshDatabase can wipe anything: tests only ever touch choosetounsi_test.
+        $connection = $app['config']->get('database.default');
+        $database   = $app['config']->get("database.connections.{$connection}.database");
+        if ($database !== 'choosetounsi_test') {
+            fwrite(STDERR, "Refusing to run tests against database \"{$database}\" — expected choosetounsi_test.\n");
+            exit(1);
+        }
+
         return $app;
     }
 }
