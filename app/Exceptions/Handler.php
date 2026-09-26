@@ -44,6 +44,14 @@ class Handler extends ExceptionHandler
                 return response()->json(['message' => __('messages.generic.too_many_requests')], 429, $e->getHeaders());
             }
         });
+
+        // findOrFail() misses: "No query results for model [...]" is internal and English-only.
+        $this->renderable(function (\Symfony\Component\HttpKernel\Exception\NotFoundHttpException $e, $request) {
+            if (($request->expectsJson() || $request->is('api/*'))
+                && $e->getPrevious() instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+                return response()->json(['success' => false, 'message' => __('messages.generic.not_found')], 404);
+            }
+        });
     }
 
     protected function invalidJson($request, \Illuminate\Validation\ValidationException $exception)

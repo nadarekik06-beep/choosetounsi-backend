@@ -114,7 +114,7 @@ class ProductApiController extends Controller
         }
 
         return response()->json([
-            'message' => 'Product created successfully! It will be reviewed by admin.',
+            'message' => __('seller.product.created_review_long'),
             'product' => $product->load('images', 'category'),
         ], 201);
     }
@@ -153,7 +153,7 @@ class ProductApiController extends Controller
         $product->update($validated);
 
         return response()->json([
-            'message' => 'Product updated successfully.',
+            'message' => __('seller.product.updated_long'),
             'product' => $product->load('images', 'category'),
         ]);
     }
@@ -172,7 +172,7 @@ class ProductApiController extends Controller
         $product->delete();
 
         return response()->json([
-            'message' => 'Product deleted successfully.',
+            'message' => __('seller.product.deleted_long'),
         ]);
     }
 
@@ -192,7 +192,7 @@ class ProductApiController extends Controller
 
         if ($currentCount + count($request->file('images')) > 5) {
             return response()->json([
-                'message' => 'Cannot upload more than 5 images per product.',
+                'message' => __('seller.product.max_images'),
             ], 400);
         }
 
@@ -210,7 +210,7 @@ class ProductApiController extends Controller
         }
 
         return response()->json([
-            'message' => 'Images uploaded successfully.',
+            'message' => __('seller.product.images_uploaded'),
             'product' => $product->fresh()->load('images'),
         ]);
     }
@@ -224,13 +224,13 @@ class ProductApiController extends Controller
 
         if ($image->product_id !== $product->id) {
             return response()->json([
-                'message' => 'Image does not belong to this product.',
+                'message' => __('seller.product.image_not_owned'),
             ], 403);
         }
 
         if ($product->images()->count() <= 1) {
             return response()->json([
-                'message' => 'Cannot delete the last image.',
+                'message' => __('seller.product.last_image'),
             ], 400);
         }
 
@@ -247,7 +247,7 @@ class ProductApiController extends Controller
         }
 
         return response()->json([
-            'message' => 'Image deleted successfully.',
+            'message' => __('seller.product.image_deleted_long'),
             'product' => $product->fresh()->load('images'),
         ]);
     }
@@ -258,7 +258,7 @@ class ProductApiController extends Controller
     private function ensureOwner(Request $request, Product $product)
     {
         if ($product->seller_id !== $request->user()->id) {
-            abort(403, 'You do not have permission to access this product.');
+            abort(403, __('seller.product.no_permission'));
         }
     }
 }

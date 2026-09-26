@@ -135,9 +135,9 @@ class AutoPromotionService
 
     private function velocityLabel(float $m): string
     {
-        if ($m >= 3) return 'Selling ' . round($m) . 'x faster than usual';
-        if ($m >= 2) return 'Selling twice as fast as usual';
-        return 'Selling 1.5x faster than usual';
+        if ($m >= 3) return __('seller.black.velocity.times', ['x' => round($m)]);
+        if ($m >= 2) return __('seller.black.velocity.twice');
+        return __('seller.black.velocity.half');
     }
 
     private function buildRationale(string $name, string $signal, float $m, float $revenue): string
@@ -145,30 +145,23 @@ class AutoPromotionService
         $roundedRevenue = number_format($revenue, 0);
 
         if ($signal === 'hot') {
-            return "{$name} is your hottest product right now — selling " . round($m) . "x faster than usual "
-                 . "and generating {$roundedRevenue} TND this week. "
-                 . "Sponsoring it will push it in front of even more buyers who are ready to purchase.";
+            return __('seller.black.promo.hot', ['name' => $name, 'x' => round($m), 'amount' => $roundedRevenue]);
         }
 
         if ($signal === 'rising') {
-            return "{$name} is picking up strong momentum this week. "
-                 . "It has already generated {$roundedRevenue} TND and demand is accelerating. "
-                 . "Sponsor it now to ride the wave while it is hot.";
+            return __('seller.black.promo.rising', ['name' => $name, 'amount' => $roundedRevenue]);
         }
 
-        return "{$name} is outperforming its usual pace this week ({$roundedRevenue} TND earned). "
-             . "A sponsorship boost would help it reach buyers who haven't discovered it yet.";
+        return __('seller.black.promo.warm', ['name' => $name, 'amount' => $roundedRevenue]);
     }
 
     private function buildBoostExplanation(int $boostTnd, string $signal): string
     {
         if ($signal === 'hot') {
-            return "Based on your current sales pace, sponsorship typically adds around {$boostTnd} TND "
-                 . "in extra revenue per week by placing your product at the top of search results and category pages.";
+            return __('seller.black.promo.boost_hot', ['amount' => $boostTnd]);
         }
 
-        return "Sponsorship usually delivers a 35% visibility increase. "
-             . "At your current pace, that translates to roughly {$boostTnd} TND in additional revenue this week.";
+        return __('seller.black.promo.boost', ['amount' => $boostTnd]);
     }
 
     // ── Column detection ──────────────────────────────────────────────────────

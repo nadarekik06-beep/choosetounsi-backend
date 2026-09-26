@@ -102,7 +102,7 @@ class SellerComplaintController extends Controller
         if (!$complaint->sellerCanAct()) {
             return response()->json([
                 'success' => false,
-                'message' => 'This complaint can no longer be updated by the seller.',
+                'message' => __('seller.complaint.locked'),
             ], 422);
         }
 
@@ -110,12 +110,12 @@ class SellerComplaintController extends Controller
             $complaint->markReviewing($request->seller_note);
         } catch (\Throwable $e) {
             Log::error('[SellerComplaint] markReviewing failed: ' . $e->getMessage());
-            return response()->json(['success' => false, 'message' => 'Failed to update complaint.'], 500);
+            return response()->json(['success' => false, 'message' => __('seller.complaint.update_failed')], 500);
         }
 
         return response()->json([
             'success' => true,
-            'message' => 'Note submitted. The complaint is now under review.',
+            'message' => __('seller.complaint.note_submitted'),
             'data'    => $complaint->fresh(),
         ]);
     }
@@ -137,7 +137,7 @@ class SellerComplaintController extends Controller
         if (!$complaint->sellerCanAct()) {
             return response()->json([
                 'success' => false,
-                'message' => 'This complaint can no longer be updated by the seller.',
+                'message' => __('seller.complaint.locked'),
             ], 422);
         }
 
@@ -145,7 +145,7 @@ class SellerComplaintController extends Controller
             $complaint->sellerApprove($request->seller_note);
         } catch (\Throwable $e) {
             Log::error('[SellerComplaint] approve failed: ' . $e->getMessage());
-            return response()->json(['success' => false, 'message' => 'Failed to approve complaint.'], 500);
+            return response()->json(['success' => false, 'message' => __('seller.complaint.approve_failed')], 500);
         }
 
         try {
@@ -156,7 +156,7 @@ class SellerComplaintController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Complaint approved. The client has been notified.',
+            'message' => __('seller.complaint.approved'),
             'data'    => $complaint->fresh(),
         ]);
     }
@@ -178,7 +178,7 @@ class SellerComplaintController extends Controller
         if (!$complaint->sellerCanAct()) {
             return response()->json([
                 'success' => false,
-                'message' => 'This complaint can no longer be updated by the seller.',
+                'message' => __('seller.complaint.locked'),
             ], 422);
         }
 
@@ -186,7 +186,7 @@ class SellerComplaintController extends Controller
             $complaint->sellerReject($request->seller_note, $request->rejection_reason);
         } catch (\Throwable $e) {
             Log::error('[SellerComplaint] reject failed: ' . $e->getMessage());
-            return response()->json(['success' => false, 'message' => 'Failed to reject complaint.'], 500);
+            return response()->json(['success' => false, 'message' => __('seller.complaint.reject_failed')], 500);
         }
 
         try {
@@ -198,7 +198,7 @@ class SellerComplaintController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Rejection submitted. Admin has been notified and will make the final decision.',
+            'message' => __('seller.complaint.rejected'),
             'data'    => $complaint->fresh(),
         ]);
     }

@@ -27,7 +27,7 @@ class SellerApplicationApprovedMail extends Mailable implements ShouldQueue
     public function build(): self
     {
         return $this
-            ->subject("🎉 Congratulations — You're Now a ChooseTounsi Seller!")
+            ->subject(__('seller.mail.approved.subject'))
             ->view('emails.seller-acceptance.approved')
             ->with([
                 'seller'      => $this->seller,

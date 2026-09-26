@@ -50,7 +50,10 @@ class ProductModerationLog extends Model
 
     public static function labelsFor(array $codes): array
     {
-        return array_values(array_map(fn($c) => self::REASONS[$c] ?? $c, $codes));
+        return array_values(array_map(
+            fn($c) => \Illuminate\Support\Facades\Lang::has("seller.moderation.{$c}") ? __("seller.moderation.{$c}") : (self::REASONS[$c] ?? $c),
+            $codes
+        ));
     }
 
     /**

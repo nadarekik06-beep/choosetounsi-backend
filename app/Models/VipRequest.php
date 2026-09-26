@@ -46,22 +46,13 @@ class VipRequest extends Model
 
     public function getTypeLabelAttribute(): string
     {
-        return match($this->type) {
-            'reel'      => '🎬 Reel Request',
-            'promotion' => '📣 Promotion Request',
-            'support'   => '👑 VIP Support',
-            default     => $this->type,
-        };
+        $key = "seller.labels.vip_type.{$this->type}";
+        return \Illuminate\Support\Facades\Lang::has($key) ? __($key) : (string) $this->type;
     }
 
     public function getStatusLabelAttribute(): string
     {
-        return match($this->status) {
-            'pending'     => 'Pending',
-            'in_progress' => 'In Progress',
-            'completed'   => 'Completed',
-            'rejected'    => 'Rejected',
-            default       => $this->status,
-        };
+        $key = "seller.labels.vip_status.{$this->status}";
+        return \Illuminate\Support\Facades\Lang::has($key) ? __($key) : (string) $this->status;
     }
 }

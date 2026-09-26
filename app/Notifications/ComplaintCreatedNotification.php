@@ -51,8 +51,8 @@ class ComplaintCreatedNotification extends Notification
 
         return [
             // ── Fields read by NotificationBell.tsx ──────────────────────
-            'title'  => 'New Complaint Filed',
-            'body'   => "From {$this->client->name} — {$typeLabel}",
+            'title'  => __('seller.notif.complaint_created.title'),
+            'body'   => __('seller.notif.complaint_created.body', ['client' => $this->client->name, 'type' => $typeLabel]),
             'icon'   => 'x-circle',
             'action' => 'created',
             'link'   => $isAdmin
@@ -67,7 +67,7 @@ class ComplaintCreatedNotification extends Notification
             'complaint_type' => $this->complaint->complaint_type,
             'type_label'     => $typeLabel,
             'status'         => $this->complaint->status,
-            'message'        => "New complaint from {$this->client->name} — {$typeLabel}",
+            'message'        => __('seller.notif.complaint_created.message', ['client' => $this->client->name, 'type' => $typeLabel]),
             'created_at'     => now()->format('Y-m-d\TH:i:s\Z'),
         ];
     }
@@ -84,22 +84,22 @@ class ComplaintCreatedNotification extends Notification
             : $this->complaint->order_id;
 
         return (new MailMessage)
-            ->subject("New Complaint Filed — {$label}")
-            ->greeting("Hello {$notifiable->name},")
+            ->subject(__('seller.notif.complaint_created.subject', ['type' => $label]))
+            ->greeting(__('seller.notif.complaint_created.greeting', ['name' => $notifiable->name]))
             ->line(
                 $isAdmin
-                    ? "A new complaint has been filed by **{$this->client->name}** ({$this->client->email})."
-                    : "A complaint has been filed about one of your products by a customer."
+                    ? __('seller.notif.complaint_created.line_admin', ['client' => $this->client->name, 'email' => $this->client->email])
+                    : __('seller.notif.complaint_created.line_seller')
             )
-            ->line("**Type:** {$label}")
-            ->line("**Order:** #{$orderNumber}")
-            ->line("**Description:** {$this->complaint->description}")
+            ->line(__('seller.notif.complaint_created.type', ['type' => $label]))
+            ->line(__('seller.notif.complaint_created.order', ['order' => $orderNumber]))
+            ->line(__('seller.notif.complaint_created.description', ['description' => $this->complaint->description]))
             ->action(
-                $isAdmin ? 'Review Complaint (Admin Panel)' : 'View Complaint',
+                $isAdmin ? __('seller.notif.complaint_created.action_admin') : __('seller.notif.complaint_created.action_seller'),
                 $isAdmin
                     ? url("/admin/complaints/{$this->complaint->id}")
                     : url("/seller/complaints/{$this->complaint->id}")
             )
-            ->line('Please review and respond to this complaint as soon as possible.');
+            ->line(__('seller.notif.complaint_created.outro'));
     }
 }

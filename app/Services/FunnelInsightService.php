@@ -141,8 +141,8 @@ class FunnelInsightService
         if ($imageCount < 2) {
             return [
                 'type'         => 'image',
-                'suggestion'   => 'Add more photos. Products with 3+ images sell significantly better.',
-                'action_label' => 'Add Photos',
+                'suggestion'   => __('seller.black.funnel.photos'),
+                'action_label' => __('seller.black.funnel.photos_action'),
                 'action_href'  => "/seller/products/{$product->id}",
             ];
         }
@@ -156,8 +156,8 @@ class FunnelInsightService
         if ($descLength < 80) {
             return [
                 'type'         => 'description',
-                'suggestion'   => 'Write a better description. Tell buyers what makes this product special.',
-                'action_label' => 'Improve Description',
+                'suggestion'   => __('seller.black.funnel.description'),
+                'action_label' => __('seller.black.funnel.description_action'),
                 'action_href'  => "/seller/products/{$product->id}",
             ];
         }
@@ -174,8 +174,8 @@ class FunnelInsightService
         if ($categoryAvgPrice && (float)$product->price > $categoryAvgPrice * 1.3) {
             return [
                 'type'         => 'price',
-                'suggestion'   => 'Your price may be higher than similar products. Try a small discount to see if it converts better.',
-                'action_label' => 'Add a Discount',
+                'suggestion'   => __('seller.black.funnel.price'),
+                'action_label' => __('seller.black.funnel.price_action'),
                 'action_href'  => '/seller/promotions',
             ];
         }
@@ -183,8 +183,8 @@ class FunnelInsightService
         // Default: promote to increase trust
         return [
             'type'         => 'promote',
-            'suggestion'   => 'Sponsor this product to increase visibility and build trust with new buyers.',
-            'action_label' => 'Promote It',
+            'suggestion'   => __('seller.black.funnel.promote'),
+            'action_label' => __('seller.black.funnel.promote_action'),
             'action_href'  => '/seller/promote',
         ];
     }
@@ -192,14 +192,11 @@ class FunnelInsightService
     private function buildDiagnosis(float $convPct, int $views, int $sold): string
     {
         if ($sold === 0) {
-            return "{$views} people visited this product in the last 30 days but nobody bought. "
-                 . "Something is stopping them — usually the photos, the description, or the price.";
+            return __('seller.black.funnel.diag_none', ['views' => $views]);
         }
 
         $ratio = (int) round($views / max($sold, 1));
-        return "About {$views} people visited this product recently, but only {$sold} bought. "
-             . "That means roughly 1 in every {$ratio} visitors makes a purchase — "
-             . "improving the listing could convert far more of them.";
+        return __('seller.black.funnel.diag_some', ['views' => $views, 'sold' => $sold, 'ratio' => $ratio]);
     }
 
     private function sellerCol(): string

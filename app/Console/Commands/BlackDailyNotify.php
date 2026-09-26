@@ -109,9 +109,7 @@ class BlackDailyNotify extends Command
                     $seller->notify(new \App\Notifications\BlackSmartNotification([
                         'notify_type' => 'auto_promo',
                         'source'      => 'black_daily_notify',
-                        'title'       => 'Your hottest product is not sponsored yet',
-                        'body'        => $top['product_name'] . ' is selling fast. Sponsoring it could add '
-                                        . $top['estimated_boost_tnd'] . ' TND this week.',
+                        'params'      => ['name' => $top['product_name'], 'amount' => $top['estimated_boost_tnd']],
                         'icon'        => 'zap',
                         'action'      => 'promote',
                         'link'        => '/seller/black',
@@ -155,8 +153,7 @@ class BlackDailyNotify extends Command
                     $seller->notify(new \App\Notifications\BlackSmartNotification([
                         'notify_type' => 'stock_risk',
                         'source'      => 'black_daily_notify',
-                        'title'       => $atRisk->name . ' runs out in ' . $days . ' day' . ($days === 1 ? '' : 's'),
-                        'body'        => 'Only ' . $atRisk->stock . ' units left. Restock today to avoid losing sales this week.',
+                        'params'      => ['name' => $atRisk->getRawOriginal('name') ?? $atRisk->name, 'count' => $days, 'stock' => $atRisk->stock],
                         'icon'        => 'alert-triangle',
                         'action'      => 'restock',
                         'link'        => '/seller/products/' . $atRisk->id,
@@ -194,9 +191,7 @@ class BlackDailyNotify extends Command
                     $seller->notify(new \App\Notifications\BlackSmartNotification([
                         'notify_type' => 'weekend_spike',
                         'source'      => 'black_daily_notify',
-                        'title'       => 'Weekend demand spike coming',
-                        'body'        => 'Last weekend, ' . $topProduct->name . ' was your best seller. '
-                                        . 'Make sure it is stocked and sponsored before Friday evening.',
+                        'params'      => ['name' => $topProduct->name],
                         'icon'        => 'trending-up',
                         'action'      => 'promote',
                         'link'        => '/seller/black',
@@ -263,10 +258,7 @@ class BlackDailyNotify extends Command
                     $seller->notify(new \App\Notifications\BlackSmartNotification([
                         'notify_type' => 'cooling',
                         'source'      => 'black_daily_notify',
-                        'title'       => $coolingProduct['name'] . ' is slowing down',
-                        'body'        => 'This product sold ' . $coolingProduct['last_units'] . ' units last week '
-                                        . 'but only ' . $coolingProduct['this_units'] . ' so far this week. '
-                                        . 'A flash sale or price adjustment could bring buyers back.',
+                        'params'      => ['name' => $coolingProduct['name'], 'last' => $coolingProduct['last_units'], 'now' => $coolingProduct['this_units']],
                         'icon'        => 'trending-down',
                         'action'      => 'flash_sale',
                         'link'        => '/seller/promotions',

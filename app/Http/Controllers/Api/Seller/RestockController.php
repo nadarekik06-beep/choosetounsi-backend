@@ -70,7 +70,7 @@ class RestockController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => "Stock updated to {$updated->stock} units.",
+                'message' => __('seller.restock.updated', ['stock' => $updated->stock]),
                 'data'    => [
                     'id'           => $updated->id,
                     'stock'        => $updated->stock,
@@ -86,7 +86,7 @@ class RestockController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Restock failed. Please try again.',
+                'message' => __('seller.restock.failed'),
             ], 500);
         }
     }
@@ -122,7 +122,7 @@ class RestockController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => "Variant stock updated. Total: {$totalStock} units.",
+                'message' => __('seller.restock.variants_updated', ['total' => $totalStock]),
                 'data'    => [
                     'id'            => $updated->id,
                     'stock'         => $updated->stock,
@@ -140,7 +140,7 @@ class RestockController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Restock failed. Please try again.',
+                'message' => __('seller.restock.failed'),
             ], 500);
         }
     }

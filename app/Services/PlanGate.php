@@ -35,17 +35,20 @@ class PlanGate
         [$plan, $sub, $app] = $this->context($sellerId);
 
         if (!$app) {
-            return $this->deny('Approved seller account required.', 'NOT_SELLER');
+            return $this->deny(__('seller.gate.not_seller'), 'NOT_SELLER');
         }
         if ($sub && $sub->isSuspended()) {
-            return $this->deny('Your subscription has been suspended. Please contact support.', 'SUBSCRIPTION_SUSPENDED');
+            return $this->deny(__('seller.subscription.suspended'), 'SUBSCRIPTION_SUSPENDED');
         }
         if (!$plan->hasFeature($feature)) {
-            $label  = SubscriptionPlan::FEATURES[$feature] ?? $feature;
+            $label  = \Illuminate\Support\Facades\Lang::has("seller.gate.features.{$feature}")
+                ? __("seller.gate.features.{$feature}")
+                : (SubscriptionPlan::FEATURES[$feature] ?? $feature);
             $offers = SubscriptionPlan::offered()->ordered()->get()->filter(fn($p) => $p->hasFeature($feature));
-            $names  = $offers->pluck('name')->join(', ', ' or ');
+            $names  = $offers->pluck('name')->join(', ', ' ' . __('seller.gate.or') . ' ');
             return $this->deny(
-                "{$label} is not included in your {$plan->name} plan." . ($names ? " Upgrade to {$names}." : ''),
+                __('seller.gate.feature_missing', ['feature' => $label, 'plan' => $plan->name])
+                    . ($names ? ' ' . __('seller.gate.upgrade_to', ['plans' => $names]) : ''),
                 'PLAN_REQUIRED',
                 ['feature' => $feature, 'current_plan' => $plan->slug, 'required_plan' => optional($offers->first())->slug]
             );
@@ -67,7 +70,7 @@ class PlanGate
 
         if ($count >= $plan->max_products) {
             return $this->deny(
-                "Your {$plan->name} plan allows {$plan->max_products} products and you have {$count}. Upgrade your plan or delete a product to add more.",
+                __('seller.gate.product_limit', ['plan' => $plan->name, 'limit' => $plan->max_products, 'count' => $count]),
                 'PRODUCT_LIMIT_REACHED',
                 ['limit' => $plan->max_products, 'current' => $count]
             );
@@ -82,7 +85,7 @@ class PlanGate
         if ($plan->max_images_per_product === null || $totalAfterSave <= $plan->max_images_per_product) return null;
 
         return $this->deny(
-            "Your {$plan->name} plan allows {$plan->max_images_per_product} images per product (this product would have {$totalAfterSave}).",
+            __('seller.gate.image_limit', ['plan' => $plan->name, 'limit' => $plan->max_images_per_product, 'count' => $totalAfterSave]),
             'IMAGE_LIMIT_REACHED',
             ['limit' => $plan->max_images_per_product, 'requested' => $totalAfterSave]
         );
@@ -103,7 +106,7 @@ class PlanGate
             ->unique()->count();
         if ($active >= $plan->max_sponsored_products) {
             return $this->deny(
-                "Your {$plan->name} plan allows {$plan->max_sponsored_products} sponsored product(s) at a time.",
+                __('seller.gate.sponsor_limit', ['plan' => $plan->name, 'limit' => $plan->max_sponsored_products]),
                 'SPONSOR_LIMIT_REACHED',
                 ['limit' => $plan->max_sponsored_products, 'current' => $active]
             );

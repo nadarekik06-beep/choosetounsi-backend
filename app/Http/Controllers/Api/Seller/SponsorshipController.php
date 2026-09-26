@@ -102,7 +102,7 @@ class SponsorshipController extends Controller
         if (!$product) {
             return response()->json([
                 'success' => false,
-                'message' => 'Product not found or you do not own it.',
+                'message' => __('seller.sponsor.not_owned'),
                 'code'    => 'NOT_FOUND',
             ], 404);
         }
@@ -110,7 +110,7 @@ class SponsorshipController extends Controller
         if (!$product->is_approved || !$product->is_active) {
             return response()->json([
                 'success' => false,
-                'message' => 'Only approved and active products can be sponsored.',
+                'message' => __('seller.sponsor.only_approved'),
                 'code'    => 'PRODUCT_NOT_ELIGIBLE',
             ], 422);
         }
@@ -119,7 +119,7 @@ class SponsorshipController extends Controller
         if (Sponsorship::hasActiveForProduct($product->id)) {
             return response()->json([
                 'success' => false,
-                'message' => 'This product is already sponsored. Cancel the current sponsorship first.',
+                'message' => __('seller.sponsor.already'),
                 'code'    => 'DUPLICATE_ACTIVE',
             ], 422);
         }
@@ -251,7 +251,7 @@ class SponsorshipController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Product sponsored successfully.',
+            'message' => __('seller.sponsor.created'),
             'data'    => [
                 'sponsorship'     => $sponsorship->load('product:id,name,slug'),
                 'boost_score'     => $finalPriority,
@@ -282,7 +282,7 @@ class SponsorshipController extends Controller
         if (!$sponsorship) {
             return response()->json([
                 'success' => false,
-                'message' => 'Active sponsorship not found.',
+                'message' => __('seller.sponsor.active_not_found'),
                 'code'    => 'NOT_FOUND',
             ], 404);
         }
@@ -292,7 +292,7 @@ class SponsorshipController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Sponsorship cancelled. Product is no longer boosted.',
+            'message' => __('seller.sponsor.cancelled'),
         ]);
     }
 
@@ -569,7 +569,7 @@ public function publicFeed(Request $request): JsonResponse
     {
         return response()->json([
             'success' => false,
-            'message' => 'Payment is required to activate this sponsorship.',
+            'message' => __('seller.sponsor.payment_required'),
             'code'    => 'PAYMENT_REQUIRED',
             'data'    => [
                 'amount_due'   => number_format($amountDue, 3),

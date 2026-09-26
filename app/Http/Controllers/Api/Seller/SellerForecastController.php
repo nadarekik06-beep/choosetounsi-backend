@@ -127,7 +127,7 @@ class SellerForecastController extends Controller
             ->first();
 
         if (!$main) {
-            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
+            return response()->json(['success' => false, 'message' => __('seller.common.product_not_found')], 404);
         }
 
         $priceMin = (float)$main->price * 0.5;
@@ -689,7 +689,7 @@ public function upcomingEvents(Request $request)
         $productId = (int) $request->product_id;
         $sellerId  = auth()->id();
         self::clearForecastCache($productId, $sellerId);
-        return response()->json(['success' => true, 'message' => 'Cache cleared.']);
+        return response()->json(['success' => true, 'message' => __('seller.common.cache_cleared')]);
     }
 
     /**
@@ -762,13 +762,13 @@ public function upcomingEvents(Request $request)
         $insights = [];
         if ($marketMedian > 0) {
             $ratio = $ownUnits / $marketMedian;
-            if ($ratio < 0.5)      $insights[] = ['type' => 'warning',     'message' => "Sales are " . round((1 - $ratio) * 100) . "% below similar products."];
-            elseif ($ratio > 1.5)  $insights[] = ['type' => 'positive',    'message' => "Outperforming " . round($ratio * 100 - 100) . "% above similar products."];
-            else                   $insights[] = ['type' => 'neutral',     'message' => "Sales are in line with similar products."];
+            if ($ratio < 0.5)      $insights[] = ['type' => 'warning',     'message' => __('seller.forecast.below_similar', ['pct' => round((1 - $ratio) * 100)])];
+            elseif ($ratio > 1.5)  $insights[] = ['type' => 'positive',    'message' => __('seller.forecast.above_similar', ['pct' => round($ratio * 100 - 100)])];
+            else                   $insights[] = ['type' => 'neutral',     'message' => __('seller.forecast.in_line')];
         }
-        if ($ownPrice > $marketAvgPrice * 1.20)   $insights[] = ['type' => 'warning',     'message' => "Price is " . round(($ownPrice / $marketAvgPrice - 1) * 100) . "% above market average."];
-        elseif ($ownPrice < $marketAvgPrice * 0.80) $insights[] = ['type' => 'opportunity', 'message' => "Price is below market average — room to increase 10–15%."];
-        if ($topSeller && $topSeller['monthly_units'] > 0) $insights[] = ['type' => 'info', 'message' => "Top performer: '{$topSeller['name']}' — {$topSeller['monthly_units']} units/month."];
+        if ($ownPrice > $marketAvgPrice * 1.20)   $insights[] = ['type' => 'warning',     'message' => __('seller.forecast.price_above', ['pct' => round(($ownPrice / $marketAvgPrice - 1) * 100)])];
+        elseif ($ownPrice < $marketAvgPrice * 0.80) $insights[] = ['type' => 'opportunity', 'message' => __('seller.forecast.price_below')];
+        if ($topSeller && $topSeller['monthly_units'] > 0) $insights[] = ['type' => 'info', 'message' => __('seller.forecast.top_performer', ['name' => $topSeller['name'], 'units' => $topSeller['monthly_units']])];
         return $insights;
     }
 

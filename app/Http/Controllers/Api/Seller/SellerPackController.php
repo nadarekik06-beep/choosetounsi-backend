@@ -79,7 +79,7 @@ public function show(Request $request, int $id)
         if ($ownedCount !== $productIds->count()) {
             return response()->json([
                 'success' => false,
-                'message' => 'One or more products do not belong to you.',
+                'message' => __('seller.common.products_not_owned'),
             ], 403);
         }
 
@@ -114,7 +114,7 @@ public function show(Request $request, int $id)
 
             return response()->json([
                 'success' => true,
-                'message' => 'Pack created! It will be reviewed by an admin.',
+                'message' => __('seller.pack.created'),
                 'data' => $this->formatPack($pack->load([
     'items.product.primaryImage',
     'items.product.variants.attributeOptions.attribute',
@@ -128,7 +128,7 @@ public function show(Request $request, int $id)
             ]);
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to create pack.',
+                'message' => __('seller.pack.create_failed'),
                 'debug'   => $e->getMessage(),
             ], 500);
         }
@@ -172,7 +172,7 @@ public function show(Request $request, int $id)
                     DB::rollBack();
                     return response()->json([
                         'success' => false,
-                        'message' => 'One or more products do not belong to you.',
+                        'message' => __('seller.common.products_not_owned'),
                     ], 403);
                 }
 
@@ -184,7 +184,7 @@ public function show(Request $request, int $id)
 
             return response()->json([
                 'success' => true,
-                'message' => 'Pack updated.',
+                'message' => __('seller.pack.updated'),
 'data' => $this->formatPack($pack->load([
     'items.product.primaryImage',
     'items.product.variants.attributeOptions.attribute',
@@ -203,7 +203,7 @@ public function show(Request $request, int $id)
     {
         $pack = Pack::where('seller_id', $request->user()->id)->findOrFail($id);
         $pack->delete(); // boot() handles image cleanup
-        return response()->json(['success' => true, 'message' => 'Pack deleted.']);
+        return response()->json(['success' => true, 'message' => __('seller.pack.deleted')]);
     }
 
     // ── Seller's own products list (for item picker) ───────────────────────

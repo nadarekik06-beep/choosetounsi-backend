@@ -35,7 +35,7 @@ class SellerNotificationController extends Controller
     {
         try {
             $seller  = $request->user();
-            if (!$seller) return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
+            if (!$seller) return response()->json(['success' => false, 'message' => __('seller.common.unauthenticated')], 401);
 
             $perPage = min((int) $request->query('per_page', 20), 100);
 
@@ -54,7 +54,7 @@ class SellerNotificationController extends Controller
             ]);
         } catch (\Exception $e) {
             Log::error('[SellerNotificationController::index] ' . $e->getMessage());
-            return response()->json(['success' => false, 'message' => 'Server error.'], 500);
+            return response()->json(['success' => false, 'message' => __('seller.common.server_error')], 500);
         }
     }
 
@@ -62,7 +62,7 @@ class SellerNotificationController extends Controller
     {
         try {
             $seller = $request->user();
-            if (!$seller) return response()->json(['success' => false, 'message' => 'Unauthenticated.'], 401);
+            if (!$seller) return response()->json(['success' => false, 'message' => __('seller.common.unauthenticated')], 401);
 
             return response()->json([
                 'success' => true,
@@ -81,7 +81,7 @@ class SellerNotificationController extends Controller
             $notification->markAsRead();
             return response()->json(['success' => true]);
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            return response()->json(['success' => false, 'message' => 'Not found.'], 404);
+            return response()->json(['success' => false, 'message' => __('seller.common.not_found')], 404);
         } catch (\Exception $e) {
             Log::error('[SellerNotificationController::markRead] ' . $e->getMessage());
             return response()->json(['success' => false], 500);

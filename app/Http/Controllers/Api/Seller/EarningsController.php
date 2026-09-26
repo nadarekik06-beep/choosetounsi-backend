@@ -156,7 +156,7 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
     if (!$batch) {
         return response()->json([
             'success' => false,
-            'message' => 'Settlement not found.',
+            'message' => __('seller.earnings.settlement_not_found'),
         ], 404);
     }
 

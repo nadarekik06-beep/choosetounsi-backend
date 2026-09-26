@@ -27,7 +27,7 @@ class SellerApplicationSubmittedMail extends Mailable implements ShouldQueue
     public function build(): self
     {
         return $this
-            ->subject("Application Received — We're On It! ✅")
+            ->subject(__('seller.mail.submitted.subject'))
             ->view('emails.seller-application.submitted')
             ->with([
                 'seller'      => $this->seller,

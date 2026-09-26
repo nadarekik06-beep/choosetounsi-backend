@@ -216,9 +216,9 @@ class SubscriptionService
             $this->audit($sub, 'plan_assigned', $admin, 'admin', $reason, $before, $change->id);
         });
 
-        $this->notify($sub, 'plan_assigned',
-            "Your plan is now {$plan->name}",
-            "An administrator moved your store to the {$plan->name} plan." . $this->endSentence($sub->fresh()) . " Reason: {$reason}");
+        $end = $sub->fresh()->billing_cycle_end;
+        $this->notify($sub, 'plan_assigned', $end ? 'plan_assigned' : 'plan_assigned_open',
+            ['plan' => $plan->name, 'end_date' => $end?->toDateString(), 'reason' => $reason]);
 
         return $sub->fresh();
     }
@@ -246,8 +246,8 @@ class SubscriptionService
             $this->audit($sub, 'end_date_changed', $admin, 'admin', $reason, $before);
         });
 
-        $this->notify($sub, 'end_date_changed', 'Your subscription dates changed',
-            "Your current period now ends on {$newEnd->format('d M Y')}. Reason: {$reason}");
+        $this->notify($sub, 'end_date_changed', 'end_date_changed',
+            ['end_date' => $newEnd->toDateString(), 'reason' => $reason]);
 
         return $sub->fresh();
     }
@@ -274,8 +274,8 @@ class SubscriptionService
             $this->audit($sub, 'free_days_granted', $admin, 'admin', "+{$days} days — {$reason}", $before);
         });
 
-        $this->notify($sub, 'free_days_granted', "You received {$days} free days",
-            "{$days} free days were added to your subscription. It now runs until {$newEnd->format('d M Y')}.");
+        $this->notify($sub, 'free_days_granted', 'free_days_granted',
+            ['days' => $days, 'end_date' => $newEnd->toDateString()]);
 
         return $sub->fresh();
     }
@@ -315,8 +315,8 @@ class SubscriptionService
             $this->audit($sub, 'trial_started', $admin, 'admin', "{$days}-day trial — {$reason}", $before, $change->id);
         });
 
-        $this->notify($sub, 'trial_started', "Your {$plan->name} trial has started",
-            "Enjoy {$plan->name} free for {$days} days, until {$endsAt->format('d M Y')}. Subscribe before then to keep its features.");
+        $this->notify($sub, 'trial_started', 'trial_started',
+            ['plan' => $plan->name, 'days' => $days, 'end_date' => $endsAt->toDateString()]);
 
         return $sub->fresh();
     }
@@ -341,8 +341,7 @@ class SubscriptionService
             $this->audit($sub, 'suspended', $admin, 'admin', $reason, $before);
         });
 
-        $this->notify($sub, 'suspended', 'Your subscription has been suspended',
-            "Premium features are disabled until further notice. Reason: {$reason}", ['icon' => 'alert-triangle']);
+        $this->notify($sub, 'suspended', 'suspended', ['reason' => $reason], ['icon' => 'alert-triangle']);
 
         return $sub->fresh();
     }
@@ -376,8 +375,7 @@ class SubscriptionService
             $this->audit($sub, 'reactivated', $admin, 'admin', $reason, $before);
         });
 
-        $this->notify($sub, 'reactivated', 'Your subscription is active again',
-            "Your plan features have been restored. {$reason}");
+        $this->notify($sub, 'reactivated', 'reactivated', ['reason' => $reason]);
 
         return $sub->fresh();
     }
@@ -428,10 +426,8 @@ class SubscriptionService
         });
 
         $fresh = $sub->fresh();
-        $this->notify($sub, 'cancelled', 'Your subscription was cancelled',
-            ($fresh->pending_plan
-                ? "You keep your current plan until {$fresh->billing_cycle_end->format('d M Y')}, then move to {$default->name}."
-                : "Your store is now on the {$default->name} plan.") . " Reason: {$reason}",
+        $this->notify($sub, 'cancelled', $fresh->pending_plan ? 'cancelled_at_end' : 'cancelled_now',
+            ['plan' => $default->name, 'end_date' => $fresh->billing_cycle_end?->toDateString(), 'reason' => $reason],
             ['icon' => 'alert-triangle']);
 
         return $fresh;
@@ -451,9 +447,8 @@ class SubscriptionService
         });
 
         $rateLabel = rtrim(rtrim(number_format($rate, 2), '0'), '.');
-        $this->notify($sub, 'commission_override_set', "Your commission rate is now {$rateLabel}%",
-            "A custom commission of {$rateLabel}% applies to your new orders" .
-            ($expiresAt ? " until {$expiresAt->format('d M Y')}." : '.') . ' Existing orders are not affected.');
+        $this->notify($sub, 'commission_override_set', $expiresAt ? 'commission_set_until' : 'commission_set',
+            ['rate' => $rateLabel, 'end_date' => $expiresAt?->toDateString()]);
 
         return $sub->fresh();
     }
@@ -470,8 +465,7 @@ class SubscriptionService
             $this->audit($sub, 'commission_override_removed', $admin, 'admin', $reason, $before);
         });
 
-        $this->notify($sub, 'commission_override_removed', 'Your custom commission rate ended',
-            'Your new orders now use your plan\'s standard commission rate. Existing orders are not affected.');
+        $this->notify($sub, 'commission_override_removed', 'commission_removed');
 
         return $sub->fresh();
     }
@@ -502,22 +496,18 @@ class SubscriptionService
                         ->exists();
                     if ($already) return;
 
-                    $when = $n === 1 ? 'tomorrow' : "in {$n} days";
+                    $params = ['plan' => $plan->name, 'days' => $n, 'end_date' => $sub->billing_cycle_end->toDateString()];
                     if ($sub->isTrial()) {
-                        $title = "Your {$plan->name} trial ends {$when}";
-                        $body  = "Subscribe before {$sub->billing_cycle_end->format('d M Y')} to keep {$plan->name} features.";
+                        $key = 'reminder_trial';
                     } elseif ($sub->hasPendingDowngrade()) {
-                        $to    = SubscriptionPlan::forSlug($sub->pending_plan)->name;
-                        $title = "Your {$plan->name} plan ends {$when}";
-                        $body  = "On {$sub->billing_cycle_end->format('d M Y')} your store moves to {$to}.";
+                        $key = 'reminder_downgrade';
+                        $params['to'] = SubscriptionPlan::forSlug($sub->pending_plan)->name;
                     } else {
-                        $price = number_format($plan->priceFor($sub->billing_period ?? 'monthly'), 0);
-                        $title = "Your {$plan->name} plan renews {$when}";
-                        $body  = "Your subscription ({$price} DT/" . ($sub->billing_period === 'yearly' ? 'year' : 'month') .
-                                 ") is due on {$sub->billing_cycle_end->format('d M Y')}. Renew to avoid losing features.";
+                        $key = $sub->billing_period === 'yearly' ? 'reminder_renew_yearly' : 'reminder_renew_monthly';
+                        $params['price'] = number_format($plan->priceFor($sub->billing_period ?? 'monthly'), 0);
                     }
 
-                    $this->notify($sub, 'expiry_reminder', $title, $body,
+                    $this->notify($sub, 'expiry_reminder', $key, $params,
                         ['source' => 'subscription_renewal_reminder', 'days_remaining' => $n]);
                     $this->audit($sub, 'expiry_reminder', null, 'system', "{$n}d");
                     $sent++;
@@ -594,8 +584,7 @@ class SubscriptionService
                 $this->audit($sub, 'downgraded', null, 'system', 'Scheduled change applied at end of billing cycle', $before, $change->id);
             });
 
-            $this->notify($sub, 'downgraded', "Your store is now on {$target->name}",
-                "Your previous plan ended. Products above the {$target->name} limit are hidden (never deleted) until you upgrade again.");
+            $this->notify($sub, 'downgraded', 'downgraded', ['plan' => $target->name]);
             return;
         }
 
@@ -606,9 +595,9 @@ class SubscriptionService
         $this->audit($sub, 'grace_started', null, 'system', 'Billing period ended without renewal', $before);
 
         $plan = SubscriptionPlan::forSlug($sub->current_plan)->name;
-        $this->notify($sub, 'grace_started', "Your {$plan} plan has expired",
-            "You keep your features until {$graceEndsAt->format('d M Y')}. Renew before then or your store moves to " .
-            SubscriptionPlan::defaultPlan()->name . '.', ['icon' => 'alert-triangle']);
+        $this->notify($sub, 'grace_started', 'grace_started',
+            ['plan' => $plan, 'end_date' => $graceEndsAt->toDateString(), 'to' => SubscriptionPlan::defaultPlan()->name],
+            ['icon' => 'alert-triangle']);
     }
 
     /** Grace periods that ran out → default plan. */
@@ -641,8 +630,7 @@ class SubscriptionService
                 $before = $this->snapshot($sub);
                 $this->clearOverride($sub);
                 $this->audit($sub, 'commission_override_expired', null, 'system', null, $before);
-                $this->notify($sub, 'commission_override_expired', 'Your custom commission rate has ended',
-                    'Your new orders now use your plan\'s standard commission rate.');
+                $this->notify($sub, 'commission_override_expired', 'commission_expired');
                 $count++;
             });
         return $count;
@@ -670,8 +658,8 @@ class SubscriptionService
             $this->audit($sub, $auditAction, null, 'system', $reason, $before, $change->id);
         });
 
-        $this->notify($sub, $auditAction, "Your store is now on {$default->name}",
-            "{$reason}. Products above the {$default->name} limit are hidden (never deleted) — upgrade anytime to restore them.",
+        $this->notify($sub, $auditAction, $auditAction === 'trial_ended' ? 'reverted_trial' : 'reverted_unpaid',
+            ['plan' => $default->name, 'from' => SubscriptionPlan::forSlug($before['plan'] ?? null)->name],
             ['icon' => 'alert-triangle']);
         Log::info("[SubscriptionService] Reverted to default: user #{$sub->user_id} — {$reason}");
     }
@@ -745,18 +733,18 @@ class SubscriptionService
         }
     }
 
-    private function notify(SellerSubscription $sub, string $action, string $title, string $body, array $meta = []): void
+    /**
+     * Notify the seller. $key picks seller.notif.subscription.{key}.title/body; the text is
+     * rendered in the seller's own locale when the notification is stored.
+     */
+    private function notify(SellerSubscription $sub, string $action, string $key, array $params = [], array $meta = []): void
     {
         try {
             $user = $sub->user ?? User::find($sub->user_id);
-            $user?->notify(new SubscriptionUpdatedNotification($action, $title, $body, $meta));
+            $user?->notify(new SubscriptionUpdatedNotification($action, $key, $params, $meta));
         } catch (\Throwable $e) {
             Log::warning('[SubscriptionService] notify failed: ' . $e->getMessage());
         }
     }
 
-    private function endSentence(SellerSubscription $sub): string
-    {
-        return $sub->billing_cycle_end ? " It runs until {$sub->billing_cycle_end->format('d M Y')}." : '';
-    }
 }

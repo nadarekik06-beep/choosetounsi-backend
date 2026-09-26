@@ -50,7 +50,7 @@ class EmailService
     public function sendSellerApplicationSubmitted(User $seller, SellerApplication $application): void
     {
         try {
-            Mail::to($seller->email)
+            Mail::to($seller)
                 ->queue(new SellerApplicationSubmittedMail($seller, $application));
         } catch (\Exception $e) {
             Log::error("SellerApplicationSubmittedMail failed for user #{$seller->id}: " . $e->getMessage());
@@ -63,7 +63,7 @@ class EmailService
     public function sendSellerApplicationApproved(User $seller, SellerApplication $application): void
     {
         try {
-            Mail::to($seller->email)
+            Mail::to($seller)
                 ->queue(new SellerApplicationApprovedMail($seller, $application));
         } catch (\Exception $e) {
             Log::error("SellerApplicationApprovedMail failed for user #{$seller->id}: " . $e->getMessage());

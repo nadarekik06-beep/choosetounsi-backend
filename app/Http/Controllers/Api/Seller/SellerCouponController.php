@@ -63,7 +63,7 @@ class SellerCouponController extends Controller
         if ($validated['discount_type'] === 'percentage' && $validated['discount_value'] > 100) {
             return response()->json([
                 'success' => false,
-                'errors'  => ['discount_value' => ['A percentage discount cannot exceed 100%.']],
+                'errors'  => ['discount_value' => [__('seller.coupon.pct_max')]],
             ], 422);
         }
 
@@ -77,7 +77,7 @@ class SellerCouponController extends Controller
         if ($owned !== count($productIds)) {
             return response()->json([
                 'success' => false,
-                'message' => 'One or more products are invalid or do not belong to you.',
+                'message' => __('seller.common.products_not_yours'),
             ], 403);
         }
 
@@ -101,7 +101,7 @@ class SellerCouponController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'Coupon created successfully.',
+                'message' => __('seller.coupon.created'),
                 'data'    => $this->format($coupon->load(['products:id,name,slug,price', 'products.primaryImage'])),
             ], 201);
         } catch (\Throwable $e) {
@@ -148,7 +148,7 @@ class SellerCouponController extends Controller
                     DB::rollBack();
                     return response()->json([
                         'success' => false,
-                        'message' => 'One or more products are invalid or do not belong to you.',
+                        'message' => __('seller.common.products_not_yours'),
                     ], 403);
                 }
                 $coupon->products()->sync($productIds);
@@ -157,7 +157,7 @@ class SellerCouponController extends Controller
             DB::commit();
             return response()->json([
                 'success' => true,
-                'message' => 'Coupon updated.',
+                'message' => __('seller.coupon.updated'),
                 'data'    => $this->format($coupon->load(['products:id,name,slug,price', 'products.primaryImage'])),
             ]);
         } catch (\Throwable $e) {
@@ -172,7 +172,7 @@ class SellerCouponController extends Controller
     {
         $coupon = Coupon::where('seller_id', $request->user()->id)->findOrFail($id);
         $coupon->delete();
-        return response()->json(['success' => true, 'message' => 'Coupon deleted.']);
+        return response()->json(['success' => true, 'message' => __('seller.coupon.deleted')]);
     }
 
     // ── Stats ──────────────────────────────────────────────────────────────

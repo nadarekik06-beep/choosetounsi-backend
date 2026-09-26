@@ -35,7 +35,7 @@ class OutOfStockNotification extends Notification
 
     public function toDatabase(object $notifiable): array
     {
-        $productName  = $this->product->name;
+        $productName  = ($this->product->getRawOriginal('name') ?? $this->product->name);
         $variantLabel = $this->resolveVariantLabel();
 
         $fullName = $variantLabel
@@ -46,8 +46,8 @@ class OutOfStockNotification extends Notification
             // ── Fields consumed by NotificationBell.tsx ───────────────────
             'type'   => 'out_of_stock',
             'action' => 'out_of_stock',
-            'title'  => "🚨 Out of Stock: {$fullName}",
-            'body'   => "This item is now out of stock. Update your inventory to resume sales.",
+            'title'  => __('seller.notif.out_of_stock.title', ['name' => $fullName]),
+            'body'   => __('seller.notif.out_of_stock.body'),
             'icon'   => 'package-x',
             'link'   => "/seller/products/{$this->product->id}",
 

@@ -120,13 +120,17 @@ class SellerReviewController extends Controller
             ->where('r.seller_id', $sellerId)
             ->where('r.status', 'approved')
             ->select(
-                'rt.id', 'rt.label', 'rt.label_fr', 'rt.sentiment', 'rt.icon',
+                'rt.id', 'rt.label', 'rt.label_fr', 'rt.label_ar', 'rt.sentiment', 'rt.icon',
                 DB::raw('COUNT(*) as usage_count')
             )
-            ->groupBy('rt.id', 'rt.label', 'rt.label_fr', 'rt.sentiment', 'rt.icon')
+            ->groupBy('rt.id', 'rt.label', 'rt.label_fr', 'rt.label_ar', 'rt.sentiment', 'rt.icon')
             ->orderByDesc('usage_count')
             ->limit(8)
-            ->get();
+            ->get()
+            ->map(function ($t) {
+                $t->label = ReviewTag::localizedLabel($t);
+                return $t;
+            });
 
         // Repeated complaint alerts (negative tags with high count)
         $alerts = $topTags->where('sentiment', 'negative')->filter(fn($t) => $t->usage_count >= 3);
@@ -184,7 +188,7 @@ class SellerReviewController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Reply saved.',
+            'message' => __('seller.review.reply_saved'),
             'data'    => [
                 'id'         => $reply->id,
                 'body'       => $reply->body,
@@ -216,7 +220,7 @@ class SellerReviewController extends Controller
 
         $exists = ReviewReport::where('review_id', $id)->where('reported_by', $sellerId)->exists();
         if ($exists) {
-            return response()->json(['success' => false, 'message' => 'Already reported.'], 409);
+            return response()->json(['success' => false, 'message' => __('seller.review.already_reported')], 409);
         }
 
         ReviewReport::create([
@@ -226,7 +230,7 @@ class SellerReviewController extends Controller
             'note'        => $data['note'] ?? null,
         ]);
 
-        return response()->json(['success' => true, 'message' => 'Review reported to admin.']);
+        return response()->json(['success' => true, 'message' => __('seller.review.reported')]);
     }
 
     // ── Private: format review for seller dashboard ───────────────────────────
@@ -241,7 +245,7 @@ class SellerReviewController extends Controller
             'is_verified'   => $r->is_verified_purchase,
             'status'        => $r->status,
             'helpful_count' => $r->helpful_count,
-            'tags'          => $r->tags->map(fn($t) => ['id' => $t->id, 'label' => $t->label, 'sentiment' => $t->sentiment, 'icon' => $t->icon]),
+            'tags'          => $r->tags->map(fn($t) => ['id' => $t->id, 'label' => ReviewTag::localizedLabel($t), 'sentiment' => $t->sentiment, 'icon' => $t->icon]),
             'media'         => $r->allMedia->where('is_approved', true)->values()->map(fn($m) => ['id' => $m->id, 'url' => $m->url]),
             'reply'         => $r->reply ? ['id' => $r->reply->id, 'body' => $r->reply->body, 'created_at' => $r->reply->created_at->format('Y-m-d')] : null,
             'reports_count' => $r->reports->count(),

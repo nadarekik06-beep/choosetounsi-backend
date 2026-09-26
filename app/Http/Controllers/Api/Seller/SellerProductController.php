@@ -331,7 +331,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
         return response()->json([
             'success' => true,
-            'message' => 'Product created! It will be reviewed by an admin.',
+            'message' => __('seller.product.created_review'),
             'data'    => $product->load(['images', 'category', 'variants.attributeOptions.attribute']),
         ], 201);
     }
@@ -438,7 +438,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
         return response()->json([
             'success' => true,
-            'message' => 'Product updated.',
+            'message' => __('seller.product.updated'),
             'data'    => $product->fresh(['images', 'category', 'variants.attributeOptions.attribute']),
         ]);
     }
@@ -467,7 +467,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
         return response()->json([
             'success' => true,
-            'message' => 'Product removed.',
+            'message' => __('seller.product.removed'),
         ]);
     }
 
@@ -482,7 +482,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
     $this->notifyAdmins('deleted', (object) ['id' => $pid, 'name' => $pname], $seller);
 
-    return response()->json(['success' => true, 'message' => 'Product deleted.']);
+    return response()->json(['success' => true, 'message' => __('seller.product.deleted')]);
 }
 
     // ── Image endpoints ─────────────────────────────────────────────────────────
@@ -492,7 +492,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         $product = $request->user()->products()->findOrFail($productId);
         $product->images()->update(['is_primary' => false]);
         $product->images()->where('id', $imageId)->update(['is_primary' => true]);
-        return response()->json(['success' => true, 'message' => 'Primary image updated.']);
+        return response()->json(['success' => true, 'message' => __('seller.product.primary_updated')]);
     }
 
     public function destroyImage(Request $request, $productId, $imageId)
@@ -500,7 +500,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         $product = $request->user()->products()->findOrFail($productId);
 
         if ($product->images()->count() <= 1) {
-            return response()->json(['success' => false, 'message' => 'Cannot delete the last image.'], 400);
+            return response()->json(['success' => false, 'message' => __('seller.product.last_image')], 400);
         }
 
         $image      = $product->images()->findOrFail($imageId);
@@ -513,7 +513,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
             $product->images()->first()?->update(['is_primary' => true]);
         }
 
-        return response()->json(['success' => true, 'message' => 'Image deleted.']);
+        return response()->json(['success' => true, 'message' => __('seller.product.image_deleted')]);
     }
 
     // ── Private helpers ─────────────────────────────────────────────────────────

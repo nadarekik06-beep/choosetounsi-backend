@@ -34,23 +34,23 @@ class SellerApplicationReviewedNotification extends Notification
             return [
                 'type'          => 'seller_application_reviewed',
                 'action'        => 'approved',
-                'title'         => 'Application approved!',
-                'body'          => 'Congratulations! Your seller application for "' . $this->businessName . '" has been approved. You can now list products.',
+                'title'         => __('seller.notif.application.approved.title'),
+                'body'          => __('seller.notif.application.approved.body', ['name' => $this->businessName]),
                 'icon'          => 'check-circle',
                 'link'          => '/seller/dashboard',
                 'business_name' => $this->businessName,
             ];
         }
 
-        $body = 'Your seller application for "' . $this->businessName . '" was not approved.';
+        $body = __('seller.notif.application.rejected.body', ['name' => $this->businessName]);
         if ($this->reason) {
-            $body .= ' Reason: ' . $this->reason;
+            $body .= ' ' . __('seller.notif.product_reviewed.reason', ['reason' => $this->reason]);
         }
 
         return [
             'type'          => 'seller_application_reviewed',
             'action'        => 'rejected',
-            'title'         => 'Application not approved',
+            'title'         => __('seller.notif.application.rejected.title'),
             'body'          => $body,
             'icon'          => 'x-circle',
             'link'          => '/apply-seller',

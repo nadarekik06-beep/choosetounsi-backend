@@ -147,8 +147,8 @@ class ProductAlertService
         if ($hasZeroSales) {
             $reasons[]   = [
                 'key'     => 'zero_sales',
-                'label'   => 'No sales in ' . $this->windowDays . ' days',
-                'detail'  => 'This product has had 0 sales in the last ' . $this->windowDays . ' days despite being listed for ' . $listingAge . ' days.',
+                'label'   => __('seller.alerts.zero_sales.label', ['days' => $this->windowDays]),
+                'detail'  => __('seller.alerts.zero_sales.detail', ['days' => $this->windowDays, 'age' => $listingAge]),
                 'severity'=> 'critical',
             ];
             $alertScore += 40;
@@ -159,8 +159,8 @@ class ProductAlertService
         if ($hasLowSales) {
             $reasons[] = [
                 'key'     => 'low_sales',
-                'label'   => 'Low sales detected',
-                'detail'  => "Only {$unitsSold} unit(s) sold in the last {$this->windowDays} days.",
+                'label'   => __('seller.alerts.low_sales.label'),
+                'detail'  => trans_choice('seller.alerts.low_sales.detail', $unitsSold, ['count' => $unitsSold, 'days' => $this->windowDays]),
                 'severity'=> 'warning',
             ];
             $alertScore += 25;
@@ -174,8 +174,8 @@ class ProductAlertService
         if ($hasHighStock && $hasBadRatio) {
             $reasons[] = [
                 'key'     => 'high_stock_risk',
-                'label'   => 'High stock risk',
-                'detail'  => "You have {$stock} units but only {$unitsSold} sold recently. Stock is tying up capital.",
+                'label'   => __('seller.alerts.high_stock.label'),
+                'detail'  => __('seller.alerts.high_stock.detail', ['stock' => $stock, 'sold' => $unitsSold]),
                 'severity'=> 'warning',
             ];
             $alertScore += 20;
@@ -186,8 +186,8 @@ class ProductAlertService
         if ($hasLowViews && ($hasZeroSales || $hasLowSales)) {
             $reasons[] = [
                 'key'     => 'low_visibility',
-                'label'   => 'Low visibility',
-                'detail'  => "Only {$views} views. Your product may not be appearing in search results.",
+                'label'   => __('seller.alerts.low_visibility.label'),
+                'detail'  => __('seller.alerts.low_visibility.detail', ['views' => $views]),
                 'severity'=> 'info',
             ];
             $alertScore += 15;
@@ -209,14 +209,14 @@ class ProductAlertService
         if ($hasZeroSales || $hasLowSales) {
             $suggestedActions[] = [
                 'key'   => 'flash_sale',
-                'label' => 'Create Flash Sale',
+                'label' => __('seller.alerts.actions.flash_sale'),
                 'icon'  => 'zap',
                 'href'  => '/seller/promotions?create=flash_sale',
                 'color' => '#f59e0b',
             ];
             $suggestedActions[] = [
                 'key'   => 'optimize_price',
-                'label' => 'Optimize Price',
+                'label' => __('seller.alerts.actions.optimize_price'),
                 'icon'  => 'dollar-sign',
                 'href'  => '/seller/ai-tools?tab=price&product_id=' . $productId . '&autorun=1',
                 'color' => '#db142e',
@@ -227,7 +227,7 @@ class ProductAlertService
         if ($hasHighStock) {
             $suggestedActions[] = [
                 'key'   => 'bundle',
-                'label' => 'Bundle Product',
+                'label' => __('seller.alerts.actions.bundle'),
                 'icon'  => 'package',
                 'href'  => '/seller/packs',
                 'color' => '#8b5cf6',
@@ -238,7 +238,7 @@ class ProductAlertService
         if ($hasLowViews) {
             $suggestedActions[] = [
                 'key'   => 'promote',
-                'label' => 'Promote Product',
+                'label' => __('seller.alerts.actions.promote'),
                 'icon'  => 'trending-up',
                 'href'  => '/seller/promote',
                 'color' => '#10b981',
@@ -247,7 +247,7 @@ class ProductAlertService
 
         $suggestedActions[] = [
             'key'   => 'description',
-            'label' => 'Improve Listing',
+            'label' => __('seller.alerts.actions.description'),
             'icon'  => 'file-text',
             'href'  => '/seller/ai-tools?tab=description&product_id=' . $productId,
             'color' => '#3b82f6',

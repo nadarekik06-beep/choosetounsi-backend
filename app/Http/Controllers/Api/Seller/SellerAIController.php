@@ -101,7 +101,7 @@ class SellerAIController extends Controller
             ->first();
 
         if (!$product) {
-            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
+            return response()->json(['success' => false, 'message' => __('seller.common.product_not_found')], 404);
         }
 
         $salesHistory = DB::table('order_items as oi')
@@ -471,7 +471,7 @@ EOT;
             ->first();
 
         if (!$product) {
-            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
+            return response()->json(['success' => false, 'message' => __('seller.common.product_not_found')], 404);
         }
 
         $rawSeason = $product->season;
@@ -1033,7 +1033,7 @@ EOT;
             ->first();
 
         if (!$product) {
-            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
+            return response()->json(['success' => false, 'message' => __('seller.common.product_not_found')], 404);
         }
 
         $attributeRows = DB::table('product_attribute_values as pav')
@@ -1736,7 +1736,7 @@ EOT;
             ->first();
 
         if (!$mainProduct) {
-            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
+            return response()->json(['success' => false, 'message' => __('seller.common.product_not_found')], 404);
         }
 
         $ordersWithMain = DB::table('order_items')->where('product_id', $mainProduct->id)->pluck('order_id');

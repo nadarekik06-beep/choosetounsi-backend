@@ -37,7 +37,19 @@ class BlackSmartNotification extends Notification
 
     public function toDatabase(object $notifiable): array
     {
-        return array_merge($this->payload, [
+        $payload = $this->payload;
+        // New payloads carry params; the text is rendered here, in the seller's own locale.
+        if (isset($payload['params'], $payload['notify_type'])) {
+            $key    = 'seller.notif.black.' . $payload['notify_type'];
+            $params = $payload['params'];
+            $payload['title'] = isset($params['count'])
+                ? trans_choice("{$key}.title", (int) $params['count'], $params)
+                : __("{$key}.title", $params);
+            $payload['body'] = __("{$key}.body", $params);
+            unset($payload['params']);
+        }
+
+        return array_merge($payload, [
             'type'       => 'black_smart',
             'created_at' => now()->format('Y-m-d\TH:i:s\Z'),
         ]);

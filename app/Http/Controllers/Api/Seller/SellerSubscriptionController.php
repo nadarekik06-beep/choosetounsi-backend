@@ -145,9 +145,9 @@ class SellerSubscriptionController extends Controller
             'cvv'             => ['required', 'string', 'regex:/^\d{3,4}$/'],
             'cardholder_name' => ['required', 'string', 'min:2', 'max:100'],
         ], [
-            'card_number.regex' => 'Please enter a valid card number.',
-            'expiry_date.regex' => 'Expiry must be in MM/YY format.',
-            'cvv.regex'         => 'CVV must be 3 or 4 digits.',
+            'card_number.regex' => __('seller.subscription.card_invalid'),
+            'expiry_date.regex' => __('seller.subscription.expiry_format'),
+            'cvv.regex'         => __('seller.subscription.cvv_format'),
         ]);
 
         // ── 2. Find approved seller application ───────────────────────────────
@@ -158,7 +158,7 @@ class SellerSubscriptionController extends Controller
         if (! $application) {
             return response()->json([
                 'success' => false,
-                'message' => 'You must have an approved seller account to upgrade.',
+                'message' => __('seller.subscription.need_seller'),
             ], 403);
         }
 
@@ -170,7 +170,7 @@ class SellerSubscriptionController extends Controller
         if ($sub->isSuspended()) {
             return response()->json([
                 'success' => false,
-                'message' => 'Your subscription is suspended. Please contact support.',
+                'message' => __('seller.subscription.suspended'),
                 'code'    => 'SUBSCRIPTION_SUSPENDED',
             ], 403);
         }
@@ -178,11 +178,11 @@ class SellerSubscriptionController extends Controller
         if ($target->isFree() || (!$sub->isUpgrade($target->slug) && !$convertingTrial)) {
             return response()->json([
                 'success' => false,
-                'message' => 'You are already on this plan or a higher plan.',
+                'message' => __('seller.subscription.already_on_plan'),
             ], 422);
         }
         if ($period === 'yearly' && $target->price_yearly === null) {
-            return response()->json(['success' => false, 'message' => "{$target->name} has no yearly billing."], 422);
+            return response()->json(['success' => false, 'message' => __('seller.subscription.no_yearly', ['plan' => $target->name])], 422);
         }
 
         // ── 4. Determine amount ───────────────────────────────────────────────
@@ -212,7 +212,7 @@ class SellerSubscriptionController extends Controller
             \Log::error('[SellerSubscriptionController::upgrade] ' . $e->getMessage());
             return response()->json([
                 'success' => false,
-                'message' => 'Payment processing failed. Please try again.',
+                'message' => __('seller.subscription.payment_failed'),
             ], 500);
         }
 
@@ -231,7 +231,7 @@ class SellerSubscriptionController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => "Successfully upgraded to {$planLabel}!",
+            'message' => __('seller.subscription.upgraded', ['plan' => $planLabel]),
             'data'    => [
                 'plan'       => $validated['plan'],
                 'amount'     => $amount,
@@ -265,7 +265,7 @@ class SellerSubscriptionController extends Controller
         if (! $application) {
             return response()->json([
                 'success' => false,
-                'message' => 'No approved seller account found.',
+                'message' => __('seller.common.no_seller_account'),
             ], 403);
         }
 
@@ -275,7 +275,7 @@ class SellerSubscriptionController extends Controller
         if (!$current->isHigherThan($target)) {
             return response()->json([
                 'success' => false,
-                'message' => 'The requested plan is not a downgrade from your current plan.',
+                'message' => __('seller.subscription.not_downgrade'),
             ], 422);
         }
 
@@ -284,7 +284,7 @@ class SellerSubscriptionController extends Controller
         if ($sub->hasPendingDowngrade()) {
             return response()->json([
                 'success' => false,
-                'message' => "A downgrade to {$sub->pending_plan} is already scheduled for {$sub->billing_cycle_end?->format('Y-m-d')}.",
+                'message' => __('seller.subscription.downgrade_exists', ['plan' => \App\Models\SubscriptionPlan::forSlug($sub->pending_plan)?->name ?? $sub->pending_plan, 'date' => $sub->billing_cycle_end?->translatedFormat('j F Y')]),
                 'code'    => 'DOWNGRADE_ALREADY_SCHEDULED',
             ], 422);
         }
@@ -300,11 +300,11 @@ class SellerSubscriptionController extends Controller
 
         $planLabel = $target->name;
 
-        $effectiveDate = $sub->billing_cycle_end?->format('Y-m-d') ?? 'end of billing period';
+        $effectiveDate = $sub->billing_cycle_end?->translatedFormat('j F Y') ?? __('seller.subscription.period_end');
 
         return response()->json([
             'success' => true,
-            'message' => "Downgrade to {$planLabel} scheduled. You keep your current plan until {$effectiveDate}.",
+            'message' => __('seller.subscription.downgrade_scheduled', ['plan' => $planLabel, 'date' => $effectiveDate]),
             'data'    => [
                 'pending_plan'    => $sub->pending_plan,
                 'effective_date'  => $effectiveDate,
@@ -329,7 +329,7 @@ class SellerSubscriptionController extends Controller
             ->first();
 
         if (! $application) {
-            return response()->json(['success' => false, 'message' => 'No approved seller account found.'], 403);
+            return response()->json(['success' => false, 'message' => __('seller.common.no_seller_account')], 403);
         }
 
         try {
@@ -337,14 +337,14 @@ class SellerSubscriptionController extends Controller
         } catch (\LogicException $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         } catch (\Throwable $e) {
-            return response()->json(['success' => false, 'message' => 'Failed to cancel downgrade.'], 500);
+            return response()->json(['success' => false, 'message' => __('seller.subscription.cancel_downgrade_failed')], 500);
         }
 
         $planLabel = \App\Models\SubscriptionPlan::forSlug($sub->current_plan)->name;
 
         return response()->json([
             'success' => true,
-            'message' => "Downgrade cancelled. You will remain on {$planLabel}.",
+            'message' => __('seller.subscription.downgrade_cancelled', ['plan' => $planLabel]),
             'data'    => [
                 'current_plan'          => $sub->current_plan,
                 'has_pending_downgrade' => false,

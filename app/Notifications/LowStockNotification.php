@@ -38,7 +38,7 @@ class LowStockNotification extends Notification
 
     public function toDatabase(object $notifiable): array
     {
-        $productName  = $this->product->name;
+        $productName  = ($this->product->getRawOriginal('name') ?? $this->product->name);
         $variantLabel = $this->resolveVariantLabel();
 
         // e.g. "Sneakers (Red / M)" or just "Sneakers"
@@ -46,14 +46,13 @@ class LowStockNotification extends Notification
             ? "{$productName} ({$variantLabel})"
             : $productName;
 
-        $body = "Only {$this->stock} unit" . ($this->stock === 1 ? '' : 's') . " left in stock. "
-              . "Restock soon to avoid losing sales.";
+        $body = trans_choice('seller.notif.low_stock.body', $this->stock, ['count' => $this->stock]);
 
         return [
             // ── Fields consumed by NotificationBell.tsx ───────────────────
             'type'   => 'low_stock',
             'action' => 'low_stock',
-            'title'  => "⚠️ Low Stock: {$fullName}",
+            'title'  => __('seller.notif.low_stock.title', ['name' => $fullName]),
             'body'   => $body,
             'icon'   => 'package-x',
             'link'   => "/seller/products/{$this->product->id}",

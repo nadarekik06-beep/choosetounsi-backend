@@ -364,7 +364,7 @@ public function updateStatus(Request $request, $id)
 
     return response()->json([
         'success' => true,
-        'message' => 'Order status updated.',
+        'message' => __('seller.order.status_updated'),
         'data'    => $sellerOrder,
     ]);
 }
@@ -442,7 +442,7 @@ public function updatePayment(Request $request, $id)
     if ($sellerOrder->payment_status === 'paid') {
         return response()->json([
             'success' => false,
-            'message' => 'Payment has already been confirmed by admin and cannot be changed.',
+            'message' => __('seller.order.payment_locked'),
         ], 403);
     }
 
@@ -450,7 +450,7 @@ public function updatePayment(Request $request, $id)
     if (!in_array($sellerOrder->status, ['delivered', 'completed'])) {
         return response()->json([
             'success' => false,
-            'message' => 'Can only mark as refunded after order is delivered or completed.',
+            'message' => __('seller.order.refund_after_delivery'),
         ], 422);
     }
 
@@ -473,7 +473,7 @@ public function updatePayment(Request $request, $id)
 
     return response()->json([
         'success' => true,
-        'message' => 'Order marked as refunded.',
+        'message' => __('seller.order.refunded'),
         'data'    => $sellerOrder,
     ]);
 }

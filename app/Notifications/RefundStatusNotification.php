@@ -35,15 +35,15 @@ class RefundStatusNotification extends Notification
     {
         $map = [
             'refunded' => [
-                'title'  => '↩ Order Marked as Refunded',
-                'body'   => "Order #{$this->orderNumber} has been marked as refunded. Awaiting product pickup.",
+                'title'  => __('seller.notif.refund.refunded.title'),
+                'body'   => __('seller.notif.refund.refunded.body', ['order' => $this->orderNumber]),
                 'icon'   => 'package-x',
                 'action' => 'refunded',
                 'color'  => '#a855f7',
             ],
             'pickup_done' => [
-                'title'  => '✅ Refunded Product Picked Up',
-                'body'   => "Order #{$this->orderNumber} — the returned product has been picked up and marked delivered.",
+                'title'  => __('seller.notif.refund.pickup_done.title'),
+                'body'   => __('seller.notif.refund.pickup_done.body', ['order' => $this->orderNumber]),
                 'icon'   => 'package-check',
                 'action' => 'updated',
                 'color'  => '#10b981',

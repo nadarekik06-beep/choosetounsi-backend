@@ -205,7 +205,7 @@ class SellerApplicationController extends Controller
             )
         );
 
-        Mail::to($user->email)->queue(
+        Mail::to($user)->queue(
             new SellerApplicationSubmittedMail($user, $application)
         );
 
@@ -337,7 +337,7 @@ class SellerApplicationController extends Controller
             new SellerApplicationReviewedNotification('approved', $application->business_name)
         );
 
-        Mail::to($application->user->email)->queue(
+        Mail::to($application->user)->queue(
             new SellerApplicationApprovedMail($application->user, $application)
         );
 

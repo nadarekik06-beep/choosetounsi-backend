@@ -96,7 +96,7 @@ if (!empty($businessErrors)) {
         if ($owned !== count($productIds)) {
             return response()->json([
                 'success' => false,
-                'message' => 'One or more products are invalid or do not belong to you.',
+                'message' => __('seller.common.products_not_yours'),
             ], 403);
         }
 
@@ -106,7 +106,7 @@ if (!empty($businessErrors)) {
             if ($overlap) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'One or more products already have an active flash sale in this time range.',
+                    'message' => __('seller.promotion.flash_overlap'),
                 ], 422);
             }
         }
@@ -135,7 +135,7 @@ if (!empty($businessErrors)) {
 
             return response()->json([
                 'success' => true,
-                'message' => 'Promotion created successfully.',
+                'message' => __('seller.promotion.created'),
                 'data'    => $this->format($promo->load(['products:id,name,slug,price', 'products.primaryImage'])
 ),
             ], 201);
@@ -153,7 +153,7 @@ if (!empty($businessErrors)) {
         $promo = Promotion::where('seller_id', $request->user()->id)->findOrFail($id);
 
         if ($promo->status === 'expired') {
-            return response()->json(['success' => false, 'message' => 'Cannot edit an expired promotion.'], 422);
+            return response()->json(['success' => false, 'message' => __('seller.promotion.expired')], 422);
         }
 
         DB::beginTransaction();
@@ -179,7 +179,7 @@ if (!empty($businessErrors)) {
             DB::commit();
             return response()->json([
                 'success' => true,
-                'message' => 'Promotion updated.',
+                'message' => __('seller.promotion.updated'),
                 'data'    => $this->format($promo->load(['products:id,name,slug,price', 'products.primaryImage'])),
             ]);
 
@@ -197,7 +197,7 @@ if (!empty($businessErrors)) {
         $productIds = $promo->products->pluck('id')->toArray();
         $promo->delete();
         $this->promoService->bustCacheForProducts($productIds);
-        return response()->json(['success' => true, 'message' => 'Promotion deleted.']);
+        return response()->json(['success' => true, 'message' => __('seller.promotion.deleted')]);
     }
 
     // ── Stats ──────────────────────────────────────────────────────────────

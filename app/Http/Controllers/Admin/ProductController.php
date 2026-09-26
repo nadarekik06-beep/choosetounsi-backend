@@ -420,7 +420,7 @@ public function index(Request $request)
 
         if ($product->seller) {
             $product->seller->notify(
-                new ProductReviewedNotification('rejected', $product->id, $product->name, $note, $labels)
+                new ProductReviewedNotification('rejected', $product->id, $product->name, $note, $labels, array_values(array_diff($reasons, ['other'])))
             );
         }
         return response()->json(['success' => true, 'message' => 'Product rejected.']);
@@ -463,7 +463,7 @@ public function index(Request $request)
 
         if ($product->seller) {
             $product->seller->notify(
-                new ProductReviewedNotification('changes_requested', $product->id, $product->name, $note, $labels)
+                new ProductReviewedNotification('changes_requested', $product->id, $product->name, $note, $labels, array_values(array_diff($reasons, ['other'])))
             );
         }
         return response()->json(['success' => true, 'message' => 'Changes requested from the seller.']);

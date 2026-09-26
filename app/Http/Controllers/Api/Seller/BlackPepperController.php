@@ -66,6 +66,16 @@ class BlackPepperController extends Controller
         return 'COALESCE(' . implode(', ', $parts) . ')';
     }
 
+    /** Language name for LLM prompts — replies follow the seller's interface language. */
+    private function replyLanguage(): string
+    {
+        return match (app()->getLocale()) {
+            'ar'    => 'Arabic (Modern Standard Arabic, Tunisian-friendly)',
+            'en'    => 'English',
+            default => 'French',
+        };
+    }
+
     private function callGroq(string $system, string $user, int $maxTokens = 600): ?string
     {
         $key = $this->groqKey();
@@ -109,18 +119,18 @@ class BlackPepperController extends Controller
 
     private function humanVelocityLabel(float $multiplier): string
     {
-        if ($multiplier >= 3) return "Selling " . round($multiplier) . "x faster than usual";
-        if ($multiplier >= 2) return "Selling twice as fast as usual";
-        return "Selling 1.5x faster than usual";
+        if ($multiplier >= 3) return __('seller.black.velocity.times', ['x' => round($multiplier)]);
+        if ($multiplier >= 2) return __('seller.black.velocity.twice');
+        return __('seller.black.velocity.half');
     }
 
     private function humanUrgencyLabel(string $urgency, int $daysRemaining): string
     {
         if ($urgency === 'critical') {
-            return "Act today — only {$daysRemaining} day" . ($daysRemaining === 1 ? '' : 's') . " left";
+            return trans_choice('seller.black.urgency.critical', $daysRemaining, ['count' => $daysRemaining]);
         }
-        if ($urgency === 'high') return "Restock within 48 hours";
-        return "Plan a restock this week";
+        if ($urgency === 'high') return __('seller.black.urgency.high');
+        return __('seller.black.urgency.medium');
     }
 
     // =========================================================================
@@ -198,12 +208,12 @@ class BlackPepperController extends Controller
                     'velocity_multiplier' => $velocityMultiplier,
                     'velocity_label'      => $this->humanVelocityLabel($velocityMultiplier),
                     'trend_signal'        => $velocityMultiplier >= 2.5 ? 'hot' : ($velocityMultiplier >= 1.8 ? 'rising' : 'warm'),
-                    'insight'             => $this->humanVelocityLabel($velocityMultiplier) . ". " .
+                    'insight'             => $this->humanVelocityLabel($velocityMultiplier) . '. ' .
                                             ($daysToTrend < 3
-                                                ? "This is your hottest product right now."
-                                                : "This product is gaining momentum."),
+                                                ? __('seller.black.trend.hottest')
+                                                : __('seller.black.trend.momentum')),
                     'smart_actions'       => [
-                        ['label' => 'Promote Now', 'href' => '/seller/promote', 'type' => 'promote'],
+                        ['label' => __('seller.black.actions.promote_now'), 'href' => '/seller/promote', 'type' => 'promote'],
                     ],
                     'image_url'           => $product->image_path
                         ? url(\Storage::url($product->image_path))
@@ -250,13 +260,12 @@ class BlackPepperController extends Controller
                     'revenue_at_risk' => $revenueAtRisk,
                     'restock_units'   => max(0, (int) ceil($daily * 30) - $product->stock),
                     'insight'         => match($urgency) {
-                        'critical' => "Only {$daysRemaining} day" . ($daysRemaining === 1 ? '' : 's') . " of stock left. "
-                                      . "You could lose " . number_format($revenueAtRisk, 3) . " TND.",
-                        'high'     => "You have {$daysRemaining} days of stock left. Order a restock this week.",
-                        default    => "Stock is getting low — plan a restock soon.",
+                        'critical' => trans_choice('seller.black.stock.critical', $daysRemaining, ['count' => $daysRemaining, 'amount' => number_format($revenueAtRisk, 3)]),
+                        'high'     => __('seller.black.stock.high', ['count' => $daysRemaining]),
+                        default    => __('seller.black.stock.medium'),
                     },
                     'smart_actions'   => [
-                        ['label' => 'Restock Now', 'href' => "/seller/products/{$product->id}", 'type' => 'restock'],
+                        ['label' => __('seller.black.actions.restock_now'), 'href' => "/seller/products/{$product->id}", 'type' => 'restock'],
                     ],
                     'image_url'       => $product->image_path
                         ? url(\Storage::url($product->image_path))
@@ -269,7 +278,7 @@ class BlackPepperController extends Controller
         $inventoryAlerts = array_slice($inventoryAlerts, 0, 10);
 
         // ── Groq Market Insights — PHASE 3 IMPROVED PROMPT ───────────────
-        $cacheKey  = "black_ai_hub_insights_{$sellerId}";
+        $cacheKey  = "black_ai_hub_insights_{$sellerId}_" . app()->getLocale();
         $cachePath = storage_path("app/cache/{$cacheKey}.json");
         $insights  = null;
 
@@ -289,7 +298,7 @@ class BlackPepperController extends Controller
 
             // ── PHASE 3: Improved prompt — plain language, warm tone ──────
             $system = "You are a trusted business advisor for a Tunisian e-commerce seller on ChooseTounsi.
-Write in plain, warm, encouraging English. Max 3 bullet points.
+Write in plain, warm, encouraging {$this->replyLanguage()}. Max 3 bullet points.
 NEVER use technical terms like 'velocity', 'conversion rate', or 'KPI'.
 ALWAYS respond with ONLY valid JSON — no markdown, no preamble.";
 
@@ -303,6 +312,7 @@ REVENUE FROM FAST SELLERS: {$totalRevenue7d} TND this week
 CRITICAL STOCK: {$criticalCount} product(s) may run out within 3 days
 
 Write like a trusted friend who knows their business. Be specific, warm, and actionable.
+Write every text value in {$this->replyLanguage()} (keep the JSON keys and market_temperature values in English).
 
 Respond ONLY with:
 {
@@ -333,20 +343,20 @@ PROMPT;
             if (!$insights) {
                 $insights = [
                     'headline'           => $trendCount > 0
-                        ? "{$trendCount} of your products are gaining momentum this week."
-                        : 'Your store performance data is ready for analysis.',
+                        ? trans_choice('seller.black.hub.headline_trending', $trendCount, ['count' => $trendCount])
+                        : __('seller.black.hub.headline_ready'),
                     'insights'           => [
                         $trendCount > 0
-                            ? "Your trending products are performing well — consider sponsoring them for even more reach."
-                            : 'Drive traffic to your top products using the Visibility Control panel.',
+                            ? __('seller.black.hub.trending_ok')
+                            : __('seller.black.hub.drive_traffic'),
                         count($inventoryAlerts) > 0
-                            ? count($inventoryAlerts) . ' product(s) need restocking within 14 days to avoid losing sales.'
-                            : 'Your inventory levels are healthy across all active products.',
-                        'Sponsored products on ChooseTounsi see an average 35% increase in visibility.',
+                            ? trans_choice('seller.black.hub.restock_needed', count($inventoryAlerts), ['count' => count($inventoryAlerts)])
+                            : __('seller.black.hub.stock_healthy'),
+                        __('seller.black.hub.sponsored_stat'),
                     ],
                     'priority_action'    => count($inventoryAlerts) > 0
-                        ? 'Restock ' . ($inventoryAlerts[0]['product_name'] ?? 'your at-risk products') . ' immediately.'
-                        : 'Activate sponsorship on your fastest-moving product.',
+                        ? __('seller.black.hub.restock_now', ['name' => $inventoryAlerts[0]['product_name'] ?? __('seller.black.hub.at_risk_products')])
+                        : __('seller.black.hub.activate_sponsor'),
                     'market_temperature' => $trendCount >= 3 ? 'hot' : ($trendCount >= 1 ? 'warm' : 'cooling'),
                 ];
             }
@@ -380,7 +390,7 @@ PROMPT;
         $now       = Carbon::now();
         $seller    = auth()->user();
 
-        $cacheKey  = "black_daily_brief_{$sellerId}";
+        $cacheKey  = "black_daily_brief_{$sellerId}_" . app()->getLocale();
         $cachePath = storage_path("app/cache/{$cacheKey}.json");
 
         if (file_exists($cachePath)) {
@@ -410,11 +420,11 @@ PROMPT;
         $revenuePositive = $todayRevenue >= $yesterdayRevenue;
         if ($yesterdayRevenue > 0) {
             $delta        = round((($todayRevenue - $yesterdayRevenue) / $yesterdayRevenue) * 100, 1);
-            $revenueDelta = ($delta >= 0 ? '+' : '') . $delta . '% vs yesterday';
+            $revenueDelta = __('seller.black.brief.vs_yesterday', ['pct' => ($delta >= 0 ? '+' : '') . $delta]);
         } elseif ($todayRevenue > 0) {
-            $revenueDelta = 'First sales today!'; $revenuePositive = true;
+            $revenueDelta = __('seller.black.brief.first_sales'); $revenuePositive = true;
         } else {
-            $revenueDelta = 'No sales yet today'; $revenuePositive = false;
+            $revenueDelta = __('seller.black.brief.no_sales'); $revenuePositive = false;
         }
 
         // Trending count
@@ -500,28 +510,27 @@ PROMPT;
 
                 if ($urgentProduct) {
                     $topAction = [
-                        'label' => "Restock {$urgentProduct->name} before it runs out",
+                        'label' => __('seller.black.brief.restock', ['name' => $urgentProduct->name]),
                         'href'  => "/seller/products/{$urgentProduct->id}",
                         'type'  => 'restock',
                     ];
                 }
             } catch (\Throwable $e) {}
         } elseif ($trendingCount > 0) {
-            $topAction = ['label' => 'Promote your trending products for maximum reach', 'href' => '/seller/promote', 'type' => 'promote'];
+            $topAction = ['label' => __('seller.black.brief.promote_trending'), 'href' => '/seller/promote', 'type' => 'promote'];
         } else {
-            $topAction = ['label' => 'Add a flash sale to boost slow-moving products', 'href' => '/seller/promotions', 'type' => 'flash_sale'];
+            $topAction = ['label' => __('seller.black.brief.flash_sale'), 'href' => '/seller/promotions', 'type' => 'flash_sale'];
         }
 
         // Greeting
         $hour         = (int) $now->format('H');
-        $timeGreeting = $hour < 12 ? 'Good morning' : ($hour < 17 ? 'Good afternoon' : 'Good evening');
-        $firstName    = explode(' ', $seller->name ?? 'Seller')[0];
-        $greeting     = "{$timeGreeting}, {$firstName}!";
+        $firstName    = explode(' ', $seller->name ?? '')[0] ?: __('seller.black.brief.seller');
+        $greeting     = __($hour < 12 ? 'seller.black.brief.morning' : ($hour < 17 ? 'seller.black.brief.afternoon' : 'seller.black.brief.evening'), ['name' => $firstName]);
 
         // ── PHASE 3: Improved Groq prompt for ai_message ─────────────────
         $aiMessage = null;
         $system = "You are a warm, encouraging business coach for a Tunisian online seller. "
-            . "Write exactly ONE sentence in plain English. "
+            . "Write exactly ONE sentence in plain {$this->replyLanguage()}. "
             . "Max 22 words. No emojis. No jargon. "
             . "Sound like a trusted friend, not a corporate tool. "
             . "Make the seller feel capable and motivated.";
@@ -542,11 +551,11 @@ PROMPT;
 
         if (!$aiMessage) {
             if ($trendingCount > 0 && $riskCount === 0) {
-                $aiMessage = "Your store is doing well — keep the momentum going.";
+                $aiMessage = __('seller.black.brief.ai_good');
             } elseif ($riskCount > 0) {
-                $aiMessage = "Restock your at-risk products today to protect your revenue.";
+                $aiMessage = __('seller.black.brief.ai_restock');
             } else {
-                $aiMessage = "A great day to try a flash sale or new promotion.";
+                $aiMessage = __('seller.black.brief.ai_flash');
             }
         }
 
@@ -576,7 +585,7 @@ PROMPT;
     public function funnelInsights(Request $request): JsonResponse
     {
         $sellerId = auth()->id();
-        $data     = Cache::remember("black_funnel_insights_{$sellerId}", now()->addHours(6), function () use ($sellerId) {
+        $data     = Cache::remember("black_funnel_insights_{$sellerId}_" . app()->getLocale(), now()->addHours(6), function () use ($sellerId) {
             return (new FunnelInsightService())->analyze($sellerId);
         });
 
@@ -594,7 +603,7 @@ PROMPT;
     public function qualityAudit(Request $request): JsonResponse
     {
         $sellerId  = auth()->id();
-        $data      = Cache::remember("black_quality_audit_{$sellerId}", now()->addHours(2), function () use ($sellerId) {
+        $data      = Cache::remember("black_quality_audit_{$sellerId}_" . app()->getLocale(), now()->addHours(2), function () use ($sellerId) {
             return (new ProductQualityService())->analyzeAll($sellerId);
         });
 
@@ -615,7 +624,7 @@ PROMPT;
     public function autoPromote(Request $request): JsonResponse
     {
         $sellerId = auth()->id();
-        $data     = Cache::remember("black_auto_promote_{$sellerId}", now()->addHours(3), function () use ($sellerId) {
+        $data     = Cache::remember("black_auto_promote_{$sellerId}_" . app()->getLocale(), now()->addHours(3), function () use ($sellerId) {
             return (new AutoPromotionService())->suggest($sellerId);
         });
 
@@ -635,11 +644,15 @@ PROMPT;
     // =========================================================================
     public static function clearSellerCache(int $sellerId): void
     {
-        Cache::forget("black_quality_audit_{$sellerId}");
-        Cache::forget("black_funnel_insights_{$sellerId}");
-        Cache::forget("black_daily_brief_{$sellerId}");
-        Cache::forget("black_ai_hub_insights_{$sellerId}");
-        Cache::forget("black_auto_promote_{$sellerId}");  // ← Phase 3 added
+        foreach (['fr', 'ar', 'en'] as $loc) {
+            Cache::forget("black_quality_audit_{$sellerId}_{$loc}");
+            Cache::forget("black_funnel_insights_{$sellerId}_{$loc}");
+            Cache::forget("black_daily_brief_{$sellerId}_{$loc}");
+            Cache::forget("black_ai_hub_insights_{$sellerId}_{$loc}");
+            Cache::forget("black_auto_promote_{$sellerId}_{$loc}");
+            @unlink(storage_path("app/cache/black_daily_brief_{$sellerId}_{$loc}.json"));
+            @unlink(storage_path("app/cache/black_ai_hub_insights_{$sellerId}_{$loc}.json"));
+        }  // ← Phase 3 added
     }
 
     // =========================================================================
@@ -743,7 +756,7 @@ public function revenueGoals(Request $request): JsonResponse
  
     // ── AI encouragement via Groq ─────────────────────────────────────────
     $aiMessage = null;
-    $cacheKey  = "black_revenue_goals_ai_{$sellerId}_{$currentMonth}";
+    $cacheKey  = "black_revenue_goals_ai_{$sellerId}_{$currentMonth}_" . app()->getLocale();
     $cachePath = storage_path("app/cache/{$cacheKey}.json");
  
     if (file_exists($cachePath)) {
@@ -755,7 +768,7 @@ public function revenueGoals(Request $request): JsonResponse
  
     if (!$aiMessage) {
         $system = "You are a warm business coach for a Tunisian online seller. "
-            . "Write exactly ONE short sentence (max 20 words) in plain English. "
+            . "Write exactly ONE short sentence (max 20 words) in plain {$this->replyLanguage()}. "
             . "Be specific, warm, encouraging. No emojis. No jargon.";
  
         $goalStr     = $currentGoal > 0 ? number_format($currentGoal, 0) . ' TND' : 'no goal set';
@@ -780,11 +793,11 @@ public function revenueGoals(Request $request): JsonResponse
  
         if (!$aiMessage) {
             if ($onTrack && $currentGoal > 0) {
-                $aiMessage = "You're on track — keep this pace and you'll hit your goal.";
+                $aiMessage = __('seller.black.goals.on_track');
             } elseif ($currentGoal > 0) {
-                $aiMessage = "Push a little harder this month — your goal is within reach.";
+                $aiMessage = __('seller.black.goals.push');
             } else {
-                $aiMessage = "Set a monthly goal to stay motivated and track your progress.";
+                $aiMessage = __('seller.black.goals.set_goal');
             }
         }
     }
@@ -833,7 +846,7 @@ public function setRevenueGoal(Request $request): JsonResponse
  
     return response()->json([
         'success' => true,
-        'message' => 'Goal updated successfully.',
+        'message' => __('seller.black.goal_updated'),
         'data'    => [
             'month'  => $validated['month'],
             'amount' => (float) $validated['amount'],
@@ -857,7 +870,7 @@ public function setRevenueGoal(Request $request): JsonResponse
         $product   = Product::where('id', $productId)->where($sellerCol, $sellerId)->whereNull('deleted_at')->first();
 
         if (!$product) {
-            return response()->json(['success' => false, 'message' => 'Product not found.'], 404);
+            return response()->json(['success' => false, 'message' => __('seller.common.product_not_found')], 404);
         }
 
         if ($request->action === 'activate' && !$product->is_sponsored
@@ -882,21 +895,21 @@ public function setRevenueGoal(Request $request): JsonResponse
                 Log::warning('[BlackPepper] Sponsorship notification failed: ' . $e->getMessage());
             }
             // Clear auto-promote cache so the card updates immediately
-            Cache::forget("black_auto_promote_{$sellerId}");
+            foreach (['fr', 'ar', 'en'] as $loc) Cache::forget("black_auto_promote_{$sellerId}_{$loc}");
 
             return response()->json([
                 'success' => true,
-                'message' => "Sponsorship activated for \"{$product->name}\".",
+                'message' => __('seller.black.sponsor_on', ['name' => $product->name]),
                 'data'    => ['is_sponsored' => true, 'sponsored_priority' => $product->sponsored_priority],
             ]);
         }
 
         $product->update(['is_sponsored' => false, 'sponsored_priority' => 0, 'sponsored_at' => null, 'sponsored_until' => null]);
-        Cache::forget("black_auto_promote_{$sellerId}");
+        foreach (['fr', 'ar', 'en'] as $loc) Cache::forget("black_auto_promote_{$sellerId}_{$loc}");
 
         return response()->json([
             'success' => true,
-            'message' => "Sponsorship deactivated for \"{$product->name}\".",
+            'message' => __('seller.black.sponsor_off', ['name' => $product->name]),
             'data'    => ['is_sponsored' => false],
         ]);
     }
@@ -957,7 +970,7 @@ public function setRevenueGoal(Request $request): JsonResponse
         if ($pendingCount >= 3) {
             return response()->json([
                 'success' => false,
-                'message' => 'You already have 3 pending requests of this type. Please wait for them to be processed.',
+                'message' => __('seller.black.vip_limit'),
             ], 422);
         }
 
@@ -979,7 +992,7 @@ public function setRevenueGoal(Request $request): JsonResponse
 
         return response()->json([
             'success' => true,
-            'message' => 'Your VIP request has been submitted. Our team will contact you within 24 hours.',
+            'message' => __('seller.black.vip_submitted'),
             'data'    => [
                 'id'         => $vipRequest->id,
                 'type'       => $vipRequest->type,

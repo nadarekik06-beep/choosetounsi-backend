@@ -22,8 +22,8 @@ class OrderConfirmedNotification extends Notification
     {
         return [
             'type'         => 'order_confirmed',
-            'title'        => '✅ Order Confirmed — Ready to Prepare',
-            'body'         => "Order {$this->orderNumber} has been confirmed by admin. Please start preparing it now.",
+            'title'        => __('seller.notif.order_confirmed.title'),
+            'body'         => __('seller.notif.order_confirmed.body', ['order' => $this->orderNumber]),
             'icon'         => 'package-check',
             'link'         => '/orders',
             'order_id'     => $this->order->id,

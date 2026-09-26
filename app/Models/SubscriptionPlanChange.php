@@ -50,14 +50,7 @@ class SubscriptionPlanChange extends Model
 
     public function getChangeTypeLabelAttribute(): string
     {
-        return match($this->change_type) {
-            'upgrade'         => 'Upgrade',
-            'downgrade'       => 'Downgrade',
-            'admin_force'     => 'Admin Override',
-            'payment_failure' => 'Payment Failure',
-            'trial_end'       => 'Trial Ended',
-            'reactivation'    => 'Reactivation',
-            default           => $this->change_type,
-        };
+        $key = "seller.labels.change_type.{$this->change_type}";
+        return \Illuminate\Support\Facades\Lang::has($key) ? __($key) : (string) $this->change_type;
     }
 }

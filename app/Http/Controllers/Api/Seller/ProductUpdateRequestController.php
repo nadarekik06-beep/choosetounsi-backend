@@ -68,7 +68,7 @@ class ProductUpdateRequestController extends Controller
         if (!$product->is_approved) {
             return response()->json([
                 'success' => false,
-                'message' => 'This product is not yet approved. You can edit it directly.',
+                'message' => __('seller.update_request.not_approved'),
             ], 422);
         }
 
@@ -81,7 +81,7 @@ class ProductUpdateRequestController extends Controller
         if ($existing) {
             return response()->json([
                 'success' => false,
-                'message' => 'You already have a pending update request for this product.',
+                'message' => __('seller.update_request.pending_exists'),
                 'data'    => $existing,
             ], 422);
         }
@@ -126,7 +126,7 @@ class ProductUpdateRequestController extends Controller
         if (empty($proposedData)) {
             return response()->json([
                 'success' => false,
-                'message' => 'No changes were submitted.',
+                'message' => __('seller.update_request.no_changes'),
             ], 422);
         }
 
@@ -146,7 +146,7 @@ class ProductUpdateRequestController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Your update request has been submitted and is pending admin review.',
+            'message' => __('seller.update_request.submitted'),
             'data'    => $updateRequest,
         ], 201);
     }

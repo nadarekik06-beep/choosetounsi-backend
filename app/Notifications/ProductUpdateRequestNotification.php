@@ -63,8 +63,8 @@ class ProductUpdateRequestNotification extends Notification
                 return [
                     'type'       => 'product_update_request',
                     'action'     => 'approved',
-                    'title'      => 'Update request approved!',
-                    'body'       => 'Your update request for "' . $this->productName . '" was approved and applied.',
+                    'title'      => __('seller.notif.update_request.approved.title'),
+                    'body'       => __('seller.notif.update_request.approved.body', ['name' => $this->productName]),
                     'icon'       => 'check-circle',
                     'link'       => '/seller/products/' . $this->productId,
                     'request_id' => $this->requestId,
@@ -73,14 +73,14 @@ class ProductUpdateRequestNotification extends Notification
 
             case 'rejected':
             default:
-                $body = 'Your update request for "' . $this->productName . '" was rejected.';
+                $body = __('seller.notif.update_request.rejected.body', ['name' => $this->productName]);
                 if ($this->adminComment) {
-                    $body .= ' Reason: ' . $this->adminComment;
+                    $body .= ' ' . __('seller.notif.product_reviewed.reason', ['reason' => $this->adminComment]);
                 }
                 return [
                     'type'          => 'product_update_request',
                     'action'        => 'rejected',
-                    'title'         => 'Update request rejected',
+                    'title'         => __('seller.notif.update_request.rejected.title'),
                     'body'          => $body,
                     'icon'          => 'x-circle',
                     'link'          => '/seller/products/' . $this->productId,

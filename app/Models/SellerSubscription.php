@@ -222,15 +222,7 @@ class SellerSubscription extends Model
 
     public function getStatusLabelAttribute(): string
     {
-        return match($this->status) {
-            'active'       => 'Active',
-            'trial'        => 'Trial',
-            'grace_period' => 'Grace Period',
-            'past_due'     => 'Payment Overdue',
-            'canceled'     => 'Canceled (runs to end of period)',
-            'expired'      => 'Expired',
-            'suspended'    => 'Suspended by Admin',
-            default        => $this->status,
-        };
+        $key = "seller.labels.subscription_status.{$this->status}";
+        return \Illuminate\Support\Facades\Lang::has($key) ? __($key) : (string) $this->status;
     }
 }

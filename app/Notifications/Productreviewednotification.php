@@ -12,6 +12,7 @@ class ProductReviewedNotification extends Notification
     private $productName;
     private $reason;
     private $reasonLabels;
+    private $reasonCodes;
 
     /**
      * @param string      $action       'approved' | 'rejected' | 'changes_requested'
@@ -20,8 +21,13 @@ class ProductReviewedNotification extends Notification
      * @param string|null $reason       free-text reason / admin notes (optional)
      * @param string[]    $reasonLabels predefined reason labels (optional)
      */
-    public function __construct($action, $productId, $productName, $reason = null, array $reasonLabels = [])
+    /**
+     * Pass $reasonCodes (ProductModerationLog::REASONS keys) so the labels are rendered in the
+     * seller's language; $reasonLabels stays for callers that only have ready-made text.
+     */
+    public function __construct($action, $productId, $productName, $reason = null, array $reasonLabels = [], array $reasonCodes = [])
     {
+        $this->reasonCodes  = $reasonCodes;
         $this->action       = $action;
         $this->productId    = $productId;
         $this->productName  = $productName;
@@ -43,46 +49,50 @@ class ProductReviewedNotification extends Notification
             'product_id' => $this->productId,
         ];
 
+        $labels = $this->reasonCodes
+            ? \App\Models\ProductModerationLog::labelsFor($this->reasonCodes)
+            : $this->reasonLabels;
+
         if ($this->action === 'approved') {
             return $base + [
-                'title' => 'Product approved!',
-                'body'  => 'Your product "' . $this->productName . '" has been approved and is now live.',
+                'title' => __('seller.notif.product_reviewed.approved.title'),
+                'body'  => __('seller.notif.product_reviewed.approved.body', ['name' => $this->productName]),
                 'icon'  => 'check-circle',
             ];
         }
 
-        $details = implode(', ', $this->reasonLabels);
+        $details = implode(', ', $labels);
         if ($this->reason) {
             $details = $details ? $details . ' — ' . $this->reason : $this->reason;
         }
 
         if ($this->action === 'changes_requested') {
-            $body = 'Changes were requested on your product "' . $this->productName . '".';
+            $body = __('seller.notif.product_reviewed.changes.body', ['name' => $this->productName]);
             if ($details) {
                 $body .= ' ' . rtrim($details, '. ') . '.';
             }
-            $body .= ' Edit the product to resubmit it for review.';
+            $body .= ' ' . __('seller.notif.product_reviewed.changes.resubmit');
 
             return $base + [
-                'title'   => 'Changes requested',
+                'title'   => __('seller.notif.product_reviewed.changes.title'),
                 'body'    => $body,
                 'icon'    => 'alert-triangle',
                 'reason'  => $this->reason,
-                'reasons' => $this->reasonLabels,
+                'reasons' => $labels,
             ];
         }
 
-        $body = 'Your product "' . $this->productName . '" was rejected.';
+        $body = __('seller.notif.product_reviewed.rejected.body', ['name' => $this->productName]);
         if ($details) {
-            $body .= ' Reason: ' . $details;
+            $body .= ' ' . __('seller.notif.product_reviewed.reason', ['reason' => $details]);
         }
 
         return $base + [
-            'title'   => 'Product rejected',
+            'title'   => __('seller.notif.product_reviewed.rejected.title'),
             'body'    => $body,
             'icon'    => 'x-circle',
             'reason'  => $this->reason,
-            'reasons' => $this->reasonLabels,
+            'reasons' => $labels,
         ];
     }
 }

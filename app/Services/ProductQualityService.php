@@ -139,7 +139,7 @@ class ProductQualityService
         } else {
             $tips[] = [
                 'type'        => 'images',
-                'label'       => 'Add at least one photo',
+                'label'       => __('seller.black.quality.one_photo'),
                 'points'      => 10,
                 'action_href' => $productEditBase,
             ];
@@ -150,7 +150,7 @@ class ProductQualityService
             $remaining = 3 - max($imageCount, 0);
             $tips[] = [
                 'type'        => 'images',
-                'label'       => "Add {$remaining} more photo" . ($remaining > 1 ? 's' : '') . " (3 minimum for better sales)",
+                'label'       => trans_choice('seller.black.quality.photos_3', $remaining, ['count' => $remaining]),
                 'points'      => 10,
                 'action_href' => $productEditBase,
             ];
@@ -161,7 +161,7 @@ class ProductQualityService
             $remaining = 5 - max($imageCount, 0);
             $tips[] = [
                 'type'        => 'images',
-                'label'       => "Add {$remaining} more photo" . ($remaining > 1 ? 's' : '') . " to reach 5 (best practice)",
+                'label'       => trans_choice('seller.black.quality.photos_5', $remaining, ['count' => $remaining]),
                 'points'      => 10,
                 'action_href' => $productEditBase,
             ];
@@ -173,7 +173,7 @@ class ProductQualityService
         } else {
             $tips[] = [
                 'type'        => 'description',
-                'label'       => 'Write a product description',
+                'label'       => __('seller.black.quality.write_description'),
                 'points'      => 15,  // higher urgency if none at all
                 'action_href' => $productEditBase,
             ];
@@ -183,7 +183,7 @@ class ProductQualityService
         } elseif ($descLen > 0) {
             $tips[] = [
                 'type'        => 'description',
-                'label'       => 'Make the description longer (at least 100 characters)',
+                'label'       => __('seller.black.quality.longer_description'),
                 'points'      => 10,
                 'action_href' => $productEditBase,
             ];
@@ -193,7 +193,7 @@ class ProductQualityService
         } else {
             $tips[] = [
                 'type'        => 'description',
-                'label'       => 'Add a short summary for search results',
+                'label'       => __('seller.black.quality.short_summary'),
                 'points'      => 5,
                 'action_href' => $productEditBase,
             ];
@@ -205,7 +205,7 @@ class ProductQualityService
         } else {
             $tips[] = [
                 'type'        => 'title',
-                'label'       => 'Use a longer, more descriptive product name',
+                'label'       => __('seller.black.quality.longer_name'),
                 'points'      => 5,
                 'action_href' => $productEditBase,
             ];
@@ -215,7 +215,7 @@ class ProductQualityService
         } else {
             $tips[] = [
                 'type'        => 'title',
-                'label'       => 'Add more detail to the product name (brand, size, color)',
+                'label'       => __('seller.black.quality.detailed_name'),
                 'points'      => 5,
                 'action_href' => $productEditBase,
             ];
@@ -227,7 +227,7 @@ class ProductQualityService
         } else {
             $tips[] = [
                 'type'        => 'attributes',
-                'label'       => 'Assign a category to this product',
+                'label'       => __('seller.black.quality.category'),
                 'points'      => 10,
                 'action_href' => $productEditBase,
             ];
@@ -237,7 +237,7 @@ class ProductQualityService
         } else {
             $tips[] = [
                 'type'        => 'attributes',
-                'label'       => 'Add product details (size, material, color, etc.)',
+                'label'       => __('seller.black.quality.attributes'),
                 'points'      => 10,
                 'action_href' => $productEditBase,
             ];
@@ -249,7 +249,7 @@ class ProductQualityService
         } else {
             $tips[] = [
                 'type'        => 'stock',
-                'label'       => 'Set a price for this product',
+                'label'       => __('seller.black.quality.price'),
                 'points'      => 5,
                 'action_href' => $productEditBase,
             ];
@@ -259,7 +259,7 @@ class ProductQualityService
         } else {
             $tips[] = [
                 'type'        => 'attributes',
-                'label'       => 'Add a SKU reference code',
+                'label'       => __('seller.black.quality.sku'),
                 'points'      => 5,
                 'action_href' => $productEditBase,
             ];
@@ -269,7 +269,7 @@ class ProductQualityService
         } else {
             $tips[] = [
                 'type'        => 'stock',
-                'label'       => 'Update stock — this product shows as out of stock',
+                'label'       => __('seller.black.quality.stock'),
                 'points'      => 5,
                 'action_href' => "/seller/products/{$product->id}",
             ];

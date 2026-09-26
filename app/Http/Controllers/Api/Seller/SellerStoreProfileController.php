@@ -59,7 +59,7 @@ class SellerStoreProfileController extends Controller
         if (!$application) {
             return response()->json([
                 'success' => false,
-                'message' => 'No approved seller application found for this account.',
+                'message' => __('seller.store.no_application'),
             ], 422);
         }
 
@@ -72,7 +72,7 @@ class SellerStoreProfileController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Cover photo updated.',
+            'message' => __('seller.store.cover_updated'),
             'data'    => ['cover_photo' => Storage::url($path)],
         ]);
     }
