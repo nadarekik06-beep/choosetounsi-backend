@@ -56,8 +56,8 @@ class FunnelInsightService
             ->where('p.is_approved', true)
             ->where('p.is_active', true)
             ->where('p.views', '>=', self::MIN_VIEWS)
-            ->selectRaw("p.id, p.name, p.price, p.views, c.name as category_name, MIN(pi.image_path) as image_path")
-            ->groupBy('p.id', 'p.name', 'p.price', 'p.views', 'c.name')
+            ->selectRaw("p.id, p.name, p.price, p.views, " . \App\Support\Localization::sqlName('c') . " as category_name, MIN(pi.image_path) as image_path")
+            ->groupBy('p.id', 'p.name', 'p.price', 'p.views', 'c.name', 'c.name_fr', 'c.name_ar')
             ->get()
             ->keyBy('id');
 
@@ -104,7 +104,7 @@ class FunnelInsightService
             $results[] = [
                 'product_id'       => (int) $product->id,
                 'product_name'     => $product->name,
-                'category'         => $product->category_name ?? 'Uncategorized',
+                'category'         => $product->category_name ?? __('seller.common.uncategorized'),
                 'image_url'        => $product->image_path
                     ? url(Storage::url($product->image_path))
                     : null,

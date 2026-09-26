@@ -12,6 +12,7 @@ return [
         'server_error' => 'خطأ في الخادم.',
         'not_found' => 'غير موجود.',
         'no_seller_account' => 'لم يُعثر على حساب بائع مقبول.',
+        'uncategorized' => 'بدون قسم',
         'cache_cleared' => 'تم مسح الذاكرة المؤقتة.',
     ],
     'product' => [

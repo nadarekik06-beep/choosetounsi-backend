@@ -77,8 +77,8 @@ class AutoPromotionService
             ->where("p.{$sellerCol}", $sellerId)
             ->whereNull('p.deleted_at')
             ->where('p.is_approved', true)
-            ->selectRaw("p.id, p.name, p.price, p.is_sponsored, c.name as category_name, MIN(pi.image_path) as image_path")
-            ->groupBy('p.id', 'p.name', 'p.price', 'p.is_sponsored', 'c.name')
+            ->selectRaw("p.id, p.name, p.price, p.is_sponsored, " . \App\Support\Localization::sqlName('c') . " as category_name, MIN(pi.image_path) as image_path")
+            ->groupBy('p.id', 'p.name', 'p.price', 'p.is_sponsored', 'c.name', 'c.name_fr', 'c.name_ar')
             ->get()
             ->keyBy('id');
 
@@ -105,7 +105,7 @@ class AutoPromotionService
             $suggestions[] = [
                 'product_id'          => (int) $productId,
                 'product_name'        => $product->name,
-                'category'            => $product->category_name ?? 'Uncategorized',
+                'category'            => $product->category_name ?? __('seller.common.uncategorized'),
                 'image_url'           => $product->image_path
                     ? url(Storage::url($product->image_path))
                     : null,

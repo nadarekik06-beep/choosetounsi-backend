@@ -12,6 +12,7 @@ return [
         'server_error' => 'Erreur du serveur.',
         'not_found' => 'Introuvable.',
         'no_seller_account' => 'Aucun compte vendeur validé trouvé.',
+        'uncategorized' => 'Sans catégorie',
         'cache_cleared' => 'Cache vidé.',
     ],
     'product' => [

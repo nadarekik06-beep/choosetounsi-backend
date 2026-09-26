@@ -178,8 +178,8 @@ class BlackPepperController extends Controller
             ->where("p.{$sellerCol}", $sellerId)
             ->whereNull('p.deleted_at')
             ->where('p.is_approved', true)
-            ->selectRaw("p.id, p.name, p.price, p.stock, c.name as category_name, MIN(pi.image_path) as image_path")
-            ->groupBy('p.id', 'p.name', 'p.price', 'p.stock', 'c.name')
+            ->selectRaw("p.id, p.name, p.price, p.stock, " . \App\Support\Localization::sqlName('c') . " as category_name, MIN(pi.image_path) as image_path")
+            ->groupBy('p.id', 'p.name', 'p.price', 'p.stock', 'c.name', 'c.name_fr', 'c.name_ar')
             ->get()
             ->keyBy('id');
 

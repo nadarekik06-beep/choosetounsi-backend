@@ -51,7 +51,7 @@ class ProductQualityService
             ->whereNull('p.deleted_at')
             ->where('p.is_approved', true)
             ->selectRaw("p.id, p.name, p.price, p.stock, p.sku, p.description,
-                         p.short_description, p.category_id, c.name as category_name")
+                         p.short_description, p.category_id, " . \App\Support\Localization::sqlName('c') . " as category_name")
             ->get();
 
         if ($products->isEmpty()) {
@@ -104,7 +104,7 @@ class ProductQualityService
             $results[] = [
                 'product_id'   => (int) $product->id,
                 'product_name' => $product->name,
-                'category'     => $product->category_name ?? 'Uncategorized',
+                'category'     => $product->category_name ?? __('seller.common.uncategorized'),
                 'image_url'    => $imagePath
                     ? url(Storage::url($imagePath))
                     : null,

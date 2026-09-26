@@ -12,6 +12,7 @@ return [
         'server_error' => 'Server error.',
         'not_found' => 'Not found.',
         'no_seller_account' => 'No approved seller account found.',
+        'uncategorized' => 'Uncategorized',
         'cache_cleared' => 'Cache cleared.',
     ],
     'product' => [

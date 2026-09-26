@@ -76,6 +76,20 @@ class Localization
         return $row;
     }
 
+    /**
+     * SQL expression for a localized catalog name in raw queries, e.g. sqlName('c') for categories as c.
+     * Same fallback as column(): locale column → French → base value. Display only — never use it to match.
+     */
+    public static function sqlName(string $alias, string $base = 'name'): string
+    {
+        $locale = self::locale();
+        if (!self::$catalog || $locale === 'en') {
+            return "{$alias}.{$base}";
+        }
+        $localized = $locale === 'fr' ? '' : "NULLIF({$alias}.{$base}_{$locale}, ''), ";
+        return "COALESCE({$localized}NULLIF({$alias}.{$base}_fr, ''), {$alias}.{$base})";
+    }
+
     /** Pick the localized column (name_fr / name_ar) of a raw row, falling back to French then the base value. */
     public static function column(object $row, string $base, ?string $prefix = null): ?string
     {
