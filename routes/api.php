@@ -537,6 +537,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::prefix('finance')->group(function () {
         Route::get('overview',         [FinanceController::class, 'overview']);
         Route::get('orders',           [FinanceController::class, 'orders']);
+        Route::get('orders/{id}/details', [FinanceController::class, 'orderDetails'])->whereNumber('id');
         Route::get('sellers',          [FinanceController::class, 'sellers']);
         Route::get('pending-payouts',  [FinanceController::class, 'pendingPayouts']);
         Route::post('confirm-money/{id}', [FinanceController::class, 'confirmMoneyReceived']);

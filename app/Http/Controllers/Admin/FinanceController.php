@@ -20,6 +20,7 @@ use Illuminate\Support\Facades\Log;
  *   GET  /api/admin/finance/orders            — per-order financial breakdown
  *   GET  /api/admin/finance/sellers           — per-seller earnings tracking
  *   GET  /api/admin/finance/pending-payouts   — orders ready to settle
+ *   GET  /api/admin/finance/orders/{id}/details — one seller order's items + breakdown
  *   POST /api/admin/finance/confirm-money/{id} — mark cash received from delivery
  */
 class FinanceController extends Controller
@@ -165,6 +166,8 @@ class FinanceController extends Controller
                 'so.settlement_batch_id',
                 'so.created_at',
                 DB::raw("CONCAT(o.payment_method) as payment_method"),
+                // Line items of this seller's part only (same rows as SellerOrder->items)
+                DB::raw('(SELECT COUNT(*) FROM order_items oi WHERE oi.seller_order_id = so.id) as items_count'),
             ]);
 
         // Filters
@@ -192,6 +195,132 @@ class FinanceController extends Controller
             ->paginate((int) $request->query('per_page', 15));
 
         return response()->json(['success' => true, 'data' => $results]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // GET /api/admin/finance/orders/{id}/details   ({id} = seller_orders.id)
+    // Read-only. Financials come from the same frozen seller_orders columns as
+    // the orders() row, so the drawer always matches the table.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public function orderDetails(int $id): JsonResponse
+    {
+        $so = SellerOrder::with([
+            'order.user:id,name,email',
+            'seller:id,name,email',
+            'items.product.images',
+            'items.product.variants.attributeOptions.attribute',
+            'items.variant.attributeOptions.attribute',
+        ])->find($id);
+
+        if (!$so) {
+            return response()->json(['success' => false, 'message' => 'Seller order not found.'], 404);
+        }
+
+        $order = $so->order;
+        $num   = fn($v) => round((float) ($v ?? 0), 3);
+
+        $items = $so->items->map(function ($item) {
+            $product = $item->product;   // withTrashed(); null when hard-deleted
+            $variant = $item->variant;   // null when the variant was deleted
+
+            $options = $variant
+                ? $variant->attributeOptions
+                    ->filter(fn($o) => $o->attribute)
+                    ->map(fn($o) => [
+                        'name'      => $o->attribute->name,
+                        'value'     => $o->value,
+                        'color_hex' => $o->color_hex,
+                    ])->values()
+                : collect();
+
+            $image = null;
+            if (!empty($item->getAttributes()['image_url'])) {
+                $image = $item->getAttributes()['image_url'];
+            } elseif ($product) {
+                $image = \App\Services\ProductImages::thumbnailFor($product, $variant);
+            }
+
+            $lineTotal = round((float) $item->total, 3);
+            $discount  = round((float) ($item->discount_amount ?? 0), 3);
+
+            return [
+                'id'                    => $item->id,
+                'product_id'            => $item->product_id,
+                'variant_id'            => $item->variant_id,
+                'product_name'          => $item->product_name ?: optional($product)->getAttributes()['name'] ?? null,
+                'variant_label'         => $item->variant_label,
+                'variant_options'       => $options,
+                'image_url'             => $image ? (str_starts_with($image, 'http') ? $image : url($image)) : null,
+                'quantity'              => (int) $item->quantity,
+                'unit_price'            => round((float) $item->unit_price, 3),
+                'line_total'            => $lineTotal,                       // before the seller's coupon
+                'discount_amount'       => $discount,                        // coupon share on this line
+                'paid_total'            => round((float) ($item->net_total ?? ($lineTotal - $discount)), 3),
+                'commission_percentage' => $item->commission_percentage !== null ? (float) $item->commission_percentage : null,
+                'commission_amount'     => round((float) ($item->commission_amount ?? 0), 3),
+                'product_deleted'       => !$product || $product->trashed(),
+                'variant_deleted'       => $item->variant_id !== null && !$variant,
+            ];
+        })->values();
+
+        // Commission %: snapshot on the seller order, else the single rate its items share
+        $rate = $so->getAttribute('commission_rate');
+        if ($rate === null) {
+            $rates = $items->where('commission_amount', '>', 0)->pluck('commission_percentage')->filter(fn($r) => $r !== null)->unique();
+            $rate  = $rates->count() === 1 ? $rates->first() : null;
+        }
+
+        $sellerPhone = DB::table('seller_applications')
+            ->where('user_id', $so->seller_id)
+            ->where('status', 'approved')
+            ->value('phone_number');
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'id'              => $so->id,
+                'order_id'        => $so->order_id,
+                'order_number'    => optional($order)->order_number,
+                'created_at'      => $so->created_at,
+                'status'          => $so->status,
+                'order_status'    => optional($order)->status,
+                'payment_method'  => optional($order)->payment_method,
+                'payment_status'  => $so->payment_status,
+                'payout_status'   => $so->getAttribute('payout_status'),
+                'coupon_code'     => $so->coupon_code,
+                'items_count'     => $items->count(),
+                'seller' => [
+                    'id'    => $so->seller_id,
+                    'name'  => optional($so->seller)->name,
+                    'email' => optional($so->seller)->email,
+                    'phone' => $sellerPhone,
+                ],
+                'customer' => [
+                    'id'      => optional($order)->user_id,
+                    'name'    => optional(optional($order)->user)->name,
+                    'email'   => optional(optional($order)->user)->email,
+                    'phone'   => optional($order)->phone,
+                    'address' => optional($order)->address,
+                    'wilaya'  => optional($order)->wilaya,
+                ],
+                'items'      => $items,
+                // Same columns / formula as the orders() row
+                'financials' => [
+                    'gross'                  => $num($so->subtotal - $so->discount_amount),
+                    'subtotal_before_coupon' => $num($so->subtotal),
+                    'discount_amount'        => $num($so->discount_amount),
+                    'commission_amount'      => $num($so->getAttribute('commission_amount')),
+                    'commission_rate'        => $rate !== null ? (float) $rate : null,
+                    'delivery_fee'           => $num($so->getAttribute('delivery_fee')),
+                    'shipping_cost'          => $num($so->getAttribute('shipping_cost')),
+                    'seller_shipping_charge' => $num($so->getAttribute('seller_shipping_charge')),
+                    'shipping_paid_by'       => $order ? $order->getAttribute('shipping_paid_by') : null,
+                    'platform_profit'        => $num($so->getAttribute('platform_profit')),
+                    'seller_net_amount'      => $num($so->getAttribute('seller_net_amount')),
+                ],
+            ],
+        ]);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
