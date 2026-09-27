@@ -199,6 +199,7 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
                 'so.commission_amount',
                 'so.seller_net_amount',
                 'so.delivery_fee',
+                'so.seller_shipping_charge',
                 'so.status',
                 'so.money_received_at',
                 'so.created_at',

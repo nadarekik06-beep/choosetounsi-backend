@@ -52,6 +52,8 @@ class FinanceController extends Controller
                 COALESCE(SUM(so.commission_amount), 0) as total_commission,
                 COALESCE(SUM(so.seller_net_amount), 0) as total_seller_payouts,
                 COALESCE(SUM(so.delivery_fee), 0)      as total_delivery_fees,
+                COALESCE(SUM(so.seller_shipping_charge), 0) as total_seller_shipping,
+                COALESCE(SUM(so.shipping_cost), 0)     as total_shipping_cost,
                 COALESCE(SUM(so.platform_profit), 0)   as total_platform_profit,
                 COUNT(DISTINCT so.id)                  as orders_count
             ')
@@ -78,6 +80,8 @@ class FinanceController extends Controller
                 COALESCE(SUM(subtotal - discount_amount), 0) as gross,
                 COALESCE(SUM(commission_amount), 0)   as commission,
                 COALESCE(SUM(delivery_fee), 0)        as delivery_fees,
+                COALESCE(SUM(seller_shipping_charge), 0) as seller_shipping,
+                COALESCE(SUM(shipping_cost), 0)       as shipping_cost,
                 COALESCE(SUM(seller_net_amount), 0)   as seller_payouts,
                 COALESCE(SUM(platform_profit), 0)     as platform_profit
             ')
@@ -93,7 +97,11 @@ class FinanceController extends Controller
                     'gross_revenue'         => round((float) $totals->gross_revenue,        3),
                     'total_commission'      => round((float) $totals->total_commission,     3),
                     'total_seller_payouts'  => round((float) $totals->total_seller_payouts, 3),
+                    // Shipping: collected from customers + deducted from sellers
+                    // (free shipping) − paid to the agency. Net is inside platform_profit.
                     'total_delivery_fees'   => round((float) $totals->total_delivery_fees,  3),
+                    'total_seller_shipping' => round((float) $totals->total_seller_shipping, 3),
+                    'total_shipping_cost'   => round((float) $totals->total_shipping_cost,  3),
                     'total_platform_profit' => round((float) $totals->total_platform_profit,3),
                     'orders_count'          => (int) $totals->orders_count,
                 ],
@@ -147,6 +155,9 @@ class FinanceController extends Controller
                 'so.commission_amount',
                 'so.seller_net_amount',
                 'so.delivery_fee',
+                'so.shipping_cost',
+                'so.seller_shipping_charge',
+                'o.shipping_paid_by',
                 'so.platform_profit',
                 'so.delivery_confirmed_at',
                 'so.money_received_at',
@@ -205,6 +216,7 @@ class FinanceController extends Controller
                 DB::raw('COUNT(so.id) as orders_count'),
                 DB::raw('COALESCE(SUM(so.subtotal - so.discount_amount), 0) as gross_revenue'),
                 DB::raw('COALESCE(SUM(so.commission_amount), 0) as total_commission'),
+                DB::raw('COALESCE(SUM(so.seller_shipping_charge), 0) as total_shipping'),
                 DB::raw('COALESCE(SUM(so.seller_net_amount), 0) as total_net'),
                 DB::raw('COALESCE(SUM(CASE WHEN so.payout_status = "paid" THEN so.seller_net_amount ELSE 0 END), 0) as total_paid_out'),
                 DB::raw('COALESCE(SUM(CASE WHEN so.payout_status = "ready" THEN so.seller_net_amount ELSE 0 END), 0) as pending_payout'),
@@ -258,6 +270,7 @@ class FinanceController extends Controller
                 'so.commission_amount',
                 'so.seller_net_amount',
                 'so.delivery_fee',
+                'so.seller_shipping_charge',
                 'so.money_received_at',
                 'so.created_at',
             ])

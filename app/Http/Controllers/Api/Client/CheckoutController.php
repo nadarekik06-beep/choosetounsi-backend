@@ -201,6 +201,8 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 'discount_amount' => $totalDiscount,
                 'coupon_codes'    => collect($resolvedCoupons)->map(fn($c) => $c['coupon']->code)->values()->all() ?: null,
                 'shipping_fee'    => $shippingFee,
+                'shipping_cost'   => Product::shippingCost(),
+                'shipping_paid_by' => FinancialSnapshotService::shippingPayer($shippingFee),
                 'total_amount'    => $total,
                 'wilaya'          => $request->wilaya,
                 'address'         => $request->address,
@@ -565,7 +567,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         }
 
         $basePrice    = $variant ? (float) ($variant->price_override ?? $product->price) : (float) $product->price;
-        $priceData    = $this->promoService->getEffectivePrice($product, $basePrice);
+        $priceData    = $this->promoService->getEffectivePrice($product, $basePrice, $variant?->id);
         $unitPrice    = $priceData['effective_price'];
         $lineTotal    = round($unitPrice * $quantity, 3);
 
@@ -628,6 +630,8 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 'discount_amount' => $discountAmount,
                 'coupon_codes'    => $appliedCoupon ? [$appliedCoupon->code] : null,
                 'shipping_fee'    => $deliveryFee,
+                'shipping_cost'   => Product::shippingCost(),
+                'shipping_paid_by' => FinancialSnapshotService::shippingPayer($deliveryFee),
                 'total_amount'    => $total,
                 'wilaya'          => $request->wilaya,
                 'address'         => $request->address,
@@ -760,7 +764,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         $basePrice = $item->variant
             ? (float) ($item->variant->price_override ?? $item->product->price)
             : (float) $item->product->price;
-        return $this->promoService->getEffectivePrice($item->product, $basePrice)['effective_price'];
+        return $this->promoService->getEffectivePrice($item->product, $basePrice, $item->variant?->id)['effective_price'];
     }
 
     private function lineTotal($item): float

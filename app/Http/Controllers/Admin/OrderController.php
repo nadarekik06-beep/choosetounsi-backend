@@ -160,6 +160,17 @@ class OrderController extends Controller
             'total_commission' => round($nonReturnedItems->sum('commission_amount'), 3),
             'total_seller'     => round($nonReturnedItems->sum('seller_amount'),     3),
         ];
+
+        // Shipping: the agency always bills the order; on free-shipping orders
+        // the seller pays it out of their earnings.
+        $activeSellerOrders = $order->sellerOrders->where('status', '!=', 'cancelled');
+        $sellerShipping     = round($activeSellerOrders->sum(fn($so) => (float) ($so->seller_shipping_charge ?? 0)), 3);
+        $commissionSummary += [
+            'shipping_cost'    => $order->getAttribute('shipping_cost') !== null ? round((float) $order->getAttribute('shipping_cost'), 3) : null,
+            'shipping_paid_by' => $order->getAttribute('shipping_paid_by'),
+            'seller_shipping'  => $sellerShipping,
+            'total_seller_net' => round($commissionSummary['total_seller'] - $sellerShipping, 3),
+        ];
         $order->setAttribute('commission_summary', $commissionSummary);
 
         // subtotal − discount + shipping, live from non-cancelled seller_orders
@@ -493,12 +504,7 @@ public function confirmOrder(Request $request, $id)
         if (!empty($item->image_url)) {
             return str_starts_with($item->image_url, 'http') ? $item->image_url : url($item->image_url);
         }
-        if ($item->variant && $item->variant->images->isNotEmpty()) {
-            return Storage::url($item->variant->images->first()->image_path);
-        }
-        if ($item->product && $item->product->primaryImage) {
-            return Storage::url($item->product->primaryImage->image_path);
-        }
-        return null;
+        // Main image of the variant's color group, else the product cover
+        return $item->product ? \App\Services\ProductImages::thumbnailFor($item->product, $item->variant) : null;
     }
 }

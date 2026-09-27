@@ -55,4 +55,20 @@ class CommissionController extends Controller
             ]),
         ]);
     }
+
+    /**
+     * GET /api/seller/shipping-cost
+     *
+     * Agency cost per order — what a seller pays when they offer free shipping.
+     */
+    public function shippingCost(): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'shipping_cost'        => \App\Models\Product::shippingCost(),
+                'customer_delivery_fee' => \App\Models\Product::DEFAULT_DELIVERY_FEE,
+            ],
+        ]);
+    }
 }

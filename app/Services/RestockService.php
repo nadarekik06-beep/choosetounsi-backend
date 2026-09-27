@@ -11,15 +11,15 @@ use Illuminate\Support\Facades\Log;
  * RestockService
  *
  * Handles DIRECT stock updates (no admin approval required).
- * Only stock-related fields are allowed — any price/title/desc change
- * must go through the ProductUpdateRequest flow.
+ * Only stock-related fields are allowed — price, title, description, etc.
+ * go through the regular product update endpoint.
  *
  * Rules enforced here:
  *   - Seller must own the product
  *   - Only stock values are written
  *   - Variants: can update existing stock + add brand-new variants
  *   - Variants: CANNOT change option_ids, price_override, sku of existing rows
- *     (structural changes require update request)
+ *     (structural changes go through the product update endpoint)
  *   - After any change, syncActiveStatusFromVariants() is called
  */
 class RestockService

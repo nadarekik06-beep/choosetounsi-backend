@@ -317,7 +317,6 @@ $products->getCollection()->transform(function ($p) use ($allColorImages) {
 
             $this->saveGeneralImages($product, $request);
             $this->saveColorImages($product, $request);
-            $this->saveVariantImages($product, $request);
 
             DB::commit();
         } catch (\Throwable $e) {
@@ -519,36 +518,6 @@ $products->getCollection()->transform(function ($p) use ($allColorImages) {
                     'is_primary'      => $setPrimary,
                 ]);
                 if ($setPrimary) $hasPrimary = true;
-                $orderIdx++;
-            }
-        }
-    }
-
-    private function saveVariantImages(Product $product, Request $request): void
-    {
-        $allFiles = $request->allFiles();
-        if (empty($allFiles['variant_images'])) return;
-        $variantImagesInput = $allFiles['variant_images'];
-        if (!is_array($variantImagesInput)) return;
-
-        $validVariantIds = $product->variants()->pluck('id')->flip();
-        $maxOrder        = $product->images()->max('order') ?? -1;
-        $orderIdx        = 0;
-
-        foreach ($variantImagesInput as $variantIdStr => $files) {
-            $variantId = (int) $variantIdStr;
-            if (!isset($validVariantIds[$variantId])) continue;
-
-            foreach ((array) $files as $file) {
-                if (!$file || !method_exists($file, 'isValid') || !$file->isValid()) continue;
-                ProductImage::create([
-                    'product_id'      => $product->id,
-                    'variant_id'      => $variantId,
-                    'color_option_id' => null,
-                    'image_path'      => $file->store('products', 'public'),
-                    'order'           => $maxOrder + $orderIdx + 1,
-                    'is_primary'      => false,
-                ]);
                 $orderIdx++;
             }
         }

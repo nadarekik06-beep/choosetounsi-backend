@@ -16,6 +16,8 @@ return [
         'cache_cleared' => 'Cache cleared.',
     ],
     'product' => [
+        'color_images_required' => 'Add at least one image for each color: :colors.',
+        'price_decrease_discount' => 'To lower the price of a live product, create a discount: customers then see the old price crossed out and the "-%" badge.',
         'created_review' => 'Product created! It will be reviewed by an admin.',
         'created_review_long' => 'Product created successfully! It will be reviewed by admin.',
         'updated' => 'Product updated.',
@@ -31,13 +33,7 @@ return [
         'image_deleted_long' => 'Image deleted successfully.',
         'primary_updated' => 'Primary image updated.',
         'no_permission' => 'You do not have permission to access this product.',
-    ],
-    'update_request' => [
-        'not_approved' => 'This product is not yet approved. You can edit it directly.',
-        'pending_exists' => 'You already have a pending update request for this product.',
-        'no_changes' => 'No changes were submitted.',
-        'submitted' => 'Your update request has been submitted and is pending admin review.',
-    ],
+    ],
     'restock' => [
         'updated' => 'Stock updated to :stock units.',
         'variants_updated' => 'Variant stock updated. Total: :total units.',
@@ -348,6 +344,7 @@ return [
             'approved' => [
                 'title' => 'Product approved!',
                 'body' => 'Your product ":name" has been approved and is now live.',
+                'body_adjusted' => 'Your product ":name" has been approved and is now live. Our team made a few adjustments before publishing it.',
             ],
             'changes' => [
                 'title' => 'Changes requested',
@@ -359,17 +356,7 @@ return [
                 'body' => 'Your product ":name" was rejected.',
             ],
             'reason' => 'Reason: :reason',
-        ],
-        'update_request' => [
-            'approved' => [
-                'title' => 'Update request approved!',
-                'body' => 'Your update request for ":name" was approved and applied.',
-            ],
-            'rejected' => [
-                'title' => 'Update request rejected',
-                'body' => 'Your update request for ":name" was rejected.',
-            ],
-        ],
+        ],
         'application' => [
             'approved' => [
                 'title' => 'Application approved!',

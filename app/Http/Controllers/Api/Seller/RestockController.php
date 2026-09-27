@@ -20,8 +20,8 @@ use App\Http\Controllers\Api\Seller\SellerForecastController;
  *   - Simple products: update `stock` field
  *   - Variant products: update per-variant stock + optionally add new variants
  *
- * Any structural or pricing change (name, price, category, variant option_ids)
- * must go through the ProductUpdateRequest flow.
+ * Other edits (name, price, category, variant structure) go through the regular
+ * product update endpoint. Both are logged by ProductChangeTracker.
  *
  * Security:
  *   - auth:sanctum middleware (applied at route level)
@@ -43,15 +43,24 @@ class RestockController extends Controller
         $seller  = $request->user();
         $product = $seller->products()->findOrFail($id);
 
+        $tracker = app(\App\Services\ProductChangeTracker::class);
+        $before  = $tracker->snapshot($product);
+
         // Determine whether this is a variant product
         $hasVariants = $product->variants()->exists();
 
         if ($hasVariants) {
-            return $this->restockVariantProduct($request, $product);
+            $response = $this->restockVariantProduct($request, $product);
+        } else {
+            SellerForecastController::clearForecastCache($product->id, auth()->id());
+            $response = $this->restockSimpleProduct($request, $product);
         }
-        SellerForecastController::clearForecastCache($product->id, auth()->id());
 
-        return $this->restockSimpleProduct($request, $product);
+        // Logged like any seller edit; stock-only changes don't notify admins
+        if ($response->getStatusCode() < 300) {
+            $tracker->record($product, $before, $seller, 'restock', (bool) $product->is_approved);
+        }
+        return $response;
     }
 
     // ── Private handlers ────────────────────────────────────────────────────

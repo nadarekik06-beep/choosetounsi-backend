@@ -487,6 +487,7 @@ public function publicFeed(Request $request): JsonResponse
         // Promotion data + effective price
         $promoData          = $promotionService->getEffectivePrice($p);
         $p->effective_price = $promoData['effective_price'];
+        $p->original_price  = $promoData['original_price'];   // lowest 30-day price when discounted
         $p->discount_amount = $promoData['discount_amount'];
         $p->promotion       = $promoData['promotion'];
 

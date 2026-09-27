@@ -82,27 +82,12 @@ class SellerInvoiceController extends Controller
                 }
             }
 
-            // Variant image — same 4-level priority chain
+            // Variant image — color group main image, else product cover
             $resolvedImage = null;
 
-            // 1. Direct variant_id images
-            if ($item->variant && $item->variant->relationLoaded('images')
-                && $item->variant->images->isNotEmpty()) {
-                $resolvedImage = Storage::url($item->variant->images->first()->image_path);
-            }
-
-            // 2. Color-option images (multi-color variants)
-            if (!$resolvedImage && $item->variant) {
-                $colorOptionId = $item->variant->color_option_id;
-                if ($colorOptionId) {
-                    $colorImage = \App\Models\ProductImage::where('product_id', $item->product_id)
-                        ->where('color_option_id', $colorOptionId)
-                        ->orderBy('order')
-                        ->first();
-                    if ($colorImage) {
-                        $resolvedImage = Storage::url($colorImage->image_path);
-                    }
-                }
+            // 1-2. Main image of the variant's color group (sizes share images)
+            if ($item->variant && $item->product) {
+                $resolvedImage = \App\Services\ProductImages::thumbnailFor($item->product, $item->variant);
             }
 
             // 3. Checkout snapshot

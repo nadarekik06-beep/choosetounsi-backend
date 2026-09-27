@@ -29,6 +29,7 @@ class EarningsController extends Controller
                 'COALESCE(SUM(subtotal - discount_amount), 0) as gross_revenue,' .
                 'COALESCE(SUM(commission_amount), 0) as total_commission,' .
                 'COALESCE(SUM(seller_net_amount), 0) as total_net,' .
+                'COALESCE(SUM(seller_shipping_charge), 0) as total_shipping,' .
                 'COUNT(*) as orders_count,' .
                 'COALESCE(SUM(CASE WHEN payout_status = "paid" THEN seller_net_amount ELSE 0 END), 0) as paid_amount,' .
                 'COALESCE(SUM(CASE WHEN payout_status = "ready" THEN seller_net_amount ELSE 0 END), 0) as ready_amount,' .
@@ -46,6 +47,7 @@ class EarningsController extends Controller
                 'COUNT(*) as orders,' .
                 'COALESCE(SUM(subtotal - discount_amount), 0) as gross,' .
                 'COALESCE(SUM(commission_amount), 0) as commission,' .
+                'COALESCE(SUM(seller_shipping_charge), 0) as shipping,' .
                 'COALESCE(SUM(seller_net_amount), 0) as net_earnings'
             )
             ->groupBy('day')
@@ -67,6 +69,8 @@ class EarningsController extends Controller
                 'kpis' => [
                     'gross_revenue'          => round((float) $totals->gross_revenue,          3),
                     'total_commission'       => round((float) $totals->total_commission,       3),
+                    // Free-shipping orders: shipping the seller pays, already out of total_net
+                    'total_shipping'         => round((float) $totals->total_shipping,         3),
                     'total_net'              => round((float) $totals->total_net,              3),
                     'orders_count'           => (int) $totals->orders_count,
                     'paid_amount'            => round((float) $totals->paid_amount,            3),
@@ -102,6 +106,7 @@ class EarningsController extends Controller
             COALESCE(SUM(subtotal - discount_amount), 0) as gross_revenue,
             COALESCE(SUM(commission_amount), 0) as total_commission,
             COALESCE(SUM(seller_net_amount), 0) as total_net,
+            COALESCE(SUM(seller_shipping_charge), 0) as total_shipping,
             COUNT(*) as orders_count,
             COALESCE(SUM(CASE WHEN payout_status = "paid"    THEN seller_net_amount ELSE 0 END), 0) as total_paid,
             COALESCE(SUM(CASE WHEN payout_status = "ready"   THEN seller_net_amount ELSE 0 END), 0) as total_ready,
@@ -130,6 +135,7 @@ class EarningsController extends Controller
             'totals' => [
                 'gross_revenue'    => round((float) $totals->gross_revenue,    3),
                 'total_commission' => round((float) $totals->total_commission, 3),
+                'total_shipping'   => round((float) $totals->total_shipping,   3),
                 'total_net'        => round((float) $totals->total_net,        3),
                 'orders_count'     => (int) $totals->orders_count,
                 'total_paid'       => round((float) $totals->total_paid,       3),
@@ -171,6 +177,7 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
             'so.commission_amount',
             'so.seller_net_amount',
             'so.delivery_fee',
+            'so.seller_shipping_charge',
             'so.status',
             'so.money_received_at',
             'so.created_at',
@@ -199,6 +206,7 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
                 'so.coupon_code',
                 'so.commission_amount',
                 'so.seller_net_amount as net_earnings',
+                'so.seller_shipping_charge',
                 'so.delivery_fee',
                 'so.platform_profit',
                 'so.money_received_at',

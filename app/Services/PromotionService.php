@@ -23,21 +23,24 @@ class PromotionService
      *   promotion: array|null
      * }
      */
-    public function getEffectivePrice(Product $product, ?float $basePrice = null): array
+    public function getEffectivePrice(Product $product, ?float $basePrice = null, ?int $variantId = null): array
     {
-        $originalPrice = $basePrice ?? (float) $product->price;
-        $promotion     = $this->getActivePromotionForProduct($product->id);
+        $currentPrice = $basePrice ?? (float) $product->price;
+        $promotion    = $this->getActivePromotionForProduct($product->id);
 
         if (!$promotion) {
             return [
-                'original_price'  => $originalPrice,
-                'effective_price' => $originalPrice,
+                'original_price'  => $currentPrice,
+                'effective_price' => $currentPrice,
                 'discount_amount' => 0.0,
                 'promotion'       => null,
             ];
         }
 
-        $discounted = $this->applyDiscount($originalPrice, $promotion);
+        // Anti fake-discount: the crossed-out price is the lowest price of the
+        // last 30 days, so raising the price before a promotion gains nothing.
+        $originalPrice = $this->referencePrice($product, $currentPrice, $variantId);
+        $discounted    = $this->applyDiscount($originalPrice, $promotion);
         $discounted = max(0, $discounted);
 
         return [
@@ -64,6 +67,19 @@ class PromotionService
                 ->orderByDesc('created_at')
                 ->first();
         });
+    }
+
+    /**
+     * Price a discount is computed from and shown crossed out: the lowest price
+     * of the last 30 days for this product (or this variant), capped at today's.
+     */
+    public function referencePrice(Product $product, float $currentPrice, ?int $variantId = null): float
+    {
+        // A variant price passed without its id can't be matched to a timeline
+        if ($variantId === null && abs($currentPrice - (float) $product->price) > 0.0005) {
+            return $currentPrice;
+        }
+        return PriceHistory::lowest($product->id, $variantId, $currentPrice);
     }
 
     /**
@@ -158,7 +174,7 @@ class PromotionService
                     'name'              => $product->name,
                     'slug'              => $product->slug,
                     'price'             => (float) $product->price,
-                    'original_price'    => (float) $product->price,
+                    'original_price'    => $promoData['original_price'],
                     'effective_price'   => $promoData['effective_price'],
                     'discount_amount'   => $promoData['discount_amount'],
                     'primary_image_url' => $product->primary_image_url,

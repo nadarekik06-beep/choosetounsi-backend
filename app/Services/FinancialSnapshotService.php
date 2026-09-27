@@ -43,6 +43,8 @@ class FinancialSnapshotService
             $sellerNetAmount  = round((float) ($totals->total_seller_net  ?? 0), 3);
             $deliveryFee      = $this->deliveryFeeFor($sellerOrderId);
             $platformProfit   = round($commissionAmount + $deliveryFee, 3);
+            // Shipping cost/charge are applied by allocateShipping() below,
+            // once every sibling seller_order of the order exists.
 
             // Snapshot which rate applied and where it came from (items with
             // commission only — pack follower rows carry 0 by design).
@@ -69,9 +71,75 @@ class FinancialSnapshotService
                     'updated_at'        => now(),
                 ]);
 
+            $orderId = DB::table('seller_orders')->where('id', $sellerOrderId)->value('order_id');
+            if ($orderId) {
+                $this->allocateShipping((int) $orderId);
+            }
+
         } catch (\Throwable $e) {
             Log::error('[FinancialSnapshotService::freeze] seller_order_id=' . $sellerOrderId . ' — ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Spread the order's agency shipping cost over its seller_orders.
+     *
+     *   paid_by customer/platform → cost booked on the first seller_order,
+     *                                next to the delivery_fee the customer paid
+     *   paid_by seller            → cost split evenly between the sellers and
+     *                                deducted from each one's seller_net_amount
+     *
+     *   seller_net_amount = Σ items.seller_amount − seller_shipping_charge
+     *   platform_profit   = commission + delivery_fee + seller_shipping_charge − shipping_cost
+     *
+     * Idempotent: freeze() calls it after every seller_order it snapshots, so the
+     * last call of a checkout sees all siblings. Commission is never touched.
+     */
+    public function allocateShipping(int $orderId): void
+    {
+        $order = DB::table('orders')->where('id', $orderId)->first(['shipping_cost', 'shipping_paid_by']);
+        if (!$order || $order->shipping_cost === null) {
+            return; // not tracked for this order
+        }
+
+        $sellerOrders = DB::table('seller_orders')->where('order_id', $orderId)->orderBy('id')->get(['id', 'commission_amount']);
+        if ($sellerOrders->isEmpty()) return;
+
+        $cost      = round((float) $order->shipping_cost, 3);
+        $sellerPay = $order->shipping_paid_by === 'seller';
+
+        // Even split in millimes; the first seller_order absorbs the remainder.
+        $share  = $sellerPay ? floor($cost * 1000 / $sellerOrders->count()) / 1000 : 0.0;
+        $firstId = $sellerOrders->first()->id;
+
+        foreach ($sellerOrders as $so) {
+            $isFirst = $so->id === $firstId;
+
+            $shippingCost = $sellerPay
+                ? round($isFirst ? $cost - $share * ($sellerOrders->count() - 1) : $share, 3)
+                : ($isFirst ? $cost : 0.0);
+            $charge       = $sellerPay ? $shippingCost : 0.0;
+            $deliveryFee  = $this->deliveryFeeFor($so->id);
+            $itemsNet     = (float) DB::table('order_items')->where('seller_order_id', $so->id)->sum('seller_amount');
+
+            DB::table('seller_orders')->where('id', $so->id)->update([
+                'delivery_fee'           => $deliveryFee,
+                'shipping_cost'          => $shippingCost,
+                'seller_shipping_charge' => $charge,
+                'seller_net_amount'      => round($itemsNet - $charge, 3),
+                'platform_profit'        => round((float) $so->commission_amount + $deliveryFee + $charge - $shippingCost, 3),
+                'updated_at'             => now(),
+            ]);
+        }
+    }
+
+    /**
+     * Who carries the agency cost for an order the customer pays $shippingFee on.
+     * Free shipping (0) means the seller offered it, so the seller pays.
+     */
+    public static function shippingPayer(float $shippingFee): string
+    {
+        return $shippingFee > 0 ? 'customer' : 'seller';
     }
 
     /**

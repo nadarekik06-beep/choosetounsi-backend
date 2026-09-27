@@ -18,12 +18,22 @@ class Product extends Model
     protected $translatable     = ['name', 'description', 'short_description'];
     protected $translatableBase = ['name'];
 
-    protected $hidden = ['translations', 'translations_hash'];
+    protected $hidden = ['translations', 'translations_hash', 'admin_note'];
 
     // ── Platform-level delivery constants ──────────────────────────────────────
     // Change this ONE constant when the platform delivery fee changes.
     // Every controller reads from here — never hardcode 8 anywhere else.
     public const DEFAULT_DELIVERY_FEE = 8.0;
+
+    /**
+     * What the delivery agency bills per order (config platform.shipping_cost).
+     * Never 0: free shipping moves this cost onto the seller, it doesn't remove it.
+     */
+    public static function shippingCost(): float
+    {
+        $cost = (float) config('platform.shipping_cost', self::DEFAULT_DELIVERY_FEE);
+        return round($cost > 0 ? $cost : self::DEFAULT_DELIVERY_FEE, 3);
+    }
 
     protected $fillable = [
         'seller_id', 'category_id', 'subcategory_id',
@@ -32,6 +42,7 @@ class Product extends Model
         'is_approved', 'is_active', 'is_platform_product', 'featured', 'views',
         'is_pack', 'season', 'rejection_reason', 'deleted_by_seller',
         'changes_requested_at',
+        'admin_note', 'admin_edited_at', 'admin_edited_by',
     ];
 
     protected $casts = [
@@ -45,6 +56,7 @@ class Product extends Model
         'season'              => 'array',
         'deleted_by_seller'   => 'boolean',
         'changes_requested_at' => 'datetime',
+        'admin_edited_at'     => 'datetime',
         'translations'        => 'array',
         'translated_at'       => 'datetime',
     ];
@@ -89,6 +101,13 @@ class Product extends Model
 
         // Translate name / descriptions with Groq once the product is live or its text changed.
         // Runs after the response is sent; the storefront only ever reads the cached result.
+        // Price timeline for the 30-day "lowest price" discount rule
+        static::saved(function ($product) {
+            if ($product->wasRecentlyCreated || $product->wasChanged('price')) {
+                \App\Services\PriceHistory::productPriceChanged($product, $product->wasRecentlyCreated);
+            }
+        });
+
         static::saved(function ($product) {
             if (\App\Services\ProductTranslator::needsTranslation($product)) {
                 $id = $product->id;
@@ -161,6 +180,11 @@ class Product extends Model
     public function moderationLogs()
     {
         return $this->hasMany(ProductModerationLog::class)->orderByDesc('created_at')->orderByDesc('id');
+    }
+
+    public function editLogs()
+    {
+        return $this->hasMany(ProductEditLog::class)->orderByDesc('created_at')->orderByDesc('id');
     }
 
     public function reviews()

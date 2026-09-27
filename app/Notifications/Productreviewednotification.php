@@ -13,6 +13,7 @@ class ProductReviewedNotification extends Notification
     private $reason;
     private $reasonLabels;
     private $reasonCodes;
+    private $adjusted;
 
     /**
      * @param string      $action       'approved' | 'rejected' | 'changes_requested'
@@ -25,8 +26,9 @@ class ProductReviewedNotification extends Notification
      * Pass $reasonCodes (ProductModerationLog::REASONS keys) so the labels are rendered in the
      * seller's language; $reasonLabels stays for callers that only have ready-made text.
      */
-    public function __construct($action, $productId, $productName, $reason = null, array $reasonLabels = [], array $reasonCodes = [])
+    public function __construct($action, $productId, $productName, $reason = null, array $reasonLabels = [], array $reasonCodes = [], bool $adjusted = false)
     {
+        $this->adjusted     = $adjusted;
         $this->reasonCodes  = $reasonCodes;
         $this->action       = $action;
         $this->productId    = $productId;
@@ -56,8 +58,11 @@ class ProductReviewedNotification extends Notification
         if ($this->action === 'approved') {
             return $base + [
                 'title' => __('seller.notif.product_reviewed.approved.title'),
-                'body'  => __('seller.notif.product_reviewed.approved.body', ['name' => $this->productName]),
+                'body'  => __($this->adjusted
+                    ? 'seller.notif.product_reviewed.approved.body_adjusted'
+                    : 'seller.notif.product_reviewed.approved.body', ['name' => $this->productName]),
                 'icon'  => 'check-circle',
+                'admin_adjusted' => $this->adjusted,
             ];
         }
 

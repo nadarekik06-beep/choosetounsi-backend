@@ -292,197 +292,43 @@ class ProductController extends Controller
         $selectableAxes      = [];
         $colorImages         = [];          // string key → url[]
         $colorPrimaryImage   = [];          // string key → first url
-        $variantPrimaryImage = [];          // variant_id → first image url
 
         if ($hasVariants) {
 
-            // Product-level images: no color_option_id AND no variant_id
-            $productImageUrls = $product->images
-                ->filter(fn($i) => is_null($i->variant_id) && is_null($i->color_option_id))
-                ->map(fn($i) => Storage::url($i->image_path))
-                ->values()
-                ->toArray();
+            // Gallery + color group images (ProductImages). There are no per-size
+            // images: every size of a color shows that color's set, so picking a
+            // size never changes the gallery.
+            $sets = \App\Services\ProductImages::sets($product);
+            $productImageUrls = array_map(fn($i) => Storage::url($i['path']), $sets['gallery']);
 
-            
-//
-// FIX: The old colorGroupMap used first-write-wins, which caused images to be
-// assigned to the wrong group when the same color ID appeared in multiple groups.
-// (e.g. Black=8 in group [5,7,8] AND in solo group [8] — Black's solo images
-// would be registered under "5|7|8" instead of "8".)
-//
-// New approach: build an authoritative map from variant definitions (each variant
-// knows its exact color group), then resolve each image path to the correct group
-// by exact match first, then smallest-containing-subset fallback.
-
-// Build authoritative variant group registry: groupKey → groupKey (identity)
-$variantGroupRegistry = [];  // e.g. "5|7|8" => "5|7|8", "8" => "8"
-
-foreach ($product->variants as $v) {
-    $colorIds = $v->attributeOptions
-        ->filter(fn($o) => $o->attribute->slug === 'color')
-        ->sortBy('id')
-        ->pluck('id')
-        ->toArray();
-
-    if (empty($colorIds)) continue;
-
-    sort($colorIds);
-    $key = implode('|', $colorIds);
-    $variantGroupRegistry[$key] = $key;
-}
-
-// Collect color images grouped by image_path (handles duplicate rows from old save format)
-$pathToColorIds = [];
-
-$product->images
-    ->filter(fn($i) => $i->color_option_id !== null)
-    ->each(function ($img) use (&$pathToColorIds) {
-        $pathToColorIds[$img->image_path][] = (int) $img->color_option_id;
-    });
-
-foreach ($pathToColorIds as $path => $cids) {
-    $storedIds = array_values(array_unique($cids));
-    sort($storedIds);
-    $storedKey = implode('|', $storedIds);
-
-    // Exact match: new format stores primary ID only, or all IDs for the group
-    if (isset($variantGroupRegistry[$storedKey])) {
-        $groupKey = $storedKey;
-    } else {
-        // Subset match: old format may store only one ID from a multi-color group.
-        // Find the smallest registered group that contains ALL stored IDs.
-        $groupKey = null;
-        foreach ($variantGroupRegistry as $vKey) {
-            $vIds = array_map('intval', explode('|', $vKey));
-            if (count(array_intersect($storedIds, $vIds)) === count($storedIds)) {
-                if ($groupKey === null) {
-                    $groupKey = $vKey;
-                } else {
-                    // Prefer the more specific (smaller) group
-                    $curLen = substr_count($groupKey, '|') + 1;
-                    $newLen = substr_count($vKey, '|') + 1;
-                    if ($newLen < $curLen) $groupKey = $vKey;
-                }
-            }
-        }
-        // Last resort: use stored key as-is
-        if ($groupKey === null) $groupKey = $storedKey;
-    }
-
-    $url = Storage::url($path);
-
-    if (!in_array($url, $colorImages[$groupKey] ?? [])) {
-        $colorImages[$groupKey][] = $url;
-    }
-    if (!isset($colorPrimaryImage[$groupKey])) {
-        $colorPrimaryImage[$groupKey] = $url;
-    }
-
-    // Backward compat: also register under each individual color ID string
-    foreach (array_map('intval', explode('|', $groupKey)) as $gid) {
-        $strId = (string) $gid;
-        if (!in_array($url, $colorImages[$strId] ?? [])) {
-            $colorImages[$strId][] = $url;
-        }
-        if (!isset($colorPrimaryImage[$strId])) {
-            $colorPrimaryImage[$strId] = $url;
-        }
-    }
-}
-            // ── Step 3: Build variantPrimaryImage from variant-linked images ─
-            //
-            // Some images are stored with variant_id (no color_option_id).
-            // These are the per-variant images uploaded via VariantImageManager.
-            // We expose them so the frontend can resolve image_urls per variant.
-            foreach ($product->variants as $v) {
-                if ($v->images->isEmpty()) continue;
-
-                $primary = $v->images->firstWhere('is_primary', true)
-                        ?? $v->images->sortBy('order')->first();
-
-                if ($primary) {
-                    $variantPrimaryImage[$v->id] = Storage::url($primary->image_path);
+            foreach ($sets['color_groups'] as $g) {
+                $urls = array_map(fn($i) => Storage::url($i['path']), $g['images']);
+                if (!$urls) continue;
+                $colorImages[$g['key']]       = $urls;
+                $colorPrimaryImage[$g['key']] = $urls[0];
+                // Backward compat: also reachable under each single color id
+                foreach ($g['color_option_ids'] as $cid) {
+                    $colorImages[(string) $cid]       ??= $urls;
+                    $colorPrimaryImage[(string) $cid] ??= $urls[0];
                 }
             }
 
-            // ── Step 4: Build variants payload ────────────────────────────────
-// ── Step 3b: Bridge variant images → color group images ───────────────────
-foreach ($product->variants as $v) {
-    if (!isset($variantPrimaryImage[$v->id])) continue;
-
-    $colorOpts = $v->attributeOptions
-        ->filter(fn($o) => $o->attribute->slug === 'color')
-        ->sortBy('id')
-        ->values();
-
-    if ($colorOpts->isEmpty()) continue;
-
-    $colorIds = $colorOpts->pluck('id')->toArray();
-    sort($colorIds);
-    $groupKey = implode('|', $colorIds);
-
-    $vImgUrls = $v->images
-        ->map(fn($i) => Storage::url($i->image_path))
-        ->values()
-        ->toArray();
-
-    if (empty($colorImages[$groupKey])) {
-        $colorImages[$groupKey]      = $vImgUrls;
-        $colorPrimaryImage[$groupKey] = $variantPrimaryImage[$v->id];
-
-        foreach ($colorIds as $cid) {
-            $strId = (string) $cid;
-            if (empty($colorImages[$strId])) {
-                $colorImages[$strId]      = $vImgUrls;
-                $colorPrimaryImage[$strId] = $variantPrimaryImage[$v->id];
-            }
-        }
-    }
-}
             $variantsPayload = $product->variants->map(function ($v) use (
-                $productImageUrls, $colorImages, $colorPrimaryImage, $variantPrimaryImage, $product
+                $productImageUrls, $colorImages, $product
             ) {
-                // Resolve image_urls for this variant:
-                // Priority: variant's own images → color-group images → product images
-                $variantImageUrls = $v->images
-                    ->map(fn($i) => Storage::url($i->image_path))
-                    ->values()
-                    ->toArray();
+                $colorIds      = \App\Services\ProductImages::colorIdsOf($v);
+                $colorGroupKey = $colorIds ? implode('|', $colorIds) : null;
 
-                // Build the color group key for this variant
-                $colorOpts = $v->attributeOptions
-                    ->filter(fn($o) => $o->attribute->slug === 'color')
-                    ->sortBy('id')
-                    ->values();
-
-                $colorGroupKey = null;
-
-                if ($colorOpts->isNotEmpty()) {
-                    $colorIds      = $colorOpts->pluck('id')->toArray();
-                    sort($colorIds);
-                    $colorGroupKey = implode('|', $colorIds);
-
-                    // If variant has no own images, fall back to color-group images
-                    if (empty($variantImageUrls) && isset($colorImages[$colorGroupKey])) {
-                        $variantImageUrls = $colorImages[$colorGroupKey];
-                    }
-                }
-
-                // Final fallback: product-level images
-                if (empty($variantImageUrls)) {
-                    $variantImageUrls = $productImageUrls;
-                }
-
-                // Primary image for this variant
-                $primaryImageUrl = $variantPrimaryImage[$v->id]
-                    ?? ($colorGroupKey ? ($colorPrimaryImage[$colorGroupKey] ?? null) : null)
-                    ?? $productImageUrls[0]
-                    ?? null;
+                $variantImageUrls = ($colorGroupKey ? ($colorImages[$colorGroupKey] ?? []) : []) ?: $productImageUrls;
+                $primaryImageUrl  = $variantImageUrls[0] ?? null;
 
                 $productBasePrice = (float) $product->price;
                 $effectiveBase    = $v->price_override !== null
                     ? (float) $v->price_override
                     : $productBasePrice;
+
+                // With a promotion: discounted from this variant's lowest 30-day price
+                $variantPromo = $this->promoService->getEffectivePrice($product, $effectiveBase, $v->id);
 
                 return [
                     'id'              => $v->id,
@@ -491,7 +337,9 @@ foreach ($product->variants as $v) {
                     'is_active'       => $v->is_active,
                     // Effective price = variant override OR product base price
                     'price'           => $effectiveBase,
-                    'original_price'  => $productBasePrice,
+                    'effective_price' => $variantPromo['effective_price'],
+                    // Crossed-out price when discounted (equals price otherwise)
+                    'original_price'  => $variantPromo['original_price'],
                     'price_override'  => $v->price_override !== null ? (float) $v->price_override : null,
                     'label'           => $v->label,
                     // option_map is the accessor on ProductVariant — handles color group grouping
@@ -552,10 +400,8 @@ foreach ($product->variants as $v) {
                     if (!isset($axesMap['color']['options'][$groupKey])) {
                         $primaryOpt = $colorOpts->first();
 
-                        // primary_image: color-group image → variant primary image → null
-                        $primaryImage = $colorPrimaryImage[$groupKey]
-                            ?? $variantPrimaryImage[$v->id]
-                            ?? null;
+                        // primary_image: the color group's main image
+                        $primaryImage = $colorPrimaryImage[$groupKey] ?? null;
 
                         $axesMap['color']['options'][$groupKey] = [
                             'id'            => $primaryOpt->id,
@@ -618,6 +464,7 @@ foreach ($product->variants as $v) {
         $data['attribute_data']  = $product->attribute_data;
         $data['color_images']    = $colorImages;
         $data['effective_price'] = $promoData['effective_price'];
+        $data['original_price']  = $promoData['original_price'];
         $data['discount_amount'] = $promoData['discount_amount'];
         $data['promotion']       = $promoData['promotion'];
 
@@ -780,6 +627,7 @@ $p->variant_images = $variantImages;
 
     $promoData          = $this->promoService->getEffectivePrice($p);
     $p->effective_price = $promoData['effective_price'];
+    $p->original_price  = $promoData['original_price'];   // lowest 30-day price when discounted
     $p->discount_amount = $promoData['discount_amount'];
     $p->promotion       = $promoData['promotion'];
 

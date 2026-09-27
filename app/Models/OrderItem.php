@@ -71,7 +71,7 @@ class OrderItem extends Model
      * Priority:
      *   0. Controller pre-resolved value (set via setAttribute in ClientOrderApiController)
      *   1. Stored snapshot (image_url column set at checkout time)
-     *   2. Variant's first image (live lookup — only if relations are loaded)
+     *   2. Main image of the variant's color group (only if relations are loaded)
      *   3. Product primary image
      *   4. null
      */
@@ -88,12 +88,9 @@ class OrderItem extends Model
             return str_starts_with($stored, 'http') ? $stored : url($stored);
         }
 
-        // 2. Variant's first image
-        if ($this->relationLoaded('variant') && $this->variant) {
-            $v = $this->variant;
-            if ($v->relationLoaded('images') && $v->images->isNotEmpty()) {
-                return Storage::url($v->images->first()->image_path);
-            }
+        // 2. Main image of the variant's color group (sizes share images)
+        if ($this->relationLoaded('variant') && $this->variant && $this->relationLoaded('product') && $this->product) {
+            if ($url = \App\Services\ProductImages::thumbnailFor($this->product, $this->variant)) return $url;
         }
 
         // 3. Product primary image

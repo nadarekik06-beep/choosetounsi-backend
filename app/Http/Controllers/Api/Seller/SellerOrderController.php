@@ -174,29 +174,12 @@ $mappedItems = $sellerOrder->items->map(function ($item) use ($returnedItemIds, 
             }
 
             // ── Variant image resolution ──────────────────────────────────
-            // Priority: variant images → color-option images → checkout snapshot → product primary
+            // Priority: color group main image → product cover (sizes share images)
             $resolvedImage = null;
 
-            // 1. Direct variant_id images
-            if ($item->variant && $item->variant->relationLoaded('images')
-                && $item->variant->images->isNotEmpty()) {
-                $resolvedImage = Storage::url(
-                    $item->variant->images->first()->image_path
-                );
-            }
-
-            // 2. Color-option images
-            if (!$resolvedImage && $item->variant) {
-                $colorOptionId = $item->variant->color_option_id;
-                if ($colorOptionId) {
-                    $colorImage = \App\Models\ProductImage::where('product_id', $item->product_id)
-                        ->where('color_option_id', $colorOptionId)
-                        ->orderBy('order')
-                        ->first();
-                    if ($colorImage) {
-                        $resolvedImage = Storage::url($colorImage->image_path);
-                    }
-                }
+            // 1-2. Main image of the variant's color group (sizes share images)
+            if ($item->variant && $item->product) {
+                $resolvedImage = \App\Services\ProductImages::thumbnailFor($item->product, $item->variant);
             }
 
             // 3. Stored checkout snapshot
@@ -279,6 +262,10 @@ $totalSellerNet        = $hasAnyCommission
     ? round($commissionItems->sum(fn($i) => (float) $i->seller_amount), 3)
     : null;
 
+// Free-shipping orders: the agency cost the seller pays, off their earnings.
+$shippingCharge  = round((float) ($sellerOrder->seller_shipping_charge ?? 0), 3);
+$netAfterShipping = $totalSellerNet !== null ? round($totalSellerNet - $shippingCharge, 3) : null;
+
         $order    = $sellerOrder->order;
         $customer = $order->user ? ['name' => $order->user->name] : null;
 
@@ -311,6 +298,8 @@ $totalSellerNet        = $hasAnyCommission
                     'total_net'               => $totalNet,   // commission base
                     'total_commission_amount' => $totalCommissionAmount,
                     'total_seller_net'        => $totalSellerNet,
+                    'shipping_paid_by_seller' => $shippingCharge,     // 0 unless free shipping
+                    'net_after_shipping'      => $netAfterShipping,   // sale − commission − shipping
                 ],
             ],
         ]);

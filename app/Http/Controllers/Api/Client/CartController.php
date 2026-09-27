@@ -171,7 +171,7 @@ class CartController extends Controller
             productId:  $productId,
             categoryId: $product->category_id,
             action:     'cart',
-            sessionId:  $request->session()->getId()
+            sessionId:  $this->safeSessionId($request)
         );
 
         return $this->index($request);
@@ -346,7 +346,7 @@ private function safeSessionId(Request $request): ?string
                 : (float) $product->price)
             : (float) $product->price;
  
-        $promoData = $this->promotionService->getEffectivePrice($product, $basePrice);
+        $promoData = $this->promotionService->getEffectivePrice($product, $basePrice, $variant?->id);
         $price     = $promoData['effective_price'];
  
         $imageUrl = $this->resolveImageUrl($product, $variant);
@@ -430,36 +430,9 @@ private function safeSessionId(Request $request): ?string
         ];
     }
 
+    /** Main image of the variant's color group, else the product cover (sizes share images). */
     private function resolveImageUrl(Product $product, ?ProductVariant $variant): ?string
     {
-        if ($variant) {
-            if ($variant->relationLoaded('images') && $variant->images->isNotEmpty()) {
-                $primary = $variant->images->firstWhere('is_primary', true)
-                        ?? $variant->images->sortBy('order')->first();
-                if ($primary) return Storage::url($primary->image_path);
-            }
-
-            $colorOptId = null;
-            if ($variant->relationLoaded('attributeOptions')) {
-                $colorOpt   = $variant->attributeOptions->first(fn($o) => $o->attribute->slug === 'color');
-                $colorOptId = $colorOpt?->id;
-            }
-
-            if ($colorOptId && $product->relationLoaded('images')) {
-                $colorImage = $product->images
-                    ->where('color_option_id', $colorOptId)
-                    ->sortBy('order')
-                    ->first();
-                if ($colorImage) return Storage::url($colorImage->image_path);
-            }
-        }
-
-        if ($product->relationLoaded('images')) {
-            $primary = $product->images->firstWhere('is_primary', true)
-                    ?? $product->images->sortBy('order')->first();
-            if ($primary) return Storage::url($primary->image_path);
-        }
-
-        return null;
+        return \App\Services\ProductImages::thumbnailFor($product, $variant);
     }
 }

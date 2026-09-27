@@ -37,7 +37,8 @@ class DashboardController extends Controller
         // to stay in sync with the Finance dashboard.
         //
         // gross_revenue  = what customers paid for items (seller_orders.subtotal − coupon discount_amount)
-        // platform_profit = commission + delivery fee (what platform earns)
+        // platform_profit = commission + shipping collected (customer fee or
+        //                   seller charge) − shipping paid to the agency
         //
         // We show gross_revenue on the dashboard KPI so the number is
         // meaningful to the admin (matches Finance > Overview > Gross Revenue).

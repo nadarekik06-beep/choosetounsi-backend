@@ -16,14 +16,12 @@ use App\Http\Controllers\Api\Seller\SellerStoreProfileController;
 use App\Http\Controllers\Api\Client\SellerFollowController;
 use App\Http\Controllers\Api\Seller\SellerProductController;
 use App\Http\Controllers\Api\Seller\SellerOrderController;
-use App\Http\Controllers\Api\Seller\ProductUpdateRequestController as SellerProductUpdateRequestController;
 use App\Http\Controllers\Api\Seller\RestockController;
 use App\Http\Controllers\Admin\SellerController;
 use App\Http\Controllers\Admin\ProductController as AdminProductController;
 use App\Http\Controllers\Admin\AdminSubscriptionController;
 use App\Http\Controllers\Admin\AdminPlanController;
 use App\Http\Controllers\Admin\OrderController as AdminOrderController;
-use App\Http\Controllers\Admin\ProductUpdateRequestController as AdminProductUpdateRequestController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Admin\AdminNotificationController;
 use App\Http\Controllers\Admin\UserController as AdminUserController;
@@ -211,6 +209,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/subscription/history',        [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'history']);
         //----─ Commission Calculation (for frontend preview) ─────────────────────────
         Route::post('/commission/calculate', [CommissionController::class, 'calculate']);
+        Route::get('/shipping-cost',         [CommissionController::class, 'shippingCost']);
 
         // ── Advanced Analytics (Red Pepper +) ─────────────────────────────
         Route::prefix('analytics')
@@ -276,9 +275,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
         Route::delete('/products/{id}/images/{imageId}',        [SellerProductController::class, 'destroyImage']);
         Route::patch('/products/{id}/images/{imageId}/primary', [SellerProductController::class, 'setPrimaryImage']);
-
-        Route::get('/products/{id}/update-requests', [SellerProductUpdateRequestController::class, 'index']);
-        Route::post('/products/{id}/request-update', [SellerProductUpdateRequestController::class, 'store']);
 
         // ── Orders ────────────────────────────────────────────────────────
         Route::get('/orders/stats',          [SellerOrderController::class, 'stats']);
@@ -437,6 +433,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/products',                [AdminProductController::class, 'index']);
         Route::get('/products/{id}',           [AdminProductController::class, 'show']);
         Route::get('/products/{id}/review',    [AdminProductController::class, 'review']);
+        Route::get('/products/{id}/editor',    [\App\Http\Controllers\Admin\ProductEditorController::class, 'show']);
+        Route::post('/products/{id}/editor',   [\App\Http\Controllers\Admin\ProductEditorController::class, 'save']);
         Route::patch('/products/{id}/request-changes', [AdminProductController::class, 'requestChanges']);
         Route::patch('/products/{id}/featured',        [AdminProductController::class, 'toggleFeatured']);
         Route::put('/products/{id}',           [AdminProductController::class, 'update']);
@@ -460,12 +458,11 @@ Route::middleware('auth:sanctum')->group(function () {
 
         
 
-        // ── Product Update Requests ───────────────────────────────────────
-        Route::get('/product-update-requests/stats',         [AdminProductUpdateRequestController::class, 'stats']);
-        Route::get('/product-update-requests',               [AdminProductUpdateRequestController::class, 'index']);
-        Route::get('/product-update-requests/{id}',          [AdminProductUpdateRequestController::class, 'show']);
-        Route::post('/product-update-requests/{id}/approve', [AdminProductUpdateRequestController::class, 'approve']);
-        Route::post('/product-update-requests/{id}/reject',  [AdminProductUpdateRequestController::class, 'reject']);
+        // ── Product changes (seller edits log; replaces update requests) ──
+        Route::get('/product-changes/stats',        [\App\Http\Controllers\Admin\ProductChangeController::class, 'stats']);
+        Route::get('/product-changes',              [\App\Http\Controllers\Admin\ProductChangeController::class, 'index']);
+        Route::get('/product-changes/{id}',         [\App\Http\Controllers\Admin\ProductChangeController::class, 'show']);
+        Route::post('/product-changes/{id}/revert', [\App\Http\Controllers\Admin\ProductChangeController::class, 'revert']);
 
 
         // ── Admin Packs ───────────────────────────────────────────────────

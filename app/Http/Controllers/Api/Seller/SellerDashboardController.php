@@ -146,6 +146,35 @@ class SellerDashboardController extends Controller
             }
         }
 
+        // ── Shipping the seller pays on free-shipping orders ───────────────────
+        // Per order, not per item, so it comes off the item totals afterwards.
+        $shippingQuery = fn() => DB::table('seller_orders as so')
+            ->join('orders as o', 'o.id', '=', 'so.order_id')
+            ->where('so.seller_id', $sellerId)
+            ->where('so.status', '!=', 'cancelled')
+            ->whereIn('o.status', ['completed', 'delivered']);
+
+        $totalShipping = 0.0;
+        $shippingByMonth = collect();
+        try {
+            $totalShipping     = (float) $shippingQuery()->sum('so.seller_shipping_charge');
+            $revenueThisMonth -= (float) $shippingQuery()
+                ->whereBetween('o.created_at', [$now->copy()->startOfMonth(), $now->copy()->endOfMonth()])
+                ->sum('so.seller_shipping_charge');
+            $revenueLastMonth -= (float) $shippingQuery()
+                ->whereBetween('o.created_at', [$now->copy()->subMonth()->startOfMonth(), $now->copy()->subMonth()->endOfMonth()])
+                ->sum('so.seller_shipping_charge');
+            $totalRevenue     -= $totalShipping;
+
+            $shippingByMonth = $shippingQuery()
+                ->where('o.created_at', '>=', $now->copy()->subMonths(11)->startOfMonth())
+                ->selectRaw("DATE_FORMAT(o.created_at, '%Y-%m') as month, SUM(so.seller_shipping_charge) as shipping")
+                ->groupBy('month')
+                ->pluck('shipping', 'month');
+        } catch (\Exception $e) {
+            // columns missing before the shipping migration — nothing to deduct
+        }
+
         $revenueGrowth = $revenueLastMonth > 0
             ? round((($revenueThisMonth - $revenueLastMonth) / $revenueLastMonth) * 100, 1)
             : ($revenueThisMonth > 0 ? 100.0 : 0.0);
@@ -190,7 +219,7 @@ class SellerDashboardController extends Controller
                     $label = $now->copy()->subMonths($i)->translatedFormat('M Y');
                     $monthlyRevenue->push([
                         'month'   => $label,
-                        'revenue' => isset($rawMonthly[$key]) ? round((float) $rawMonthly[$key]->revenue, 3) : 0,
+                        'revenue' => round((isset($rawMonthly[$key]) ? (float) $rawMonthly[$key]->revenue : 0) - (float) ($shippingByMonth[$key] ?? 0), 3),
                         'orders'  => isset($rawMonthly[$key]) ? (int) $rawMonthly[$key]->orders : 0,
                     ]);
                 }
@@ -369,7 +398,8 @@ class SellerDashboardController extends Controller
             'success' => true,
             'data'    => [
                 'summary' => [
-                    'total_revenue'             => round((float) $totalRevenue, 3),
+                    'total_revenue'             => round((float) $totalRevenue, 3),   // net of commission and shipping paid by the seller
+                    'total_shipping'            => round($totalShipping, 3),
                     'total_orders'              => $totalOrders,
                     'pending_orders'            => $pendingOrders,
                     'total_products'            => $totalProducts,

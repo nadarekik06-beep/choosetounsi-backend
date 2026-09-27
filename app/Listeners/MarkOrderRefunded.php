@@ -197,7 +197,10 @@ class MarkOrderRefunded
                     // Adjust financial columns (reverse commission)
                     'commission_amount'  => 0,
                     'seller_net_amount'  => 0,
-                    'platform_profit'    => DB::raw('delivery_fee'), // only delivery fee remains
+                    // Nothing sold → the seller isn't charged shipping; the platform
+                    // keeps the customer's delivery fee and still owes the agency.
+                    'seller_shipping_charge' => 0,
+                    'platform_profit'    => DB::raw('delivery_fee - shipping_cost'),
                 ]);
 
                 // Sync parent order (may become 'cancelled' if all sub-orders cancelled)

@@ -204,53 +204,9 @@ class ClientOrderApiController extends Controller
         return $arr;
     }
 
+    /** Main image of the variant's color group, else the product cover (sizes share images). */
     private function resolveImageUrl(?Product $product, ?ProductVariant $variant): ?string
     {
-        if (!$product) return null;
-
-        if ($variant) {
-            if ($variant->relationLoaded('images') && $variant->images->isNotEmpty()) {
-                $img = $variant->images->firstWhere('is_primary', true)
-                    ?? $variant->images->sortBy('order')->first();
-                if ($img) return Storage::url($img->image_path);
-            }
-
-            $colorOptId = null;
-            if ($variant->relationLoaded('attributeOptions')) {
-                $colorOpt = $variant->attributeOptions->first(
-                    fn($o) => $o->relationLoaded('attribute') && $o->attribute->slug === 'color'
-                );
-                $colorOptId = $colorOpt?->id;
-            }
-
-            if ($colorOptId && $product->relationLoaded('images')) {
-                $img = $product->images
-                    ->where('color_option_id', $colorOptId)
-                    ->sortBy('order')
-                    ->first();
-                if ($img) return Storage::url($img->image_path);
-            }
-
-            if ($colorOptId) {
-                $img = \App\Models\ProductImage::where('product_id', $product->id)
-                    ->where('color_option_id', $colorOptId)
-                    ->orderBy('order')
-                    ->first();
-                if ($img) return Storage::url($img->image_path);
-            }
-        }
-
-        if ($product->relationLoaded('images')) {
-            $img = $product->images->firstWhere('is_primary', true)
-                ?? $product->images->sortBy('order')->first();
-            if ($img) return Storage::url($img->image_path);
-        }
-
-        $img = \App\Models\ProductImage::where('product_id', $product->id)
-            ->orderByDesc('is_primary')
-            ->orderBy('order')
-            ->first();
-
-        return $img ? Storage::url($img->image_path) : null;
+        return \App\Services\ProductImages::thumbnailFor($product, $variant);
     }
 }

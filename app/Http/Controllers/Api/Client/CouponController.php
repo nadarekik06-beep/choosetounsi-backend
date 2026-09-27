@@ -42,7 +42,7 @@ class CouponController extends Controller
             ->filter(fn ($item) => $item->product && $item->product->seller_id === $coupon->seller_id)
             ->map(function ($item) {
                 $basePrice = $item->variant?->price_override ?? $item->product->price;
-                $promo = app(\App\Services\PromotionService::class)->getEffectivePrice($item->product, (float) $basePrice);
+                $promo = app(\App\Services\PromotionService::class)->getEffectivePrice($item->product, (float) $basePrice, $item->variant?->id);
                 return [
                     'product_id' => $item->product_id,
                     'quantity'   => $item->quantity,

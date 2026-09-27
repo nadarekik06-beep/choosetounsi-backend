@@ -150,48 +150,9 @@ class FavoriteController extends Controller
         ];
     }
 
-    /**
-     * Image priority:
-     *  1. Variant's own images
-     *  2. Product images with variant's color_option_id
-     *  3. Product primary image
-     *  4. null
-     */
+    /** Main image of the variant's color group, else the product cover (sizes share images). */
     private function resolveImageUrl(Product $product, ?ProductVariant $variant): ?string
     {
-        if ($variant) {
-            // 1. Variant's own images
-            if ($variant->relationLoaded('images') && $variant->images->isNotEmpty()) {
-                $img = $variant->images->firstWhere('is_primary', true)
-                    ?? $variant->images->sortBy('order')->first();
-                if ($img) return Storage::url($img->image_path);
-            }
-
-            // 2. Color-grouped product images
-            $colorOptId = null;
-            if ($variant->relationLoaded('attributeOptions')) {
-                $colorOpt   = $variant->attributeOptions->first(
-                    fn($o) => $o->attribute->slug === 'color'
-                );
-                $colorOptId = $colorOpt?->id;
-            }
-
-            if ($colorOptId && $product->relationLoaded('images')) {
-                $img = $product->images
-                    ->where('color_option_id', $colorOptId)
-                    ->sortBy('order')
-                    ->first();
-                if ($img) return Storage::url($img->image_path);
-            }
-        }
-
-        // 3. Product primary image fallback
-        if ($product->relationLoaded('images')) {
-            $img = $product->images->firstWhere('is_primary', true)
-                ?? $product->images->sortBy('order')->first();
-            if ($img) return Storage::url($img->image_path);
-        }
-
-        return null;
+        return \App\Services\ProductImages::thumbnailFor($product, $variant);
     }
 }

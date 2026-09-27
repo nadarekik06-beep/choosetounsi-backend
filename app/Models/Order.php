@@ -18,6 +18,8 @@ class Order extends Model
         'coupon_codes',
         'total_amount',
         'shipping_fee',      // ← ADDED
+        'shipping_cost',     // agency cost, frozen at checkout
+        'shipping_paid_by',  // customer | seller | platform
         'status',
         'payment_status',
         'payment_method',
@@ -34,7 +36,11 @@ class Order extends Model
         'coupon_codes'    => 'array',
         'total_amount'    => 'decimal:3',
         'shipping_fee'    => 'decimal:3',  // ← ADDED
+        'shipping_cost'   => 'decimal:3',
     ];
+
+    // Internal cost split — the customer only ever sees shipping_fee.
+    protected $hidden = ['shipping_cost', 'shipping_paid_by'];
 
     /* ── Boot: auto-generate order_number ── */
 

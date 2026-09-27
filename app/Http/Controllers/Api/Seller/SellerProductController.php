@@ -8,6 +8,9 @@ use App\Models\Product;
 use App\Models\ProductImage;
 use App\Models\ProductModerationLog;
 use App\Models\ProductVariant;
+use App\Services\PriceHistory;
+use App\Services\ProductImages;
+use App\Services\ProductChangeTracker;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -57,6 +60,7 @@ class SellerProductController extends Controller
                     : null;
             $p->has_variants  = $p->variants()->exists();
             $p->variant_stock = $p->variants()->sum('stock');
+            $p->reference_price = PriceHistory::lowestFor($p);
             return $p;
         });
 
@@ -174,6 +178,10 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
             ];
         });
 
+        $product->pricing = $this->pricingRules($product);
+        // Images as the form edits them: gallery + one set per color group
+        $product->image_sets = ProductImages::sets($product->fresh());
+
         $product->moderation_status = $product->moderationStatus();
         $product->changes_request   = null;
         if ($product->changes_requested_at) {
@@ -259,7 +267,13 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         // ── Plan limits (subscription_plans) ─────────────────────────────────
         $gate = app(\App\Services\PlanGate::class);
         if ($deny = $gate->canAddProduct($seller->id)) return $deny;
-        if ($deny = $gate->imagesWithinLimit($seller->id, $this->imageCountAfterSave(null, $request))) return $deny;
+
+        // Images: gallery or one set per color group, applied once the variants exist
+        $images = $this->readImageManifest($request, new Product(), $this->requestedGroupKeys($request, null));
+        if ($images instanceof \Illuminate\Http\JsonResponse) return $images;
+
+        $imageCount = $images ? ProductImages::countAfter($images['manifest']) : $this->imageCountAfterSave(null, $request);
+        if ($deny = $gate->imagesWithinLimit($seller->id, $imageCount)) return $deny;
 
         try {
             $product = $seller->products()->create([
@@ -306,20 +320,11 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
             throw $e;
         }
 
-        try {
-            $this->saveGeneralImages($product, $request);
-            Log::info('[SellerProduct::store] General images saved');
-        } catch (\Throwable $e) {
-            Log::error('[SellerProduct::store] GENERAL IMAGES FAILED', ['error' => $e->getMessage()]);
-            throw $e;
-        }
-
-        try {
-            $this->saveColorImages($product, $request);
-            Log::info('[SellerProduct::store] Color images saved');
-        } catch (\Throwable $e) {
-            Log::error('[SellerProduct::store] COLOR IMAGES FAILED', ['error' => $e->getMessage()]);
-            throw $e;
+        if ($images) {
+            $this->applyImageManifest($product, $images);
+            Log::info('[SellerProduct::store] Images saved');
+        } else {
+            $this->saveLegacyImages($product, $request, 'store');
         }
 
         ProductModerationLog::record($product, 'submitted', ['to_status' => 'pending']);
@@ -345,11 +350,29 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
         Log::info('[SellerProduct::update] START', ['id' => $id]);
 
+        $images = $this->readImageManifest($request, $product, $this->requestedGroupKeys($request, $product));
+        if ($images instanceof \Illuminate\Http\JsonResponse) return $images;
+
         // Only uploads are checked, so products already above a lowered limit stay editable
+        $imageCount = $images ? ProductImages::countAfter($images['manifest']) : $this->imageCountAfterSave($product, $request);
         if ($this->countUploads($request) > 0
-            && ($deny = app(\App\Services\PlanGate::class)->imagesWithinLimit($seller->id, $this->imageCountAfterSave($product, $request)))) {
+            && ($deny = app(\App\Services\PlanGate::class)->imagesWithinLimit($seller->id, $imageCount))) {
             return $deny;
         }
+
+        // Live products: a lower price must be a discount (crossed-out price + badge)
+        if ($violations = $this->priceDecreaseViolations($product, $request)) {
+            return response()->json([
+                'success' => false,
+                'code'    => 'PRICE_DECREASE_REQUIRES_DISCOUNT',
+                'message' => __('seller.product.price_decrease_discount'),
+                'errors'  => ['price' => [__('seller.product.price_decrease_discount')]],
+                'data'    => $violations,
+            ], 422);
+        }
+
+        $tracker = app(ProductChangeTracker::class);
+        $before  = $tracker->snapshot($product);
 
         $isActive = $request->has('is_active')
             ? filter_var($request->is_active, FILTER_VALIDATE_BOOLEAN)
@@ -402,27 +425,17 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
             throw $e;
         }
 
-        if ($deleteIds = $request->input('delete_image_ids', [])) {
-            foreach ($product->images()->whereIn('id', (array) $deleteIds)->get() as $img) {
-                Storage::disk('public')->delete($img->image_path);
-                $img->delete();
+        if ($images) {
+            $this->applyImageManifest($product, $images);
+            Log::info('[SellerProduct::update] Images saved');
+        } else {
+            if ($deleteIds = $request->input('delete_image_ids', [])) {
+                foreach ($product->images()->whereIn('id', (array) $deleteIds)->get() as $img) {
+                    Storage::disk('public')->delete($img->image_path);
+                    $img->delete();
+                }
             }
-        }
-
-        try {
-            $this->saveGeneralImages($product, $request);
-            Log::info('[SellerProduct::update] General images saved');
-        } catch (\Throwable $e) {
-            Log::error('[SellerProduct::update] GENERAL IMAGES FAILED', ['error' => $e->getMessage()]);
-            throw $e;
-        }
-
-        try {
-            $this->saveColorImages($product, $request);
-            Log::info('[SellerProduct::update] Color images saved');
-        } catch (\Throwable $e) {
-            Log::error('[SellerProduct::update] COLOR IMAGES FAILED', ['error' => $e->getMessage()]);
-            throw $e;
+            $this->saveLegacyImages($product, $request, 'update');
         }
 
         if ($resubmitting) {
@@ -431,7 +444,14 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                 'to_status'   => 'pending',
             ]);
         }
-        $this->notifyAdmins('updated', $product, $seller);
+        // Every save is logged. Live products: one grouped admin notification
+        // (none for stock-only saves). Products in review keep the review ping.
+        $product->refresh();
+        $tracker->record($product, $before, $seller, 'seller_edit', $product->is_approved);
+        if (!$product->is_approved) {
+            $this->notifyAdmins('updated', $product, $seller);
+        }
+        app(\App\Services\PromotionService::class)->bustCacheForProducts([$product->id]);
         if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class, 'clearSellerCache')) {
             \App\Http\Controllers\Api\Seller\BlackPepperController::clearSellerCache($seller->id);
         }
@@ -490,8 +510,11 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
     public function setPrimaryImage(Request $request, $productId, $imageId)
     {
         $product = $request->user()->products()->findOrFail($productId);
+        $tracker = app(ProductChangeTracker::class);
+        $before  = $tracker->snapshot($product);
         $product->images()->update(['is_primary' => false]);
         $product->images()->where('id', $imageId)->update(['is_primary' => true]);
+        $tracker->record($product, $before, $request->user(), 'images', $product->is_approved);
         return response()->json(['success' => true, 'message' => __('seller.product.primary_updated')]);
     }
 
@@ -505,6 +528,8 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
         $image      = $product->images()->findOrFail($imageId);
         $wasPrimary = $image->is_primary;
+        $tracker    = app(ProductChangeTracker::class);
+        $before     = $tracker->snapshot($product);
 
         Storage::disk('public')->delete($image->image_path);
         $image->delete();
@@ -512,8 +537,142 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         if ($wasPrimary) {
             $product->images()->first()?->update(['is_primary' => true]);
         }
+        $tracker->record($product, $before, $request->user(), 'images', $product->is_approved);
 
         return response()->json(['success' => true, 'message' => __('seller.product.image_deleted')]);
+    }
+
+    // ── Images ─────────────────────────────────────────────────────────────────
+
+    /**
+     * The form's image manifest (see ProductImages): the full ordered list of the
+     * gallery and of each color group, with new files under uploads[key].
+     * Returns null when the request uses the older images/color_images fields,
+     * a 422 response when invalid, else ['manifest' => …, 'uploads' => …].
+     */
+    private function readImageManifest(Request $request, Product $product, array $groupKeys)
+    {
+        if (!$request->has('image_manifest')) return null;
+
+        $manifest = json_decode((string) $request->input('image_manifest'), true);
+        if (!is_array($manifest)) {
+            return response()->json(['success' => false, 'message' => 'Invalid image data.', 'errors' => ['images' => ['Invalid image data.']]], 422);
+        }
+        $manifest += ['gallery' => [], 'color_groups' => []];
+        $uploads  = array_filter((array) $request->file('uploads', []));
+
+        $v = validator([], []);
+        $v->after(fn($v) => ProductImages::validate($v, $product, $manifest, $uploads, $groupKeys, true));
+        if ($v->fails()) {
+            return response()->json(['success' => false, 'message' => $v->errors()->first(), 'errors' => $v->errors()], 422);
+        }
+
+        return ['manifest' => $manifest, 'uploads' => $uploads];
+    }
+
+    /** Color groups the product will have after this save. */
+    private function requestedGroupKeys(Request $request, ?Product $product): array
+    {
+        $rows = (array) $request->input('variants', []);
+        if ($rows) {
+            return ProductImages::groupKeysFor(array_map(fn($r) => (array) ($r['option_ids'] ?? []), array_filter($rows, 'is_array')));
+        }
+        if (!$product) return [];
+        return ProductImages::groupKeysFor(
+            $product->variants()->get()->map(fn($v) => $v->attributeOptions->pluck('id')->all())
+        );
+    }
+
+    /** Stores new files, rewrites image rows, then deletes the files that are no longer used. */
+    private function applyImageManifest(Product $product, array $images): void
+    {
+        $stored = ProductImages::storeUploads($images['manifest'], $images['uploads']);
+        try {
+            $orphans = DB::transaction(fn() => ProductImages::apply($product, $images['manifest'], $stored));
+        } catch (\Throwable $e) {
+            foreach ($stored as $path) Storage::disk('public')->delete($path);
+            throw $e;
+        }
+        ProductImages::deleteUnusedFiles($orphans);
+    }
+
+    /** Older clients: images[] (gallery) and color_images[group] uploads. */
+    private function saveLegacyImages(Product $product, Request $request, string $step): void
+    {
+        try {
+            $this->saveGeneralImages($product, $request);
+            $this->saveColorImages($product, $request);
+        } catch (\Throwable $e) {
+            Log::error("[SellerProduct::$step] IMAGES FAILED", ['error' => $e->getMessage()]);
+            throw $e;
+        }
+    }
+
+    // ── Price rules ─────────────────────────────────────────────────────────────
+
+    /**
+     * Whether lowering this product's price must go through a discount: only
+     * live products, and only when the seller's plan can create promotions
+     * (otherwise the seller would have no way to lower a price at all).
+     */
+    private function discountRuleApplies(Product $product): bool
+    {
+        return $product->is_approved
+            && app(\App\Services\PlanGate::class)->feature($product->seller_id, 'promotions') === null;
+    }
+
+    /**
+     * Prices below both today's price and the 30-day lowest price. Going back
+     * down to a price already charged in the last 30 days is allowed directly
+     * (undoing an increase) — a discount could not show it as a reduction.
+     */
+    private function priceDecreaseViolations(Product $product, Request $request): array
+    {
+        if (!$this->discountRuleApplies($product)) return [];
+
+        $below = fn(float $new, float $current, float $lowest) => $new < $current - 0.0005 && $new < $lowest - 0.0005;
+        $out   = [];
+
+        $curBase = round((float) $product->price, 3);
+        $newBase = $request->filled('price') ? round((float) $request->input('price'), 3) : $curBase;
+        $refBase = PriceHistory::lowest($product->id, null, $curBase);
+        if ($below($newBase, $curBase, $refBase)) {
+            $out['product'] = ['current_price' => $curBase, 'requested_price' => $newBase, 'reference_price' => $refBase];
+        }
+
+        $rows = collect((array) $request->input('variants', []))
+            ->filter(fn($r) => is_array($r) && !empty($r['id']))
+            ->keyBy(fn($r) => (int) $r['id']);
+
+        foreach ($product->variants()->get() as $v) {
+            $row      = $rows->get($v->id);
+            $override = $row ? ($row['price_override'] ?? null) : $v->price_override;
+            $follows  = $override === null || $override === '';
+            $curEff   = round((float) ($v->price_override ?? $curBase), 3);
+            $newEff   = round((float) ($follows ? $newBase : $override), 3);
+            $ref      = PriceHistory::lowest($product->id, $v->id, $curEff);
+            // A drop that only comes from the base price is reported once, on the product
+            if ($below($newEff, $curEff, $ref) && !(isset($out['product']) && $follows)) {
+                $out['variants'][] = [
+                    'id' => $v->id, 'label' => $v->label, 'current_price' => $curEff,
+                    'requested_price' => $newEff, 'reference_price' => $ref,
+                ];
+            }
+        }
+
+        return $out;
+    }
+
+    /** Pricing info for the seller edit form (lower-price popup). */
+    private function pricingRules(Product $product): array
+    {
+        return [
+            'discount_rule'            => $this->discountRuleApplies($product),
+            'reference_price'          => PriceHistory::lowestFor($product),
+            'variant_reference_prices' => (object) $product->variants()->get()
+                ->mapWithKeys(fn($v) => [$v->id => PriceHistory::lowestFor($product, $v)])->all(),
+            'window_days'              => PriceHistory::WINDOW_DAYS,
+        ];
     }
 
     // ── Private helpers ─────────────────────────────────────────────────────────
@@ -578,46 +737,6 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
  
         // Only accept 0 (free) or positive values; reject negatives
         return $fee >= 0 ? round($fee, 3) : null;
-    }
-
-    private function saveVariantImages(Product $product, Request $request): void
-    {
-        $allFiles = $request->allFiles();
-        if (empty($allFiles['variant_images'])) return;
-
-        $variantImagesInput = $allFiles['variant_images'];
-        if (!is_array($variantImagesInput)) return;
-
-        $validVariantIds = $product->variants()->pluck('id')->flip();
-
-        $maxOrder = $product->images()->max('order') ?? -1;
-        $orderIdx = 0;
-
-        foreach ($variantImagesInput as $variantIdStr => $files) {
-            $variantId = (int) $variantIdStr;
-
-            if (!isset($validVariantIds[$variantId])) {
-                Log::warning("[SellerProduct::saveVariantImages] Invalid variant_id: {$variantId} for product {$product->id}");
-                continue;
-            }
-
-            foreach ((array) $files as $file) {
-                if (!$file || !method_exists($file, 'isValid') || !$file->isValid()) continue;
-
-                $path = $file->store('products', 'public');
-
-                ProductImage::create([
-                    'product_id'      => $product->id,
-                    'variant_id'      => $variantId,
-                    'color_option_id' => null,
-                    'image_path'      => $path,
-                    'order'           => $maxOrder + $orderIdx + 1,
-                    'is_primary'      => false,
-                ]);
-
-                $orderIdx++;
-            }
-        }
     }
 
     private function saveAttributes(Product $product, Request $request): void
@@ -851,7 +970,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
             if (is_array($v)) return array_sum(array_map($count, $v));
             return $v instanceof \Illuminate\Http\UploadedFile ? 1 : 0;
         };
-        return $count($files['images'] ?? []) + $count($files['color_images'] ?? []) + $count($files['variant_images'] ?? []);
+        return $count($files['images'] ?? []) + $count($files['color_images'] ?? []) + $count($files['uploads'] ?? []);
     }
 
     /** Distinct images the product will have once this request is saved. */

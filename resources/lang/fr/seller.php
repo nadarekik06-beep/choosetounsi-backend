@@ -16,6 +16,8 @@ return [
         'cache_cleared' => 'Cache vidé.',
     ],
     'product' => [
+        'color_images_required' => 'Ajoutez au moins une image pour chaque couleur : :colors.',
+        'price_decrease_discount' => 'Pour baisser le prix d\'un produit en ligne, créez une réduction : les clients voient alors l\'ancien prix barré et le badge « -% ».',
         'created_review' => 'Produit créé ! Il sera examiné par un administrateur.',
         'created_review_long' => 'Produit créé avec succès ! Il sera examiné par l\'administration.',
         'updated' => 'Produit mis à jour.',
@@ -31,13 +33,7 @@ return [
         'image_deleted_long' => 'Image supprimée avec succès.',
         'primary_updated' => 'Image principale mise à jour.',
         'no_permission' => 'Vous n\'avez pas l\'autorisation d\'accéder à ce produit.',
-    ],
-    'update_request' => [
-        'not_approved' => 'Ce produit n\'est pas encore validé. Vous pouvez le modifier directement.',
-        'pending_exists' => 'Vous avez déjà une demande de modification en attente pour ce produit.',
-        'no_changes' => 'Aucune modification n\'a été soumise.',
-        'submitted' => 'Votre demande de modification a été envoyée et attend la validation de l\'administration.',
-    ],
+    ],
     'restock' => [
         'updated' => 'Stock mis à jour : :stock unités.',
         'variants_updated' => 'Stock des variantes mis à jour. Total : :total unités.',
@@ -348,6 +344,7 @@ return [
             'approved' => [
                 'title' => 'Produit validé !',
                 'body' => 'Votre produit « :name » a été validé et est maintenant en ligne.',
+                'body_adjusted' => 'Votre produit « :name » a été approuvé et est maintenant en ligne. Notre équipe y a apporté quelques ajustements avant sa publication.',
             ],
             'changes' => [
                 'title' => 'Modifications demandées',
@@ -359,17 +356,7 @@ return [
                 'body' => 'Votre produit « :name » a été refusé.',
             ],
             'reason' => 'Motif : :reason',
-        ],
-        'update_request' => [
-            'approved' => [
-                'title' => 'Demande de modification acceptée !',
-                'body' => 'Votre demande de modification pour « :name » a été acceptée et appliquée.',
-            ],
-            'rejected' => [
-                'title' => 'Demande de modification refusée',
-                'body' => 'Votre demande de modification pour « :name » a été refusée.',
-            ],
-        ],
+        ],
         'application' => [
             'approved' => [
                 'title' => 'Candidature acceptée !',

@@ -174,7 +174,7 @@ class BackfillOrderDiscounts extends Command
             $profitFixed = 0;
             foreach (DB::table('seller_orders')->get() as $so) {
                 $fee    = $dry ? (float) $so->delivery_fee : $snapshot->deliveryFeeFor($so->id);
-                $profit = round((float) $so->commission_amount + $fee, 3);
+                $profit = round((float) $so->commission_amount + $fee + (float) ($so->seller_shipping_charge ?? 0) - (float) ($so->shipping_cost ?? 0), 3);
                 if (abs($fee - (float) $so->delivery_fee) > 0.0005 || abs($profit - (float) $so->platform_profit) > 0.0005) {
                     $profitFixed++;
                     if (!$dry) {

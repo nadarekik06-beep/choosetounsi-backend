@@ -367,23 +367,9 @@ public function index(Request $request)
 
     public function approve(Request $request, $id)
     {
-        $product = Product::with('seller')->findOrFail($id);
-        $from    = $product->moderationStatus();
+        // Clears rejection / change-request state, logs it and notifies the seller
+        app(\App\Services\AdminProductEditor::class)->approve(Product::findOrFail($id), $request->user());
 
-        // Clear rejection / change-request state so the product goes back to a clean state
-        $product->update(['is_approved' => true, 'rejection_reason' => null, 'changes_requested_at' => null]);
-        $product = $product->fresh('seller');
-        $product->syncActiveStatusFromVariants();
-
-        ProductModerationLog::record($product, 'approved', [
-            'admin_id'    => $request->user()->id,
-            'from_status' => $from,
-            'to_status'   => $product->moderationStatus(),
-        ]);
-
-        if ($product->seller) {
-            $product->seller->notify(new ProductReviewedNotification('approved', $product->id, $product->name));
-        }
         return response()->json(['success' => true, 'message' => 'Product approved.']);
     }
 
