@@ -18,7 +18,7 @@ use App\Services\FinancialSnapshotService;
 use App\Services\WalletService;
 use App\Services\StockAlertService;
 use App\Services\PromotionService;
-use App\Services\UserPreferenceService; // ← CHANGE 1: Added import
+use App\Services\Recommendation\InteractionTracker;
 use App\Http\Controllers\Api\Seller\SellerForecastController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -27,14 +27,14 @@ use Illuminate\Support\Str;
 
 class CheckoutController extends Controller
 {
-    // ← CHANGE 2: Added UserPreferenceService to constructor
+    // InteractionTracker records purchase signals for homepage personalization
     public function __construct(
         private WalletService            $walletService,
         private StockAlertService        $stockAlertService,
         private PromotionService         $promoService,
         private CommissionService        $commissionService,
         private FinancialSnapshotService $financialSnapshot,
-        private UserPreferenceService    $preferenceService, // ← ADD THIS LINE
+        private InteractionTracker       $tracker,
         private CouponService            $couponService,
     ) {}
 
@@ -447,25 +447,12 @@ $checkingOutIds = $cartItems->pluck('id')->all();
 
             // ── CHANGE 3a: Log purchase activity for preferences ──────────────
             try {
-                $sessionId = $this->safeSessionId($request);
                 foreach ($productRows as $item) {
-                    $this->preferenceService->logActivity(
-                        userId:     $user->id,
-                        productId:  $item->product_id,
-                        categoryId: $item->product->category_id,
-                        action:     'purchase',
-                        sessionId:  $sessionId
-                    );
+                    $this->tracker->recordFromRequest($request, 'purchase', $item->product_id, ['category_id' => $item->product->category_id, 'order_id' => $order->id]);
                 }
                 foreach ($packRows as $cartRow) {
                     foreach ($cartRow->pack->items as $packItem) {
-                        $this->preferenceService->logActivity(
-                            userId:     $user->id,
-                            productId:  $packItem->product_id,
-                            categoryId: $packItem->product->category_id,
-                            action:     'purchase',
-                            sessionId:  $sessionId
-                        );
+                        $this->tracker->recordFromRequest($request, 'purchase', $packItem->product_id, ['category_id' => $packItem->product->category_id, 'order_id' => $order->id]);
                     }
                 }
             } catch (\Throwable $e) {
@@ -694,13 +681,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
 
             // ── CHANGE 3b: Log purchase activity for preferences ──────────────
             try {
-                $this->preferenceService->logActivity(
-                    userId:     $user->id,
-                    productId:  $product->id,
-                    categoryId: $product->category_id,
-                    action:     'purchase',
-                    sessionId:  $this->safeSessionId($request)
-                );
+                $this->tracker->recordFromRequest($request, 'purchase', $product->id, ['category_id' => $product->category_id, 'order_id' => $order->id]);
             } catch (\Throwable $e) {
                 Log::warning('[Preferences] buyNow purchase log failed: ' . $e->getMessage());
             }

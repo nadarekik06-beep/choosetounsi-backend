@@ -9,6 +9,7 @@ use App\Models\PackItem;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Services\UserPreferenceService;
+use App\Services\Recommendation\InteractionTracker;
 use App\Services\PromotionService;          // ← already imported, just moved up
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -166,13 +167,7 @@ class CartController extends Controller
             ]);
         }
 
-        $this->preferenceService->logActivity(
-            userId:     $user->id,
-            productId:  $productId,
-            categoryId: $product->category_id,
-            action:     'cart',
-            sessionId:  $this->safeSessionId($request)
-        );
+        app(InteractionTracker::class)->recordFromRequest($request, 'cart_add', $product);
 
         return $this->index($request);
     }

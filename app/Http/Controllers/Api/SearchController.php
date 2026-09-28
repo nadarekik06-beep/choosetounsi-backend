@@ -4,6 +4,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\Recommendation\InteractionTracker;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use App\Support\Localization;
@@ -137,6 +138,7 @@ class SearchController extends Controller
                            + count($sections['same_category'])
                            + count($sections['related']);
 
+                    $this->trackSearch($request, $query, $sections);
                     return response()->json([
                         'success'      => true,
                         'source'       => 'ai',
@@ -148,6 +150,7 @@ class SearchController extends Controller
                 }
 
                 // AI returned no results
+                $this->trackSearch($request, $query, []);
                 return response()->json([
                     'success'      => true,
                     'source'       => 'ai',
@@ -176,6 +179,7 @@ class SearchController extends Controller
         $sections = $this->splitIntoSections($products, $searchQuery);
         $total    = count($sections['direct']) + count($sections['same_category']) + count($sections['related']);
 
+        $this->trackSearch($request, $query, $sections);
         return response()->json([
             'success'      => true,
             'source'       => 'fallback',
@@ -495,5 +499,21 @@ class SearchController extends Controller
 
         return $dbQuery->orderByDesc('relevance_score')->orderByDesc('p.featured')->orderByDesc('p.views')
             ->limit($limit)->get()->map(fn($p) => $this->formatProduct($p))->toArray();
+    }
+
+    /** Personalization signal: remember what was searched and which category it pointed at. */
+    private function trackSearch(Request $request, string $query, array $sections): void
+    {
+        $top = $sections['direct'][0] ?? $sections['same_category'][0] ?? null;
+        $top = is_object($top) ? (array) $top : $top;
+        $slug = $top['category_slug'] ?? null;
+        $categoryId = $slug
+            ? Cache::remember("category_id_by_slug:{$slug}", 3600, fn () => DB::table('categories')->where('slug', $slug)->value('id'))
+            : null;
+
+        app(InteractionTracker::class)->recordFromRequest($request, 'search', null, [
+            'search_query' => $query,
+            'category_id'  => $categoryId ? (int) $categoryId : null,
+        ]);
     }
 }

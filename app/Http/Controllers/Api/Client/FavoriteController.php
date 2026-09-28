@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Favorite;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Services\Recommendation\InteractionTracker;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 
@@ -56,6 +57,7 @@ class FavoriteController extends Controller
 
         if ($existing) {
             $existing->delete();
+            app(InteractionTracker::class)->recordFromRequest($request, 'favorite_remove', $product);
             return response()->json(['success' => true, 'data' => null, 'message' => __('messages.favorite.removed')]);
         }
 
@@ -64,6 +66,8 @@ class FavoriteController extends Controller
             'product_id' => $productId,
             'variant_id' => $variantId,
         ]);
+
+        app(InteractionTracker::class)->recordFromRequest($request, 'favorite_add', $product);
 
         $fav->load([
             'product.images',

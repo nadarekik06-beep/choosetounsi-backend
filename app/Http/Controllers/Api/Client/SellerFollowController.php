@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\SellerFollow;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
+use App\Services\Recommendation\InteractionTracker;
 use Illuminate\Http\Request;
 
 class SellerFollowController extends Controller
@@ -28,6 +29,8 @@ class SellerFollowController extends Controller
         } else {
             SellerFollow::create(['user_id' => $userId, 'seller_id' => $seller->id]);
         }
+
+        app(InteractionTracker::class)->recordFromRequest($request, $existing ? 'unfollow' : 'follow', null, ['seller_id' => $seller->id]);
 
         return response()->json([
             'success' => true,

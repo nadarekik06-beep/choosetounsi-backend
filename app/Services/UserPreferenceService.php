@@ -4,8 +4,8 @@
 namespace App\Services;
 
 use App\Models\User;
-use App\Models\UserActivityLog;
 use App\Models\UserPreference;
+use App\Services\Recommendation\InteractionTracker;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -59,79 +59,59 @@ class UserPreferenceService
     }
 
     /**
-     * Log a user activity event.
-     *
-     * FIX 1: Added 'purchase' to valid actions check via ACTIONS constant (now includes it).
-     * FIX 2: Session ID is now passed as nullable — no crash if API route has no session.
-     * FIX 3: try/catch now logs the FULL exception message so silent failures are visible.
+     * Legacy entry point — forwards to InteractionTracker (user_interactions).
+     * Kept so existing callers and the old /api/recommendations keep working.
      */
     public function logActivity(
         int $userId,
         int $productId,
         ?int $categoryId,
         string $action,
-        ?string $sessionId = null
+        ?string $sessionId = null,
+        ?int $orderId = null
     ): void {
-        // Validate action against the model constant
-        if (!in_array($action, UserActivityLog::ACTIONS, true)) {
-            Log::warning("[UserPreferenceService] Invalid action '{$action}' — not in ACTIONS constant.");
+        $event = self::LEGACY_ACTION_MAP[$action] ?? null;
+        if (!$event) {
+            Log::warning("[UserPreferenceService] Invalid action '{$action}'.");
             return;
         }
 
-        // Deduplicate view actions within the same session window (30 min)
-        if ($action === UserActivityLog::ACTION_VIEW && $sessionId) {
-            $recentView = DB::table('user_activity_logs')
-                ->where('user_id', $userId)
-                ->where('product_id', $productId)
-                ->where('action', 'view')
-                ->where('session_id', $sessionId)
-                ->where('created_at', '>=', now()->subMinutes(30))
-                ->exists();
-
-            if ($recentView) {
-                return; // Already logged this view in this session
-            }
-        }
-
-        try {
-            UserActivityLog::create([
-                'user_id'     => $userId,
-                'product_id'  => $productId,
-                'category_id' => $categoryId,
-                'action'      => $action,
-                'session_id'  => $sessionId, // nullable — safe for API routes
-            ]);
-        } catch (\Throwable $e) {
-            // FIX 3: Log full details so we can actually debug failures
-            Log::warning("[UserPreferenceService] Failed to log activity: " . $e->getMessage(), [
-                'user_id'    => $userId,
-                'product_id' => $productId,
-                'action'     => $action,
-                'error'      => $e->getMessage(),
-            ]);
-        }
+        app(InteractionTracker::class)->record($event, $userId, $sessionId, $productId, array_filter([
+            'category_id' => $categoryId,
+            'order_id'    => $orderId,
+        ]));
     }
 
+    private const LEGACY_ACTION_MAP = [
+        'view'     => 'view',
+        'cart'     => 'cart_add',
+        'favorite' => 'favorite_add',
+        'order'    => 'purchase',
+        'purchase' => 'purchase',
+    ];
+
     /**
-     * Infer dynamic preferences from activity logs WITH recency decay.
-     * FIX: Added 'purchase' weight (highest = 10).
+     * Infer dynamic preferences from activity WITH recency decay.
+     * (Legacy — the homepage feed uses InterestProfileService instead.)
      */
     public function inferPreferencesFromActivity(int $userId, int $days = 60): array
     {
         $actionWeights = [
-            'purchase' => 10, // ← ADDED: highest signal
-            'order'    => 4,
-            'cart'     => 3,
-            'favorite' => 2,
-            'view'     => 1,
+            'purchase'     => 10,
+            'cart_add'     => 3,
+            'favorite_add' => 2,
+            'click'        => 1,
+            'view'         => 1,
         ];
 
         $halflife = self::ACTIVITY_HALFLIFE_DAYS;
 
-        $logs = DB::table('user_activity_logs')
+        $logs = DB::table('user_interactions')
             ->where('user_id', $userId)
+            ->whereNotNull('product_id')
+            ->whereIn('event_type', array_keys($actionWeights))
             ->where('created_at', '>=', now()->subDays($days))
-            ->select('product_id', 'category_id', 'action', 'created_at')
+            ->select('product_id', 'category_id', 'event_type as action', 'created_at')
             ->get();
 
         if ($logs->isEmpty()) {

@@ -113,6 +113,10 @@ Route::get('/brand-products/{slug}',   [PublicBrandProductController::class, 'sh
 Route::get('/recommendations',                    [ProductRecommendationController::class, 'feed']);
 Route::get('/recommendations/similar/{productId}', [ProductRecommendationController::class, 'similar']);
 
+// ── Homepage personalization: signal tracking (fire-and-forget from the storefront) ──
+Route::post('/track', [\App\Http\Controllers\Api\TrackingController::class, 'store'])
+    ->middleware('throttle:120,1');
+
 // This must come BEFORE the auth:sanctum group
 Route::post(
     '/payment/stripe/webhook',
@@ -141,6 +145,7 @@ Route::post('/auth/reset-password',  [AuthController::class, 'resetPassword']);
 Route::middleware('auth:sanctum')->group(function () {
 
     Route::post('/auth/logout', [AuthController::class, 'logout']);
+    Route::post('/track/merge', [\App\Http\Controllers\Api\TrackingController::class, 'merge']);
     Route::get('/auth/user',    [AuthController::class, 'user']);
    
     Route::get('/profile',                 [ProfileApiController::class, 'show']);

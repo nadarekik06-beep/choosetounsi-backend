@@ -9,7 +9,9 @@ use App\Models\Product;
 use App\Services\ProductScoringService;
 use App\Services\PromotionService;
 use App\Services\UserPreferenceService;
+use App\Services\Recommendation\InteractionTracker;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
@@ -249,17 +251,12 @@ class ProductController extends Controller
             $product->seller->avatar        = $branding['avatar'];
         }
 
-        $product->incrementViews();
-
-        $user = $request->user();
-        if ($user) {
-            $this->preferenceService->logActivity(
-                userId:     $user->id,
-                productId:  $product->id,
-                categoryId: $product->category_id,
-                action:     'view',
-                sessionId: $this->safeSessionId($request)
-            );
+        // Count a visitor once per 30 min so refreshes/SSR prefetches don't inflate views.
+        // The personalization "view" signal is sent by the storefront via POST /api/track.
+        [$viewerId, $viewerSession] = InteractionTracker::actorFromRequest($request);
+        $viewer = $viewerId ? "u{$viewerId}" : ($viewerSession ?: sha1($request->ip() . '|' . $request->userAgent()));
+        if (Cache::add("product:viewed:{$product->id}:{$viewer}", 1, 1800)) {
+            $product->incrementViews();
         }
 
         // ── Attribute data (non-variant informational attributes) ──────────
