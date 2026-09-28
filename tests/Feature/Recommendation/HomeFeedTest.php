@@ -9,6 +9,7 @@ use App\Models\UserInteraction;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Tests\TestCase;
 
@@ -26,6 +27,8 @@ class HomeFeedTest extends TestCase
         parent::setUp();
         Cache::flush();
         $this->fakeTranslator();
+        // No AI vectors in these tests: "similar" runs on content similarity only.
+        Http::fake(['*/similar' => Http::response(['results' => [], 'seeds_used' => []])]);
     }
 
     /** $n products spread over $sellers sellers, all in $category. */

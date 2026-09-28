@@ -2,17 +2,27 @@
 
 namespace App\Services\Recommendation;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 /**
  * "You might also like": products similar to a weighted set of seed products.
  *
- * Content-based fallback: same subcategory > same category, plus brand and
- * price proximity. The AI service (MiniLM/CLIP + FAISS) is tried first once
- * wired in; this fallback keeps the section alive when it's down.
+ * Hybrid score = AI_WEIGHT × AI similarity (MiniLM text + CLIP image vectors from the
+ * FAISS search indexes, via the FastAPI /similar endpoint, normalized to 0..1)
+ *              + (1 − AI_WEIGHT) × content similarity (same subcategory/category,
+ * brand, price). The content part keeps results grounded when embeddings are noisy
+ * and covers products added after the last index rebuild. If the AI service is slow
+ * or down, content similarity is used alone and the service is skipped for a while.
  */
 class SimilarProductsFinder
 {
+    const AI_WEIGHT     = 0.65;
+    const DOWN_FLAG     = 'reco:ai_similar_down';
+    const CACHE_MINUTES = 30;
+
     public function __construct(
         private CandidatePools $pools,
         private InterestProfileService $profiles,
@@ -21,14 +31,75 @@ class SimilarProductsFinder
     /**
      * @param array<int, float> $seeds  product_id => weight (0..1)
      * @return array{scores: array<int, float>, source: string, seeds_of: array<int, int>}
-     *         scores: product_id => similarity 0..1; seeds_of: product_id => most similar seed
+     *         scores: product_id => similarity 0..1; seeds_of: product_id => most similar seed;
+     *         source: ai | fallback | none
      */
     public function similarTo(array $seeds, int $limit = 60): array
     {
         if (empty($seeds)) {
             return ['scores' => [], 'source' => 'none', 'seeds_of' => []];
         }
-        return $this->fallback($seeds, $limit);
+
+        $content = $this->fallback($seeds, 500);
+        $ai      = $this->fromAi($seeds, max($limit * 2, 100));
+        if (!$ai || !$ai['scores']) {
+            return ['scores' => array_slice($content['scores'], 0, $limit, true), 'source' => 'fallback',
+                    'seeds_of' => array_intersect_key($content['seeds_of'], array_slice($content['scores'], 0, $limit, true))];
+        }
+
+        $max = max($ai['scores']) ?: 1.0;
+        $scores = [];
+        foreach (array_keys($ai['scores'] + $content['scores']) as $id) {
+            $scores[$id] = round(self::AI_WEIGHT * (($ai['scores'][$id] ?? 0) / $max)
+                + (1 - self::AI_WEIGHT) * ($content['scores'][$id] ?? 0), 4);
+        }
+        arsort($scores);
+        $scores = array_slice($scores, 0, $limit, true);
+
+        $seedsOf = [];
+        foreach ($scores as $id => $_) {
+            $seedsOf[$id] = $ai['seeds_of'][$id] ?? $content['seeds_of'][$id] ?? null;
+        }
+
+        return ['scores' => $scores, 'source' => 'ai', 'seeds_of' => $seedsOf];
+    }
+
+    /** @return array{scores: array<int, float>, seeds_of: array<int, int>}|null  null when unavailable */
+    private function fromAi(array $seeds, int $limit): ?array
+    {
+        if (Cache::has(self::DOWN_FLAG)) {
+            return null;
+        }
+        ksort($seeds);
+        $key = 'reco:similar:' . md5(json_encode($seeds) . ":{$limit}");
+        if (is_array($cached = Cache::get($key))) {
+            return $cached;
+        }
+
+        try {
+            $res = Http::timeout((int) config('recommendations.ai.similar_timeout', 2))
+                ->withOptions(['connect_timeout' => 1])
+                ->acceptJson()
+                ->post(rtrim(config('services.ai.url', 'http://localhost:8001'), '/') . '/similar', [
+                    'seeds' => (object) array_map('floatval', $seeds),
+                    'limit' => min($limit, 200),
+                ]);
+            if (!$res->successful()) {
+                throw new \RuntimeException('HTTP ' . $res->status());
+            }
+
+            $out = ['scores' => [], 'seeds_of' => []];
+            foreach ($res->json('results', []) as $r) {
+                $out['scores'][(int) $r['product_id']]   = (float) $r['score'];
+                $out['seeds_of'][(int) $r['product_id']] = (int) $r['seed_id'];
+            }
+            Cache::put($key, $out, now()->addMinutes(self::CACHE_MINUTES));
+            return $out;
+        } catch (\Throwable $e) {
+            Cache::put(self::DOWN_FLAG, true, now()->addMinutes((int) config('recommendations.ai.down_flag_minutes', 2)));
+            Log::info('[SimilarProductsFinder] AI service unavailable, using content similarity: ' . $e->getMessage());
+            return null;
+        }
     }
 
     private function fallback(array $seeds, int $limit): array
