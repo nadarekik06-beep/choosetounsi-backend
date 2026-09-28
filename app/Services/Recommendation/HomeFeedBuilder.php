@@ -36,6 +36,7 @@ class HomeFeedBuilder
     /** Recommended = personal affinity + a little popularity/quality + seller plan as a tie-breaker. */
     const RECOMMENDED_MIX = ['affinity' => 0.70, 'popularity' => 0.15, 'quality' => 0.10];
 
+    const SEEN_PENALTY = 0.3;
     const ROTATION_SECONDS = 300;
     const POPULAR_CATEGORY_ROWS = 3;
     const SPONSORED_INJECT_SLOTS = [1, 5];
@@ -141,7 +142,11 @@ class HomeFeedBuilder
                 + self::RECOMMENDED_MIX['popularity'] * $pop
                 + self::RECOMMENDED_MIX['quality'] * $qual
                 + (float) $this->cfg['seller_plan_weight'] * $plan;
-            $why[$id] = ['affinity' => $aff, 'popularity' => $pop, 'quality' => $qual, 'plan' => $plan];
+            // Already viewed/carted → it's "continue browsing" material, not a discovery.
+            if (isset($seen[$id])) {
+                $scores[$id] *= self::SEEN_PENALTY;
+            }
+            $why[$id] = ['affinity' => $aff, 'popularity' => $pop, 'quality' => $qual, 'plan' => $plan, 'already_seen' => isset($seen[$id])];
         }
 
         $explore = (int) max(1, round($this->row() * (float) $this->cfg['exploration_ratio']));

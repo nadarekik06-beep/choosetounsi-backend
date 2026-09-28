@@ -384,6 +384,9 @@ Route::middleware('auth:sanctum')->group(function () {
     */
     Route::prefix('admin')->middleware('role:admin')->group(function () {
 
+        // ── Homepage personalization debug ────────────────────────────────
+        Route::get('/recommendations/debug', [\App\Http\Controllers\Admin\RecommendationDebugController::class, 'show']);
+
         // ── Categories ────────────────────────────────────────────────────
         Route::get('/categories',               [AdminCategoryController::class, 'index']);
         Route::get('/categories/{id}',          [AdminCategoryController::class, 'show']);

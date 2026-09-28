@@ -156,6 +156,21 @@ class HomeFeedTest extends TestCase
         $this->assertSame(count($ids), count(array_unique($ids)));
     }
 
+    public function test_recommended_prefers_unseen_products_over_ones_just_viewed(): void
+    {
+        $user  = $this->makeUser();
+        $liked = $this->makeCategory();
+        $products = $this->catalog($liked, 20, 7);
+        $viewed = $products[0];
+        $this->event($user, 'view', $viewed);
+        $this->event($user, 'cart_add', $products[1]);
+
+        $rec = $this->section($this->feed($this->auth($user)), 'recommended');
+
+        $this->assertNotNull($rec);
+        $this->assertNotContains($viewed->id, array_slice(array_column($rec['products'], 'id'), 0, 3));
+    }
+
     public function test_recommended_row_respects_seller_diversity_cap(): void
     {
         $user = $this->makeUser();
