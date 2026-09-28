@@ -55,8 +55,18 @@ return [
     ],
 
     'feed' => [
-        'row_size'            => 12,
-        'min_section_size'    => 4,
+        'row_size'            => 16,     // target products per row
+        'min_section_size'    => 4,      // optional/personal rows below this are hidden
+        'best_seller_days'    => 90,
+
+        // Small catalog (launch, dev): strict rules would leave the page empty, so the
+        // per-seller cap is lifted and a product may appear in up to 2 rows (unique first).
+        'small_catalog' => [
+            'max_products'      => 60,   // fewer eligible products than this → small
+            'min_sellers'       => 5,    // or fewer distinct sellers than this → small
+            'max_appearances'   => 2,
+            'min_section_size'  => 2,
+        ],
         'max_per_seller'      => 3,
         'max_per_category'    => 4,
         'exploration_ratio'   => 0.15,

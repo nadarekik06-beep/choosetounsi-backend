@@ -48,6 +48,8 @@ class RecommendationDebugController extends Controller
         return response()->json([
             'success' => true,
             'viewer'  => ['user_id' => $userId, 'session_id' => $sessionId],
+            'catalog_mode' => $feed['catalog_mode'],
+            'reserved_by_other_rows' => $feed['reserved_by_other_rows'],
             'profile' => [
                 'state'         => $feed['profile_state'],
                 'computed_at'   => date(DATE_ATOM, (int) $profile['computed_at']),
@@ -68,9 +70,9 @@ class RecommendationDebugController extends Controller
                     'id'        => $p['id'],
                     'name'      => $p['name'],
                     'placement' => $p['placement'],
-                    'score'     => $feed['explain'][$p['id']]['score'] ?? null,
-                    'reason'    => $this->sentence($feed['explain'][$p['id']] ?? [], $names),
-                    'details'   => $feed['explain'][$p['id']]['why'] ?? null,
+                    'score'     => $feed['explain'][$s['key']][$p['id']]['score'] ?? null,
+                    'reason'    => $this->sentence($feed['explain'][$s['key']][$p['id']] ?? [], $names),
+                    'details'   => $feed['explain'][$s['key']][$p['id']]['why'] ?? null,
                 ], $s['products']),
             ], $feed['sections']),
         ]);
@@ -106,6 +108,8 @@ class RecommendationDebugController extends Controller
             $first === 'followed_seller'    => 'New/popular from a followed seller: ' . ($names['sellers'][$why['seller_id']] ?? "#{$why['seller_id']}") . '.',
             $first === 'frequent_seller'    => 'From a seller bought from in 2+ orders: ' . ($names['sellers'][$why['seller_id']] ?? "#{$why['seller_id']}") . '.',
             $first === 'new_arrival'        => 'New arrival.',
+            $first === 'best_seller'        => sprintf('Best seller: %d units sold recently.', $why['units_sold']),
+            $first === 'backfill_popular_new' => 'Row top-up: popular / recently listed (not enough products with this row\'s own signal).',
             $first === 'top_rated'          => sprintf('Top rated (%.1f★ from %d reviews).', $why['rating']['avg'], $why['rating']['count']),
             $first === 'popular_in_category'=> 'Popular in this category.',
             default                         => 'n/a',
@@ -115,9 +119,11 @@ class RecommendationDebugController extends Controller
     private function names(array $profile, array $feed): array
     {
         $sellerIds = array_keys($profile['sellers']);
-        foreach ($feed['explain'] as $note) {
-            if (isset($note['why']['seller_id'])) {
-                $sellerIds[] = $note['why']['seller_id'];
+        foreach ($feed['explain'] as $section) {
+            foreach ($section as $note) {
+                if (isset($note['why']['seller_id'])) {
+                    $sellerIds[] = $note['why']['seller_id'];
+                }
             }
         }
         return [

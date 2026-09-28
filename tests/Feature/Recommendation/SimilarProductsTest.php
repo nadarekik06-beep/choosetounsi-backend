@@ -87,6 +87,11 @@ class SimilarProductsTest extends TestCase
         $viewed = array_map(fn () => $this->makeProduct($seller, $viewedCat), range(1, 2));
         $targets = array_map(fn () => $this->makeProduct($this->makeUser('seller'), $this->makeCategory()), range(1, 6));
         $gone = $this->makeProduct($seller, $this->makeCategory(), ['stock' => 0]);
+        // A standard-size catalog around them (strict rules: each product once).
+        config(['recommendations.feed.small_catalog.max_products' => 0, 'recommendations.feed.small_catalog.min_sellers' => 0]);
+        foreach (range(1, 40) as $_) {
+            $this->makeProduct($this->makeUser('seller'), $viewedCat);
+        }
 
         foreach ($viewed as $p) {
             \App\Models\UserInteraction::create(['user_id' => $user->id, 'product_id' => $p->id, 'seller_id' => $p->seller_id,

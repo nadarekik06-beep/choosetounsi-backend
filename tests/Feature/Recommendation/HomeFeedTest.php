@@ -29,6 +29,24 @@ class HomeFeedTest extends TestCase
         $this->fakeTranslator();
         // No AI vectors in these tests: "similar" runs on content similarity only.
         Http::fake(['*/similar' => Http::response(['results' => [], 'seeds_used' => []])]);
+        // Most tests use a few dozen products; exercise the strict (standard-catalog) rules
+        // unless a test opts into small-catalog mode.
+        $this->strictCatalogRules();
+    }
+
+    private function strictCatalogRules(): void
+    {
+        config(['recommendations.feed.small_catalog.max_products' => 0, 'recommendations.feed.small_catalog.min_sellers' => 0]);
+    }
+
+    private function smallCatalogRules(): void
+    {
+        config(['recommendations.feed.small_catalog.max_products' => 60, 'recommendations.feed.small_catalog.min_sellers' => 5]);
+    }
+
+    private function counts(array $feed): array
+    {
+        return array_count_values($this->allIds($feed));
     }
 
     /** $n products spread over $sellers sellers, all in $category. */
@@ -93,12 +111,110 @@ class HomeFeedTest extends TestCase
         $types = array_column($feed['sections'], 'type');
         $this->assertContains('trending', $types);
         $this->assertContains('new_arrivals', $types);
-        $this->assertContains('popular_in_category', $types);
+        $this->assertContains('best_sellers', $types);
+        $this->assertContains('top_rated', $types);
         $ids = $this->allIds($feed);
         $this->assertSame(count($ids), count(array_unique($ids)), 'a product appears in two sections');
         foreach ($feed['sections'] as $s) {
             $this->assertGreaterThanOrEqual(4, count($s['products']), "{$s['key']} is too small to show");
         }
+    }
+
+    public function test_core_rows_always_show_and_are_topped_up_when_their_signal_is_missing(): void
+    {
+        // 70 products, no reviews and no sales: best sellers / top rated have no own signal.
+        foreach (range(1, 5) as $_) {
+            $this->catalog($this->makeCategory(), 14, 7);
+        }
+
+        $feed = $this->feed();
+
+        foreach (['trending', 'best_sellers', 'new_arrivals', 'top_rated'] as $key) {
+            $row = $this->section($feed, $key);
+            $this->assertNotNull($row, "$key missing");
+            $this->assertGreaterThanOrEqual(10, count($row['products']), "$key too short");
+        }
+        $ids = $this->allIds($feed);
+        $this->assertSame(count($ids), count(array_unique($ids)), 'standard catalog: every product at most once');
+        $this->assertSame('standard', $feed['catalog_mode']);
+    }
+
+    public function test_best_sellers_rank_by_units_sold(): void
+    {
+        foreach (range(1, 5) as $_) {
+            $products = $this->catalog($this->makeCategory(), 14, 7);
+        }
+        $buyer = $this->makeUser();
+        $orderId = DB::table('orders')->insertGetId([
+            'user_id' => $buyer->id, 'order_number' => 'RECO-' . Str::random(8), 'total_amount' => 10,
+            'shipping_fee' => 0, 'discount_amount' => 0, 'status' => 'delivered', 'payment_status' => 'paid',
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+        DB::table('order_items')->insert([
+            'order_id' => $orderId, 'product_id' => $products[3]->id, 'quantity' => 9, 'unit_price' => 10, 'price' => 10,
+            'total' => 90, 'discount_amount' => 0, 'commission_percentage' => 0, 'commission_amount' => 0,
+            'seller_amount' => 90, 'plan_used' => 'free', 'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        $row = $this->section($this->feed(), 'best_sellers');
+
+        $this->assertSame($products[3]->id, $row['products'][0]['id']);
+    }
+
+    public function test_small_catalog_fills_every_core_row_reusing_products_at_most_twice(): void
+    {
+        $this->smallCatalogRules();
+        $seller = $this->makeUser('seller');
+        $cats = [$this->makeCategory(), $this->makeCategory(), $this->makeCategory()];
+        $products = array_map(fn ($i) => $this->makeProduct($seller, $cats[$i % 3]), range(0, 13));   // 14 products, 1 seller
+
+        $feed = $this->feed();
+
+        $this->assertSame('small', $feed['catalog_mode']);
+        foreach (['trending', 'best_sellers', 'new_arrivals', 'top_rated'] as $key) {
+            $this->assertNotNull($this->section($feed, $key), "$key missing on a small catalog");
+        }
+        $counts = $this->counts($feed);
+        $this->assertLessThanOrEqual(2, max($counts), 'no product in more than 2 rows');
+        $this->assertCount(14, $counts, 'every product shown before any is repeated');
+        foreach ($feed['sections'] as $s) {
+            $ids = array_column($s['products'], 'id');
+            $this->assertSame(count($ids), count(array_unique($ids)), "{$s['key']} repeats a product");
+        }
+    }
+
+    public function test_small_catalog_warm_user_still_gets_all_core_rows(): void
+    {
+        $this->smallCatalogRules();
+        $user = $this->makeUser();
+        $seller = $this->makeUser('seller');
+        $cat = $this->makeCategory();
+        $products = array_map(fn () => $this->makeProduct($seller, $cat), range(1, 14));
+        DB::table('seller_follows')->insert(['user_id' => $user->id, 'seller_id' => $seller->id, 'created_at' => now(), 'updated_at' => now()]);
+        $this->event($user, 'view', $products[0]);
+
+        $feed = $this->feed($this->auth($user));
+
+        foreach (['recommended', 'trending', 'best_sellers', 'new_arrivals'] as $key) {
+            $this->assertNotNull($this->section($feed, $key), "$key missing");
+        }
+        $this->assertNotNull($this->section($feed, 'favorite_sellers'));
+    }
+
+    public function test_flash_deal_products_are_left_to_the_flash_deals_row(): void
+    {
+        foreach (range(1, 5) as $_) {
+            $products = $this->catalog($this->makeCategory(), 14, 7);
+        }
+        $flash = $products[0];
+        $promoId = DB::table('promotions')->insertGetId([
+            'seller_id' => $flash->seller_id, 'name' => 'Flash', 'type' => 'flash_sale', 'discount_type' => 'percentage',
+            'discount_value' => 20, 'starts_at' => now()->subHour(), 'ends_at' => now()->addDay(), 'status' => 'active',
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+        DB::table('promotion_products')->insert(['promotion_id' => $promoId, 'product_id' => $flash->id]);
+
+        $this->assertNotContains($flash->id, $this->allIds($this->feed()));
     }
 
     public function test_unavailable_products_never_appear(): void

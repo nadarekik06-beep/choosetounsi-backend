@@ -26,7 +26,8 @@ class ProductController extends Controller
     public function index(Request $request)
     {
         $sort = $request->query('sort', 'created_at');
-        $user = $request->user();
+        // Public route (no auth:sanctum): the default guard can't see Bearer tokens.
+        $user = $request->user() ?? $request->user('sanctum');
 
         // Scoring applies on the default sort when user is authenticated
         $applyScoring = ($sort === 'created_at') && ($user !== null);

@@ -10,26 +10,34 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Assembles the personalized homepage: every section in one response, with
- * GLOBAL DEDUPLICATION — a product appears in at most one section.
+ * Assembles the personalized homepage: every section in one response.
  *
- * Sections claim products from most specific to most generic — paid, the
- * viewer's own lists, favourite sellers, recommended, similar, trending — so a
- * narrow row never loses its few candidates to a broad one. Display order differs.
+ * CORE rows always appear (topped up from popular/new products when short):
+ *   warm (has activity):  recommended, trending, best_sellers, new_arrivals
+ *   cold (guest/new):     trending, best_sellers, new_arrivals, top_rated
+ * OPTIONAL rows appear only with enough data: sponsored, similar, favorites,
+ *   favorite_sellers, recently_viewed, top_rated (warm), popular_in_category (cold).
  *
- *   Warm (has activity):  recommended, sponsored, trending, similar,
- *                         favorites, favorite_sellers, recently_viewed
- *   Cold (guest/new):     sponsored, trending, new_arrivals, top_rated,
- *                         popular_in_category (one row per top category)
+ * Deduplication uses an appearance budget. Standard catalogs: a product appears
+ * once on the whole page (including Flash deals / Brand collection, which are
+ * reserved up front). Small catalogs (< small_catalog.max_products products or
+ * < min_sellers sellers): up to max_appearances rows, unique products always
+ * picked before repeats, and the per-seller cap is lifted — otherwise a launch
+ * catalog would render an empty page.
+ *
+ * Claim order: paid → the viewer's own lists (recently viewed, favourites, favourite
+ * sellers) → recommended → similar → trending / best sellers / new arrivals → top rated,
+ * so narrow rows keep their few candidates. On small catalogs "similar" moves after the
+ * core rows so it can never starve them. Display order differs.
  *
  * Diversity: per-row caps per seller / category, ~15% exploration slots in
- * "recommended", and a seeded ±jitter that changes every 5 minutes so the
- * page rotates between visits but stays stable while browsing.
+ * "recommended", and a seeded ±jitter that changes every 5 minutes so the page
+ * rotates between visits but stays stable while browsing.
  */
 class HomeFeedBuilder
 {
     const DISPLAY_ORDER = [
-        'recommended', 'sponsored', 'trending', 'similar', 'favorites',
+        'recommended', 'sponsored', 'trending', 'best_sellers', 'similar', 'favorites',
         'favorite_sellers', 'recently_viewed', 'new_arrivals', 'top_rated', 'popular_in_category',
     ];
 
@@ -40,15 +48,21 @@ class HomeFeedBuilder
     const ROTATION_SECONDS = 300;
     const POPULAR_CATEGORY_ROWS = 3;
     const SPONSORED_INJECT_SLOTS = [1, 5];
+    const CORE_ROWS = 4;
+    const MIN_ROW = 6;
 
     private array $cfg;
     private array $pool;
     private array $profile;
-    private array $claimed = [];
-    private array $excluded = [];
-    private array $explain = [];
-    private array $paid = [];
+    private array $uses = [];       // product_id => rows it's already in (incl. reserved)
+    private array $excluded = [];   // bought, never shown
+    private array $notes = [];      // section => product_id => note
+    private array $paidIn = [];     // "section:product_id" => true
+    private bool $small = false;
+    private int $maxUses = 1;
+    private int $rowTarget = 16;
     private int $seed = 0;
+    private ?array $backfill = null;
 
     public function __construct(
         private CandidatePools $pools,
@@ -62,60 +76,84 @@ class HomeFeedBuilder
         $this->cfg      = config('recommendations.feed');
         $this->pool     = $this->pools->get();
         $this->profile  = $this->profiles->forActor($userId, $sessionId);
-        $this->claimed  = $this->explain = $this->paid = [];
+        $this->uses     = $this->notes = $this->paidIn = [];
+        $this->backfill = null;
         $this->excluded = array_flip($this->profiles->purchasedExclusions($userId));
         $actor          = $userId ? "u{$userId}" : ($sessionId ? "s{$sessionId}" : 'guest');
         $this->seed     = crc32($actor . ':' . intdiv(time(), self::ROTATION_SECONDS));
 
+        $small = $this->cfg['small_catalog'];
+        $this->small   = count($this->pool['products']) < (int) $small['max_products']
+                      || ($this->pool['sellers'] ?? 0) < (int) $small['min_sellers'];
+        $this->maxUses = $this->small ? max(1, (int) $small['max_appearances']) : 1;
+
+        // Flash deals and the Brand collection already show these on the homepage.
+        foreach ($this->pool['reserved'] ?? [] as $id => $_) {
+            $this->uses[$id] = 1;
+        }
+
         $personal = !$this->profile['is_cold'];
+        $this->sizeRows($personal);
         $history  = $personal ? $this->recentHistory($userId, $sessionId) : ['viewed' => [], 'seen' => [], 'seeds' => []];
         $rows     = [];   // key => ['ids' => [...], 'meta' => [...]]
 
-        // 1. Paid visibility claims first so ads never lose their slot to organic rows.
+        // Paid visibility claims first so ads never lose their slot to organic rows.
         $sponsored = $this->sponsoredIds($userId);
         $inject    = [];
-        if (count($sponsored) >= $this->min()) {
-            $rows['sponsored'] = ['ids' => $this->claim(array_slice($sponsored, 0, $this->row()), 'sponsored', fn () => ['sponsored']), 'meta' => []];
+        if (count($sponsored) >= (int) $this->cfg['min_section_size']) {
+            $ids = array_slice($sponsored, 0, $this->row());
+            foreach ($ids as $id) {
+                $this->note('sponsored', $id, 1, ['sponsored']);
+                $this->paidIn["sponsored:{$id}"] = true;
+            }
+            $rows['sponsored'] = ['ids' => $this->claim($ids), 'meta' => []];
         } elseif ($sponsored) {
-            $inject = $this->claim(array_slice($sponsored, 0, count(self::SPONSORED_INJECT_SLOTS)), 'sponsored', fn () => ['sponsored']);
+            $inject = $this->claim(array_slice($sponsored, 0, count(self::SPONSORED_INJECT_SLOTS)));
         }
-        $this->paid = array_flip(array_merge($rows['sponsored']['ids'] ?? [], $inject));
 
         if ($personal) {
-            $this->addRow($rows, 'recently_viewed', $this->recentlyViewed($history['viewed']));
+            $this->optionalRow($rows, 'recently_viewed', $this->recentlyViewed($history['viewed']));
             if ($userId) {
-                $this->addRow($rows, 'favorites', $this->favorites($userId));
+                $this->optionalRow($rows, 'favorites', $this->favorites($userId));
             }
-            $this->addRow($rows, 'favorite_sellers', ...$this->favoriteSellers($userId));
-            $this->addRow($rows, 'recommended', $this->recommended($history['seen']));
-            $this->addRow($rows, 'similar', $this->youMightAlsoLike($history['seeds']));
-            $this->addRow($rows, 'trending', $this->trending());
-
-            // Thin history → top up with discovery rows instead of showing a near-empty page.
-            if (count(array_diff_key($rows, ['sponsored' => 1])) < 3) {
-                $this->addRow($rows, 'new_arrivals', $this->newArrivals());
-                $this->addRow($rows, 'top_rated', $this->topRated());
+            [$ids, $meta] = $this->favoriteSellers($userId);
+            $this->optionalRow($rows, 'favorite_sellers', $ids, $meta);
+            $this->coreRow($rows, 'recommended', $this->recommended($history['seen']));
+            // Standard catalog: "similar" is personal, so it picks before the generic core rows.
+            // Small catalog: it goes last so it can never starve a core row.
+            if (!$this->small) {
+                $this->optionalRow($rows, 'similar', $this->youMightAlsoLike($history['seeds']));
             }
+            $this->coreRow($rows, 'trending', $this->trending());
+            $this->coreRow($rows, 'best_sellers', $this->bestSellers());
+            $this->coreRow($rows, 'new_arrivals', $this->newArrivals());
+            if ($this->small) {
+                $this->optionalRow($rows, 'similar', $this->youMightAlsoLike($history['seeds']));
+            }
+            $this->optionalRow($rows, 'top_rated', $this->topRated());
         } else {
-            $this->addRow($rows, 'trending', $this->trending());
-            $this->addRow($rows, 'new_arrivals', $this->newArrivals());
-            $this->addRow($rows, 'top_rated', $this->topRated());
+            $this->coreRow($rows, 'trending', $this->trending());
+            $this->coreRow($rows, 'best_sellers', $this->bestSellers());
+            $this->coreRow($rows, 'new_arrivals', $this->newArrivals());
+            $this->coreRow($rows, 'top_rated', $this->topRated());
             foreach ($this->popularInCategories() as $key => [$ids, $meta]) {
-                $this->addRow($rows, $key, $ids, $meta);
+                $this->optionalRow($rows, $key, $ids, $meta);
             }
         }
 
         $this->injectSponsored($rows, $inject);
 
         $feed = [
-            'personalized' => $personal,
-            'profile_state'=> $personal ? 'warm' : 'cold',
-            'sections'     => $this->render($rows),
+            'personalized'  => $personal,
+            'profile_state' => $personal ? 'warm' : 'cold',
+            'catalog_mode'  => $this->small ? 'small' : 'standard',
+            'sections'      => $this->render($rows),
         ];
         if ($explain) {
-            $feed['explain'] = $this->explain;
+            $feed['explain'] = $this->notes;
             $feed['profile'] = $this->profile;
             $feed['excluded_purchased'] = array_keys($this->excluded);
+            $feed['reserved_by_other_rows'] = $this->pool['reserved'] ?? [];
         }
         return $feed;
     }
@@ -151,19 +189,18 @@ class HomeFeedBuilder
 
         $explore = (int) max(1, round($this->row() * (float) $this->cfg['exploration_ratio']));
         $ids = $this->pick($scores, $this->row() - $explore, 0.15);
-        if (count($ids) < $this->min()) {
-            return [];
-        }
         foreach ($ids as $id) {
-            $this->note($id, 'recommended', $scores[$id], array_merge($this->topReasons($why[$id]['affinity']['parts']), $why[$id]));
+            $this->note('recommended', $id, $scores[$id], array_merge($this->topReasons($why[$id]['affinity']['parts']), $why[$id]));
+        }
+        if (!$ids) {
+            return [];
         }
 
         // Exploration: fresh products the viewer hasn't interacted with, preferring unfamiliar categories.
-        $taken   = array_flip($ids);
         $newSince = time() - 86400 * (int) $this->cfg['new_arrival_days'];
         $cand = [];
         foreach ($this->pool['products'] as $id => $p) {
-            if (isset($taken[$id]) || isset($seen[$id]) || $p->created_ts < $newSince) {
+            if (isset($seen[$id]) || $p->created_ts < $newSince) {
                 continue;
             }
             $familiar = isset($this->profile['categories'][$p->category_id]);
@@ -172,7 +209,7 @@ class HomeFeedBuilder
         $exploreIds = $this->pick($cand, $explore, 0, [], array_flip($ids));
         foreach ($exploreIds as $i => $id) {
             array_splice($ids, min(count($ids), 3 + $i * 5), 0, [$id]);
-            $this->note($id, 'recommended', round($cand[$id], 4), ['exploration', 'new_arrival']);
+            $this->note('recommended', $id, round($cand[$id], 4), ['exploration', 'new_arrival']);
         }
 
         return $ids;
@@ -184,14 +221,27 @@ class HomeFeedBuilder
         $max   = $trend ? max($trend) : 0;
         $scores = [];
         foreach ($this->pool['products'] as $id => $p) {
-            // Real 7-day momentum always ranks above the lifetime-views backfill.
+            // Real 7-day momentum always ranks above the lifetime-views fallback.
             $scores[$id] = ($trend[$id] ?? 0) > 0
                 ? 1 + $trend[$id] / $max
                 : 0.99 * ($this->pool['popularity'][$id] ?? 0);
         }
         $ids = $this->pick($scores, $this->row(), 0.10);
         foreach ($ids as $id) {
-            $this->note($id, 'trending', round($scores[$id], 4), [($trend[$id] ?? 0) > 0 ? 'trending_7d' : 'popular_all_time', 'trend_score' => $trend[$id] ?? 0]);
+            $this->note('trending', $id, round($scores[$id], 4), [($trend[$id] ?? 0) > 0 ? 'trending_7d' : 'popular_all_time', 'trend_score' => $trend[$id] ?? 0]);
+        }
+        return $ids;
+    }
+
+    private function bestSellers(): array
+    {
+        $scores = [];
+        foreach ($this->pool['sales'] ?? [] as $id => $units) {
+            $scores[$id] = log1p($units);
+        }
+        $ids = $this->pick($scores, $this->row(), 0.05);
+        foreach ($ids as $id) {
+            $this->note('best_sellers', $id, round($scores[$id], 4), ['best_seller', 'units_sold' => $this->pool['sales'][$id]]);
         }
         return $ids;
     }
@@ -209,7 +259,7 @@ class HomeFeedBuilder
         }
         $ids = $this->pick($scores, $this->row(), 0.10);
         foreach ($ids as $id) {
-            $this->note($id, 'similar', round($scores[$id], 4), [
+            $this->note('similar', $id, round($scores[$id], 4), [
                 'similar_to' => $result['seeds_of'][$id] ?? null,
                 'similarity' => $result['scores'][$id],
                 'source'     => $result['source'],
@@ -222,10 +272,9 @@ class HomeFeedBuilder
     {
         $ids = DB::table('favorites')->where('user_id', $userId)
             ->orderByDesc('created_at')->pluck('product_id')->map(fn ($i) => (int) $i)->unique()->values()->all();
-        $ids = $this->pools->eligibleIds($ids);
-        $ids = array_slice(array_values(array_filter($ids, fn ($id) => !isset($this->claimed[$id]))), 0, $this->row());
+        $ids = array_slice(array_values(array_filter($this->pools->eligibleIds($ids), fn ($id) => $this->canUse($id, true))), 0, $this->row());
         foreach ($ids as $id) {
-            $this->note($id, 'favorites', 1, ['in_your_favourites']);
+            $this->note('favorites', $id, 1, ['in_your_favourites']);
         }
         return $ids;
     }
@@ -267,7 +316,7 @@ class HomeFeedBuilder
         $ids = $this->pick($scores, $this->row(), 0.10, ['seller' => 6, 'category' => 6]);
         foreach ($ids as $id) {
             $sid = $this->pool['products'][$id]->seller_id;
-            $this->note($id, 'favorite_sellers', round($scores[$id], 4), [in_array($sid, $followed, true) ? 'followed_seller' : 'frequent_seller', 'seller_id' => $sid]);
+            $this->note('favorite_sellers', $id, round($scores[$id], 4), [in_array($sid, $followed, true) ? 'followed_seller' : 'frequent_seller', 'seller_id' => $sid]);
         }
 
         $shown = array_values(array_unique(array_map(fn ($id) => $this->pool['products'][$id]->seller_id, $ids)));
@@ -295,13 +344,10 @@ class HomeFeedBuilder
 
     private function recentlyViewed(array $viewed): array
     {
-        $ids = array_values(array_filter(
-            $this->pools->eligibleIds($viewed),
-            fn ($id) => !isset($this->excluded[$id]) && !isset($this->claimed[$id])
-        ));
+        $ids = array_values(array_filter($this->pools->eligibleIds($viewed), fn ($id) => $this->canUse($id)));
         $ids = array_slice($ids, 0, $this->row());
         foreach ($ids as $i => $id) {
-            $this->note($id, 'recently_viewed', $this->row() - $i, ['recently_viewed']);
+            $this->note('recently_viewed', $id, $this->row() - $i, ['recently_viewed']);
         }
         return $ids;
     }
@@ -311,7 +357,7 @@ class HomeFeedBuilder
         $scores = array_map(fn ($p) => (float) $p->created_ts, $this->pool['products']);
         $ids = $this->pick($scores, $this->row(), 0);
         foreach ($ids as $id) {
-            $this->note($id, 'new_arrivals', 1, ['new_arrival', 'created_at' => date('Y-m-d', $this->pool['products'][$id]->created_ts)]);
+            $this->note('new_arrivals', $id, 1, ['new_arrival', 'created_at' => date('Y-m-d', $this->pool['products'][$id]->created_ts)]);
         }
         return $ids;
     }
@@ -326,7 +372,7 @@ class HomeFeedBuilder
         }
         $ids = $this->pick($scores, $this->row(), 0.03);
         foreach ($ids as $id) {
-            $this->note($id, 'top_rated', $scores[$id], ['top_rated', 'rating' => $this->pool['rating'][$id]]);
+            $this->note('top_rated', $id, $scores[$id], ['top_rated', 'rating' => $this->pool['rating'][$id]]);
         }
         return $ids;
     }
@@ -347,13 +393,13 @@ class HomeFeedBuilder
             if (count($out) >= self::POPULAR_CATEGORY_ROWS) {
                 break;
             }
+            $key = "popular_in_category:{$catId}";
             $ids = $this->pick($scores, $this->row(), 0.10, ['category' => PHP_INT_MAX]);
-            if (count($ids) < $this->min()) {
+            if (count($ids) < $this->minOptional()) {
                 continue;
             }
-            $key = "popular_in_category:{$catId}";
             foreach ($ids as $id) {
-                $this->note($id, $key, round($scores[$id], 4), ['popular_in_category']);
+                $this->note($key, $id, round($scores[$id], 4), ['popular_in_category']);
             }
             $c = $this->pool['categories'][$catId];
             $out[$key] = [$ids, ['category' => ['id' => (int) $c->id, 'slug' => $c->slug, 'name' => $c->name, 'name_fr' => $c->name_fr, 'name_ar' => $c->name_ar]]];
@@ -371,7 +417,7 @@ class HomeFeedBuilder
 
         $candidates = array_keys(array_filter(
             $this->pool['products'],
-            fn ($p, $id) => $p->is_sponsored && !isset($this->excluded[$id]),
+            fn ($p, $id) => $p->is_sponsored && !isset($this->excluded[$id]) && $this->canUse($id),
             ARRAY_FILTER_USE_BOTH
         ));
         if (!$candidates) {
@@ -438,9 +484,30 @@ class HomeFeedBuilder
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Rank by score with seeded jitter, skipping claimed/excluded products, then fill greedily
-     * under per-seller / per-category caps. If the row is still short, the category cap is
-     * doubled once; the seller cap is never relaxed (no row dominated by one shop).
+     * Share the available appearances between the core rows (+1 spare, +2 for a warm
+     * viewer's personal rows) so the first rows can't swallow a modest catalog.
+     * 80 products → 16 per row; 14 products on a small catalog → 6.
+     */
+    private function sizeRows(bool $personal): void
+    {
+        $rows = self::CORE_ROWS + 1 + ($personal ? 2 : 0);
+        $this->rowTarget = (int) max(self::MIN_ROW, min(
+            (int) $this->cfg['row_size'],
+            floor(count($this->pool['products']) * $this->maxUses / $rows)
+        ));
+    }
+
+    /** Can this product go into one more row? ($ignoreExclusion: the viewer's own favourites.) */
+    private function canUse(int $id, bool $ignoreExclusion = false): bool
+    {
+        return ($ignoreExclusion || !isset($this->excluded[$id])) && ($this->uses[$id] ?? 0) < $this->maxUses;
+    }
+
+    /**
+     * Rank by score with seeded jitter, then fill greedily under per-seller / per-category
+     * caps: first with products not yet on the page, then (small catalogs only) with ones
+     * shown once. Within each tier the category cap is doubled once if the row is short.
+     * The seller cap is never relaxed on a standard catalog, and never applied on a small one.
      */
     private function pick(array $scores, int $n, float $rotation, array $caps = [], array $skip = []): array
     {
@@ -449,80 +516,113 @@ class HomeFeedBuilder
         }
         $adj = [];
         foreach ($scores as $id => $s) {
-            if (isset($this->claimed[$id]) || isset($this->excluded[$id]) || isset($skip[$id]) || !isset($this->pool['products'][$id])) {
+            if (isset($skip[$id]) || !isset($this->pool['products'][$id]) || !$this->canUse($id)) {
                 continue;
             }
             $adj[$id] = $rotation > 0 ? $s * (1 + $rotation * (2 * $this->rand($id) - 1)) : $s;
         }
+        if (!$adj) {
+            return [];
+        }
         arsort($adj);
 
-        $maxSeller = $caps['seller']   ?? (int) $this->cfg['max_per_seller'];
-        $maxCat    = $caps['category'] ?? (int) $this->cfg['max_per_category'];
-
-        // A cap the candidates can't satisfy would just empty the row (e.g. a catalog where one
-        // shop owns everything). Never cap below what the available variety can fill.
+        // A cap the candidates can't satisfy would just empty the row. Never cap below what
+        // the available variety can fill; on small catalogs drop the seller cap entirely.
         $sellers = $cats = [];
         foreach ($adj as $id => $_) {
             $sellers[$this->pool['products'][$id]->seller_id ?? 0] = true;
             $cats[$this->pool['products'][$id]->category_id ?? 0]  = true;
         }
-        $maxSeller = max($maxSeller, (int) ceil($n / max(1, count($sellers))));
-        $maxCat    = max($maxCat, (int) ceil($n / max(1, count($cats))));
-        $out = [];
-        foreach ([1, 2] as $relax) {
-            $bySeller = $byCat = [];
-            // $skip = products already in this row: never re-picked, but they count toward the caps.
-            foreach (array_merge($out, array_keys($skip)) as $id) {
-                if (!isset($this->pool['products'][$id])) {
-                    continue;
-                }
+        $maxSeller = $this->small ? PHP_INT_MAX
+            : max($caps['seller'] ?? (int) $this->cfg['max_per_seller'], (int) ceil($n / count($sellers)));
+        $maxCat = max($caps['category'] ?? (int) $this->cfg['max_per_category'], (int) ceil($n / count($cats)));
+
+        $bySeller = $byCat = [];
+        foreach (array_keys($skip) as $id) {   // already in this row: count toward the caps
+            if (isset($this->pool['products'][$id])) {
                 $p = $this->pool['products'][$id];
                 $bySeller[$p->seller_id ?? 0] = ($bySeller[$p->seller_id ?? 0] ?? 0) + 1;
                 $byCat[$p->category_id ?? 0]  = ($byCat[$p->category_id ?? 0] ?? 0) + 1;
             }
-            $taken = array_flip($out);
-            foreach ($adj as $id => $_) {
-                if (count($out) >= $n) {
-                    return $out;
+        }
+
+        $tiers = [array_filter($adj, fn ($id) => ($this->uses[$id] ?? 0) === 0, ARRAY_FILTER_USE_KEY)];
+        if ($this->maxUses > 1) {
+            $tiers[] = array_filter($adj, fn ($id) => ($this->uses[$id] ?? 0) > 0, ARRAY_FILTER_USE_KEY);
+        }
+
+        $out = [];
+        $taken = [];
+        foreach ($tiers as $tier) {
+            foreach ([1, 2] as $relax) {
+                foreach ($tier as $id => $_) {
+                    if (count($out) >= $n) {
+                        return $out;
+                    }
+                    if (isset($taken[$id])) {
+                        continue;
+                    }
+                    $p = $this->pool['products'][$id];
+                    $s = $p->seller_id ?? 0;
+                    $c = $p->category_id ?? 0;
+                    if (($bySeller[$s] ?? 0) >= $maxSeller || ($byCat[$c] ?? 0) >= $maxCat * $relax) {
+                        continue;
+                    }
+                    $out[] = $id;
+                    $taken[$id] = true;
+                    $bySeller[$s] = ($bySeller[$s] ?? 0) + 1;
+                    $byCat[$c]    = ($byCat[$c] ?? 0) + 1;
                 }
-                if (isset($taken[$id])) {
-                    continue;
-                }
-                $p = $this->pool['products'][$id];
-                $s = $p->seller_id ?? 0;
-                $c = $p->category_id ?? 0;
-                if (($bySeller[$s] ?? 0) >= $maxSeller || ($byCat[$c] ?? 0) >= $maxCat * $relax) {
-                    continue;
-                }
-                $out[] = $id;
-                $bySeller[$s] = ($bySeller[$s] ?? 0) + 1;
-                $byCat[$c]    = ($byCat[$c] ?? 0) + 1;
             }
         }
         return $out;
     }
 
-    private function addRow(array &$rows, string $key, array $ids, array $meta = []): void
+    /** Core rows always show: when short, they're topped up with popular + new products. */
+    private function coreRow(array &$rows, string $key, array $ids, array $meta = []): void
     {
-        if (count($ids) < $this->min()) {
-            // Too weak to show: release any notes so the products can appear elsewhere.
-            foreach ($ids as $id) {
-                if (($this->explain[$id]['section'] ?? null) === $key) {
-                    unset($this->explain[$id]);
-                }
+        if (count($ids) < $this->row()) {
+            $scores = $this->backfillScores();
+            $fill = $this->pick($scores, $this->row() - count($ids), 0.10, [], array_flip($ids));
+            foreach ($fill as $id) {
+                $this->note($key, $id, round($scores[$id], 4), ['backfill_popular_new']);
             }
-            return;
+            $ids = array_merge($ids, $fill);
         }
-        $rows[$key] = ['ids' => $this->claim($ids, $key), 'meta' => $meta];
+        if ($ids) {
+            $rows[$key] = ['ids' => $this->claim($ids), 'meta' => $meta];
+        } else {
+            unset($this->notes[$key]);
+        }
     }
 
-    private function claim(array $ids, string $section, ?callable $why = null): array
+    /** Optional rows (personal, similar, …) are hidden when too thin. */
+    private function optionalRow(array &$rows, string $key, array $ids, array $meta = []): void
+    {
+        if (count($ids) < $this->minOptional()) {
+            unset($this->notes[$key]);
+            return;
+        }
+        $rows[$key] = ['ids' => $this->claim($ids), 'meta' => $meta];
+    }
+
+    /** Popular, with a boost for recent listings: what a core row shows when its own signal runs out. */
+    private function backfillScores(): array
+    {
+        if ($this->backfill === null) {
+            $this->backfill = [];
+            foreach ($this->pool['products'] as $id => $p) {
+                $newness = exp(-max(0, time() - $p->created_ts) / (86400 * 30));
+                $this->backfill[$id] = 0.6 * ($this->pool['popularity'][$id] ?? 0) + 0.4 * $newness;
+            }
+        }
+        return $this->backfill;
+    }
+
+    private function claim(array $ids): array
     {
         foreach ($ids as $id) {
-            $this->claimed[$id] = $section;
-            if ($why && !isset($this->explain[$id])) {
-                $this->note($id, $section, 1, $why($id));
-            }
+            $this->uses[$id] = ($this->uses[$id] ?? 0) + 1;
         }
         return $ids;
     }
@@ -537,18 +637,23 @@ class HomeFeedBuilder
             if (isset($rows[$host])) {
                 foreach (array_values($inject) as $i => $id) {
                     array_splice($rows[$host]['ids'], min(count($rows[$host]['ids']), self::SPONSORED_INJECT_SLOTS[$i] ?? 1), 0, [$id]);
-                    $this->note($id, $host, 1, ['sponsored', 'injected_into' => $host]);
+                    $this->note($host, $id, 1, ['sponsored', 'injected_into' => $host]);
+                    $this->paidIn["{$host}:{$id}"] = true;
                 }
                 return;
             }
         }
         // Nothing organic to ride in: show them as their own (short) sponsored row.
+        foreach ($inject as $id) {
+            $this->note('sponsored', $id, 1, ['sponsored']);
+            $this->paidIn["sponsored:{$id}"] = true;
+        }
         $rows['sponsored'] = ['ids' => $inject, 'meta' => []];
     }
 
     private function render(array $rows): array
     {
-        $allIds = array_merge(...array_values(array_map(fn ($r) => $r['ids'], $rows ?: [['ids' => []]])));
+        $allIds = array_values(array_unique(array_merge(...array_values(array_map(fn ($r) => $r['ids'], $rows ?: [['ids' => []]])))));
         $cards  = $this->presenter->cardsFor($allIds);
 
         $ordered = [];
@@ -564,7 +669,7 @@ class HomeFeedBuilder
                     }
                     $card = $cards[$id];
                     // Only paid placements carry the Sponsored label.
-                    $isPaid = isset($this->paid[$id]);
+                    $isPaid = isset($this->paidIn["{$key}:{$id}"]);
                     $card['is_sponsored'] = $isPaid;
                     $card['placement']    = $isPaid ? 'sponsored' : 'organic';
                     if (!$isPaid) {
@@ -617,9 +722,9 @@ class HomeFeedBuilder
         return $labels;
     }
 
-    private function note(int $id, string $section, $score, array $why): void
+    private function note(string $section, int $id, $score, array $why): void
     {
-        $this->explain[$id] = ['section' => $section, 'score' => $score, 'why' => $why];
+        $this->notes[$section][$id] = ['score' => $score, 'why' => $why];
     }
 
     private function sellerBadges(array $sellerIds, array $followed): array
@@ -636,11 +741,13 @@ class HomeFeedBuilder
 
     private function row(): int
     {
-        return (int) $this->cfg['row_size'];
+        return $this->rowTarget;
     }
 
-    private function min(): int
+    private function minOptional(): int
     {
-        return (int) $this->cfg['min_section_size'];
+        return $this->small
+            ? (int) $this->cfg['small_catalog']['min_section_size']
+            : (int) $this->cfg['min_section_size'];
     }
 }
