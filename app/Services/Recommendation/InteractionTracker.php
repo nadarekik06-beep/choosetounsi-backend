@@ -118,6 +118,8 @@ class InteractionTracker
 
             if ($moved > 0) {
                 $this->markDirty($userId, $sessionId);
+                // The guest profile's signals now live in the user's profile.
+                app(InterestProfileService::class)->forget(null, $sessionId);
             }
             return $moved;
         } catch (\Throwable $e) {

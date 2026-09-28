@@ -38,6 +38,11 @@ class Kernel extends ConsoleKernel
         // ── Promotions sync (existing) ─────────────────────────────────────
         $schedule->command('promotions:sync')->everyMinute();
 
+        // ── Homepage personalization ───────────────────────────────────────
+        // Profiles also rebuild lazily on demand; these just warm them and keep tables bounded.
+        $schedule->command('recommendations:refresh-profiles')->dailyAt('03:30')->withoutOverlapping()->runInBackground();
+        $schedule->command('recommendations:prune')->weeklyOn(1, '04:00')->withoutOverlapping()->runInBackground();
+
         // ── Black Pepper — daily smart notifications ───────────────────────
         // Runs every day at 08:00 server time.
         // Sends: auto-promo, stock-risk, weekend-spike, cooling notifications

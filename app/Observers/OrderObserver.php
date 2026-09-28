@@ -34,6 +34,12 @@ class OrderObserver
         }
 
         $newStatus = $order->status;
+
+        // Cancelled/refunded purchases stop counting in the buyer's interest profile.
+        if (in_array($newStatus, ['cancelled', 'refunded'], true)) {
+            app(\App\Services\Recommendation\InteractionTracker::class)->markDirty((int) $order->user_id, null);
+            return;
+        }
         if (!in_array($newStatus, ['completed', 'delivered'], true)) {
             return;
         }
