@@ -496,6 +496,7 @@ public function updatePayment(Request $request, $id)
                 // 'email' => INTENTIONALLY OMITTED — privacy policy
             ] : null,
             'parent_order_id' => $order?->id,
+            'items_count'     => $so->items->count(),   // this seller's items only (already loaded)
         ];
     }
 }

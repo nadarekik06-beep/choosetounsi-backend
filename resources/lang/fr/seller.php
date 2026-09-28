@@ -53,6 +53,7 @@ return [
     ],
     'earnings' => [
         'settlement_not_found' => 'Règlement introuvable.',
+        'order_not_found'      => 'Commande introuvable.',
     ],
     'complaint' => [
         'locked' => 'Cette réclamation ne peut plus être modifiée par le vendeur.',

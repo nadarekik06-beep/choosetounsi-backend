@@ -53,6 +53,7 @@ return [
     ],
     'earnings' => [
         'settlement_not_found' => 'Settlement not found.',
+        'order_not_found'      => 'Order not found.',
     ],
     'complaint' => [
         'locked' => 'This complaint can no longer be updated by the seller.',

@@ -53,6 +53,7 @@ return [
     ],
     'earnings' => [
         'settlement_not_found' => 'التسوية غير موجودة.',
+        'order_not_found'      => 'الطلب غير موجود.',
     ],
     'complaint' => [
         'locked' => 'لم يعد بإمكان البائع تعديل هذه الشكوى.',

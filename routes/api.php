@@ -338,6 +338,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::prefix('earnings')->group(function () {
         Route::get('overview', [EarningsController::class, 'overview']);
         Route::get('orders',   [EarningsController::class, 'orders']);
+        Route::get('orders/{id}/details', [EarningsController::class, 'orderDetails'])->whereNumber('id');
         Route::get('history',  [EarningsController::class, 'history']);
         Route::get('receipt',           [EarningsController::class, 'fullReceipt']);   // ← nouveau
         Route::get('settlement/{id}',   [EarningsController::class, 'settlementReceipt']); // ← nouveau

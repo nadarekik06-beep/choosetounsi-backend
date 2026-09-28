@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api\Seller;
 
 use App\Http\Controllers\Controller;
+use App\Models\SellerOrder;
+use App\Services\ProductImages;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -213,6 +215,8 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
                 'so.settled_at',
                 'so.settlement_batch_id',
                 'so.created_at',
+                // Line items of this seller order only (same rows as SellerOrder->items)
+                DB::raw('(SELECT COUNT(*) FROM order_items oi WHERE oi.seller_order_id = so.id) as items_count'),
             ]);
 
         if ($s = $request->query('payout_status')) {
@@ -230,6 +234,138 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
             ->paginate((int) $request->query('per_page', 15));
 
         return response()->json(['success' => true, 'data' => $results]);
+    }
+
+    /**
+     * GET /api/seller/earnings/orders/{id}/details   ({id} = seller_orders.id)
+     *
+     * Read-only drawer data for one of the seller's own orders. Money comes from the
+     * same frozen seller_orders columns as orders(), so it always matches the row.
+     * PRIVACY: only this seller's items; customer name + wilaya only (what the seller
+     * UI already shows); no platform_profit, no agency cost unless charged to the seller.
+     */
+    public function orderDetails(int $id): JsonResponse
+    {
+        $so = SellerOrder::where('seller_id', auth()->id())
+            ->whereKey($id)
+            ->with([
+                'order.user:id,name',
+                'items.product.images',
+                'items.product.variants.attributeOptions.attribute',
+                'items.variant.attributeOptions.attribute',
+            ])
+            ->first();
+
+        if (!$so) {
+            return response()->json([
+                'success' => false,
+                'message' => __('seller.earnings.order_not_found'),
+            ], 404);
+        }
+
+        $order = $so->order;
+        $num   = fn($v) => round((float) ($v ?? 0), 3);
+
+        $items = $so->items->map(function ($item) {
+            $product = $item->product;   // withTrashed(); null when hard-deleted
+            $variant = $item->variant;   // null when the variant was deleted
+
+            $options = $variant
+                ? $variant->attributeOptions
+                    ->filter(fn($o) => $o->attribute)
+                    ->map(fn($o) => [
+                        'name'      => $o->attribute->name,
+                        'value'     => $o->value,
+                        'color_hex' => $o->color_hex,
+                    ])->values()
+                : collect();
+
+            $image = $item->getAttributes()['image_url'] ?? null;
+            if (!$image && $product) {
+                $image = ProductImages::thumbnailFor($product, $variant);
+            }
+
+            $lineTotal = round((float) $item->total, 3);
+            $discount  = round((float) ($item->discount_amount ?? 0), 3);
+
+            return [
+                'id'              => $item->id,
+                'product_name'    => $item->product_name ?: ($product ? ($product->getAttributes()['name'] ?? null) : null),
+                'variant_label'   => $item->variant_label,
+                'variant_options' => $options,
+                'image_url'       => $image ? (str_starts_with($image, 'http') ? $image : url($image)) : null,
+                'quantity'        => (int) $item->quantity,
+                'unit_price'      => round((float) $item->unit_price, 3),
+                'line_total'      => $lineTotal,                 // before the coupon
+                'discount_amount' => $discount,                  // coupon share on this line
+                'paid_total'      => round((float) ($item->net_total ?? ($lineTotal - $discount)), 3),
+                'product_deleted' => !$product || $product->trashed(),
+                'variant_deleted' => $item->variant_id !== null && !$variant,
+            ];
+        })->values();
+
+        // Commission %: snapshot on the seller order, else the single rate its items share
+        $rate = $so->getAttribute('commission_rate');
+        if ($rate === null) {
+            $rates = $so->items
+                ->filter(fn($i) => (float) $i->commission_amount > 0 && $i->commission_percentage !== null)
+                ->map(fn($i) => (float) $i->commission_percentage)
+                ->unique();
+            $rate = $rates->count() === 1 ? $rates->first() : null;
+        }
+
+        // Shipping from the seller's point of view. The agency cost is only shown
+        // when it is charged to this seller (then it equals their deduction).
+        $charge = $num($so->getAttribute('seller_shipping_charge'));
+        $paidBy = $order ? $order->getAttribute('shipping_paid_by') : null;
+        $payer  = $charge > 0 || $paidBy === 'seller' ? 'you' : (in_array($paidBy, ['customer', 'platform'], true) ? $paidBy : null);
+
+        $gross      = $num($so->subtotal - $so->discount_amount);
+        $commission = $num($so->getAttribute('commission_amount'));
+        $net        = $num($so->getAttribute('seller_net_amount'));
+        // Non-zero only when the frozen net was adjusted afterwards (e.g. a refund)
+        $adjustment = round($net - ($gross - $commission - $charge), 3);
+
+        $timeline = collect([
+            ['key' => 'placed',         'at' => $so->created_at],
+            ['key' => 'delivered',      'at' => $so->getAttribute('delivery_confirmed_at')],
+            ['key' => 'cash_collected', 'at' => $so->getAttribute('money_received_at')],
+            ['key' => 'paid_out',       'at' => $so->getAttribute('settled_at')],
+        ])->filter(fn($e) => $e['at'])
+          ->map(fn($e) => ['key' => $e['key'], 'at' => Carbon::parse($e['at'])->toIso8601String()])
+          ->values();
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'id'             => $so->id,
+                'order_number'   => optional($order)->order_number,
+                'created_at'     => $so->created_at,
+                'status'         => $so->status,
+                'payment_method' => optional($order)->payment_method,
+                'payout_status'  => $so->getAttribute('payout_status'),
+                'paid_out_at'    => $so->getAttribute('settled_at'),
+                'coupon_code'    => $so->coupon_code,
+                'items_count'    => $items->count(),
+                'customer' => [
+                    'name'   => optional(optional($order)->user)->name,
+                    'wilaya' => $order ? ($order->wilaya ?? $order->shipping_address ?? null) : null,
+                ],
+                'items'    => $items,
+                'timeline' => $timeline,
+                'earnings' => [
+                    'gross'                  => $gross,
+                    'subtotal_before_coupon' => $num($so->subtotal),
+                    'discount_amount'        => $num($so->discount_amount),
+                    'commission_amount'      => $commission,
+                    'commission_rate'        => $rate !== null ? (float) $rate : null,
+                    'shipping_paid_by'       => $payer,     // you | customer | platform | null
+                    'shipping_charge'        => $charge,    // your share of the agency cost; 0 unless you pay
+                    'adjustment'             => abs($adjustment) >= 0.001 ? $adjustment : 0.0,
+                    'net'                    => $net,
+                ],
+            ],
+        ]);
     }
 
     public function history(Request $request): JsonResponse
