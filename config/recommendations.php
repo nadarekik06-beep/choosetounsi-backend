@@ -51,7 +51,8 @@ return [
     'repurchase' => [
         'after_days'          => 30,
         'category_slugs'      => ['food-grocery', 'beauty-personal-care'],
-        'subcategory_slugs'   => [],
+        // Health & Wellness: only its consumable subcategories (not devices / essential oils)
+        'subcategory_slugs'   => ['vitamins', 'herbal-tea', 'protein-powder'],
     ],
 
     'feed' => [
