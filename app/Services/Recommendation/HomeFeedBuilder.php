@@ -25,10 +25,10 @@ use Illuminate\Support\Facades\Log;
  * picked before repeats, and the per-seller cap is lifted — otherwise a launch
  * catalog would render an empty page.
  *
- * Claim order: paid → the viewer's own lists (recently viewed, favourites, favourite
- * sellers) → recommended → similar → trending / best sellers / new arrivals → top rated,
- * so narrow rows keep their few candidates. On small catalogs "similar" moves after the
- * core rows so it can never starve them. Display order differs.
+ * Claim order: the viewer's own lists (recently viewed, favourites) → paid → recommended
+ * → favourite sellers → similar → trending / best sellers / new arrivals → top rated.
+ * On small catalogs favourite sellers picks before recommended and similar after the
+ * core rows, so nothing narrow or core gets starved. Display order differs.
  *
  * Diversity: per-row caps per seller / category, ~15% exploration slots in
  * "recommended", and a seeded ±jitter that changes every 5 minutes so the page
@@ -50,6 +50,7 @@ class HomeFeedBuilder
     const SPONSORED_INJECT_SLOTS = [1, 5];
     const CORE_ROWS = 4;
     const MIN_ROW = 6;
+    const MIN_OWN_LIST = 2;   // favourites / recently viewed
 
     private array $cfg;
     private array $pool;
@@ -97,7 +98,16 @@ class HomeFeedBuilder
         $history  = $personal ? $this->recentHistory($userId, $sessionId) : ['viewed' => [], 'seen' => [], 'seeds' => []];
         $rows     = [];   // key => ['ids' => [...], 'meta' => [...]]
 
-        // Paid visibility claims first so ads never lose their slot to organic rows.
+        // The viewer's own lists come first: they're their data, not recommendations,
+        // and they show even when short (a favourite that is also sponsored stays here).
+        if ($personal) {
+            $this->optionalRow($rows, 'recently_viewed', $this->recentlyViewed($history['viewed']), [], self::MIN_OWN_LIST);
+            if ($userId) {
+                $this->optionalRow($rows, 'favorites', $this->favorites($userId), [], self::MIN_OWN_LIST);
+            }
+        }
+
+        // Paid visibility next, so ads never lose their slot to organic rows.
         $sponsored = $this->sponsoredIds($userId);
         $inject    = [];
         if (count($sponsored) >= (int) $this->cfg['min_section_size']) {
@@ -112,13 +122,16 @@ class HomeFeedBuilder
         }
 
         if ($personal) {
-            $this->optionalRow($rows, 'recently_viewed', $this->recentlyViewed($history['viewed']));
-            if ($userId) {
-                $this->optionalRow($rows, 'favorites', $this->favorites($userId));
+            // Standard catalog: Recommended picks first (its per-seller cap leaves the favourite
+            // sellers plenty). Small catalog: the narrow seller row picks first so it isn't starved.
+            if (!$this->small) {
+                $this->coreRow($rows, 'recommended', $this->recommended($history['seen']));
             }
             [$ids, $meta] = $this->favoriteSellers($userId);
             $this->optionalRow($rows, 'favorite_sellers', $ids, $meta);
-            $this->coreRow($rows, 'recommended', $this->recommended($history['seen']));
+            if ($this->small) {
+                $this->coreRow($rows, 'recommended', $this->recommended($history['seen']));
+            }
             // Standard catalog: "similar" is personal, so it picks before the generic core rows.
             // Small catalog: it goes last so it can never starve a core row.
             if (!$this->small) {
@@ -597,9 +610,9 @@ class HomeFeedBuilder
     }
 
     /** Optional rows (personal, similar, …) are hidden when too thin. */
-    private function optionalRow(array &$rows, string $key, array $ids, array $meta = []): void
+    private function optionalRow(array &$rows, string $key, array $ids, array $meta = [], ?int $min = null): void
     {
-        if (count($ids) < $this->minOptional()) {
+        if (count($ids) < ($min ?? $this->minOptional())) {
             unset($this->notes[$key]);
             return;
         }

@@ -37,6 +37,17 @@ class ProductCardPresenter
             ])
             ->get();
 
+        // Cards show the shop's name, not the seller account's personal name.
+        $shops = \Illuminate\Support\Facades\DB::table('seller_applications')
+            ->whereIn('user_id', $products->pluck('seller_id')->filter()->unique())
+            ->where('status', 'approved')
+            ->pluck('business_name', 'user_id');
+        foreach ($products as $p) {
+            if ($p->seller && isset($shops[$p->seller_id])) {
+                $p->seller->setAttribute('business_name', $shops[$p->seller_id]);
+            }
+        }
+
         return collect($this->present($products, withSponsorData: true))->keyBy('id')->all();
     }
 

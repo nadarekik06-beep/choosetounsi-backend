@@ -333,7 +333,7 @@ class HomeFeedTest extends TestCase
         $favs   = $this->catalog($this->makeCategory(), 5, 2);
         $viewed = $this->catalog($this->makeCategory(), 5, 2);
         $shop   = $this->makeUser('seller');
-        $shopProducts = array_map(fn () => $this->makeProduct($shop, $this->makeCategory()), range(1, 6));
+        $shopProducts = array_map(fn () => $this->makeProduct($shop, $this->makeCategory()), range(1, 12));
 
         foreach ($favs as $p) {
             DB::table('favorites')->insert(['user_id' => $user->id, 'product_id' => $p->id, 'created_at' => now(), 'updated_at' => now()]);
@@ -365,7 +365,7 @@ class HomeFeedTest extends TestCase
         $user = $this->makeUser();
         $this->catalog($this->makeCategory(), 20);
         $shop = $this->makeUser('seller');
-        $items = array_map(fn () => $this->makeProduct($shop, $this->makeCategory()), range(1, 8));
+        $items = array_map(fn () => $this->makeProduct($shop, $this->makeCategory()), range(1, 14));
 
         foreach ([$items[0], $items[1]] as $p) {
             $orderId = DB::table('orders')->insertGetId([
@@ -391,11 +391,31 @@ class HomeFeedTest extends TestCase
         $this->assertNotContains($items[1]->id, $ids, 'already bought');
     }
 
+    public function test_sponsored_favourites_stay_in_the_favourites_row(): void
+    {
+        $user = $this->makeUser();
+        $products = $this->catalog($this->makeCategory(), 30, 6);
+        foreach (array_slice($products, 0, 6) as $p) {
+            $this->sponsor($p);
+        }
+        foreach ([$products[0], $products[1], $products[20]] as $p) {   // 2 of 3 favourites are sponsored
+            DB::table('favorites')->insert(['user_id' => $user->id, 'product_id' => $p->id, 'created_at' => now(), 'updated_at' => now()]);
+        }
+        $this->event($user, 'view', $products[25]);
+
+        $feed = $this->feed($this->auth($user));
+
+        $fav = $this->section($feed, 'favorites');
+        $this->assertNotNull($fav);
+        $this->assertEqualsCanonicalizing([$products[0]->id, $products[1]->id, $products[20]->id], array_column($fav['products'], 'id'));
+        $this->assertNotNull($this->section($feed, 'sponsored'), 'the other 4 ads still fill the sponsored row');
+    }
+
     public function test_small_sections_are_hidden(): void
     {
         $user = $this->makeUser();
         $this->catalog($this->makeCategory(), 20);
-        $fav = $this->catalog($this->makeCategory(), 2, 1);
+        $fav = $this->catalog($this->makeCategory(), 1, 1);   // own lists show from 2 items
         foreach ($fav as $p) {
             DB::table('favorites')->insert(['user_id' => $user->id, 'product_id' => $p->id, 'created_at' => now(), 'updated_at' => now()]);
         }
