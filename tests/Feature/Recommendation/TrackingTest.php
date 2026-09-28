@@ -20,6 +20,7 @@ class TrackingTest extends TestCase
     {
         parent::setUp();
         Cache::flush();
+        $this->fakeTranslator();
     }
 
     public function test_guest_view_and_click_are_recorded_with_session_and_section(): void

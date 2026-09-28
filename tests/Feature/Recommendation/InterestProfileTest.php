@@ -27,6 +27,7 @@ class InterestProfileTest extends TestCase
     {
         parent::setUp();
         Cache::flush();
+        $this->fakeTranslator();
         $this->profiles = app(InterestProfileService::class);
         $this->tracker  = app(InteractionTracker::class);
     }

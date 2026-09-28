@@ -113,7 +113,10 @@ Route::get('/brand-products/{slug}',   [PublicBrandProductController::class, 'sh
 Route::get('/recommendations',                    [ProductRecommendationController::class, 'feed']);
 Route::get('/recommendations/similar/{productId}', [ProductRecommendationController::class, 'similar']);
 
-// ── Homepage personalization: signal tracking (fire-and-forget from the storefront) ──
+// ── Homepage personalization ─────────────────────────────────────────────────
+Route::get('/home/feed', [\App\Http\Controllers\Api\HomeFeedController::class, 'index']);
+
+// Signal tracking (fire-and-forget from the storefront)
 Route::post('/track', [\App\Http\Controllers\Api\TrackingController::class, 'store'])
     ->middleware('throttle:120,1');
 

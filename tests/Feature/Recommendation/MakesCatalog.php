@@ -10,6 +10,12 @@ use Illuminate\Support\Str;
 /** Throwaway users/categories/products for recommendation tests (never reuse existing rows). */
 trait MakesCatalog
 {
+    /** Saving a product queues a Groq translation after the response — keep tests offline and fast. */
+    protected function fakeTranslator(): void
+    {
+        $this->app->instance(\App\Services\ProductTranslator::class, \Mockery::mock(\App\Services\ProductTranslator::class)->shouldIgnoreMissing());
+    }
+
     protected function makeUser(string $role = 'client', array $attrs = []): User
     {
         return User::query()->forceCreate(array_merge([
