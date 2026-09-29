@@ -30,6 +30,15 @@ class PlanGate
         return $this->context($sellerId)[0] ?? SubscriptionPlan::defaultPlan();
     }
 
+    /**
+     * The seller's plan tier: free (Green) | red | black. The one place that turns a
+     * seller into a tier — custom admin-created plans price like the tier they belong to.
+     */
+    public function tierFor(int $sellerId): string
+    {
+        return $this->planFor($sellerId)->tierKey();
+    }
+
     public function feature(int $sellerId, string $feature): ?JsonResponse
     {
         [$plan, $sub, $app] = $this->context($sellerId);

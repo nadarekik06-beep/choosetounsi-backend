@@ -147,7 +147,8 @@ class ProductController extends Controller
         }
 
         // ── Non-scoring path (guest, or explicit sort) ────────────────────
-        $query->orderByDesc('is_sponsored')->orderByDesc('sponsored_priority');
+        // The requested sort is honoured as-is: ads never jump ahead of it
+        // (paid placements get their own labelled slots instead).
         match ($sort) {
             'price_asc'    => $query->orderBy('price'),
             'price_desc'   => $query->orderByDesc('price'),

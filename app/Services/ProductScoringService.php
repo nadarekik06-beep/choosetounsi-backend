@@ -24,7 +24,7 @@ use Illuminate\Support\Facades\DB;
  *     +15  gender match
  *
  *   ActivityScore        (0–40)   ← behavioral signals, recency-weighted
- *     Drawn from user_activity_logs, decays with time
+ *     Drawn from user_interactions (UserPreferenceService), decays with time
  *
  *   SellerPriorityScore  (0–40)   ← seller subscription tier
  *     +40  black

@@ -114,8 +114,6 @@ return [
     ],
     'black' => [
         'goal_updated' => 'Goal updated successfully.',
-        'sponsor_on' => 'Sponsorship activated for ":name".',
-        'sponsor_off' => 'Sponsorship deactivated for ":name".',
         'vip_limit' => 'You already have 3 pending requests of this type. Please wait for them to be processed.',
         'vip_submitted' => 'Your VIP request has been submitted. Our team will contact you within 24 hours.',
         'velocity' => [

@@ -36,6 +36,8 @@ return [
 ],
 'ai' => [
     'url'            => env('AI_SERVICE_URL', 'http://localhost:8001'),
+    // Shared secret sent as X-AI-Token (see Http::ai()); must match the service's AI_SERVICE_TOKEN.
+    'token'          => env('AI_SERVICE_TOKEN'),
     // Shopping chatbot: short timeout so a down service doesn't slow chat; SQL search takes over.
     'chat_timeout'   => env('AI_CHAT_SEARCH_TIMEOUT', 3),
     'chat_min_score' => env('AI_CHAT_MIN_SCORE', 0.35),

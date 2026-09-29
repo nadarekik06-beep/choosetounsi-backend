@@ -5,6 +5,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use App\Support\Wilayas;
 use Carbon\Carbon;
 
 /**
@@ -97,6 +98,16 @@ class Sponsorship extends Model
         return $query->where('status', 'active');
     }
 
+    /**
+     * Active and not past its end date. Read paths use this instead of expiring rows
+     * themselves; ads:complete-ended does the status write on a schedule.
+     */
+    public function scopeLive($query)
+    {
+        return $query->where('status', 'active')
+            ->where(fn ($q) => $q->whereNull('end_at')->orWhere('end_at', '>', Carbon::now()));
+    }
+
     public function scopeExpired($query)
     {
         return $query->where('status', 'expired');
@@ -158,16 +169,14 @@ class Sponsorship extends Model
 
         // ── Wilaya targeting ─────────────────────────────────────────────
         if (!empty($this->target_wilaya_ids)) {
-            // wilaya is stored directly on the User model
-            $userWilaya = $user->wilaya ?? null;
+            // Default address, else latest order (memoized on the User instance)
+            $userWilaya = $user->targetingWilaya();
 
-            if ($userWilaya !== null) {
-                $targetWilayas = array_map('strtolower', (array) $this->target_wilaya_ids);
-                if (!in_array(strtolower($userWilaya), $targetWilayas, true)) {
-                    return false;
-                }
+            if ($userWilaya !== null
+                && !in_array($userWilaya, Wilayas::normalizeMany((array) $this->target_wilaya_ids), true)) {
+                return false;
             }
-            // If user has no wilaya set, do not filter them out
+            // If we don't know where the user is, do not filter them out
         }
 
         // ── Price range targeting ────────────────────────────────────────
@@ -188,12 +197,8 @@ class Sponsorship extends Model
     }
 
     // ── Business logic helpers ────────────────────────────────────────────────
-    public static function maybeResetBlackQuota(int $sellerId): void
-{
-    // intentionally empty — blackFreeUsedThisWeek() already scopes
-    // to Carbon::now()->startOfWeek(), so it self-resets each week.
-}
 
+    /** Scoped to Carbon::now()->startOfWeek(), so the quota resets itself each week. */
     public static function blackFreeUsedThisWeek(int $sellerId): int
     {
         return static::where('seller_id', $sellerId)

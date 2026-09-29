@@ -30,8 +30,6 @@ use App\Models\RevenueGoal;
  *   GET  /api/seller/black/funnel-insights
  *   GET  /api/seller/black/quality-audit
  *   GET  /api/seller/black/auto-promote-suggestions   ← Phase 3
- *   POST /api/seller/black/sponsor/{id}
- *   GET  /api/seller/black/sponsored
  *   POST /api/seller/black/vip-request
  *   GET  /api/seller/black/vip-requests
  */
@@ -853,104 +851,6 @@ public function setRevenueGoal(Request $request): JsonResponse
         ],
     ]);
 }
-
-    // =========================================================================
-    // 7. TOGGLE SPONSORSHIP
-    //    POST /api/seller/black/sponsor/{id}
-    // =========================================================================
-    public function toggleSponsorship(Request $request, int $productId): JsonResponse
-    {
-        $request->validate([
-            'action'   => 'required|in:activate,deactivate',
-            'priority' => 'nullable|integer|min:1|max:10',
-        ]);
-
-        $sellerId  = auth()->id();
-        $sellerCol = $this->sellerCol();
-        $product   = Product::where('id', $productId)->where($sellerCol, $sellerId)->whereNull('deleted_at')->first();
-
-        if (!$product) {
-            return response()->json(['success' => false, 'message' => __('seller.common.product_not_found')], 404);
-        }
-
-        if ($request->action === 'activate' && !$product->is_sponsored
-            && ($deny = app(\App\Services\PlanGate::class)->canSponsor($request->user()->id))) {
-            return $deny;
-        }
-
-        if ($request->action === 'activate') {
-            $product->update([
-                'is_sponsored'       => true,
-                'sponsored_priority' => $request->input('priority', 5),
-                'sponsored_at'       => now(),
-                'sponsored_until'    => null,
-            ]);
-            try {
-                $seller = auth()->user();
-                $admins = User::where('role', 'admin')->get();
-                foreach ($admins as $admin) {
-                    $admin->notify(new SponsoredProductActivatedNotification($seller, $product));
-                }
-            } catch (\Throwable $e) {
-                Log::warning('[BlackPepper] Sponsorship notification failed: ' . $e->getMessage());
-            }
-            // Clear auto-promote cache so the card updates immediately
-            foreach (['fr', 'ar', 'en'] as $loc) Cache::forget("black_auto_promote_{$sellerId}_{$loc}");
-
-            return response()->json([
-                'success' => true,
-                'message' => __('seller.black.sponsor_on', ['name' => $product->name]),
-                'data'    => ['is_sponsored' => true, 'sponsored_priority' => $product->sponsored_priority],
-            ]);
-        }
-
-        $product->update(['is_sponsored' => false, 'sponsored_priority' => 0, 'sponsored_at' => null, 'sponsored_until' => null]);
-        foreach (['fr', 'ar', 'en'] as $loc) Cache::forget("black_auto_promote_{$sellerId}_{$loc}");
-
-        return response()->json([
-            'success' => true,
-            'message' => __('seller.black.sponsor_off', ['name' => $product->name]),
-            'data'    => ['is_sponsored' => false],
-        ]);
-    }
-
-    // =========================================================================
-    // 8. LIST SPONSORED PRODUCTS
-    //    GET /api/seller/black/sponsored
-    // =========================================================================
-    public function sponsoredProducts(Request $request): JsonResponse
-    {
-        $sellerId  = auth()->id();
-        $sellerCol = $this->sellerCol();
-
-        $sponsored = DB::table('products as p')
-            ->leftJoin('categories as c', 'c.id', '=', 'p.category_id')
-            ->leftJoin('product_images as pi', function ($join) {
-                $join->on('pi.product_id', '=', 'p.id')->where('pi.is_primary', true);
-            })
-            ->where("p.{$sellerCol}", $sellerId)->whereNull('p.deleted_at')
-            ->selectRaw("p.id, p.name, p.price, p.stock, p.is_sponsored, p.sponsored_priority,
-                         p.sponsored_at, p.is_active, p.is_approved, c.name as category_name,
-                         MIN(pi.image_path) as image_path")
-            ->groupBy('p.id', 'p.name', 'p.price', 'p.stock', 'p.is_sponsored',
-                      'p.sponsored_priority', 'p.sponsored_at', 'p.is_active', 'p.is_approved', 'c.name')
-            ->orderByDesc('p.is_sponsored')->orderByDesc('p.sponsored_priority')->get()
-            ->map(fn($row) => [
-                'id'                 => (int) $row->id,
-                'name'               => $row->name,
-                'price'              => (float) $row->price,
-                'stock'              => (int) $row->stock,
-                'is_active'          => (bool) $row->is_active,
-                'is_approved'        => (bool) $row->is_approved,
-                'is_sponsored'       => (bool) $row->is_sponsored,
-                'sponsored_priority' => (int) $row->sponsored_priority,
-                'sponsored_at'       => $row->sponsored_at,
-                'category_name'      => $row->category_name,
-                'image_url'          => $row->image_path ? url(\Storage::url($row->image_path)) : null,
-            ]);
-
-        return response()->json(['success' => true, 'data' => $sponsored]);
-    }
 
     // =========================================================================
     // 9. SUBMIT VIP REQUEST

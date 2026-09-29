@@ -78,6 +78,23 @@ class User extends Authenticatable implements HasLocalePreference
         return $this->hasOne(UserAddress::class)->where('is_default', true);
     }
 
+    /** @var array{0: ?string}|null  memo for targetingWilaya() (a 1-tuple, so null results are cached too) */
+    private ?array $targetingWilayaMemo = null;
+
+    /**
+     * Where this buyer is, for ad targeting: the default address's wilaya, else the
+     * wilaya of their latest order. Canonical name (App\Support\Wilayas) or null.
+     */
+    public function targetingWilaya(): ?string
+    {
+        if ($this->targetingWilayaMemo === null) {
+            $raw = $this->defaultAddress()->value('wilaya')
+                ?? $this->orders()->whereNotNull('wilaya')->latest()->value('wilaya');
+            $this->targetingWilayaMemo = [\App\Support\Wilayas::normalize($raw)];
+        }
+        return $this->targetingWilayaMemo[0];
+    }
+
     // ── Role helpers ───────────────────────────────────────────────────────
 
     public function isAdmin()          { return $this->role === 'admin'; }

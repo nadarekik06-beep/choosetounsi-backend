@@ -235,7 +235,7 @@ class ProductRetriever
     private function fetchSemantic(string $query): array
     {
         try {
-            $response = Http::timeout((int) config('services.ai.chat_timeout', 3))
+            $response = Http::ai()->timeout((int) config('services.ai.chat_timeout', 3))
                 ->post(rtrim(config('services.ai.url'), '/') . '/search/text', [
                     'query' => mb_substr($query, 0, 100),
                     'limit' => 30,

@@ -33,7 +33,7 @@ class ProductCardPresenter
                 'primaryImage',
                 'seller:id,name',
                 'variants' => fn ($q) => $q->where('is_active', true),
-                'sponsorships' => fn ($q) => $q->where('status', 'active')->select('id', 'product_id', 'ai_ad_copy', 'end_at'),
+                'sponsorships' => fn ($q) => $q->live()->select('id', 'product_id', 'ai_ad_copy', 'end_at'),
             ])
             ->get();
 

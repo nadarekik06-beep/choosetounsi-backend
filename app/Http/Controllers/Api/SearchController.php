@@ -61,7 +61,7 @@ class SearchController extends Controller
 
         $suggestions = Cache::remember($cacheKey, 600, function () use ($q, $limit) {
             try {
-                $res = Http::timeout($this->suggestTimeout)
+                $res = Http::ai()->timeout($this->suggestTimeout)
                     ->get("{$this->aiServiceUrl}/search/suggest", ['q' => $q, 'limit' => $limit]);
                 if ($res->successful()) {
                     return $res->json()['suggestions'] ?? [];
@@ -116,7 +116,7 @@ class SearchController extends Controller
 
         // ── Try AI service first ──────────────────────────────────────────
         try {
-            $aiResponse = Http::timeout($this->textTimeout)
+            $aiResponse = Http::ai()->timeout($this->textTimeout)
                 ->post("{$this->aiServiceUrl}/search/text", [
                     'query' => $query,
                     'limit' => 60, // Fetch extra, we'll section them
@@ -206,7 +206,7 @@ class SearchController extends Controller
         try {
             $imageFile = $request->file('image');
 
-            $aiResponse = Http::timeout($this->imageTimeout)
+            $aiResponse = Http::ai()->timeout($this->imageTimeout)
                 ->attach('file', file_get_contents($imageFile->getRealPath()), $imageFile->getClientOriginalName())
                 ->post("{$this->aiServiceUrl}/search/image");
 

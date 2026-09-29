@@ -38,6 +38,16 @@ class Kernel extends ConsoleKernel
         // ── Promotions sync (existing) ─────────────────────────────────────
         $schedule->command('promotions:sync')->everyMinute();
 
+        // ── Sponsoring ──────────────────────────────────────────────────────
+        // Ends overdue sponsorships (read paths only filter, they never write).
+        $schedule->command('ads:complete-ended')->everyFiveMinutes()->withoutOverlapping();
+
+        // ── AI search / similarity index ────────────────────────────────────
+        // Nightly rebuild so products added during the day get embeddings.
+        $schedule->command('search:rebuild')
+            ->dailyAt('02:30')->timezone(config('ads.timezone'))
+            ->withoutOverlapping()->runInBackground();
+
         // ── Homepage personalization ───────────────────────────────────────
         // Profiles also rebuild lazily on demand; these just warm them and keep tables bounded.
         $schedule->command('recommendations:refresh-profiles')->dailyAt('03:30')->withoutOverlapping()->runInBackground();

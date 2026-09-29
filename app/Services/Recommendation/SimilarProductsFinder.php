@@ -77,7 +77,7 @@ class SimilarProductsFinder
         }
 
         try {
-            $res = Http::timeout((int) config('recommendations.ai.similar_timeout', 2))
+            $res = Http::ai()->timeout((int) config('recommendations.ai.similar_timeout', 2))
                 ->withOptions(['connect_timeout' => 1])
                 ->acceptJson()
                 ->post(rtrim(config('services.ai.url', 'http://localhost:8001'), '/') . '/similar', [

@@ -48,7 +48,7 @@ class RebuildSearchIndex extends Command
         $this->info('Checking AI service health...');
 
         try {
-            $health = Http::timeout(5)->get("{$aiUrl}/health");
+            $health = Http::ai()->timeout(5)->get("{$aiUrl}/health");
 
             if (!$health->successful()) {
                 $this->error("AI service returned status: " . $health->status());
@@ -77,7 +77,7 @@ class RebuildSearchIndex extends Command
 
         try {
             // Long timeout — rebuilding 10k products can take 20+ minutes
-            $response = Http::timeout(1800)->post("{$aiUrl}/index/rebuild");
+            $response = Http::ai()->timeout(1800)->post("{$aiUrl}/index/rebuild");
 
             if ($response->successful()) {
                 $data = $response->json();

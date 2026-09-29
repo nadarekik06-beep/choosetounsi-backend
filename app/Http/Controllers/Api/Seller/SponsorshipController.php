@@ -1,15 +1,13 @@
 <?php
 // app/Http/Controllers/Api/Seller/SponsorshipController.php
-// UPDATED: Added payment validation, boost surcharge (5 DT per point > 5),
-//          card payment processing stub, and weekly quota auto-reset.
 
 namespace App\Http\Controllers\Api\Seller;
 
 use App\Http\Controllers\Controller;
 use App\Models\Product;
-use App\Models\ProductImage;
 use App\Models\Sponsorship;
-use App\Models\SellerApplication;
+use App\Services\PlanGate;
+use App\Support\Wilayas;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -17,7 +15,6 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Carbon\Carbon;
-use App\Models\UserPreference;
 
 /**
  * SponsorshipController — seller-facing sponsoring system.
@@ -41,11 +38,11 @@ use App\Models\UserPreference;
  *   DELETE /api/seller/sponsorships/{id}/cancel    cancel active sponsorship
  *   GET    /api/seller/sponsorships                list seller's sponsorships
  *   GET    /api/seller/sponsorships/quota          black free-quota status
- *   POST   /api/seller/sponsorships/{id}/impression record view
- *   POST   /api/seller/sponsorships/{id}/click     record click
  *
- * Public endpoint (no auth required):
+ * Public endpoints (no auth required; a Bearer token is honoured when present):
  *   GET    /api/sponsored-products                 feed for homepage/category
+ *   POST   /api/sponsorships/{id}/impression       record view
+ *   POST   /api/sponsorships/{id}/click            record click
  */
 class SponsorshipController extends Controller
 {
@@ -81,15 +78,12 @@ class SponsorshipController extends Controller
         $seller   = $request->user();
         $sellerId = $seller->id;
 
-        // Resolve active plan from seller_applications
-        $application = SellerApplication::where('user_id', $sellerId)
-            ->where('status', 'approved')
-            ->first();
         // Pricing / quotas follow the plan's tier (free | red | black), so
         // admin-created plans price like the tier they belong to.
-        $plan = \App\Models\SubscriptionPlan::forSlug($application->plan ?? null)->tierKey();
+        $gate = app(PlanGate::class);
+        $plan = $gate->tierFor($sellerId);
 
-        if ($deny = app(\App\Services\PlanGate::class)->canSponsor($sellerId)) {
+        if ($deny = $gate->canSponsor($sellerId)) {
             return $deny;
         }
 
@@ -141,9 +135,6 @@ class SponsorshipController extends Controller
         $durationDays  = (int) $request->input('duration_days', 7);
 
         if ($plan === 'black') {
-            // Auto-reset quota if week has rolled over
-            Sponsorship::maybeResetBlackQuota($sellerId);
-
             $remaining = Sponsorship::blackFreeRemaining($sellerId);
 
             if ($remaining > 0 && $boostExtraCost === 0.0) {
@@ -240,7 +231,7 @@ class SponsorshipController extends Controller
                 'clicks'           => 0,
                 'conversions'      => 0,
                 'target_gender'        => $request->input('target_gender'),
-                'target_wilaya_ids'    => $request->input('target_wilaya_ids'),
+                'target_wilaya_ids'    => Wilayas::normalizeMany($request->input('target_wilaya_ids')) ?: null,
                 'target_category_ids'  => $request->input('target_category_ids'),
                 'target_price_min'     => $request->input('target_price_min'),
                 'target_price_max'     => $request->input('target_price_max'),
@@ -304,12 +295,7 @@ class SponsorshipController extends Controller
     {
         $sellerId = $request->user()->id;
 
-        // Expire overdue sponsorships on every list call
-        try { Sponsorship::expireOverdue(); } catch (\Throwable $e) {
-            Log::warning('[Sponsorship] expireOverdue failed: ' . $e->getMessage());
-        }
-
-        $query = Sponsorship::with(['product:id,name,slug,price,is_active,is_approved'])
+        $query = Sponsorship::with(['product:id,name,slug,price,is_active,is_approved', 'product.primaryImage'])
             ->forSeller($sellerId)
             ->orderByDesc('created_at');
 
@@ -322,18 +308,14 @@ class SponsorshipController extends Controller
         // Attach primary image URL to each product
         $sponsorships->getCollection()->transform(function ($s) {
             if ($s->product) {
-                $img = ProductImage::where('product_id', $s->product->id)
-                    ->where('is_primary', true)
-                    ->first();
+                $img = $s->product->primaryImage;
                 $s->product->image_url = $img ? Storage::url($img->image_path) : null;
+                $s->product->unsetRelation('primaryImage');
             }
             return $s;
         });
 
-        $application = SellerApplication::where('user_id', $sellerId)
-            ->where('status', 'approved')
-            ->first();
-        $plan = $application?->plan ?? 'free';
+        $plan = app(PlanGate::class)->tierFor($sellerId);
 
         return response()->json([
             'success' => true,
@@ -354,16 +336,7 @@ class SponsorshipController extends Controller
     public function quota(Request $request): JsonResponse
     {
         $sellerId = $request->user()->id;
-
-        $application = SellerApplication::where('user_id', $sellerId)
-            ->where('status', 'approved')
-            ->first();
-        $plan = $application?->plan ?? 'free';
-
-        // Auto-reset if the week has rolled over
-        if ($plan === 'black') {
-            Sponsorship::maybeResetBlackQuota($sellerId);
-        }
+        $plan     = app(PlanGate::class)->tierFor($sellerId);
 
         return response()->json([
             'success' => true,
@@ -381,36 +354,34 @@ class SponsorshipController extends Controller
         ]);
     }
 
-    // =========================================================================
-    // GET /api/sponsored-products  (PUBLIC — no auth)
-    // =========================================================================
-
 // =========================================================================
 // GET /api/sponsored-products  (PUBLIC — no auth)
 // =========================================================================
 
 public function publicFeed(Request $request): JsonResponse
 {
-    try { Sponsorship::expireOverdue(); } catch (\Throwable $e) {}
-
     $limit      = min((int) $request->query('limit', 12), 40);
     $catSlug    = $request->query('category_slug');
     $minResults = max(1, (int) $request->query('min_results', 2));
 
-    $user  = $request->user();
+    // Public route (no auth:sanctum): the default guard can't see Bearer tokens.
+    $user  = $request->user() ?? $request->user('sanctum');
     $prefs = null;
 
     if ($user) {
         $prefs = \App\Models\UserPreference::where('user_id', $user->id)->first();
     }
 
+    // Only products backed by a live sponsorship (not ended, even if the scheduled
+    // ads:complete-ended hasn't flipped the flags yet).
     $query = Product::available()
         ->where('is_sponsored', true)
+        ->whereHas('sponsorships', fn($q) => $q->live())
         ->with([
             'category:id,name,name_fr,name_ar,slug',
             'primaryImage',
             'seller:id,name',
-            'sponsorships' => fn($q) => $q->where('status', 'active')
+            'sponsorships' => fn($q) => $q->live()
                 ->select('id', 'product_id', 'ai_ad_copy', 'ai_tags', 'boost_score', 'end_at',
                          'target_gender', 'target_wilaya_ids', 'target_category_ids',
                          'target_price_min', 'target_price_max'),
@@ -424,23 +395,15 @@ public function publicFeed(Request $request): JsonResponse
 
     $allSponsored = $query->take(100)->get();
 
-    $targeted = $allSponsored->filter(function ($product) use ($user, $prefs) {
-        $sponsorship = $product->sponsorships->first();
-        if (!$sponsorship) return true;
-        return $sponsorship->matchesUser($user, $prefs);
-    })->values();
+    $targeted = $allSponsored->filter(
+        fn ($product) => $product->sponsorships->first()?->matchesUser($user, $prefs) ?? false
+    )->values();
 
+    // Too few ads for this viewer: top up with popular organic products (is_sponsored=false,
+    // so the storefront never labels them as ads). Targeting is never relaxed.
     if ($targeted->count() < $minResults) {
-        $excludeIds = $targeted->pluck('id')->toArray();
-        $relaxed    = $allSponsored
-            ->whereNotIn('id', $excludeIds)
-            ->take($limit - $targeted->count())
-            ->values();
-        $targeted = $targeted->concat($relaxed)->values();
-    }
-
-    if ($targeted->count() < $minResults) {
-        $excludeIds   = $targeted->pluck('id')->toArray();
+        // Never backfill a sponsored product the viewer was targeted out of.
+        $excludeIds   = $allSponsored->pluck('id')->toArray();
         $nonSponsored = Product::available()
             ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name'])
             ->when($catSlug, fn($q) => $q->whereHas('category', fn($q2) => $q2->where('slug', $catSlug)))
@@ -470,9 +433,11 @@ public function publicFeed(Request $request): JsonResponse
         $p->primary_image_url = $p->primaryImage
             ? Storage::url($p->primaryImage->image_path)
             : null;
-        $p->is_sponsored  = (bool) ($p->is_sponsored ?? false);
-        $p->sponsor_data  = $p->sponsorships->first();
-        unset($p->sponsorships);
+        // Only rows that came with a live sponsorship are ads; backfill is organic.
+        $sponsorship      = $p->relationLoaded('sponsorships') ? $p->sponsorships->first() : null;
+        $p->is_sponsored  = $sponsorship !== null;
+        $p->sponsor_data  = $sponsorship;
+        $p->unsetRelation('sponsorships');
 
         // Variant images
         $variantImages = [];
@@ -497,7 +462,7 @@ public function publicFeed(Request $request): JsonResponse
     return response()->json(['success' => true, 'data' => $products]);
 }
     // =========================================================================
-    // POST /api/seller/sponsorships/{id}/impression
+    // POST /api/sponsorships/{id}/impression
     // =========================================================================
 
     public function recordImpression(int $id): JsonResponse
@@ -507,7 +472,7 @@ public function publicFeed(Request $request): JsonResponse
     }
 
     // =========================================================================
-    // POST /api/seller/sponsorships/{id}/click
+    // POST /api/sponsorships/{id}/click
     // =========================================================================
 
     public function recordClick(int $id): JsonResponse

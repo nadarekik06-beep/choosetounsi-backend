@@ -423,11 +423,6 @@ class HomeFeedBuilder
     /** Active sponsored products the viewer is targeted by, highest priority first. */
     private function sponsoredIds(?int $userId): array
     {
-        try {
-            Sponsorship::expireOverdue();
-        } catch (\Throwable $e) {
-        }
-
         $candidates = array_keys(array_filter(
             $this->pool['products'],
             fn ($p, $id) => $p->is_sponsored && !isset($this->excluded[$id]) && $this->canUse($id),
@@ -442,7 +437,8 @@ class HomeFeedBuilder
             $prefs = $userId ? UserPreference::where('user_id', $userId)->first() : null;
 
             return Product::whereIn('id', $candidates)
-                ->with(['sponsorships' => fn ($q) => $q->where('status', 'active')])
+                // live(): ended rows drop out even before ads:complete-ended flips them
+                ->with(['sponsorships' => fn ($q) => $q->live()])
                 ->orderByDesc('sponsored_priority')->orderByDesc('sponsored_at')
                 ->get(['id', 'sponsored_priority', 'sponsored_at'])
                 ->filter(fn ($p) => ($s = $p->sponsorships->first()) && $s->matchesUser($user, $prefs))

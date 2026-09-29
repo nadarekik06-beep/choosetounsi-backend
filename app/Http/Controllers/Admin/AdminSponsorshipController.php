@@ -25,9 +25,6 @@ class AdminSponsorshipController extends Controller
 
     public function stats(): JsonResponse
     {
-        // Expire overdue before counting
-        Sponsorship::expireOverdue();
-
         return response()->json([
             'success' => true,
             'data'    => [
@@ -48,10 +45,9 @@ class AdminSponsorshipController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        Sponsorship::expireOverdue();
-
         $query = Sponsorship::with([
             'product:id,name,slug,is_active,is_approved',
+            'product.primaryImage',
             'seller:id,name,email',
         ])->orderByDesc('created_at');
 
@@ -62,18 +58,19 @@ class AdminSponsorshipController extends Controller
             $query->where('plan_type', $plan);
         }
         if ($search = $request->query('search')) {
-            $query->whereHas('product', fn($q) => $q->where('name', 'like', "%{$search}%"))
-                  ->orWhereHas('seller', fn($q) => $q->where('name', 'like', "%{$search}%"));
+            // Grouped, so the OR can't bypass the status / plan filters above.
+            $query->where(fn ($q) => $q
+                ->whereHas('product', fn ($p) => $p->where('name', 'like', "%{$search}%"))
+                ->orWhereHas('seller', fn ($u) => $u->where('name', 'like', "%{$search}%")));
         }
 
         $sponsorships = $query->paginate((int) $request->query('per_page', 20));
 
         $sponsorships->getCollection()->transform(function ($s) {
             if ($s->product) {
-                $img = \App\Models\ProductImage::where('product_id', $s->product->id)
-                    ->where('is_primary', true)
-                    ->first();
+                $img = $s->product->primaryImage;
                 $s->product->image_url = $img ? Storage::url($img->image_path) : null;
+                $s->product->unsetRelation('primaryImage');
             }
             return $s;
         });
