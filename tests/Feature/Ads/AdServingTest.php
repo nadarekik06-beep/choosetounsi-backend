@@ -148,6 +148,11 @@ class AdServingTest extends TestCase
 
         $guest->contextCategoryId = $other->id;
         $this->assertSame([], $this->server->auction($guest), 'another category page shows no ad for it');
+
+        // On its own product page a product is never its own "similar" ad.
+        $similar = new AdRequest('product_similar', null, (string) Str::uuid(), 4);
+        $similar->contextProductId = $c->product_id;
+        $this->assertNotContains($c->id, array_column($this->server->auction($similar), 'id'));
     }
 
     // ── Tokens & events ─────────────────────────────────────────────────────

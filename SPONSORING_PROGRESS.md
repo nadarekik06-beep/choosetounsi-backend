@@ -15,9 +15,17 @@ One commit per repo per phase:
 |---|---|---|---|---|
 | 0 | `39f82e7` | `45c27b0` | `d675b67` | — |
 | 1 | `481955e` | — | — | — |
-| 2 | see `git log` ("Sponsoring phase 2") | — | — | — |
+| 2 | `3e940e5` | — | — | — |
+| 3 | see `git log` ("Sponsoring phase 3") | see `git log` | — | — |
 
 ---
+
+## Phase 3 — Storefront placements + entry popup ✅
+- **New** `lib/adsApi.ts` (ads per placement, batched signed impression/click events, `withAdSlots`), `lib/overlayStore.ts` (one entry overlay at a time), `components/ads/` (`SponsoredCard` with "Sponsored / Sponsorisé / مُموَّل" label + gold ring + ad line + promo price, `useAdImpression` ≥50 % for 1 s, `AdStrip`, `EntryPopup`); i18n namespace `ads` (EN/FR/AR).
+- **Placements**: home feed cards report with tokens; search results `search_top` and category grid `category_top` in reserved slots from `/api/ads/config` (list view too); product page "Sponsored — similar items" (`product_similar`); cart drawer cross-sell (`cart_cross_sell`); discover page via the ad server (page 1 only). Removed: `SponsoredProductsSection`, `SponsoredBadge`, "Trending in category" row, organic "Sponsored" badges (category grid, recommendations, cart), buyer calls in `lib/sponsorshipApi.ts`.
+- **Entry popup** (mounted in `app/layout.tsx`): only when `/api/ads/popup` returns a highly relevant ad; delay/dismissal from config, once per session, 24 h / 7 days after 3 dismissals, not on checkout/cart/auth/seller/onboarding, yields to `ReviewPromptPopup`; bottom sheet on phones, card on desktop, focus trap + Esc.
+- Backend fix: an ad is never shown for the product being viewed (`product_similar`). Storefront `npm run build` ✅; backend 216 passed; checked at 375 px.
+- **Test manually**: open a product that shares a subcategory with a sponsored product → "Sponsorisé — articles similaires" card, `POST /api/ads/events` 202 in the network tab after 1 s on screen; category/search pages show ads in slots 1 and 7 only when the ad isn't already listed; wait 8 s on the homepage (known viewer with matching interests) → popup once.
 
 ## Phase 2 — Ad server, events, billing, attribution ✅
 - **AdServer** (`app/Services/Ads/AdServer.php`): eligible campaigns (cached 60 s, flushed on changes) → filters (own product, bought, on page, 3/day frequency cap, targeting) → relevance (interest profile × page context per placement, dropped below `min_relevance`) → rank `bid × pCTR × relevance × quality`, 1 ad per seller → second-price charge (floor, then tier discount) sealed in an HMAC **ad token**. Legacy prepaid rows compete at the floor, never charged.

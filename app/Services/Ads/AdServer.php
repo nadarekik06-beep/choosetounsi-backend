@@ -124,7 +124,8 @@ class AdServer
         $viewer    = $req->userId ? User::find($req->userId) : null;
         $prefs     = $req->userId ? UserPreference::where('user_id', $req->userId)->first() : null;
         $purchased = array_flip($this->profiles->purchasedExclusions($req->userId));
-        $exclude   = array_flip(array_merge($req->excludeProductIds, $req->cartProductIds));
+        // Never advertise what's already on the page: listed items, the viewed product, the cart.
+        $exclude   = array_flip(array_merge($req->excludeProductIds, $req->cartProductIds, array_filter([$req->contextProductId])));
         $actor     = $req->actorKey();
         $cap       = $this->settings->int('frequency_cap_per_day');
         $today     = AdClock::today();
