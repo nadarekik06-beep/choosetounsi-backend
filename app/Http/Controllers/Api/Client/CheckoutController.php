@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Client;
 
+use App\Services\Ads\AttributionService;
 use App\Http\Controllers\Controller;
 use App\Models\Cart;
 use App\Models\Order;
@@ -458,6 +459,8 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             } catch (\Throwable $e) {
                 Log::warning('[Preferences] purchase log failed: ' . $e->getMessage());
             }
+            // Credit lines bought after clicking an ad to that campaign (never throws).
+            app(AttributionService::class)->recordOrder($order, InteractionTracker::sessionIdFrom($request));
 
         } catch (\Throwable $e) {
             DB::rollBack();
@@ -685,6 +688,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             } catch (\Throwable $e) {
                 Log::warning('[Preferences] buyNow purchase log failed: ' . $e->getMessage());
             }
+            app(AttributionService::class)->recordOrder($order, InteractionTracker::sessionIdFrom($request));
 
         } catch (\Throwable $e) {
             DB::rollBack();

@@ -38,6 +38,12 @@ class SponsorshipService
         Sponsorship::PAUSE_PLAN_DOWNGRADE, Sponsorship::PAUSE_ADMIN,
     ];
 
+    /** Pauses the platform lifts by itself once the cause is gone. */
+    const AUTO_RESUMABLE = [
+        Sponsorship::PAUSE_BUDGET_TODAY, Sponsorship::PAUSE_WALLET_EMPTY,
+        Sponsorship::PAUSE_OUT_OF_STOCK, Sponsorship::PAUSE_PRODUCT_INACTIVE,
+    ];
+
     const TARGETING = ['target_gender', 'target_wilaya_ids', 'target_category_ids', 'target_price_min', 'target_price_max'];
 
     public function __construct(
@@ -102,6 +108,7 @@ class SponsorshipService
                 'ai_tags'         => $copy['tags'],
             ]);
             Sponsorship::syncProductFlags($product->id);
+            AdServer::flushEligible();
             return $campaign;
         }));
 
@@ -128,6 +135,7 @@ class SponsorshipService
                 'max_cpc'       => $this->settings->float('min_cpc'),
             ]);
             Sponsorship::syncProductFlags($attrs['product_id']);
+            AdServer::flushEligible();
             return $campaign;
         }));
 
@@ -166,6 +174,7 @@ class SponsorshipService
             }
 
             $c->update($attrs);
+            AdServer::flushEligible();
             return $c;
         });
     }
@@ -181,6 +190,7 @@ class SponsorshipService
             }
             $c->update(['status' => Sponsorship::STATUS_PAUSED, 'paused_reason' => $reason, 'paused_at' => now()]);
             Sponsorship::syncProductFlags($c->product_id);
+            AdServer::flushEligible();
             return $c;
         });
 
@@ -224,6 +234,52 @@ class SponsorshipService
         }
 
         return $this->activate($c);
+    }
+
+    /**
+     * Scheduled resume of an automatic pause (daily budget reset, restock, wallet top-up):
+     * the product must be sellable again and the wallet able to pay for a click.
+     * Returns null when the cause is still there.
+     */
+    public function resumeAutomatically(Sponsorship $campaign): ?Sponsorship
+    {
+        $c = $campaign->fresh(['product']);
+        if ($c->status !== Sponsorship::STATUS_PAUSED || !in_array($c->paused_reason, self::AUTO_RESUMABLE, true)) {
+            return null;
+        }
+        if ($c->end_at !== null && $c->end_at->isPast()) {
+            return $this->complete($c);
+        }
+        if (!$c->product || !$c->product->is_approved || !$c->product->is_active || $c->product->trashed()
+            || $this->readiness->totalStock($c->product) <= 0) {
+            return null;
+        }
+        if ($c->isCpc()) {
+            if ($c->spent_today_date?->toDateString() === AdClock::today() && (float) $c->spent_today >= (float) $c->daily_budget) {
+                return null;
+            }
+            if ($this->wallets->available($c->seller_id) < $this->pricing->floorCpc($c->product->category_id)) {
+                return null;
+            }
+        }
+        return $this->activate($c);
+    }
+
+    /** A paused campaign's cause changed (e.g. the budget cap lifted but the wallet is empty): relabel it and tell the seller. */
+    public function repause(Sponsorship $campaign, string $reason): Sponsorship
+    {
+        $c = DB::transaction(function () use ($campaign, $reason) {
+            $c = $this->locked($campaign);
+            if ($c->status !== Sponsorship::STATUS_PAUSED) {
+                throw AdRuleViolation::make('not_paused');
+            }
+            $c->update(['paused_reason' => $reason, 'paused_at' => now()]);
+            return $c;
+        });
+        if (in_array($reason, self::NOTIFY_PAUSE, true)) {
+            $c->seller?->notify(new CampaignPaused($c->load('product'), $reason));
+        }
+        return $c;
     }
 
     // ── End ─────────────────────────────────────────────────────────────────
@@ -346,6 +402,7 @@ class SponsorshipService
             }
             $c->update(['status' => Sponsorship::STATUS_ACTIVE, 'paused_reason' => null, 'paused_at' => null]);
             Sponsorship::syncProductFlags($c->product_id);
+            AdServer::flushEligible();
             return $c;
         });
     }
@@ -359,6 +416,7 @@ class SponsorshipService
             }
             $c->update(['status' => $status, 'ended_at' => now(), 'paused_reason' => null] + $extra);
             Sponsorship::syncProductFlags($c->product_id);
+            AdServer::flushEligible();
             return $c;
         });
     }

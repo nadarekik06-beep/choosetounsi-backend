@@ -433,14 +433,18 @@ class HomeFeedTest extends TestCase
         foreach (array_slice($products, 0, 5) as $p) {
             $this->sponsor($p);
         }
+        // Ads need relevance: this viewer browses the category.
+        $user = $this->makeUser();
+        $this->event($user, 'view', $products[10]);
+        $this->event($user, 'view', $products[11]);
 
-        $feed = $this->feed();
+        $feed = $this->feed($this->auth($user));
 
         $row = $this->section($feed, 'sponsored');
         $this->assertNotNull($row);
         foreach ($row['products'] as $card) {
             $this->assertTrue($card['is_sponsored']);
-            $this->assertNotEmpty($card['sponsor_data']['id'], 'needed for impression/click tracking');
+                $this->assertNotEmpty($card['sponsor_data']['token'], 'signed token for impression/click events');
         }
         foreach ($feed['sections'] as $s) {
             if ($s['key'] !== 'sponsored') {
@@ -458,8 +462,10 @@ class HomeFeedTest extends TestCase
         $products = $this->catalog($this->makeCategory(), 24);
         $this->sponsor($products[20]);
         $this->sponsor($products[21]);
+        $user = $this->makeUser();
+        $this->event($user, 'view', $products[3]);
 
-        $feed = $this->feed();
+        $feed = $this->feed($this->auth($user));
 
         $this->assertNull($this->section($feed, 'sponsored'));
         $paid = collect($feed['sections'])->flatMap(fn ($s) => $s['products'])->where('is_sponsored', true)->pluck('id')->all();

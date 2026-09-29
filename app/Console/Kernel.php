@@ -41,6 +41,12 @@ class Kernel extends ConsoleKernel
         // ── Sponsoring ──────────────────────────────────────────────────────
         // Ends overdue sponsorships (read paths only filter, they never write).
         $schedule->command('ads:complete-ended')->everyFiveMinutes()->withoutOverlapping();
+        // New ad day: spend resets, campaigns capped yesterday resume.
+        $schedule->command('ads:reset-daily')->dailyAt('00:05')->timezone(config('ads.timezone'))->withoutOverlapping();
+        // Campaigns pause / resume with their product's stock and listing.
+        $schedule->command('ads:stock-watch')->everyFifteenMinutes()->withoutOverlapping();
+        // Daily stats and campaign counters rebuilt from events.
+        $schedule->command('ads:reconcile-stats')->dailyAt('03:45')->timezone(config('ads.timezone'))->withoutOverlapping()->runInBackground();
         // Plan tiers' free ad credit for the month (previous credit expires).
         $schedule->command('ads:grant-monthly-credit')
             ->monthlyOn(1, '00:10')->timezone(config('ads.timezone'))

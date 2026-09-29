@@ -2,12 +2,10 @@
 
 namespace App\Services\Recommendation;
 
-use App\Models\Product;
-use App\Models\Sponsorship;
+use App\Services\Ads\AdRequest;
+use App\Services\Ads\AdServer;
 use App\Models\User;
-use App\Models\UserPreference;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 
 /**
  * Assembles the personalized homepage: every section in one response.
@@ -58,7 +56,7 @@ class HomeFeedBuilder
     private array $uses = [];       // product_id => rows it's already in (incl. reserved)
     private array $excluded = [];   // bought, never shown
     private array $notes = [];      // section => product_id => note
-    private array $paidIn = [];     // "section:product_id" => true
+    private array $paidIn = [];     // "section:product_id" => sponsor_data (ad token, campaign id, copy)
     private bool $small = false;
     private int $maxUses = 1;
     private int $rowTarget = 16;
@@ -67,6 +65,7 @@ class HomeFeedBuilder
 
     public function __construct(
         private CandidatePools $pools,
+        private AdServer $adServer,
         private InterestProfileService $profiles,
         private SimilarProductsFinder $similar,
         private ProductCardPresenter $presenter,
@@ -107,18 +106,18 @@ class HomeFeedBuilder
             }
         }
 
-        // Paid visibility next, so ads never lose their slot to organic rows.
-        $sponsored = $this->sponsoredIds($userId);
-        $inject    = [];
-        if (count($sponsored) >= (int) $this->cfg['min_section_size']) {
-            $ids = array_slice($sponsored, 0, $this->row());
-            foreach ($ids as $id) {
-                $this->note('sponsored', $id, 1, ['sponsored']);
-                $this->paidIn["sponsored:{$id}"] = true;
+        // Paid visibility next, so ads never lose their slot to organic rows. The ad server
+        // decides which ads are relevant enough for this viewer (and prices them).
+        $inject = [];
+        $rowAds = $this->ads('home_row', $userId, $sessionId, $this->row(), $explain);
+        if (count($rowAds) >= (int) $this->cfg['min_section_size']) {
+            foreach ($rowAds as $id => $sponsor) {
+                $this->paidIn["sponsored:{$id}"] = $sponsor;
             }
-            $rows['sponsored'] = ['ids' => $this->claim($ids), 'meta' => []];
-        } elseif ($sponsored) {
-            $inject = $this->claim(array_slice($sponsored, 0, count(self::SPONSORED_INJECT_SLOTS)));
+            $rows['sponsored'] = ['ids' => $this->claim(array_keys($rowAds)), 'meta' => []];
+        } else {
+            $inject = $this->ads('home_inline', $userId, $sessionId, count(self::SPONSORED_INJECT_SLOTS), $explain);
+            $this->claim(array_keys($inject));
         }
 
         if ($personal) {
@@ -420,33 +419,32 @@ class HomeFeedBuilder
         return $out;
     }
 
-    /** Active sponsored products the viewer is targeted by, highest priority first. */
-    private function sponsoredIds(?int $userId): array
+    /**
+     * Ads for a homepage placement, skipping products this page can't show again.
+     *
+     * @return array<int, array> product_id => sponsor_data (campaign id, ad copy, token)
+     */
+    private function ads(string $placement, ?int $userId, ?string $sessionId, int $limit, bool $explain): array
     {
-        $candidates = array_keys(array_filter(
-            $this->pool['products'],
-            fn ($p, $id) => $p->is_sponsored && !isset($this->excluded[$id]) && $this->canUse($id),
-            ARRAY_FILTER_USE_BOTH
+        $blocked = array_keys(array_filter($this->uses, fn ($n) => $n >= $this->maxUses));
+        $served  = $this->adServer->serve(new AdRequest(
+            $placement, $userId, $sessionId, $limit,
+            excludeProductIds: array_merge(array_keys($this->excluded), $blocked),
+            explain: $explain,
         ));
-        if (!$candidates) {
-            return [];
-        }
 
-        try {
-            $user  = $userId ? User::find($userId) : null;
-            $prefs = $userId ? UserPreference::where('user_id', $userId)->first() : null;
-
-            return Product::whereIn('id', $candidates)
-                // legacyLive(): ended rows drop out even before ads:complete-ended flips them
-                ->with(['sponsorships' => fn ($q) => $q->legacyLive()])
-                ->orderByDesc('sponsored_priority')->orderByDesc('sponsored_at')
-                ->get(['id', 'sponsored_priority', 'sponsored_at'])
-                ->filter(fn ($p) => ($s = $p->sponsorships->first()) && $s->matchesUser($user, $prefs))
-                ->pluck('id')->map(fn ($i) => (int) $i)->values()->all();
-        } catch (\Throwable $e) {
-            Log::warning('[HomeFeed] sponsored lookup failed: ' . $e->getMessage());
-            return [];
+        $why = collect($served['explain'] ?? [])->keyBy('product_id');
+        $out = [];
+        foreach ($served['ads'] as $ad) {
+            $id = (int) $ad['id'];
+            if (!$this->canUse($id)) {
+                continue;
+            }
+            $out[$id] = $ad['sponsor_data'] + ['placement' => $placement];
+            $this->note($placement === 'home_row' ? 'sponsored' : 'injected', $id, $why[$id]['rank'] ?? 1,
+                ['sponsored', 'ad' => $why[$id] ?? null]);
         }
+        return $out;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -636,7 +634,11 @@ class HomeFeedBuilder
         return $ids;
     }
 
-    /** Sponsored products that couldn't fill their own row ride in the first organic row, labelled. */
+    /**
+     * Sponsored products that couldn't fill their own row ride in the first organic row, labelled.
+     *
+     * @param array<int, array> $inject product_id => sponsor_data
+     */
     private function injectSponsored(array &$rows, array $inject): void
     {
         if (!$inject) {
@@ -644,20 +646,19 @@ class HomeFeedBuilder
         }
         foreach (['recommended', 'trending', 'new_arrivals'] as $host) {
             if (isset($rows[$host])) {
-                foreach (array_values($inject) as $i => $id) {
+                foreach (array_keys($inject) as $i => $id) {
                     array_splice($rows[$host]['ids'], min(count($rows[$host]['ids']), self::SPONSORED_INJECT_SLOTS[$i] ?? 1), 0, [$id]);
                     $this->note($host, $id, 1, ['sponsored', 'injected_into' => $host]);
-                    $this->paidIn["{$host}:{$id}"] = true;
+                    $this->paidIn["{$host}:{$id}"] = $inject[$id];
                 }
                 return;
             }
         }
         // Nothing organic to ride in: show them as their own (short) sponsored row.
-        foreach ($inject as $id) {
-            $this->note('sponsored', $id, 1, ['sponsored']);
-            $this->paidIn["sponsored:{$id}"] = true;
+        foreach ($inject as $id => $sponsor) {
+            $this->paidIn["sponsored:{$id}"] = $sponsor;
         }
-        $rows['sponsored'] = ['ids' => $inject, 'meta' => []];
+        $rows['sponsored'] = ['ids' => array_keys($inject), 'meta' => []];
     }
 
     private function render(array $rows): array
@@ -677,11 +678,14 @@ class HomeFeedBuilder
                         continue;
                     }
                     $card = $cards[$id];
-                    // Only paid placements carry the Sponsored label.
-                    $isPaid = isset($this->paidIn["{$key}:{$id}"]);
-                    $card['is_sponsored'] = $isPaid;
-                    $card['placement']    = $isPaid ? 'sponsored' : 'organic';
-                    if (!$isPaid) {
+                    // Only paid placements carry the Sponsored label (and the ad token).
+                    $sponsor = $this->paidIn["{$key}:{$id}"] ?? null;
+                    $card['is_sponsored'] = $sponsor !== null;
+                    $card['placement']    = $sponsor !== null ? 'sponsored' : 'organic';
+                    if ($sponsor !== null) {
+                        $card['sponsor_data'] = $sponsor;
+                        $card['ad_token']     = $sponsor['token'];
+                    } else {
                         unset($card['sponsor_data']);
                     }
                     $products[] = $card;

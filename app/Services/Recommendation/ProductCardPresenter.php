@@ -33,7 +33,6 @@ class ProductCardPresenter
                 'primaryImage',
                 'seller:id,name',
                 'variants' => fn ($q) => $q->where('is_active', true),
-                'sponsorships' => fn ($q) => $q->legacyLive()->select('id', 'product_id', 'ai_ad_copy', 'end_at'),
             ])
             ->get();
 
@@ -48,11 +47,12 @@ class ProductCardPresenter
             }
         }
 
-        return collect($this->present($products, withSponsorData: true))->keyBy('id')->all();
+        return collect($this->present($products))->keyBy('id')->all();
     }
 
     /** Same shape the old ProductRecommendationController::transformCollection returned. */
-    public function present(Collection $products, bool $withSponsorData = false): array
+    /** Organic cards: never labelled as ads (the ad server adds sponsor_data to the ones it serves). */
+    public function present(Collection $products): array
     {
         $colorImages = ProductImage::whereIn('product_id', $products->pluck('id'))
             ->whereNotNull('color_option_id')
@@ -60,10 +60,10 @@ class ProductCardPresenter
             ->get()
             ->groupBy('product_id');
 
-        return $products->map(function ($p) use ($colorImages, $withSponsorData) {
+        return $products->map(function ($p) use ($colorImages) {
             $p->primary_image_url  = $p->primaryImage ? Storage::url($p->primaryImage->image_path) : null;
-            $p->is_sponsored       = (bool) ($p->is_sponsored ?? false);
-            $p->sponsored_priority = (int)  ($p->sponsored_priority ?? 0);
+            $p->is_sponsored       = false;
+            unset($p->sponsored_priority);
 
             $variantImages = [];
             foreach ($colorImages->get($p->id, collect()) as $img) {
@@ -82,10 +82,6 @@ class ProductCardPresenter
 
             if ($p->relationLoaded('variants')) {
                 $p->setRelation('variants', $p->variants->map(fn ($v) => ['id' => $v->id, 'stock' => $v->stock])->values());
-            }
-            if ($withSponsorData && $p->relationLoaded('sponsorships')) {
-                $p->sponsor_data = $p->sponsorships->first();
-                $p->unsetRelation('sponsorships');
             }
 
             return $p;

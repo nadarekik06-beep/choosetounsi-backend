@@ -14,9 +14,17 @@ One commit per repo per phase:
 | Phase | backend | storefront | ai-service | admin-panel |
 |---|---|---|---|---|
 | 0 | `39f82e7` | `45c27b0` | `d675b67` | — |
-| 1 | see `git log` ("Sponsoring phase 1") | — (untouched) | — | — |
+| 1 | `481955e` | — | — | — |
+| 2 | see `git log` ("Sponsoring phase 2") | — | — | — |
 
 ---
+
+## Phase 2 — Ad server, events, billing, attribution ✅
+- **AdServer** (`app/Services/Ads/AdServer.php`): eligible campaigns (cached 60 s, flushed on changes) → filters (own product, bought, on page, 3/day frequency cap, targeting) → relevance (interest profile × page context per placement, dropped below `min_relevance`) → rank `bid × pCTR × relevance × quality`, 1 ad per seller → second-price charge (floor, then tier discount) sealed in an HMAC **ad token**. Legacy prepaid rows compete at the floor, never charged.
+- **Events & billing**: `POST /api/ads/events` (impression dedupe 30 min; click billable once per viewer/campaign/24 h, never bots/IP bursts/self-clicks; charged credit-first, capped by today's and total budget; auto-pause `budget_exhausted_today` / `wallet_empty`; 80 % budget + wallet-low alerts once a day). **Attribution**: last billable click ≤ 7 days → pending at checkout, converted once on delivered/completed, reversed on cancel/refund (`OrderObserver` rewritten). New `sponsorship_events.countable` column.
+- **Endpoints**: `GET /api/ads?placement=…` (+ `q`, `context_product_id`, `category_slug`, `cart`, `exclude[]`), `GET /api/ads/popup` (1/day/viewer), `/api/sponsored-products` = thin wrapper (category_top / home_row, ads only), old `/api/sponsorships/{id}/impression|click` = no-op 202. Home feed rows come from the ad server (`sponsor_data.token`). Organic listings/recs/scoring no longer rank or label by `is_sponsored`.
+- **Scheduler**: `ads:reset-daily` 00:05, `ads:stock-watch` /15 min, `ads:reconcile-stats` 03:45 (Tunis) + existing. Tests: 216 passed (13 new in `AdServingTest`: relevance gate, second price, dedupe, bots/self, budget & wallet pause, frequency cap, attribution + reversal, tokens, popup cap).
+- **Test manually**: `GET /api/ads?placement=category_top&category_slug=<slug>` with `X-Session-Id` → ads with `ad_token`; `POST /api/ads/events {"events":[{"token":…,"event":"click"}]}` → wallet charged once (2nd click `duplicate`); order that product as the same viewer → mark delivered → campaign `attributed_orders` +1; refund → back to 0.
 
 ## Phase 1 — Data model, wallet, campaigns ✅ (waiting for "go")
 

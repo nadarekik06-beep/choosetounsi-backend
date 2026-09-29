@@ -52,8 +52,8 @@ return [
         ],
         'min_relevance' => [
             'home_row' => 0.25, 'home_inline' => 0.30, 'search_top' => 0.35, 'category_top' => 0.30,
-            'product_similar' => 0.35, 'cart_cross_sell' => 0.30, 'entry_popup' => 0.60, 'email_digest' => 0.40,
-        ],
+            'product_similar' => 0.35, 'cart_cross_sell' => 0.30, 'email_digest' => 0.40,
+        ],                                      // entry_popup: popup_min_relevance
 
         // ── Placements (buyer protection) ────────────────────────────────
         'max_ads' => [

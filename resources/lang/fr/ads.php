@@ -47,6 +47,14 @@ return [
             'cancelled' => ['title' => 'Campagne annulée : :name', 'body' => 'Dépensé :spend DT · :clicks clics · :orders commandes · :revenue DT de ventes.'],
             'rejected'  => ['title' => 'Campagne refusée : :name', 'body' => 'Motif : :reason. :refund DT ont été remboursés sur votre portefeuille publicitaire.'],
         ],
+        'budget_alert' => [
+            'title' => '80 % du budget du jour dépensé : :name',
+            'body'  => ':spent DT dépensés sur :budget DT aujourd’hui. La campagne se met en pause quand le budget est épuisé et reprend demain.',
+        ],
+        'wallet_low' => [
+            'title' => 'Votre portefeuille publicitaire est presque vide',
+            'body'  => 'Il reste :available DT — environ :days jour(s) de budget de vos campagnes. Rechargez-le pour qu’elles continuent.',
+        ],
         'view' => 'Voir la campagne',
         'roas' => 'Retour sur dépense publicitaire : :roas×',
     ],

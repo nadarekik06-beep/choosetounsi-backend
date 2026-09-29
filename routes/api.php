@@ -129,6 +129,9 @@ Route::post(
 Route::get('/sponsored-products', [SponsorshipController::class, 'publicFeed']);
 // ── Ads (public) ──────────────────────────────────────────────────────────
 Route::get('/ads/config', [\App\Http\Controllers\Api\AdsConfigController::class, 'show']);
+Route::get('/ads', [\App\Http\Controllers\Api\AdsController::class, 'index'])->middleware('throttle:120,1');
+Route::get('/ads/popup', [\App\Http\Controllers\Api\AdsController::class, 'popup'])->middleware('throttle:30,1');
+Route::post('/ads/events', [\App\Http\Controllers\Api\AdsController::class, 'events'])->middleware('throttle:120,1');
 Route::post('/ads/top-ups/callback/{gateway}', [\App\Http\Controllers\Api\Seller\Ads\AdWalletController::class, 'callback'])
     ->middleware('throttle:60,1')->name('ads.top-ups.callback');
 Route::post('/sponsorships/{id}/impression', [SponsorshipController::class, 'recordImpression']);

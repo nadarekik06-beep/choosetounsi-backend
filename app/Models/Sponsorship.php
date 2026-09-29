@@ -187,16 +187,6 @@ class Sponsorship extends Model
             ->where(fn ($q) => $q->whereNull('end_at')->orWhere('end_at', '>', Carbon::now()));
     }
 
-    /**
-     * Rows the pre-ad-server read paths (sponsored feed, home feed) may show:
-     * live legacy_daily rows. CPC campaigns are served — and billed — only by
-     * the ad server.
-     */
-    public function scopeLegacyLive($query)
-    {
-        return $query->live()->where('pricing_model', self::PRICING_LEGACY);
-    }
-
     public function scopeExpired($query)
     {
         return $query->where('status', 'expired');
@@ -324,11 +314,8 @@ class Sponsorship extends Model
      */
     public static function syncProductFlags(int $productId): void
     {
-        // Until the ad server replaces the old ranking, only legacy rows set the
-        // flags (CPC campaigns must not get unbilled organic boosts).
         $active = static::where('product_id', $productId)
             ->where('status', 'active')
-            ->where('pricing_model', self::PRICING_LEGACY)
             ->orderByDesc('boost_score')
             ->first();
 

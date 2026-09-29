@@ -10,7 +10,7 @@ use Illuminate\Support\Facades\Log;
  * Completes open campaigns whose end date has passed (seller gets the results
  * summary) and syncs the products' sponsor flags. Scheduled every 5 minutes
  * (app/Console/Kernel.php) — read paths never write; they filter with
- * Sponsorship::live() / legacyLive() in the meantime.
+ * Sponsorship::live() and the ad server's own end-date check in the meantime.
  *
  *   php artisan ads:complete-ended      (alias: sponsorships:expire)
  */

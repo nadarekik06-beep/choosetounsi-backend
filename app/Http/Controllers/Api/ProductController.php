@@ -115,9 +115,9 @@ class ProductController extends Controller
             $perPage = min((int) $request->query('per_page', 20), 60);
             $page    = max((int) $request->query('page', 1), 1);
 
+            // Candidates by recency; ranking is the scorer's job (ads have their own slots).
             $allProducts = $query
-                ->orderByDesc('is_sponsored')
-                ->orderByDesc('sponsored_priority')
+                ->orderByDesc('created_at')
                 ->limit(200)
                 ->get();
 
@@ -185,7 +185,7 @@ class ProductController extends Controller
                 ->with(['category:id,name,name_fr,name_ar,slug', 'subcategory:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name', 'variants' => fn($q) => $q->where('is_active', true)->with(['attributeOptions' => fn($q2) => $q2->with('attribute:id,slug,type')]), 'attributeValues.attribute'])
                 ->when($catSlug, fn($q) => $q->whereHas('category', fn($q2) => $q2->where('slug', $catSlug)))
                 ->when(!$catSlug && $catId, fn($q) => $q->where('category_id', $catId))
-                ->orderByDesc('is_sponsored')
+                ->orderByDesc('views')
                 ->limit(60)
                 ->get();
 
@@ -196,7 +196,6 @@ class ProductController extends Controller
 
         $popular = Product::available()
             ->with(['category:id,name,name_fr,name_ar,slug', 'subcategory:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name', 'variants' => fn($q) => $q->where('is_active', true)->with(['attributeOptions' => fn($q2) => $q2->with('attribute:id,slug,type')]), 'attributeValues.attribute'])
-            ->orderByDesc('is_sponsored')
             ->orderByDesc('views')
             ->limit(60)
             ->get();
@@ -590,8 +589,9 @@ private function safeSessionId(Request $request): ?string
 private function transformProductItem($p, ?\Illuminate\Support\Collection $colorImagesMap = null): mixed
 {
     $p->primary_image_url  = $p->primaryImage ? Storage::url($p->primaryImage->image_path) : null;
-    $p->is_sponsored       = (bool) $p->is_sponsored;
-    $p->sponsored_priority = (int)  $p->sponsored_priority;
+    // Organic listing: never labelled as an ad (paid placements come from /api/ads).
+    $p->is_sponsored       = false;
+    unset($p->sponsored_priority);
 
     $swatches = []; $seen = [];
     foreach ($p->variants as $variant) {

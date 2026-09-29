@@ -47,6 +47,14 @@ return [
             'cancelled' => ['title' => 'Campaign cancelled: :name', 'body' => 'Spent :spend DT · :clicks clicks · :orders orders · :revenue DT revenue.'],
             'rejected'  => ['title' => 'Campaign rejected: :name', 'body' => 'Reason: :reason. :refund DT has been refunded to your ad wallet.'],
         ],
+        'budget_alert' => [
+            'title' => '80% of today’s budget spent: :name',
+            'body'  => ':spent DT of :budget DT spent today. The campaign pauses when the budget runs out and resumes tomorrow.',
+        ],
+        'wallet_low' => [
+            'title' => 'Your ad wallet is running low',
+            'body'  => ':available DT left — about :days day(s) of your campaigns’ budgets. Top up to keep them running.',
+        ],
         'view' => 'View campaign',
         'roas' => 'Return on ad spend: :roas×',
     ],

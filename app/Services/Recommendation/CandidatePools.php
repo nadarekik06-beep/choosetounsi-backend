@@ -24,7 +24,7 @@ class CandidatePools
 
     /**
      * @return array{
-     *   products: array<int, object>,   id => {id, category_id, subcategory_id, seller_id, price, views, created_ts, is_sponsored}
+     *   products: array<int, object>,   id => {id, category_id, subcategory_id, seller_id, price, views, created_ts}
      *   trend: array<int, float>,       id => 7-day weighted score
      *   popularity: array<int, float>,  id => 0..1
      *   rating: array<int, array>,      id => [avg, count, bayes]
@@ -61,7 +61,7 @@ class CandidatePools
     private function build(): array
     {
         $products = $this->eligibleQuery()
-            ->select('p.id', 'p.category_id', 'p.subcategory_id', 'p.seller_id', 'p.price', 'p.views', 'p.created_at', 'p.is_sponsored')
+            ->select('p.id', 'p.category_id', 'p.subcategory_id', 'p.seller_id', 'p.price', 'p.views', 'p.created_at')
             ->orderByDesc('p.views')
             ->orderByDesc('p.id')
             ->limit(self::MAX_CATALOG)
@@ -74,7 +74,6 @@ class CandidatePools
                 'price'          => (float) $p->price,
                 'views'          => (int) $p->views,
                 'created_ts'     => $p->created_at ? strtotime($p->created_at) : 0,
-                'is_sponsored'   => (bool) $p->is_sponsored,
             ]])
             ->all();
 

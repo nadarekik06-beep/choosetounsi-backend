@@ -44,7 +44,6 @@ class ProductRecommendationController extends Controller
                     'attributeValues.attribute',
                 ])
                 ->where(function ($q) use ($prefs, $activityWeights) {
-                    $q->where('is_sponsored', true);
                     if (!empty($prefs?->category_ids)) {
                         $q->orWhereIn('category_id', array_map('intval', (array) $prefs->category_ids));
                     }
@@ -52,7 +51,6 @@ class ProductRecommendationController extends Controller
                         $q->orWhereIn('id', array_keys($activityWeights));
                     }
                 })
-                ->orderByDesc('is_sponsored')
                 ->orderByDesc('views')
                 ->limit(200)
                 ->get();
@@ -87,8 +85,6 @@ class ProductRecommendationController extends Controller
           ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name',
         'variants' => fn($q) => $q->where('is_active', true)->with('images')]) // ← ADD
 
-            ->orderByDesc('is_sponsored')
-            ->orderByDesc('sponsored_priority')
             ->orderByDesc('views')
             ->limit($limit)
             ->get();
@@ -199,7 +195,6 @@ class ProductRecommendationController extends Controller
                     'attributeValues.attribute'])
             ->where('category_id', '!=', $source->category_id)
             ->where('id', '!=', $source->id)
-            ->orderByDesc('is_sponsored')
             ->orderByDesc('featured')
             ->orderByDesc('views')
             ->limit(40)
@@ -258,7 +253,6 @@ class ProductRecommendationController extends Controller
                     'variants' => fn($q) => $q->where('is_active', true)])
             ->where('seller_id', $sellerId)
             ->where('id', '!=', $source->id)
-            ->orderByDesc('is_sponsored')
             ->orderByDesc('featured')
             ->orderByDesc('views')
             ->limit($limit)
@@ -303,10 +297,8 @@ class ProductRecommendationController extends Controller
                 } else {
                     $q->where('category_id', $source->category_id);
                 }
-                $q->orWhere('is_sponsored', true);
             })
             ->orderByDesc('featured')
-            ->orderByDesc('is_sponsored')
             ->orderByDesc('views')
             ->limit(60)
             ->get();
@@ -340,8 +332,9 @@ private function transformCollection($products): array
         $p->primary_image_url  = $p->primaryImage
             ? Storage::url($p->primaryImage->image_path)
             : null;
-        $p->is_sponsored       = (bool) ($p->is_sponsored ?? false);
-        $p->sponsored_priority = (int)  ($p->sponsored_priority ?? 0);
+        // Organic recommendations are never labelled as ads.
+        $p->is_sponsored       = false;
+        unset($p->sponsored_priority);
 
         // Variant images
         $variantImages = [];

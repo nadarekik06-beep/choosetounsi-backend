@@ -8,6 +8,8 @@ use App\Models\Product;
 use App\Exceptions\Ads\AdRuleViolation;
 use App\Jobs\GenerateAdCopy;
 use App\Models\Sponsorship;
+use App\Services\Ads\AdRequest;
+use App\Services\Ads\AdServer;
 use App\Services\Ads\SponsorshipService;
 use App\Services\PlanGate;
 use App\Support\Wilayas;
@@ -341,131 +343,47 @@ class SponsorshipController extends Controller
         ]);
     }
 
-// =========================================================================
-// GET /api/sponsored-products  (PUBLIC — no auth)
-// =========================================================================
+    // =========================================================================
+    // GET /api/sponsored-products  (PUBLIC) — transitional wrapper over the ad server
+    // =========================================================================
 
-public function publicFeed(Request $request): JsonResponse
-{
-    $limit      = min((int) $request->query('limit', 12), 40);
-    $catSlug    = $request->query('category_slug');
-    $minResults = max(1, (int) $request->query('min_results', 2));
-
-    // Public route (no auth:sanctum): the default guard can't see Bearer tokens.
-    $user  = $request->user() ?? $request->user('sanctum');
-    $prefs = null;
-
-    if ($user) {
-        $prefs = \App\Models\UserPreference::where('user_id', $user->id)->first();
-    }
-
-    // Only products backed by a live sponsorship (not ended, even if the scheduled
-    // ads:complete-ended hasn't flipped the flags yet).
-    $query = Product::available()
-        ->where('is_sponsored', true)
-        ->whereHas('sponsorships', fn($q) => $q->legacyLive())
-        ->with([
-            'category:id,name,name_fr,name_ar,slug',
-            'primaryImage',
-            'seller:id,name',
-            'sponsorships' => fn($q) => $q->legacyLive()
-                ->select('id', 'product_id', 'ai_ad_copy', 'ai_tags', 'boost_score', 'end_at',
-                         'target_gender', 'target_wilaya_ids', 'target_category_ids',
-                         'target_price_min', 'target_price_max'),
-        ])
-        ->orderByDesc('sponsored_priority')
-        ->orderByDesc('sponsored_at');
-
-    if ($catSlug) {
-        $query->whereHas('category', fn($q) => $q->where('slug', $catSlug));
-    }
-
-    $allSponsored = $query->take(100)->get();
-
-    $targeted = $allSponsored->filter(
-        fn ($product) => $product->sponsorships->first()?->matchesUser($user, $prefs) ?? false
-    )->values();
-
-    // Too few ads for this viewer: top up with popular organic products (is_sponsored=false,
-    // so the storefront never labels them as ads). Targeting is never relaxed.
-    if ($targeted->count() < $minResults) {
-        // Never backfill a sponsored product the viewer was targeted out of.
-        $excludeIds   = $allSponsored->pluck('id')->toArray();
-        $nonSponsored = Product::available()
-            ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name'])
-            ->when($catSlug, fn($q) => $q->whereHas('category', fn($q2) => $q2->where('slug', $catSlug)))
-            ->whereNotIn('id', $excludeIds)
-            ->orderByDesc('views')
-            ->take($limit - $targeted->count())
-            ->get();
-        $targeted = $targeted->concat($nonSponsored)->values();
-    }
-
-    // ── Batch-load color images once for all products ─────────────────────
-    $productIds = $targeted->take($limit)->pluck('id')->toArray();
-
-    $allColorImages = \App\Models\ProductImage::whereIn('product_id', $productIds)
-        ->whereNotNull('color_option_id')
-        ->select('product_id', 'image_path')
-        ->get()
-        ->groupBy('product_id');
-
-    // Resolve PromotionService once outside the loop
-    $promotionService = app(\App\Services\PromotionService::class);
-
-    // ── Map products ──────────────────────────────────────────────────────
-    $products = $targeted->take($limit)->map(
-        function ($p) use ($allColorImages, $promotionService) {
-
-        $p->primary_image_url = $p->primaryImage
-            ? Storage::url($p->primaryImage->image_path)
+    /**
+     * Kept for storefront sections not yet moved to GET /api/ads: category pages get
+     * category_top ads, everything else home_row. Ads only (no organic backfill);
+     * each carries sponsor_data.token for POST /api/ads/events.
+     */
+    public function publicFeed(Request $request): JsonResponse
+    {
+        $limit      = min(max(1, (int) $request->query('limit', 8)), 20);
+        $categoryId = $request->filled('category_slug')
+            ? \Illuminate\Support\Facades\DB::table('categories')->where('slug', $request->query('category_slug'))->value('id')
             : null;
-        // Only rows that came with a live sponsorship are ads; backfill is organic.
-        $sponsorship      = $p->relationLoaded('sponsorships') ? $p->sponsorships->first() : null;
-        $p->is_sponsored  = $sponsorship !== null;
-        $p->sponsor_data  = $sponsorship;
-        $p->unsetRelation('sponsorships');
 
-        // Variant images
-        $variantImages = [];
-        foreach ($allColorImages->get($p->id, collect()) as $img) {
-            $url = Storage::url($img->image_path);
-            if (!in_array($url, $variantImages, true)) {
-                $variantImages[] = $url;
-            }
-        }
-        $p->variant_images = $variantImages;
+        $req = AdRequest::fromHttp($request, $categoryId ? 'category_top' : 'home_row', [
+            'limit'             => $limit,
+            'contextCategoryId' => $categoryId ? (int) $categoryId : null,
+        ]);
 
-        // Promotion data + effective price
-        $promoData          = $promotionService->getEffectivePrice($p);
-        $p->effective_price = $promoData['effective_price'];
-        $p->original_price  = $promoData['original_price'];   // lowest 30-day price when discounted
-        $p->discount_amount = $promoData['discount_amount'];
-        $p->promotion       = $promoData['promotion'];
+        return response()->json(['success' => true, 'data' => app(AdServer::class)->serve($req)['ads']]);
+    }
 
-        return $p;
-    });
-
-    return response()->json(['success' => true, 'data' => $products]);
-}
     // =========================================================================
-    // POST /api/sponsorships/{id}/impression
+    // POST /api/sponsorships/{id}/impression|click  — deprecated
     // =========================================================================
 
+    /**
+     * Unsigned ids can't be trusted for billing or stats; the storefront now reports
+     * events with ad tokens (POST /api/ads/events). Accepted and ignored until every
+     * caller has moved.
+     */
     public function recordImpression(int $id): JsonResponse
     {
-        Sponsorship::where('id', $id)->where('status', 'active')->increment('impressions');
-        return response()->json(['success' => true]);
+        return response()->json(['success' => true, 'deprecated' => 'POST /api/ads/events'], 202);
     }
-
-    // =========================================================================
-    // POST /api/sponsorships/{id}/click
-    // =========================================================================
 
     public function recordClick(int $id): JsonResponse
     {
-        Sponsorship::where('id', $id)->where('status', 'active')->increment('clicks');
-        return response()->json(['success' => true]);
+        return response()->json(['success' => true, 'deprecated' => 'POST /api/ads/events'], 202);
     }
 
     // =========================================================================

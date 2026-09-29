@@ -38,12 +38,8 @@ use Illuminate\Support\Facades\DB;
  *     +8   featured
  *     +5   low stock urgency (1–5 units)
  *
- *   SponsorshipBonus     (10–70)  ← SECONDARY after preference
- *     Added as-is from sponsored_priority (10=green, 30=red, 70=black)
- *     ONLY applied when product.is_sponsored = true
- *
- * This means a perfectly-matched non-sponsored product (score ≈ 125)
- * beats an irrelevant black-tier sponsored product (score ≈ 70).
+ * Sponsoring doesn't change organic ranking: paid placements are served
+ * separately (App\Services\Ads\AdServer) and always labelled.
  */
 class ProductScoringService
 {
@@ -135,8 +131,7 @@ class ProductScoringService
         return $this->userInterestScore($product, $prefs)
              + $this->activityScore($product, $activityWeights)
              + $this->sellerPriorityScore($product, $sellerPlanMap)
-             + $this->productBoostScore($product, $trendingThreshold, $ratingMap)
-             + $this->sponsorshipBonus($product);
+             + $this->productBoostScore($product, $trendingThreshold, $ratingMap);
     }
 
     // ── Score components ───────────────────────────────────────────────────
@@ -256,21 +251,6 @@ class ProductScoringService
         }
 
         return $score;
-    }
-
-    /**
-     * SponsorshipBonus — adds sponsored_priority when the product is sponsored.
-     *
-     * This is ADDITIVE on top of preference score, never replacing it.
-     * A sponsored product with zero preference match gets only this bonus.
-     * A non-sponsored product with strong preference match beats it.
-     */
-    private function sponsorshipBonus($product): int
-    {
-        if ($product->is_sponsored) {
-            return (int) ($product->sponsored_priority ?? 0);
-        }
-        return 0;
     }
 
     // ── Attribute matching ─────────────────────────────────────────────────
@@ -431,7 +411,6 @@ class ProductScoringService
             'activity'        => $this->activityScore($product, $activityWeights),
             'seller_priority' => $this->sellerPriorityScore($product, $sellerPlanMap),
             'product_boost'   => $this->productBoostScore($product, $trendingThreshold, $ratingMap),
-            'sponsorship'     => $this->sponsorshipBonus($product),
             'total'           => $this->computeScore(
                 $product, $prefs, $activityWeights,
                 $sellerPlanMap, $trendingThreshold, $ratingMap
