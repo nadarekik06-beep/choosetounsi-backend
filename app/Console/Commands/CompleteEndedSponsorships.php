@@ -2,21 +2,22 @@
 
 namespace App\Console\Commands;
 
-use App\Models\Sponsorship;
+use App\Services\Ads\SponsorshipService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Ends sponsorships whose end date has passed and syncs the products' sponsor
- * flags. Scheduled every 5 minutes (app/Console/Kernel.php) — read paths never
- * write; they filter with Sponsorship::live() in the meantime.
+ * Completes open campaigns whose end date has passed (seller gets the results
+ * summary) and syncs the products' sponsor flags. Scheduled every 5 minutes
+ * (app/Console/Kernel.php) — read paths never write; they filter with
+ * Sponsorship::live() / legacyLive() in the meantime.
  *
  *   php artisan ads:complete-ended      (alias: sponsorships:expire)
  */
 class CompleteEndedSponsorships extends Command
 {
     protected $signature   = 'ads:complete-ended';
-    protected $description = 'End overdue sponsorships and sync product sponsored flags';
+    protected $description = 'Complete campaigns whose end date has passed';
 
     public function __construct()
     {
@@ -24,13 +25,13 @@ class CompleteEndedSponsorships extends Command
         $this->setAliases(['sponsorships:expire']);
     }
 
-    public function handle(): int
+    public function handle(SponsorshipService $campaigns): int
     {
         try {
-            $count = Sponsorship::expireOverdue();
-            $this->info("Ended {$count} sponsorship(s).");
+            $count = $campaigns->completeEnded();
+            $this->info("Completed {$count} campaign(s).");
             if ($count > 0) {
-                Log::info("[ads:complete-ended] Ended {$count} sponsorship(s).");
+                Log::info("[ads:complete-ended] Completed {$count} campaign(s).");
             }
         } catch (\Throwable $e) {
             $this->error('Failed: ' . $e->getMessage());

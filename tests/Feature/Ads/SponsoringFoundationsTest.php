@@ -47,6 +47,7 @@ class SponsoringFoundationsTest extends TestCase
         DB::table('products')->where('id', $p->id)->update(['is_sponsored' => true, 'sponsored_priority' => 30, 'sponsored_at' => now()]);
         return Sponsorship::create(array_merge([
             'seller_id' => $p->seller_id, 'product_id' => $p->id, 'plan_type' => 'red', 'boost_score' => 30,
+            'pricing_model' => Sponsorship::PRICING_LEGACY,
             'status' => 'active', 'start_at' => now()->subDay(), 'end_at' => now()->addWeek(),
         ], $attrs));
     }
@@ -169,7 +170,7 @@ class SponsoringFoundationsTest extends TestCase
         $this->assertSame('active', $ended->fresh()->status, 'a GET must not change sponsorship rows');
 
         $this->artisan('ads:complete-ended')->assertExitCode(0);
-        $this->assertSame('expired', $ended->fresh()->status);
+        $this->assertSame('completed', $ended->fresh()->status);
         $this->assertFalse((bool) $product->fresh()->is_sponsored);
 
         $this->artisan('sponsorships:expire')->assertExitCode(0);   // old name still works

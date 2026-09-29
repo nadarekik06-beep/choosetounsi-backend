@@ -437,8 +437,8 @@ class HomeFeedBuilder
             $prefs = $userId ? UserPreference::where('user_id', $userId)->first() : null;
 
             return Product::whereIn('id', $candidates)
-                // live(): ended rows drop out even before ads:complete-ended flips them
-                ->with(['sponsorships' => fn ($q) => $q->live()])
+                // legacyLive(): ended rows drop out even before ads:complete-ended flips them
+                ->with(['sponsorships' => fn ($q) => $q->legacyLive()])
                 ->orderByDesc('sponsored_priority')->orderByDesc('sponsored_at')
                 ->get(['id', 'sponsored_priority', 'sponsored_at'])
                 ->filter(fn ($p) => ($s = $p->sponsorships->first()) && $s->matchesUser($user, $prefs))

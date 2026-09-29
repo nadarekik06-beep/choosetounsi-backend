@@ -120,49 +120,20 @@ class PlanDowngradeService
     // ── Sponsorships ────────────────────────────────────────────────────────
 
     /**
-     * Pause active sponsorships beyond $keep (0 = pause all). Paused, never
-     * deleted — resumeSponsorships() brings them back.
+     * Pause active campaigns beyond the $keep most recent (0 = pause all). Paused
+     * (status paused, reason plan_downgrade), never deleted — resumeSponsorships()
+     * brings them back.
      */
     public function pauseSponsorships(int $sellerId, ?int $keep = 0): int
     {
-        $query = DB::table('sponsorships')->where('seller_id', $sellerId)->where('status', 'active');
-
-        if ($keep) {
-            $keepIds = (clone $query)->orderByDesc('created_at')->limit($keep)->pluck('id');
-            $query->whereNotIn('id', $keepIds);
-        }
-
-        $productIds = (clone $query)->pluck('product_id');
-        $paused = $query->update([
-            'status'        => 'expired',       // closest status to "paused" in the schema
-            'paused_reason' => 'plan_downgrade',
-            'paused_at'     => now(),
-            'updated_at'    => now(),
-        ]);
-
-        if ($paused > 0) {
-            DB::table('products')->whereIn('id', $productIds)
-                ->update(['is_sponsored' => false, 'sponsored_priority' => 0, 'updated_at' => now()]);
-        }
-
+        $paused = app(\App\Services\Ads\SponsorshipService::class)->pauseForPlan($sellerId, (int) $keep);
         Log::info("[PlanDowngradeService] Paused {$paused} sponsorships for user #{$sellerId}");
         return $paused;
     }
 
     public function resumeSponsorships(int $sellerId): int
     {
-        $query = DB::table('sponsorships')
-            ->where('seller_id', $sellerId)
-            ->where('paused_reason', 'plan_downgrade')
-            ->where(fn($q) => $q->whereNull('end_at')->orWhere('end_at', '>', now()));
-
-        $productIds = (clone $query)->pluck('product_id');
-        $n = $query->update(['status' => 'active', 'paused_reason' => null, 'paused_at' => null, 'updated_at' => now()]);
-
-        if ($n > 0) {
-            DB::table('products')->whereIn('id', $productIds)->update(['is_sponsored' => true, 'updated_at' => now()]);
-        }
-        return $n;
+        return app(\App\Services\Ads\SponsorshipService::class)->resumeForPlan($sellerId);
     }
 
     // ── Promotions ──────────────────────────────────────────────────────────

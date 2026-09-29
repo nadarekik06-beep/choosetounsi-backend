@@ -18,6 +18,7 @@ return [
 
         // ── Budget & bidding ─────────────────────────────────────────────
         'min_daily_budget'         => 3.000,
+        'min_top_up'               => 10.000,
         'min_cpc'                  => 0.200,
         'category_min_cpc'         => [],      // { "<category_id>": 0.350, ... }
         'suggested_cpc_window_days' => 14,     // median winning CPC over this window
@@ -81,13 +82,27 @@ return [
         'wallet_low_days'           => 3,      // wallet < N days of budget
         'low_performance_after_days' => 3,
         'optimizer_min_clicks'      => 30,
+
+        // ── Forecast (used until the category has campaign history) ──────
+        'forecast_reach_share'      => 0.30,   // share of category viewers an ad can reach per day
+        'forecast_default_cvr'      => 0.020,  // orders per click when the category has no data
     ],
 
-    // Deployment settings (not admin-tunable).
+    // Deployment settings (not admin-tunable). Every ad date (daily budgets, roll-ups,
+    // credit expiry, stats) is a day in this timezone — see App\Services\Ads\AdClock.
     'timezone'            => env('ADS_TIMEZONE', 'Africa/Tunis'),
     'token_ttl_hours'     => 24,
     'email_token_ttl_days' => 7,
     'eligible_cache_seconds' => 60,
     'settings_cache_seconds' => 300,
-    'ai_copy_model'       => env('ADS_AI_COPY_MODEL', env('GROQ_MODEL', 'llama-3.1-8b-instant')),
+
+    // Wallet top-up gateways. sandbox pays instantly without money (local development
+    // only); manual = D17/bank transfer confirmed by an admin; konnect/flouci are
+    // hosted-page stubs until their integration is written.
+    'gateways' => [
+        'sandbox' => (bool) env('ADS_SANDBOX_TOP_UP', env('APP_ENV') === 'local'),
+        'manual'  => (bool) env('ADS_MANUAL_TOP_UP', true),
+        'konnect' => false,
+        'flouci'  => false,
+    ],
 ];

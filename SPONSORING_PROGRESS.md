@@ -9,11 +9,157 @@ Branch `feature/smart-sponsoring` in all four repos. Source of truth for the sta
 | admin-panel | `feature/finance-order-drawer` @ `a3d8c6a` | your uncommitted finance-drawer work was committed there first as **"WIP: finance order drawer"**, so nothing was lost; this branch includes it |
 | ai-service | `feature/smart-homepage` @ `65625f2` | the regenerated FAISS indexes were committed first ("Update search indexes"); the repo had no git identity, so I set `user.name`/`user.email` locally to match the backend repo |
 
-Phase 0 changes are **not committed yet** (waiting for your go).
+One commit per repo per phase:
+
+| Phase | backend | storefront | ai-service | admin-panel |
+|---|---|---|---|---|
+| 0 | `39f82e7` | `45c27b0` | `d675b67` | — |
+| 1 | see `git log` ("Sponsoring phase 1") | — (untouched) | — | — |
 
 ---
 
-## Phase 0 — Foundations & fixes ✅ (waiting for "go")
+## Phase 1 — Data model, wallet, campaigns ✅ (waiting for "go")
+
+### What changed
+
+**Schema** (9 migrations, `2026_09_30_000001…09`; all reversible, tested up → down → up)
+
+| Migration | Content |
+|---|---|
+| `extend_sponsorships_for_campaigns` | `status` and `paused_reason` enums widened with raw `ALTER … MODIFY`. New columns: `pricing_model` (`legacy_daily`/`cpc`), `goal`, `daily_budget`, `total_budget`, `max_cpc`, `spent_total`, `spent_today`, `spent_today_date`, `placements`, `readiness_score`, `rejection_reason`, `ended_at`, `attributed_orders`, `attributed_revenue`. Stored generated column `open_product_id` + UNIQUE `uq_sponsorships_open_product`, so the database itself allows only one draft/active/paused campaign per product. Data step: existing rows become `legacy_daily` with `max_cpc = ads.min_cpc`; old "expired + plan_downgrade" rows become `paused`; duplicate open rows are cancelled; orphan sponsor flags are reset. |
+| `drop_sponsored_until_from_products` | Dead column removed. |
+| `create_ad_wallets_table` | `balance` (paid) + `credit_balance` (free plan credit) + `credit_expires_at`. |
+| `create_ad_wallet_transactions_table` | Ledger rows: `amount` (signed total) and `credit_amount` (signed part on credit), with `balance_after` / `credit_after` snapshots. UNIQUE `(sponsorship_id, type, rollup_date)` gives one `click_charge` row per campaign per Tunis day. |
+| `create_ad_top_ups_table` | Top-up intents: `pending → paid / failed / cancelled` exactly once, UNIQUE `(gateway, reference)`, linked to their single wallet transaction. |
+| `create_sponsorship_events_table` | Impression/click/conversion rows (written from Phase 2). **`restrictOnDelete`** on `sponsorship_id`. |
+| `create_sponsorship_daily_stats_table` | Campaign × day × placement roll-up. |
+| `create_order_ad_attributions_table` | Order line → click. **`restrictOnDelete`** on `sponsorship_id`. |
+| `add_marketing_consent_to_users_table` | `marketing_emails_opt_in` (default false), `marketing_opt_in_at`, `unsubscribe_token` (unique, backfilled, auto-generated on user creation, hidden from JSON), `last_marketing_email_at`. |
+
+**Services** (`app/Services/Ads/`)
+- `AdClock`: every ad *date* uses Africa/Tunis (daily budgets, roll-ups, credit expiry, end dates, stats). It also converts instants back to the app timezone before saving, because Eloquent doesn't.
+- `AdWalletService`: the only writer of wallets.
+  - Every change runs in a transaction with the wallet row `lockForUpdate` and writes one ledger row.
+  - Clicks spend **credit first, then balance**, and never overdraw (throws `InsufficientAdFunds` → HTTP 402).
+  - Expired credit is swept with a `credit_expiry` row.
+  - Monthly credit is granted once per seller per period.
+  - Refunds split back into paid balance and credit (credit that has since expired is dropped, never turned into cash).
+  - `refundCampaignCharges()` is safe to repeat.
+  - `adminAdjust()` can't take either pot below zero.
+  - `settleTopUp()` is idempotent: only `pending → paid|failed`, one wallet transaction per top-up.
+- `AdPricing`:
+  - `floorCpc()` (category override or global minimum).
+  - `suggestedCpc()`: the median billable click cost in the category over 14 days, falling back to floor × 1.5.
+  - `tierDiscount()`, `monthlyCredit()`.
+- `ReadinessService` scores 0–100 and returns machine codes (listed 20, stock 20, images 20, description 15, price 15, rating 10).
+  - **Blockers:** `not_listed`, `out_of_stock`, `no_image`, `price_far_above_similar` (price above 2× the median of similar products).
+  - **Tips:** `low_stock`, `add_images`, `improve_description` (action `ai_description`), `price_above_similar`, `low_rating`.
+  - **Stock = total stock across active variants** when the product has variants, otherwise the product's own stock.
+  - Similar products come from `SimilarProductsFinder`, with subcategory and then category medians as fallbacks.
+- `AdForecastService` returns daily impression, click, order and spend ranges.
+  - It uses category campaign history when available, otherwise category traffic from `user_interactions` × `forecast_reach_share`.
+  - CTR comes from the placement priors; CVR from category purchases per view, else `forecast_default_cvr`.
+  - Clicks are capped by what the budget can pay for, at the expected CPC after the tier discount.
+- `SponsorshipService` is the only writer of campaigns: `create`, `update`, `pause`, `resume`, `cancel`, `complete`, `reject`, `completeEnded`, `pauseForPlan`, `resumeForPlan`, `createLegacy`, `summary`.
+  - **Create rules:**
+    - Plan feature check.
+    - Readiness must pass.
+    - `max_cpc` ≥ the category floor; it defaults to the suggested CPC.
+    - `daily_budget` ≥ `ads.min_daily_budget`, and must cover at least one click at `max_cpc`.
+    - `total_budget` ≥ `daily_budget`.
+    - The wallet must hold at least one day of budget.
+    - The product row is locked, one open campaign per product is re-checked, and the plan's `max_sponsored_products` counts **open** campaigns.
+    - The campaign goes **active immediately**, starts with template ad copy, and queues the AI copy job.
+  - **Resume:**
+    - A campaign paused by an admin can only be resumed by an admin (`PAUSED_BY_ADMIN`).
+    - A plan-paused campaign comes back only with the plan (`PAUSED_BY_PLAN`).
+    - `BUDGET_EXHAUSTED_TODAY` blocks resuming until tomorrow.
+    - The product must be listed and in stock, and the wallet must hold one day of budget.
+    - If the end date passed while paused, the campaign completes instead.
+  - **Reject:** ends the campaign and refunds every charge it caused.
+- `Payments/`:
+  - `AdTopUpGateway` interface.
+  - `SandboxGateway`: pays instantly, **enabled only when `APP_ENV=local`** or `ADS_SANDBOX_TOP_UP=true`.
+  - `ManualAdminGateway`: D17 or bank transfer reference, pending until an admin confirms.
+  - `KonnectGateway` / `FlouciGateway`: documented TODO stubs (hosted page + server-side verification).
+  - `AdTopUpGateways` registry.
+  - No card data is ever collected.
+
+**Jobs, commands, notifications**
+- `GenerateAdCopy` (queued, after commit): reuses the shared `GroqClient` (its model setting and free-tier budget). The synchronous Groq call in the legacy controller is gone.
+- `ads:grant-monthly-credit`: scheduled on the 1st at 00:10 Africa/Tunis; Red 10 DT / Black 40 DT by default (`--seller=` for one seller). `ads:complete-ended` now **completes** campaigns and sends the summary.
+- `Notifications/Ads/CampaignActivated`, `CampaignPaused`, `CampaignEnded` (completed, admin-cancelled, rejected with the refund amount): database + mail, queued after commit, in the seller's locale, in the existing `NotificationBell` shape.
+  - **No notification** for manual pauses or `budget_exhausted_today`.
+  - Texts are in `resources/lang/{en,fr,ar}/ads.php` (`errors.*`, `notif.*`).
+- `PlanDowngradeService` pauses (`paused` + `plan_downgrade`) and resumes through the service. Resume works properly now: the old code lost the priority and used `expired`. `PlanGate::canSponsor()` counts open campaigns only.
+
+**HTTP**
+
+| Method | URL | Notes |
+|---|---|---|
+| GET | `/api/ads/config` | public: popup rules, `max_ads`, `reserved_slots`, placements; no prices |
+| POST | `/api/ads/top-ups/callback/{gateway}` | public, throttled; idempotent settle |
+| GET | `/api/seller/ads/config` | `?product_id=` → tier, tier discount, monthly credit, min daily budget, min top-up, floor/suggested CPC, readiness threshold, gateways, wallet |
+| POST | `/api/seller/ads/readiness` | `{product_id}` |
+| POST | `/api/seller/ads/forecast` | `{product_id, daily_budget, max_cpc?, days?}` |
+| GET | `/api/seller/ads/suggestions` | AutoPromotionService; `already_sponsored` = has an open campaign |
+| GET | `/api/seller/ads/wallet` · `/wallet/transactions` · `/wallet/top-ups` | |
+| POST | `/api/seller/ads/wallet/top-up` | `{amount ≥ ads.min_top_up (10.000), gateway, reference (manual)}`; a duplicate transfer reference returns 409 |
+| GET·POST | `/api/seller/ads/campaigns` | |
+| GET·PATCH | `/api/seller/ads/campaigns/{id}` | show adds `summary` (spend / paid / credit / clicks / orders / revenue / ROAS / cost per order), 30-day `daily`, per-`placements` |
+| POST | `/api/seller/ads/campaigns/{id}/pause\|resume\|cancel` | cancel returns `refunded: 0` |
+| POST | `/api/admin/ads/wallets/{seller}/adjust` | `{balance_delta?, credit_delta?, note, credit_expires_at?}` |
+| GET | `/api/admin/ads/top-ups` | `?status=pending` |
+| POST | `/api/admin/ads/top-ups/{id}/confirm\|reject` | idempotent, `already_settled` flag |
+
+- All seller routes use the existing `seller.feature:sponsorships` middleware (JSON 401/403).
+- Business errors come back as `{success:false, message (localized), code}` plus details: `NOT_READY` with the readiness report, `WALLET_TOO_LOW` (402) with required/available, `CPC_BELOW_MIN` with min, and so on.
+- **Legacy endpoints kept for the current promote page** (until Phase 4):
+  - `POST /api/seller/sponsorships/sponsor` now creates `legacy_daily` rows through `SponsorshipService::createLegacy()`: same one-open-campaign guard, ghost fields removed (**bug 1 fixed**), queued AI copy. It still returns `DUPLICATE_ACTIVE`.
+  - Seller and admin cancel go through the service.
+
+**Interim rule until the Phase 2 ad server:**
+- The old read paths (`/api/sponsored-products`, the home-feed sponsored row, card `sponsor_data`) and the `products.is_sponsored` flags only consider **live `legacy_daily` rows** (`Sponsorship::legacyLive()`).
+- New CPC campaigns are active in the dashboard but **not shown to buyers yet**, so they get no unbilled exposure.
+- Test and demo helpers (`HomeFeedTest`, `DemoCatalog`) now create `legacy_daily` rows.
+
+### Checks run
+- Migrations: up → rollback of all 9 → up again on `choosetounsi_fresh` ✅.
+- `migrate:fresh --seed` on `choosetounsi_fresh` ✅ (seeded users get unsubscribe tokens).
+- Dev DB `choosetounsi`:
+  - Backed up first: `C:\xampp\backups\choosetounsi_before_phase1_20260929_1730.sql`.
+  - `php artisan migrate` applied the 9 migrations.
+  - Data step log: `paused_restored: 0, duplicate_open_cancelled: 0, orphan_flags_reset: []`.
+  - Result: 6 active `legacy_daily` rows, all under the uniqueness guard; all 30 users have a token.
+- `php artisan test`: **203 passed, 13 failed**. The 13 are the same pre-existing Breeze `Auth\*` / `ExampleTest` failures.
+- New tests: 31 tests / 192 assertions, all passing.
+  - `AdWalletTest` (7): credit-first charge + daily roll-up, never overdraws, expired credit swept, monthly credit once per period, refund split, admin adjust floor, top-up settles once.
+  - `SponsorshipServiceTest` (11): create, readiness blocker, CPC/budget/wallet floors, one open campaign per product (service **and** DB unique), plan limit, pause/resume/cancel, silent vs notified pauses, admin-only resume, reject refunds, scheduled completion, plan downgrade/upgrade, update rules.
+  - `ReadinessTest` (5): full score, variant stock, tips, price blockers/tips, unlisted.
+  - `SellerAdsApiTest` (8): auth, sandbox top-up + min + disabled gateway, manual top-up → admin confirm once, duplicate reference, campaign lifecycle over HTTP, wizard tools, legacy endpoint guard, admin adjust, monthly credit command by tier.
+- Storefront `npm run build` ✅ (no storefront changes in this phase; the legacy promote page still builds against the kept endpoints).
+- Dev API smoke test (guest GETs): `/api/ads/config` 200, `/api/sponsored-products` returns the 6 legacy ads, `/api/home/feed` 200, `/api/seller/ads/wallet` 401 without a token.
+- `schedule:list` shows `ads:complete-ended` (every 5 min), `ads:grant-monthly-credit` (1st of month, 00:10 Tunis), `search:rebuild` (02:30 Tunis).
+
+### How to test manually (seller token in Postman/curl; `php artisan queue:work` running for notifications and AI copy)
+1. `POST /api/seller/ads/wallet/top-up {"amount": 50, "gateway": "sandbox"}` → `status: paid`; `GET /api/seller/ads/wallet` shows `available: 50`.
+2. `POST /api/seller/ads/readiness {"product_id": <a product with 1 photo>}` → `add_images` tip and a lower score. A product with 0 stock across its active variants → `out_of_stock` blocker.
+3. `GET /api/seller/ads/config?product_id=…` → floor and suggested CPC. `POST /api/seller/ads/forecast {"product_id": …, "daily_budget": 5, "days": 7}` → ranges.
+4. `POST /api/seller/ads/campaigns {"product_id": …, "daily_budget": 5, "max_cpc": 0.3}` → 201, `active`. The notification shows in the bell and by e-mail, and the ad copy is filled by the queued job a few seconds later. The same product again → 422 `ALREADY_OPEN`.
+5. `POST …/campaigns/{id}/pause` → `resume` → `cancel` (`refunded: 0`).
+6. Manual top-up: `{"amount": 30, "gateway": "manual", "reference": "D17-123"}` → pending. As admin, `POST /api/admin/ads/top-ups/{id}/confirm` → paid. Confirming again → `already_settled: true`, and the wallet is credited only once.
+7. Admin: `POST /api/admin/ads/wallets/{seller}/adjust {"credit_delta": 10, "note": "gift"}`.
+8. `php artisan ads:grant-monthly-credit --seller=<red seller id>` → 10 DT credit expiring at the end of the month (Tunis). Running it again does nothing.
+
+### Open questions / notes
+1. **No `ads.*` rows seeded into `platform_settings`**, as in the approved plan: defaults come from `config/ads.php`, and admins only store what they change.
+2. **Refunds:** nothing is reserved per CPC campaign, so cancel and complete refund 0. Reject refunds every charge (credit part back to credit, paid part to balance).
+3. **Queue worker needed in development** for campaign notifications and AI copy (`php artisan queue:work`). Windows Task Scheduler and production supervisor docs come in Phase 5.
+4. **Legacy prepaid flow still live** until Phase 4 (the old promote page, with its sandbox "payment"). It now respects the one-open-campaign rule and no longer drops fields.
+
+---
+
+## Phase 0 — Foundations & fixes ✅
 
 ### What changed
 

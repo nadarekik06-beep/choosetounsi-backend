@@ -5,7 +5,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Sponsorship;
-use App\Models\Product;
+use App\Services\Ads\SponsorshipService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -80,19 +80,18 @@ class AdminSponsorshipController extends Controller
 
     // ── Admin cancel ─────────────────────────────────────────────────────────
 
-    public function cancel(int $id): JsonResponse
+    public function cancel(Request $request, int $id): JsonResponse
     {
         $s = Sponsorship::findOrFail($id);
 
-        if ($s->status !== 'active') {
+        if (!$s->isOpen()) {
             return response()->json([
                 'success' => false,
                 'message' => 'Sponsorship is already ' . $s->status,
             ], 422);
         }
 
-        $s->update(['status' => 'cancelled']);
-        Sponsorship::syncProductFlags($s->product_id);
+        app(SponsorshipService::class)->cancel($s, $request->user());
 
         return response()->json(['success' => true, 'message' => 'Sponsorship cancelled by admin.']);
     }

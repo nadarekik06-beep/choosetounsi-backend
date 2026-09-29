@@ -284,6 +284,7 @@ class DemoCatalog extends Command
                 DB::table('products')->where('id', $pid)->update(['is_sponsored' => true, 'sponsored_priority' => [70, 30, 30, 10, 10][$i], 'sponsored_at' => now()->subDays($i)]);
                 DB::table('sponsorships')->insert([
                     'seller_id' => $p['seller'], 'product_id' => $pid, 'plan_type' => ['black', 'red', 'red', 'free', 'free'][$i],
+                    'pricing_model' => 'legacy_daily',
                     'status' => 'active', 'start_at' => now()->subDays(2), 'end_at' => now()->addDays(14),
                     'created_at' => now(), 'updated_at' => now(),
                 ]);

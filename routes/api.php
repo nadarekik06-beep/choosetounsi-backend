@@ -127,6 +127,10 @@ Route::post(
 )->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class]);
 
 Route::get('/sponsored-products', [SponsorshipController::class, 'publicFeed']);
+// ── Ads (public) ──────────────────────────────────────────────────────────
+Route::get('/ads/config', [\App\Http\Controllers\Api\AdsConfigController::class, 'show']);
+Route::post('/ads/top-ups/callback/{gateway}', [\App\Http\Controllers\Api\Seller\Ads\AdWalletController::class, 'callback'])
+    ->middleware('throttle:60,1')->name('ads.top-ups.callback');
 Route::post('/sponsorships/{id}/impression', [SponsorshipController::class, 'recordImpression']);
 Route::post('/sponsorships/{id}/click', [SponsorshipController::class, 'recordClick']);
 Route::get('/packs',        [PublicPackController::class, 'index']);
@@ -298,7 +302,28 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/complaints/{id}/approve', [SellerComplaintController::class, 'approve']);
         Route::patch('/complaints/{id}/reject',  [SellerComplaintController::class, 'reject']);
 
-        // ── Sponsorships ──────────────────────────────────────────────────
+        // ── Ads: wallet, CPC campaigns, wizard tools ──────────────────────
+        Route::prefix('ads')->middleware('seller.feature:sponsorships')->group(function () {
+            Route::get('/config',                  [\App\Http\Controllers\Api\Seller\Ads\AdToolsController::class, 'config']);
+            Route::post('/readiness',              [\App\Http\Controllers\Api\Seller\Ads\AdToolsController::class, 'readiness']);
+            Route::post('/forecast',               [\App\Http\Controllers\Api\Seller\Ads\AdToolsController::class, 'forecast']);
+            Route::get('/suggestions',             [\App\Http\Controllers\Api\Seller\Ads\AdToolsController::class, 'suggestions']);
+
+            Route::get('/wallet',                  [\App\Http\Controllers\Api\Seller\Ads\AdWalletController::class, 'show']);
+            Route::get('/wallet/transactions',     [\App\Http\Controllers\Api\Seller\Ads\AdWalletController::class, 'transactions']);
+            Route::get('/wallet/top-ups',          [\App\Http\Controllers\Api\Seller\Ads\AdWalletController::class, 'topUps']);
+            Route::post('/wallet/top-up',          [\App\Http\Controllers\Api\Seller\Ads\AdWalletController::class, 'topUp'])->middleware('throttle:20,1');
+
+            Route::get('/campaigns',               [\App\Http\Controllers\Api\Seller\Ads\AdCampaignController::class, 'index']);
+            Route::post('/campaigns',              [\App\Http\Controllers\Api\Seller\Ads\AdCampaignController::class, 'store']);
+            Route::get('/campaigns/{id}',          [\App\Http\Controllers\Api\Seller\Ads\AdCampaignController::class, 'show'])->whereNumber('id');
+            Route::patch('/campaigns/{id}',        [\App\Http\Controllers\Api\Seller\Ads\AdCampaignController::class, 'update'])->whereNumber('id');
+            Route::post('/campaigns/{id}/pause',   [\App\Http\Controllers\Api\Seller\Ads\AdCampaignController::class, 'pause'])->whereNumber('id');
+            Route::post('/campaigns/{id}/resume',  [\App\Http\Controllers\Api\Seller\Ads\AdCampaignController::class, 'resume'])->whereNumber('id');
+            Route::post('/campaigns/{id}/cancel',  [\App\Http\Controllers\Api\Seller\Ads\AdCampaignController::class, 'cancel'])->whereNumber('id');
+        });
+
+        // ── Sponsorships (legacy prepaid-per-day flow, until the new dashboard) ─
         Route::prefix('sponsorships')->group(function () {
             Route::get('/quota',          [SponsorshipController::class, 'quota']);
             Route::get('/',               [SponsorshipController::class, 'index']);
@@ -522,6 +547,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/vip-requests/{id}/complete',  [AdminVipRequestController::class, 'complete']);
         Route::patch('/vip-requests/{id}/reject',    [AdminVipRequestController::class, 'reject']);
         Route::patch('/vip-requests/{id}/note',      [AdminVipRequestController::class, 'addNote']);
+
+        // ── Ads: wallets & top-ups ────────────────────────────────────────
+        Route::post('/ads/wallets/{seller}/adjust',  [\App\Http\Controllers\Admin\AdminAdWalletController::class, 'adjust'])->whereNumber('seller');
+        Route::get('/ads/top-ups',                   [\App\Http\Controllers\Admin\AdminAdWalletController::class, 'topUps']);
+        Route::post('/ads/top-ups/{id}/confirm',     [\App\Http\Controllers\Admin\AdminAdWalletController::class, 'confirm'])->whereNumber('id');
+        Route::post('/ads/top-ups/{id}/reject',      [\App\Http\Controllers\Admin\AdminAdWalletController::class, 'reject'])->whereNumber('id');
 
         // ── Sponsorships ──────────────────────────────────────────────────
         Route::get('/sponsorships/stats',         [AdminSponsorshipController::class, 'stats']);

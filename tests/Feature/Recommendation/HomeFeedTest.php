@@ -92,7 +92,7 @@ class HomeFeedTest extends TestCase
     {
         DB::table('products')->where('id', $p->id)->update(['is_sponsored' => true, 'sponsored_priority' => $priority, 'sponsored_at' => now()]);
         DB::table('sponsorships')->insert([
-            'seller_id' => $p->seller_id, 'product_id' => $p->id, 'status' => 'active',
+            'seller_id' => $p->seller_id, 'product_id' => $p->id, 'status' => 'active', 'pricing_model' => 'legacy_daily',
             'start_at' => now()->subDay(), 'end_at' => now()->addWeek(), 'created_at' => now(), 'updated_at' => now(),
         ]);
     }

@@ -41,6 +41,10 @@ class Kernel extends ConsoleKernel
         // ── Sponsoring ──────────────────────────────────────────────────────
         // Ends overdue sponsorships (read paths only filter, they never write).
         $schedule->command('ads:complete-ended')->everyFiveMinutes()->withoutOverlapping();
+        // Plan tiers' free ad credit for the month (previous credit expires).
+        $schedule->command('ads:grant-monthly-credit')
+            ->monthlyOn(1, '00:10')->timezone(config('ads.timezone'))
+            ->withoutOverlapping();
 
         // ── AI search / similarity index ────────────────────────────────────
         // Nightly rebuild so products added during the day get embeddings.

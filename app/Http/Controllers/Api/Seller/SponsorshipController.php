@@ -5,13 +5,14 @@ namespace App\Http\Controllers\Api\Seller;
 
 use App\Http\Controllers\Controller;
 use App\Models\Product;
+use App\Exceptions\Ads\AdRuleViolation;
+use App\Jobs\GenerateAdCopy;
 use App\Models\Sponsorship;
+use App\Services\Ads\SponsorshipService;
 use App\Services\PlanGate;
 use App\Support\Wilayas;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Carbon\Carbon;
@@ -46,9 +47,6 @@ use Carbon\Carbon;
  */
 class SponsorshipController extends Controller
 {
-    private string $groqUrl   = 'https://api.groq.com/openai/v1/chat/completions';
-    private string $groqModel = 'llama3-8b-8192';
-
     // Boost surcharge constants
     const BOOST_FREE_THRESHOLD      = 5;       // priority ≤ 5 costs nothing extra
     const BOOST_SURCHARGE_PER_POINT = 5.000;   // DT per point above threshold
@@ -109,8 +107,8 @@ class SponsorshipController extends Controller
             ], 422);
         }
 
-        // Duplicate active sponsorship guard
-        if (Sponsorship::hasActiveForProduct($product->id)) {
+        // One open campaign per product (re-checked under a lock in SponsorshipService)
+        if (Sponsorship::hasOpenForProduct($product->id)) {
             return response()->json([
                 'success' => false,
                 'message' => __('seller.sponsor.already'),
@@ -200,45 +198,35 @@ class SponsorshipController extends Controller
         $startAt = Carbon::now();
         $endAt   = $startAt->copy()->addDays($durationDays);
 
-        // ── AI: tags + ad copy ────────────────────────────────────────────────
-        ['tags' => $aiTags, 'ad_copy' => $aiAdCopy] = $this->generateAiContent($product);
+        // ── Persist (template copy now, AI copy via the queued GenerateAdCopy job) ──
+        ['tags' => $aiTags, 'ad_copy' => $aiAdCopy] = GenerateAdCopy::fallback($product->loadMissing('category'));
 
-        // ── Persist ───────────────────────────────────────────────────────────
-        $sponsorship = null;
-        DB::transaction(function () use (
-            $sellerId, $product, $plan, $finalPriority,
-            $startAt, $endAt, $amountCharged, $boostExtraCost,
-            $wasPaid, $usedFreeQuota, $paymentStatus,
-            $aiTags, $aiAdCopy, $request, &$sponsorship
-        ) {
-            $sponsorship = Sponsorship::create([
-                'seller_id'        => $sellerId,
-                'product_id'       => $product->id,
-                'plan_type'        => $plan ?? 'free',
-                'boost_score'      => $finalPriority,
-                'status'           => 'active',
-                'start_at'         => $startAt,
-                'end_at'           => $endAt,
-                'amount_charged'   => $amountCharged,
-                'boost_extra_cost' => $boostExtraCost,
-                'was_paid'         => $wasPaid,
-                'payment_status'   => $paymentStatus,
-                'payment_method'   => $wasPaid ? 'card' : 'free_quota',
-                'used_free_quota'  => $usedFreeQuota,
-                'ai_tags'          => $aiTags,
-                'ai_ad_copy'       => $aiAdCopy,
-                'impressions'      => 0,
-                'clicks'           => 0,
-                'conversions'      => 0,
-                'target_gender'        => $request->input('target_gender'),
-                'target_wilaya_ids'    => Wilayas::normalizeMany($request->input('target_wilaya_ids')) ?: null,
-                'target_category_ids'  => $request->input('target_category_ids'),
-                'target_price_min'     => $request->input('target_price_min'),
-                'target_price_max'     => $request->input('target_price_max'),
+        try {
+            $sponsorship = app(SponsorshipService::class)->createLegacy([
+                'seller_id'           => $sellerId,
+                'product_id'          => $product->id,
+                'plan_type'           => $plan ?? 'free',
+                'boost_score'         => $finalPriority,
+                'start_at'            => $startAt,
+                'end_at'              => $endAt,
+                'amount_charged'      => $amountCharged,
+                'was_paid'            => $wasPaid,
+                'used_free_quota'     => $usedFreeQuota,
+                'ai_tags'             => $aiTags,
+                'ai_ad_copy'          => $aiAdCopy,
+                'target_gender'       => $request->input('target_gender'),
+                'target_wilaya_ids'   => Wilayas::normalizeMany($request->input('target_wilaya_ids')) ?: null,
+                'target_category_ids' => $request->input('target_category_ids'),
+                'target_price_min'    => $request->input('target_price_min'),
+                'target_price_max'    => $request->input('target_price_max'),
             ]);
-
-            Sponsorship::syncProductFlags($product->id);
-        });
+        } catch (AdRuleViolation $e) {
+            return response()->json([
+                'success' => false,
+                'message' => __('seller.sponsor.already'),
+                'code'    => 'DUPLICATE_ACTIVE',
+            ], 422);
+        }
 
         return response()->json([
             'success' => true,
@@ -267,7 +255,7 @@ class SponsorshipController extends Controller
     {
         $sponsorship = Sponsorship::where('id', $id)
             ->where('seller_id', $request->user()->id)
-            ->where('status', 'active')
+            ->open()
             ->first();
 
         if (!$sponsorship) {
@@ -278,8 +266,7 @@ class SponsorshipController extends Controller
             ], 404);
         }
 
-        $sponsorship->update(['status' => 'cancelled']);
-        Sponsorship::syncProductFlags($sponsorship->product_id);
+        app(SponsorshipService::class)->cancel($sponsorship);
 
         return response()->json([
             'success' => true,
@@ -376,12 +363,12 @@ public function publicFeed(Request $request): JsonResponse
     // ads:complete-ended hasn't flipped the flags yet).
     $query = Product::available()
         ->where('is_sponsored', true)
-        ->whereHas('sponsorships', fn($q) => $q->live())
+        ->whereHas('sponsorships', fn($q) => $q->legacyLive())
         ->with([
             'category:id,name,name_fr,name_ar,slug',
             'primaryImage',
             'seller:id,name',
-            'sponsorships' => fn($q) => $q->live()
+            'sponsorships' => fn($q) => $q->legacyLive()
                 ->select('id', 'product_id', 'ai_ad_copy', 'ai_tags', 'boost_score', 'end_at',
                          'target_gender', 'target_wilaya_ids', 'target_category_ids',
                          'target_price_min', 'target_price_max'),
@@ -544,80 +531,5 @@ public function publicFeed(Request $request): JsonResponse
                 'instructions' => 'Provide a valid payment_token obtained from the payment gateway.',
             ],
         ], 402);
-    }
-
-    // =========================================================================
-    // PRIVATE — AI content generation
-    // =========================================================================
-
-    private function generateAiContent(Product $product): array
-    {
-        $key = config('services.groq.key', env('GROQ_API_KEY', ''));
-        if (empty($key)) {
-            return $this->fallbackContent($product);
-        }
-
-        try {
-            $title    = $product->name;
-            $desc     = $product->description ?? $product->short_description ?? '';
-            $category = $product->category?->name ?? '';
-
-            $response = Http::withHeaders([
-                'Authorization' => "Bearer {$key}",
-                'Content-Type'  => 'application/json',
-            ])->timeout(12)->post($this->groqUrl, [
-                'model'      => $this->groqModel,
-                'messages'   => [
-                    [
-                        'role'    => 'system',
-                        'content' => 'You are an e-commerce content expert for ChooseTounsi Tunisian marketplace. Always respond with ONLY valid JSON. No markdown, no preamble.',
-                    ],
-                    [
-                        'role'    => 'user',
-                        'content' => "Generate promotional content for this product:\n- Title: {$title}\n- Category: {$category}\n- Description: {$desc}\n\nRespond ONLY with:\n{\"tags\":[\"kw1\",\"kw2\",\"kw3\",\"kw4\",\"kw5\",\"kw6\"],\"ad_copy\":\"<punchy promo sentence max 120 chars, French preferred>\"}",
-                    ],
-                ],
-                'max_tokens'  => 200,
-                'temperature' => 0.4,
-            ]);
-
-            if (!$response->successful()) {
-                return $this->fallbackContent($product);
-            }
-
-            $raw   = $response->json('choices.0.message.content', '');
-            $clean = preg_replace('/```json|```/i', '', $raw);
-            $s     = strpos($clean, '{');
-            $e     = strrpos($clean, '}');
-            if ($s === false || $e === false) return $this->fallbackContent($product);
-
-            $parsed = json_decode(substr($clean, $s, $e - $s + 1), true);
-            if (!is_array($parsed)) return $this->fallbackContent($product);
-
-            return [
-                'tags'    => array_values(array_slice(array_filter((array) ($parsed['tags'] ?? [])), 0, 8)),
-                'ad_copy' => trim((string) ($parsed['ad_copy'] ?? '')),
-            ];
-        } catch (\Throwable $e) {
-            Log::warning('[SponsorshipController::generateAiContent] ' . $e->getMessage());
-            return $this->fallbackContent($product);
-        }
-    }
-
-    private function fallbackContent(Product $product): array
-    {
-        $words = preg_split('/[\s\-_]+/', strtolower(
-            "{$product->name} {$product->category?->name}"
-        ));
-        $tags = array_values(array_unique(
-            array_filter($words, fn($w) => strlen($w) >= 3)
-        ));
-        $tags = array_slice($tags, 0, 6);
-        $tags = array_merge($tags, ['tunisien', 'choosetounsi']);
-
-        return [
-            'tags'    => $tags,
-            'ad_copy' => "Découvrez {$product->name} sur ChooseTounsi — qualité tunisienne garantie !",
-        ];
     }
 }

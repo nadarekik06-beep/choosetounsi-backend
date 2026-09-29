@@ -108,11 +108,9 @@ class PlanGate
         $plan = $this->planFor($sellerId);
         if ($plan->max_sponsored_products === null) return null;
 
-        // Both sponsorship mechanisms count: paid/quota sponsorships and the
-        // Black Pepper hub's direct "sponsored" flag on products.
-        $active = DB::table('sponsorships')->where('seller_id', $sellerId)->where('status', 'active')->pluck('product_id')
-            ->merge(DB::table('products')->where('seller_id', $sellerId)->where('is_sponsored', true)->whereNull('deleted_at')->pluck('id'))
-            ->unique()->count();
+        // The limit is on open campaigns (draft, active or paused).
+        $active = DB::table('sponsorships')->where('seller_id', $sellerId)
+            ->whereIn('status', \App\Models\Sponsorship::OPEN_STATUSES)->count();
         if ($active >= $plan->max_sponsored_products) {
             return $this->deny(
                 __('seller.gate.sponsor_limit', ['plan' => $plan->name, 'limit' => $plan->max_sponsored_products]),

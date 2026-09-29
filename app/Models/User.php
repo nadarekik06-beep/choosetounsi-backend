@@ -34,6 +34,7 @@ class User extends Authenticatable implements HasLocalePreference
     protected $hidden = [
         'password',
         'remember_token',
+        'unsubscribe_token',
     ];
 
     protected $casts = [
@@ -41,7 +42,18 @@ class User extends Authenticatable implements HasLocalePreference
         'is_active'           => 'boolean',
         'is_approved'         => 'boolean',
         'onboarding_completed' => 'boolean',
+        'marketing_emails_opt_in' => 'boolean',
+        'marketing_opt_in_at'     => 'datetime',
+        'last_marketing_email_at' => 'datetime',
     ];
+
+    protected static function booted(): void
+    {
+        // One-click unsubscribe links in marketing e-mails need a per-user secret.
+        static::creating(function (User $user) {
+            $user->unsubscribe_token ??= \Illuminate\Support\Str::random(40);
+        });
+    }
 
     // ── Relationships ──────────────────────────────────────────────────────
 
