@@ -14,5 +14,6 @@ class VerifyCsrfToken extends Middleware
     protected $except = [
         'api/*',           // Exclude ALL api routes from CSRF
         'sanctum/csrf-cookie',
+        'unsubscribe/*',   // one-click List-Unsubscribe-Post from mail clients (token-protected)
     ];
 }

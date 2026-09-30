@@ -101,6 +101,8 @@ class AuthController extends Controller
             'email'    => 'required|email|unique:users,email',
             'password' => 'required|min:8|confirmed',
             'role'     => 'sometimes|in:client,seller',
+            // Marketing e-mails are opt-in: the signup checkbox is unchecked by default.
+            'marketing_opt_in' => 'sometimes|boolean',
         ]);
 
         $email = strtolower(trim($validated['email']));
@@ -125,6 +127,7 @@ class AuthController extends Controller
                 'email'        => $email,
                 'password'     => Hash::make($validated['password']),
                 'role'         => $role,
+                'marketing_opt_in' => (bool) ($validated['marketing_opt_in'] ?? false),
                 'code'         => $code,
                 'expires_at'   => now()->addMinutes(self::PENDING_TTL_MINUTES)->toISOString(),
                 'attempts'     => 0,
@@ -256,6 +259,9 @@ class AuthController extends Controller
             'is_approved'      => $pending['role'] === 'client',
             'email_verified_at' => now(),
         ]);
+        if (!empty($pending['marketing_opt_in'])) {
+            app(\App\Services\Ads\MarketingConsent::class)->set($user, true);
+        }
 
         // ── Clean up cache — pending registration no longer needed ─────────
         Cache::forget($cacheKey);

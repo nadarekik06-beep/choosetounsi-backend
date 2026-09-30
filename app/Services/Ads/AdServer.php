@@ -126,6 +126,7 @@ class AdServer
         $purchased = array_flip($this->profiles->purchasedExclusions($req->userId));
         // Never advertise what's already on the page: listed items, the viewed product, the cart.
         $exclude   = array_flip(array_merge($req->excludeProductIds, $req->cartProductIds, array_filter([$req->contextProductId])));
+        $only      = $req->onlyProductIds !== null ? array_flip($req->onlyProductIds) : null;
         $actor     = $req->actorKey();
         $cap       = $this->settings->int('frequency_cap_per_day');
         $today     = AdClock::today();
@@ -134,7 +135,8 @@ class AdServer
         foreach ($eligible['campaigns'] as $row) {
             if (($row->placements && !in_array($req->placement, $row->placements, true))
                 || ($req->userId && $row->seller_id === $req->userId)
-                || isset($purchased[$row->product_id]) || isset($exclude[$row->product_id])) {
+                || isset($purchased[$row->product_id]) || isset($exclude[$row->product_id])
+                || ($only !== null && !isset($only[$row->product_id]))) {
                 continue;
             }
             if ($actor && $cap > 0 && (int) Cache::get("ads:freq:{$actor}:{$row->id}:{$today}", 0) >= $cap) {

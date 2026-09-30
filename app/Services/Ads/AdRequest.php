@@ -23,6 +23,8 @@ class AdRequest
         public bool $explain = false,
         /** longer-lived tokens (e-mail links) */
         public bool $forEmail = false,
+        /** @var int[]|null restrict the auction to these products (e.g. deals in one subcategory) */
+        public ?array $onlyProductIds = null,
     ) {}
 
     /** Viewer from an HTTP request: Bearer user (sanctum) and/or the storefront's X-Session-Id. */

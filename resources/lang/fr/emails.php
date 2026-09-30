@@ -61,6 +61,33 @@ return [
         'sell_body' => 'Rejoignez les centaines de vendeurs locaux qui développent déjà leur activité sur ChooseTounsi. Inscrivez-vous en quelques minutes, vendez en quelques jours.',
         'become_seller' => 'Devenir vendeur →',
     ],
+    'marketing' => [
+        'sponsored'      => 'Sponsorisé',
+        'view'           => 'Voir le produit',
+        'see_more'       => 'Voir plus sur ChooseTounsi',
+        'back_to_shop'   => 'Retour sur ChooseTounsi',
+        'why'            => 'Vous recevez cet e-mail car vous avez accepté de recevoir des recommandations de ChooseTounsi. Vous pouvez vous désabonner à tout moment en un clic.',
+        'digest' => [
+            'subject'   => 'Sélectionné pour vous cette semaine',
+            'preheader' => 'De nouvelles trouvailles qui correspondent à vos goûts sur ChooseTounsi.',
+            'title'     => 'Sélectionné pour vous, :name',
+            'intro'     => 'Quelques produits qui devraient vous plaire, d’après ce que vous avez consulté.',
+        ],
+        'interest' => [
+            'subject'   => 'Vous cherchez toujours : :category ?',
+            'preheader' => 'Il y a une offre sur un article que vous regardiez.',
+            'title'     => 'Vous cherchez toujours : :category ?',
+            'intro'     => 'Vous avez consulté :category plusieurs fois cette semaine. Voici une offre qui pourrait vous plaire.',
+            'deal'      => 'Offre',
+            'free_delivery' => 'Livraison gratuite',
+        ],
+        'unsubscribed' => [
+            'title'          => 'Vous êtes désabonné(e)',
+            'body'           => 'Vous ne recevrez plus d’e-mails de recommandations de ChooseTounsi. Vous pouvez les réactiver dans les paramètres de votre compte.',
+            'not_found'      => 'Lien non valide',
+            'not_found_body' => 'Ce lien de désabonnement n’est plus valide. Vous pouvez gérer vos e-mails dans les paramètres de votre compte.',
+        ],
+    ],
     'layout' => [
         'tagline_top' => 'MADE IN TUNISIA 🤝',
         'shop' => 'BOUTIQUE',

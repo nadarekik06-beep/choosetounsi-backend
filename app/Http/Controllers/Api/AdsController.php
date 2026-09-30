@@ -98,6 +98,30 @@ class AdsController extends Controller
         return response()->json(['success' => true, 'ad' => $served['ads'][0] ?? null, 'request_id' => $served['request_id']]);
     }
 
+    /**
+     * GET /api/ads/r/{token} — ad links in e-mails: count the click (billed like any
+     * other, with the same dedupe/bot rules), then send the shopper to the product.
+     */
+    public function redirect(Request $request, string $token, AdEventService $events)
+    {
+        $payload = app(\App\Services\Ads\AdTokenService::class)->verify($token);
+        $front   = rtrim((string) config('app.frontend_url'), '/');
+        if (!$payload) {
+            return redirect()->away($front);
+        }
+
+        $viewer = AdRequest::fromHttp($request, 'email_digest');
+        $events->record($token, SponsorshipEvent::CLICK, [
+            'user_id'    => $viewer->userId,
+            'session_id' => $viewer->sessionId,
+            'ip'         => $request->ip(),
+            'user_agent' => $request->userAgent(),
+        ]);
+
+        $slug = DB::table('products')->where('id', (int) ($payload['p'] ?? 0))->value('slug');
+        return redirect()->away($slug ? "{$front}/products/{$slug}?utm_source=email&utm_medium=ad" : $front);
+    }
+
     /** Cart items: explicit ids (guest cart lives in the browser) or the signed-in buyer's cart. */
     private function cartProductIds(Request $request, AdRequest $req, array $data): array
     {

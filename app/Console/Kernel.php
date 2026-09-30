@@ -49,6 +49,13 @@ class Kernel extends ConsoleKernel
         $schedule->command('ads:optimize')->dailyAt('04:00')->timezone(config('ads.timezone'))->withoutOverlapping()->runInBackground();
         // Daily stats and campaign counters rebuilt from events.
         $schedule->command('ads:reconcile-stats')->dailyAt('03:45')->timezone(config('ads.timezone'))->withoutOverlapping()->runInBackground();
+        // Marketing e-mails (opt-in only; queued — needs php artisan queue:work).
+        $digest = $this->digestSchedule();
+        $schedule->command('ads:send-digest')
+            ->weeklyOn($digest['day'], $digest['time'])->timezone(config('ads.timezone'))
+            ->withoutOverlapping()->runInBackground();
+        $schedule->command('ads:send-interest-emails')->dailyAt('11:00')->timezone(config('ads.timezone'))
+            ->withoutOverlapping()->runInBackground();
         // Plan tiers' free ad credit for the month (previous credit expires).
         $schedule->command('ads:grant-monthly-credit')
             ->monthlyOn(1, '00:10')->timezone(config('ads.timezone'))
@@ -82,6 +89,20 @@ class Kernel extends ConsoleKernel
             ->onFailure(function () {
                 \Illuminate\Support\Facades\Log::error('[Kernel] black:daily-notify FAILED.');
             });
+    }
+
+    /** Digest weekday / time from the admin ad settings (defaults if the DB isn't reachable). */
+    private function digestSchedule(): array
+    {
+        $days = ['sunday' => 0, 'monday' => 1, 'tuesday' => 2, 'wednesday' => 3, 'thursday' => 4, 'friday' => 5, 'saturday' => 6];
+        try {
+            $settings = app(\App\Services\Ads\AdSettings::class);
+            $day  = $days[strtolower((string) $settings->get('digest_day'))] ?? 5;
+            $time = preg_match('/^\d{2}:\d{2}$/', (string) $settings->get('digest_time')) ? (string) $settings->get('digest_time') : '18:00';
+        } catch (\Throwable $e) {
+            [$day, $time] = [5, '18:00'];
+        }
+        return ['day' => $day, 'time' => $time];
     }
 
     /**

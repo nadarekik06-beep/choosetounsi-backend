@@ -61,6 +61,33 @@ return [
         'sell_body' => 'Join hundreds of local sellers already growing their business on ChooseTounsi. Apply in minutes, start selling in days.',
         'become_seller' => 'Become a Seller →',
     ],
+    'marketing' => [
+        'sponsored'      => 'Sponsored',
+        'view'           => 'View product',
+        'see_more'       => 'See more on ChooseTounsi',
+        'back_to_shop'   => 'Back to ChooseTounsi',
+        'why'            => 'You receive this e-mail because you agreed to get recommendations from ChooseTounsi. You can unsubscribe at any time in one click.',
+        'digest' => [
+            'subject'   => 'Picked for you this week',
+            'preheader' => 'New finds that match what you like on ChooseTounsi.',
+            'title'     => 'Picked for you, :name',
+            'intro'     => 'A few products we think you will like, based on what you have been browsing.',
+        ],
+        'interest' => [
+            'subject'   => 'Still looking for :category?',
+            'preheader' => 'There is a deal on something you were looking at.',
+            'title'     => 'Still looking for :category?',
+            'intro'     => 'You looked at :category a few times this week. Here is a deal you might like.',
+            'deal'      => 'Deal',
+            'free_delivery' => 'Free delivery',
+        ],
+        'unsubscribed' => [
+            'title'          => 'You are unsubscribed',
+            'body'           => 'You will not receive recommendation e-mails from ChooseTounsi anymore. You can turn them back on in your account settings.',
+            'not_found'      => 'Link not valid',
+            'not_found_body' => 'This unsubscribe link is not valid anymore. You can manage e-mails in your account settings.',
+        ],
+    ],
     'layout' => [
         'tagline_top' => 'MADE IN TUNISIA 🤝',
         'shop' => 'SHOP',

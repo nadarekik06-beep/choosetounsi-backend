@@ -17,9 +17,17 @@ One commit per repo per phase:
 | 1 | `481955e` | — | — | — |
 | 2 | `3e940e5` | — | — | — |
 | 3 | `bb79b21` | `94fec32` | — | — |
-| 4 | see `git log` ("Sponsoring phase 4") | see `git log` | — | — |
+| 4 | `6b17c91` | `3277e00` | — | — |
+| 5 | see `git log` ("Sponsoring phase 5") | see `git log` | — | — |
 
 ---
+
+## Phase 5 — Emails & consent ✅
+- **Consent**: opt-in only (`users.marketing_emails_opt_in`, default off); signup checkbox (unchecked) → `marketing_opt_in` kept through e-mail verification; `GET|POST /api/account/marketing-consent`; toggle on the profile page and a footer newsletter box for signed-in shoppers; one-click `GET|POST /unsubscribe/{token}` (localized page, CSRF-exempt POST for RFC 8058) + `List-Unsubscribe` / `List-Unsubscribe-Post` headers on every marketing e-mail.
+- **E-mails** (`AdEmailService`, queued mailables `PickedForYouMail` / `StillLookingMail`, Blade templates on the existing layout, EN/FR/AR with RTL): weekly digest = organic recommendations + up to 2 labelled sponsored products (`email_digest`); "Still looking for X?" when a subcategory was viewed ≥ 3× in 7 days without buying and a sponsored product there is discounted or ships free; max 1 marketing e-mail per user per 7 days; impression at send, ad links via `GET /api/ads/r/{token}` (billed only on click, same dedupe/bot rules).
+- **Scheduler**: `ads:send-digest` on `ads.digest_day` at `ads.digest_time` (Friday 18:00 Tunis), `ads:send-interest-emails` daily 11:00; both honour `digest_enabled` / `interest_emails_enabled`. Run guide for Windows Task Scheduler and cron/supervisor: `docs/QUEUE_AND_SCHEDULER.md`.
+- Checks: backend 224 passed (new `MarketingEmailTest`), storefront build ✅. No real e-mail was sent from here (Brevo SMTP untouched).
+- **Test manually**: tick the box at signup (or in the profile) → `php artisan ads:send-digest --user=<id>` and `php artisan queue:work --once` → e-mail with "Sponsorisé" items; click an ad → redirected to the product and billed once; click "Unsubscribe" in the footer of the e-mail → opted out.
 
 ## Phase 4 — Seller dashboard ✅
 - **Seller UI** (`app/seller/promote/`): Ads home (wallet + free credit, 30-day KPIs + spend/sales chart, campaigns list with status chips, "worth boosting" suggestions), 6-step wizard `/new` (product → readiness with fix-it links → budget/duration/max CPC with plan discount → automatic or manual audience → placements → forecast + launch; no upfront charge), campaign page `/campaigns/[id]` (chart, per-placement table, ROAS, cost per order, tips, edit budget/CPC/end date, pause/resume/stop), wallet page `/wallet` (gateway top-up, pending top-ups, ledger). Old card form, `lib/sponsorshipApi.ts` and client-side prices removed; `/analytics` redirects. i18n `seller.ads` EN/FR/AR (old `seller.promote*` strings removed).

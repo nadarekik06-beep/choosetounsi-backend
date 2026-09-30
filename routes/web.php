@@ -9,6 +9,10 @@ use Illuminate\Support\Facades\Auth;
 |--------------------------------------------------------------------------
 */
 
+// One-click unsubscribe from marketing e-mails (link + RFC 8058 POST)
+Route::match(['get', 'post'], '/unsubscribe/{token}', [\App\Http\Controllers\MarketingConsentController::class, 'unsubscribe'])
+    ->where('token', '[A-Za-z0-9]{40}')->middleware('throttle:30,1')->name('marketing.unsubscribe');
+
 // Public homepage
 Route::get('/', function () {
     return view('welcome');

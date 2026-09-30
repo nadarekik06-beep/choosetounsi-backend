@@ -132,6 +132,8 @@ Route::get('/ads/config', [\App\Http\Controllers\Api\AdsConfigController::class,
 Route::get('/ads', [\App\Http\Controllers\Api\AdsController::class, 'index'])->middleware('throttle:120,1');
 Route::get('/ads/popup', [\App\Http\Controllers\Api\AdsController::class, 'popup'])->middleware('throttle:30,1');
 Route::post('/ads/events', [\App\Http\Controllers\Api\AdsController::class, 'events'])->middleware('throttle:120,1');
+Route::get('/ads/r/{token}', [\App\Http\Controllers\Api\AdsController::class, 'redirect'])
+    ->where('token', '[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+')->middleware('throttle:60,1')->name('ads.redirect');
 Route::post('/ads/top-ups/callback/{gateway}', [\App\Http\Controllers\Api\Seller\Ads\AdWalletController::class, 'callback'])
     ->middleware('throttle:60,1')->name('ads.top-ups.callback');
 Route::post('/sponsorships/{id}/impression', [SponsorshipController::class, 'recordImpression']);
@@ -153,6 +155,10 @@ Route::post('/auth/reset-password',  [AuthController::class, 'resetPassword']);
 */
 
 Route::middleware('auth:sanctum')->group(function () {
+
+    // Marketing e-mail consent (opt-in)
+    Route::get('/account/marketing-consent',  [\App\Http\Controllers\MarketingConsentController::class, 'show']);
+    Route::post('/account/marketing-consent', [\App\Http\Controllers\MarketingConsentController::class, 'update']);
 
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::post('/track/merge', [\App\Http\Controllers\Api\TrackingController::class, 'merge']);

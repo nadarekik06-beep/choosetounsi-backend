@@ -25,6 +25,8 @@ class User extends Authenticatable implements HasLocalePreference
         'avatar',
         'onboarding_completed',
         'locale',
+        'marketing_emails_opt_in',
+        'marketing_opt_in_at',
         // email_verified_at is set only at creation time via verifyEmail()
         // or immediately for Google OAuth users. It is intentionally NOT
         // in fillable for bulk-assignment safety.
