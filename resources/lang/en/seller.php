@@ -103,15 +103,6 @@ return [
         'expiry_format' => 'Expiry must be in MM/YY format.',
         'cvv_format' => 'CVV must be 3 or 4 digits.',
     ],
-    'sponsor' => [
-        'not_owned' => 'Product not found or you do not own it.',
-        'only_approved' => 'Only approved and active products can be sponsored.',
-        'already' => 'This product is already sponsored. Cancel the current sponsorship first.',
-        'created' => 'Product sponsored successfully.',
-        'active_not_found' => 'Active sponsorship not found.',
-        'cancelled' => 'Sponsorship cancelled. Product is no longer boosted.',
-        'payment_required' => 'Payment is required to activate this sponsorship.',
-    ],
     'black' => [
         'goal_updated' => 'Goal updated successfully.',
         'vip_limit' => 'You already have 3 pending requests of this type. Please wait for them to be processed.',

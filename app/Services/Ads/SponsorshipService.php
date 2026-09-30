@@ -118,31 +118,6 @@ class SponsorshipService
         return $campaign;
     }
 
-    /**
-     * Rows of the legacy prepaid-per-day flow (the old promote page), kept until the
-     * new dashboard replaces it: same one-open-campaign-per-product guard, queued AI copy.
-     */
-    public function createLegacy(array $attrs): Sponsorship
-    {
-        $campaign = $this->withOpenGuard(fn () => DB::transaction(function () use ($attrs) {
-            Product::whereKey($attrs['product_id'])->lockForUpdate()->first();
-            if (Sponsorship::hasOpenForProduct($attrs['product_id'])) {
-                throw AdRuleViolation::make('already_open');
-            }
-            $campaign = Sponsorship::create($attrs + [
-                'pricing_model' => Sponsorship::PRICING_LEGACY,
-                'status'        => Sponsorship::STATUS_ACTIVE,
-                'max_cpc'       => $this->settings->float('min_cpc'),
-            ]);
-            Sponsorship::syncProductFlags($attrs['product_id']);
-            AdServer::flushEligible();
-            return $campaign;
-        }));
-
-        GenerateAdCopy::dispatch($campaign->id);
-        return $campaign;
-    }
-
     // ── Edit ────────────────────────────────────────────────────────────────
 
     /** Budget, bid, end date, total budget, placements and targeting of an open campaign. */

@@ -55,6 +55,7 @@ return [
             'title' => 'Your ad wallet is running low',
             'body'  => ':available DT left — about :days day(s) of your campaigns’ budgets. Top up to keep them running.',
         ],
+        'low_performance' => ['title' => 'Your campaign needs attention: :name', 'low_ctr' => 'Few shoppers click on it — try better photos, a clearer title or a sharper price.', 'low_roas' => 'It costs more than it earns so far — lower your max CPC, improve the listing or add a discount.'],
         'view' => 'View campaign',
         'roas' => 'Return on ad spend: :roas×',
     ],

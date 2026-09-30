@@ -311,6 +311,7 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/readiness',              [\App\Http\Controllers\Api\Seller\Ads\AdToolsController::class, 'readiness']);
             Route::post('/forecast',               [\App\Http\Controllers\Api\Seller\Ads\AdToolsController::class, 'forecast']);
             Route::get('/suggestions',             [\App\Http\Controllers\Api\Seller\Ads\AdToolsController::class, 'suggestions']);
+            Route::get('/overview',                [\App\Http\Controllers\Api\Seller\Ads\AdCampaignController::class, 'overview']);
 
             Route::get('/wallet',                  [\App\Http\Controllers\Api\Seller\Ads\AdWalletController::class, 'show']);
             Route::get('/wallet/transactions',     [\App\Http\Controllers\Api\Seller\Ads\AdWalletController::class, 'transactions']);
@@ -324,14 +325,6 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::post('/campaigns/{id}/pause',   [\App\Http\Controllers\Api\Seller\Ads\AdCampaignController::class, 'pause'])->whereNumber('id');
             Route::post('/campaigns/{id}/resume',  [\App\Http\Controllers\Api\Seller\Ads\AdCampaignController::class, 'resume'])->whereNumber('id');
             Route::post('/campaigns/{id}/cancel',  [\App\Http\Controllers\Api\Seller\Ads\AdCampaignController::class, 'cancel'])->whereNumber('id');
-        });
-
-        // ── Sponsorships (legacy prepaid-per-day flow, until the new dashboard) ─
-        Route::prefix('sponsorships')->group(function () {
-            Route::get('/quota',          [SponsorshipController::class, 'quota']);
-            Route::get('/',               [SponsorshipController::class, 'index']);
-            Route::post('/sponsor',       [SponsorshipController::class, 'sponsor']);
-            Route::delete('/{id}/cancel', [SponsorshipController::class, 'cancel']);
         });
 
         // ── Packs ─────────────────────────────────────────────────────────

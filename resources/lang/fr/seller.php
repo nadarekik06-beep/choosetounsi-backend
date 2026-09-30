@@ -103,15 +103,6 @@ return [
         'expiry_format' => 'La date d\'expiration doit être au format MM/AA.',
         'cvv_format' => 'Le CVV doit comporter 3 ou 4 chiffres.',
     ],
-    'sponsor' => [
-        'not_owned' => 'Produit introuvable ou ne vous appartenant pas.',
-        'only_approved' => 'Seuls les produits validés et actifs peuvent être sponsorisés.',
-        'already' => 'Ce produit est déjà sponsorisé. Arrêtez d\'abord le sponsoring en cours.',
-        'created' => 'Produit sponsorisé avec succès.',
-        'active_not_found' => 'Sponsoring actif introuvable.',
-        'cancelled' => 'Sponsoring arrêté. Le produit n\'est plus mis en avant.',
-        'payment_required' => 'Un paiement est nécessaire pour activer ce sponsoring.',
-    ],
     'black' => [
         'goal_updated' => 'Objectif mis à jour.',
         'vip_limit' => 'Vous avez déjà 3 demandes en attente de ce type. Merci d\'attendre leur traitement.',

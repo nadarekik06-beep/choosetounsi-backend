@@ -50,6 +50,8 @@ class AdCampaignResource extends JsonResource
             'end_at'           => $c->end_at?->toIso8601String(),
             'ended_at'         => $c->ended_at?->toIso8601String(),
             'readiness_score'  => $c->readiness_score,
+            'tips'             => $c->optimizer['tips'] ?? [],
+            'tips_checked_at'  => $c->optimizer['checked_at'] ?? null,
             'ad_copy'          => $c->ai_ad_copy,
             'tags'             => $c->ai_tags,
             'stats'            => [

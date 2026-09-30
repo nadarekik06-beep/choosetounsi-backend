@@ -16,9 +16,17 @@ One commit per repo per phase:
 | 0 | `39f82e7` | `45c27b0` | `d675b67` | — |
 | 1 | `481955e` | — | — | — |
 | 2 | `3e940e5` | — | — | — |
-| 3 | see `git log` ("Sponsoring phase 3") | see `git log` | — | — |
+| 3 | `bb79b21` | `94fec32` | — | — |
+| 4 | see `git log` ("Sponsoring phase 4") | see `git log` | — | — |
 
 ---
+
+## Phase 4 — Seller dashboard ✅
+- **Seller UI** (`app/seller/promote/`): Ads home (wallet + free credit, 30-day KPIs + spend/sales chart, campaigns list with status chips, "worth boosting" suggestions), 6-step wizard `/new` (product → readiness with fix-it links → budget/duration/max CPC with plan discount → automatic or manual audience → placements → forecast + launch; no upfront charge), campaign page `/campaigns/[id]` (chart, per-placement table, ROAS, cost per order, tips, edit budget/CPC/end date, pause/resume/stop), wallet page `/wallet` (gateway top-up, pending top-ups, ledger). Old card form, `lib/sponsorshipApi.ts` and client-side prices removed; `/analytics` redirects. i18n `seller.ads` EN/FR/AR (old `seller.promote*` strings removed).
+- **Backend**: `AdOptimizer` + `ads:optimize` (04:00 Tunis) → tips (`no_reach`, `low_ctr`, `low_roas`, `placement_no_orders`, listing fixes) stored in `sponsorships.optimizer`, per-placement weights used by the ad server, `CampaignLowPerformance` notification at most weekly; `GET /api/seller/ads/overview`; campaign detail returns `placement_stats`. Legacy prepaid seller endpoints (`/api/seller/sponsorships/*`), their constants and strings removed.
+- Black hub `SmartPromoteCard` opens the wizard with the product preselected and shows the monthly credit; bell icons for ad notifications.
+- Checks: backend 219 passed (new `AdOptimizerTest`), storefront `npm run build` ✅, migrations fresh + dev (backup `choosetounsi_before_phase4_*.sql`).
+- **Test manually**: `/seller/promote` → New campaign → pick a product (a 1-photo product shows tips/blocked) → launch with the wallet topped up (sandbox on `/seller/promote/wallet`) → campaign page; `php artisan ads:optimize` after a few days of stats shows tips.
 
 ## Phase 3 — Storefront placements + entry popup ✅
 - **New** `lib/adsApi.ts` (ads per placement, batched signed impression/click events, `withAdSlots`), `lib/overlayStore.ts` (one entry overlay at a time), `components/ads/` (`SponsoredCard` with "Sponsored / Sponsorisé / مُموَّل" label + gold ring + ad line + promo price, `useAdImpression` ≥50 % for 1 s, `AdStrip`, `EntryPopup`); i18n namespace `ads` (EN/FR/AR).

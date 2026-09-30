@@ -18,9 +18,10 @@ use Illuminate\Support\Facades\DB;
  * Seller campaigns (CPC). Business rules live in SponsorshipService; this only
  * scopes to the seller's own campaigns and shapes responses.
  *
+ *   GET    /api/seller/ads/overview                ?days=30 — totals + daily series for the ads home
  *   GET    /api/seller/ads/campaigns               ?status=active|paused|…
  *   POST   /api/seller/ads/campaigns
- *   GET    /api/seller/ads/campaigns/{id}          + summary, daily stats, per placement
+ *   GET    /api/seller/ads/campaigns/{id}          + summary, daily (30 days), placement_stats
  *   PATCH  /api/seller/ads/campaigns/{id}          budget, max CPC, end date, placements, targeting
  *   POST   /api/seller/ads/campaigns/{id}/pause|resume|cancel
  */
@@ -42,6 +43,41 @@ class AdCampaignController extends Controller
             'data'    => AdCampaignResource::collection($page->getCollection()),
             'meta'    => ['current_page' => $page->currentPage(), 'last_page' => $page->lastPage(), 'total' => $page->total()],
         ]);
+    }
+
+    public function overview(Request $request): JsonResponse
+    {
+        $days  = min(90, max(1, (int) $request->query('days', 30)));
+        $since = AdClock::now()->subDays($days - 1)->toDateString();
+        $base  = DB::table('sponsorship_daily_stats as d')
+            ->join('sponsorships as s', 's.id', '=', 'd.sponsorship_id')
+            ->where('s.seller_id', $request->user()->id)->where('d.date', '>=', $since);
+
+        $daily = (clone $base)->groupBy('d.date')->orderBy('d.date')
+            ->selectRaw('d.date, SUM(d.impressions) AS impressions, SUM(d.clicks) AS clicks, SUM(d.cost) AS cost, SUM(d.orders) AS orders, SUM(d.revenue) AS revenue')
+            ->get()->map(fn ($r) => [
+                'date' => (string) $r->date, 'impressions' => (int) $r->impressions, 'clicks' => (int) $r->clicks,
+                'cost' => round((float) $r->cost, 3), 'orders' => (int) $r->orders, 'revenue' => round((float) $r->revenue, 3),
+            ]);
+
+        $spend   = round((float) $daily->sum('cost'), 3);
+        $revenue = round((float) $daily->sum('revenue'), 3);
+        $clicks  = (int) $daily->sum('clicks');
+        $imp     = (int) $daily->sum('impressions');
+        $orders  = (int) $daily->sum('orders');
+
+        return response()->json(['success' => true, 'data' => [
+            'days'   => $days,
+            'totals' => [
+                'spend' => $spend, 'impressions' => $imp, 'clicks' => $clicks,
+                'ctr' => $imp > 0 ? round($clicks / $imp, 4) : null,
+                'orders' => $orders, 'revenue' => $revenue,
+                'roas' => $spend > 0 ? round($revenue / $spend, 2) : null,
+                'cost_per_order' => $orders > 0 ? round($spend / $orders, 3) : null,
+            ],
+            'daily'  => $daily,
+            'open_campaigns' => Sponsorship::forSeller($request->user()->id)->open()->count(),
+        ]]);
     }
 
     public function store(StoreAdCampaignRequest $request): JsonResponse
@@ -77,8 +113,8 @@ class AdCampaignController extends Controller
             'success' => true,
             'data'    => (new AdCampaignResource($campaign))->resolve() + [
                 'summary'    => $this->campaigns->summary($campaign),
-                'daily'      => $daily,
-                'placements' => $placements,
+                'daily'           => $daily,
+                'placement_stats' => $placements,
             ],
         ]);
     }

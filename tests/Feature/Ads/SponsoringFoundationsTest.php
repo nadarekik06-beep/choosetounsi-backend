@@ -208,7 +208,7 @@ class SponsoringFoundationsTest extends TestCase
 
     // ── Bug 9: one tier resolution everywhere (custom plans price by tier) ────
 
-    public function test_custom_plan_resolves_to_its_tier_in_quota_and_list(): void
+    public function test_custom_plan_resolves_to_its_tier(): void
     {
         $slug = 'gold-' . Str::lower(Str::random(5));
         DB::table('subscription_plans')->insert([
@@ -221,8 +221,7 @@ class SponsoringFoundationsTest extends TestCase
         $this->assertSame('black', app(PlanGate::class)->tierFor($seller->id));
 
         Sanctum::actingAs($seller);
-        $this->getJson('/api/seller/sponsorships/quota')->assertOk()->assertJsonPath('data.plan', 'black');
-        $this->getJson('/api/seller/sponsorships')->assertOk()->assertJsonPath('meta.plan', 'black');
+        $this->getJson('/api/seller/ads/config')->assertOk()->assertJsonPath('data.tier', 'black');
     }
 
     // ── Bug 4: the Black Pepper direct toggle is gone ────────────────────────

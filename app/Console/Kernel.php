@@ -45,6 +45,8 @@ class Kernel extends ConsoleKernel
         $schedule->command('ads:reset-daily')->dailyAt('00:05')->timezone(config('ads.timezone'))->withoutOverlapping();
         // Campaigns pause / resume with their product's stock and listing.
         $schedule->command('ads:stock-watch')->everyFifteenMinutes()->withoutOverlapping();
+        // Campaign check-up: tips, placement weights, low-performance alerts.
+        $schedule->command('ads:optimize')->dailyAt('04:00')->timezone(config('ads.timezone'))->withoutOverlapping()->runInBackground();
         // Daily stats and campaign counters rebuilt from events.
         $schedule->command('ads:reconcile-stats')->dailyAt('03:45')->timezone(config('ads.timezone'))->withoutOverlapping()->runInBackground();
         // Plan tiers' free ad credit for the month (previous credit expires).

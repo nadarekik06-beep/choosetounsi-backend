@@ -108,7 +108,7 @@ class SellerAdsApiTest extends TestCase
         $this->postJson('/api/seller/ads/campaigns', $this->campaignData($product))->assertStatus(422)->assertJsonPath('code', 'ALREADY_OPEN');
 
         $this->getJson("/api/seller/ads/campaigns/{$id}")->assertOk()
-            ->assertJsonPath('data.summary.spend', 0)->assertJsonStructure(['data' => ['summary', 'daily', 'placements']]);
+            ->assertJsonPath('data.summary.spend', 0)->assertJsonStructure(['data' => ['summary', 'daily', 'placement_stats', 'placements']]);
         $this->patchJson("/api/seller/ads/campaigns/{$id}", ['daily_budget' => 7])->assertOk()->assertJsonPath('data.daily_budget', 7);
         $this->postJson("/api/seller/ads/campaigns/{$id}/pause")->assertOk()->assertJsonPath('data.status', 'paused');
         $this->postJson("/api/seller/ads/campaigns/{$id}/resume")->assertOk()->assertJsonPath('data.status', 'active');
@@ -143,21 +143,11 @@ class SellerAdsApiTest extends TestCase
         $this->getJson('/api/ads/config')->assertOk()->assertJsonPath('data.popup.delay_seconds', 8);
     }
 
-    public function test_legacy_sponsor_endpoint_respects_open_campaigns(): void
+    public function test_legacy_prepaid_endpoints_are_gone(): void
     {
         Sanctum::actingAs($seller = $this->seller());
-        $product = $this->readyProduct($seller);
-        $this->fund($seller, 20);
-        $this->postJson('/api/seller/ads/campaigns', $this->campaignData($product))->assertCreated();
-
-        $this->postJson('/api/seller/sponsorships/sponsor', ['product_id' => $product->id, 'payment_token' => 'tok'])
-            ->assertStatus(422)->assertJsonPath('code', 'DUPLICATE_ACTIVE');
-
-        $fresh = $this->readyProduct($seller);
-        $this->postJson('/api/seller/sponsorships/sponsor', ['product_id' => $fresh->id, 'payment_token' => 'tok'])->assertCreated();
-        $legacy = Sponsorship::where('product_id', $fresh->id)->first();
-        $this->assertSame('legacy_daily', $legacy->pricing_model);
-        $this->assertTrue((bool) $fresh->fresh()->is_sponsored);
+        $this->postJson('/api/seller/sponsorships/sponsor', ['product_id' => $this->readyProduct($seller)->id, 'payment_token' => 'tok'])->assertNotFound();
+        $this->getJson('/api/seller/sponsorships')->assertNotFound();
     }
 
     public function test_admin_adjusts_a_wallet(): void

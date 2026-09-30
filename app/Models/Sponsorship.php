@@ -73,6 +73,7 @@ class Sponsorship extends Model
         'spent_today',
         'spent_today_date',
         'placements',
+        'optimizer',
         'readiness_score',
         'amount_charged',
         'payment_reference',
@@ -102,6 +103,7 @@ class Sponsorship extends Model
         'used_free_quota'      => 'boolean',
         'ai_tags'              => 'array',
         'placements'           => 'array',
+        'optimizer'            => 'array',
         'amount_charged'       => 'decimal:3',
         'daily_budget'         => 'decimal:3',
         'total_budget'         => 'decimal:3',
@@ -119,23 +121,6 @@ class Sponsorship extends Model
         'target_price_min'     => 'decimal:3',
         'target_price_max'     => 'decimal:3',
     ];
-
-    // ── Legacy (pricing_model=legacy_daily) constants — used by the old promote
-    //    page's endpoints until the new seller dashboard replaces them ──────────
-
-    public const BOOST = [
-        'free'  => 10,
-        'red'   => 30,
-        'black' => 70,
-    ];
-
-    public const PRICE = [
-        'free'  => 5.000,
-        'red'   => 2.000,
-        'black' => 0.000,
-    ];
-
-    public const BLACK_FREE_PER_WEEK = 3;
 
     // ── Relationships ─────────────────────────────────────────────────────────
 
@@ -276,22 +261,6 @@ class Sponsorship extends Model
     }
 
     // ── Business logic helpers ────────────────────────────────────────────────
-
-    /** Scoped to Carbon::now()->startOfWeek(), so the quota resets itself each week. */
-    public static function blackFreeUsedThisWeek(int $sellerId): int
-    {
-        return static::where('seller_id', $sellerId)
-            ->where('plan_type', 'black')
-            ->where('used_free_quota', true)
-            ->where('created_at', '>=', Carbon::now()->startOfWeek())
-            ->count();
-    }
-
-    public static function blackFreeRemaining(int $sellerId): int
-    {
-        $used = static::blackFreeUsedThisWeek($sellerId);
-        return max(0, static::BLACK_FREE_PER_WEEK - $used);
-    }
 
     public static function hasOpenForProduct(int $productId): bool
     {

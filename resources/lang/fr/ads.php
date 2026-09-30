@@ -55,6 +55,7 @@ return [
             'title' => 'Votre portefeuille publicitaire est presque vide',
             'body'  => 'Il reste :available DT — environ :days jour(s) de budget de vos campagnes. Rechargez-le pour qu’elles continuent.',
         ],
+        'low_performance' => ['title' => 'Votre campagne a besoin d’attention : :name', 'low_ctr' => 'Peu d’acheteurs cliquent — essayez de meilleures photos, un titre plus clair ou un prix plus attractif.', 'low_roas' => 'Elle coûte plus qu’elle ne rapporte pour l’instant — baissez votre CPC max, améliorez la fiche ou ajoutez une remise.'],
         'view' => 'Voir la campagne',
         'roas' => 'Retour sur dépense publicitaire : :roas×',
     ],

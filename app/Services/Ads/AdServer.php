@@ -167,7 +167,9 @@ class AdServer
                 'id' => $row->id, 'product_id' => $row->product_id, 'seller_id' => $row->seller_id,
                 'pricing_model' => $row->pricing_model, 'tier' => $row->tier, 'category_id' => $row->category_id,
                 'relevance' => round($rel, 4), 'pctr' => round($pctr, 5), 'quality' => round($quality, 3),
-                'bid' => $bid, 'rank' => $bid * $pctr * $rel * $quality, 'ad_copy' => $row->ad_copy,
+                // The optimizer lowers placements where this campaign gets clicks but no orders.
+                'bid' => $bid, 'rank' => $bid * $pctr * $rel * $quality * (float) ($row->weights[$req->placement] ?? 1.0),
+                'ad_copy' => $row->ad_copy,
             ];
         }
 
@@ -241,7 +243,7 @@ class AdServer
                 ->orWhereExists(fn ($v) => $v->select(DB::raw(1))->from('product_variants as v')
                     ->whereColumn('v.product_id', 'p.id')->where('v.is_active', true)->where('v.stock', '>', 0)))
             ->select('s.id', 's.seller_id', 's.product_id', 's.pricing_model', 's.max_cpc', 's.daily_budget', 's.spent_today',
-                's.spent_today_date', 's.total_budget', 's.spent_total', 's.placements', 's.readiness_score', 's.ai_ad_copy',
+                's.spent_today_date', 's.total_budget', 's.spent_total', 's.placements', 's.optimizer', 's.readiness_score', 's.ai_ad_copy',
                 's.target_gender', 's.target_wilaya_ids', 's.target_category_ids', 's.target_price_min', 's.target_price_max',
                 'p.category_id', 'p.subcategory_id', 'p.price')
             ->get();
@@ -281,6 +283,7 @@ class AdServer
                 'pricing_model'  => $r->pricing_model,
                 'max_cpc'        => (float) $r->max_cpc,
                 'placements'     => $r->placements ? json_decode($r->placements, true) : null,
+                'weights'        => (array) (json_decode((string) $r->optimizer, true)['placement_weights'] ?? []),
                 'readiness'      => $r->readiness_score !== null ? (int) $r->readiness_score : null,
                 'ad_copy'        => $r->ai_ad_copy,
                 'tier'           => $tiers[$r->seller_id] ?? 'free',
