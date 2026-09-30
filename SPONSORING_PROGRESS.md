@@ -18,9 +18,33 @@ One commit per repo per phase:
 | 2 | `3e940e5` | — | — | — |
 | 3 | `bb79b21` | `94fec32` | — | — |
 | 4 | `6b17c91` | `3277e00` | — | — |
-| 5 | see `git log` ("Sponsoring phase 5") | see `git log` | — | — |
+| 5 | `d624fc0` | `6f2bc19` | — | — |
+| 6 | see `git log` ("Sponsoring phase 6") | — | — | see `git log` |
 
 ---
+
+## Phase 6 — Admin panel ✅
+- **Admin API** (`AdminAdsController`): `GET /api/admin/ads/overview` (paid revenue vs plan credit, revenue per day, CTR by placement, campaigns by status, top advertisers, fraud flags: IPs with many unbilled clicks, CTR > 3× the placement norm), `GET /api/admin/ads/campaigns[/{id}]` (grouped search), `POST …/{id}/reject|pause|resume`, `GET|PUT /api/admin/ads/settings` (known keys only, shape-validated), `GET /api/admin/ads/wallets[/{seller}]`; `AdRevenue` service; finance overview adds `ad_revenue` + `ad_credit_spent`. Old `AdminSponsorshipController` removed.
+- **Admin UI** (`app/(dashboard)/sponsoring/`): Overview, Campaigns (drawer: details, pause/resume, reject with reason → refund + seller notified), Wallets & top-ups (confirm/reject pending transfers, adjust balance/credit with note, ledger), Settings (every `ads.*` key grouped, only changed keys saved); sidebar entry; "Ad Revenue" card on Finance. Also fixed a pre-existing admin type error (`OrderTrendPoint.processing`) that blocked `npm run build`.
+- Checks: backend 229 passed (new `AdminAdsTest`), admin `npm run build` ✅.
+- **Test manually**: admin → Sponsoring → Settings: change *Min cpc* → Save → seller wizard shows the new minimum; Campaigns → open one → Reject with a reason → the seller's wallet gets the refund and a notification; Wallets → confirm a pending D17 top-up once (second click says already settled).
+
+## End-to-end test script (all phases)
+1. `php artisan migrate`, then keep `php artisan queue:work` running (and `schedule:run` via Task Scheduler — `docs/QUEUE_AND_SCHEDULER.md`).
+2. **Seller**: `/seller/promote/wallet` → sandbox top-up 50 DT (local only) → wallet 50.
+3. `/seller/promote/new` → pick a product with ≥ 3 photos, stock and a real description → readiness passes → daily 5 DT, suggested CPC → automatic audience → all placements → forecast → **Launch** (nothing charged) → campaign page, "Campaign live" bell + e-mail.
+4. **Buyer** (another browser, logged in, browsed that category a few times): homepage "Sponsorisé pour vous" row, search for the product's keyword (slot 1), a similar product's page ("Sponsorisé — articles similaires"), cart drawer cross-sell, and after 8 s the entry popup (if relevance ≥ 0.6). Every ad shows the Sponsored label.
+5. Click the ad → `POST /api/ads/events` click → seller wallet charged once (second-price, plan discount); clicking again within 24 h isn't billed.
+6. Buyer orders the product → mark the order **delivered** in admin → seller campaign page: 1 order, revenue, ROAS.
+7. Seller stops the campaign → status Stopped, `refunded: 0` (nothing was reserved; only clicks were paid). Admin → reject another campaign → its charges come back to the wallet.
+8. Opted-in buyer: `php artisan ads:send-digest --user=<id>` → e-mail with a labelled sponsored product; click it → billed once; "Unsubscribe" link → opted out.
+
+## Still needed for production
+- **Real payment gateway** for ad top-ups: implement `KonnectGateway` / `FlouciGateway` (hosted page + server-side verification, TODO notes in the classes) or D17 automation; keep `ADS_SANDBOX_TOP_UP` off (it is off unless `APP_ENV=local`).
+- **Queue worker + scheduler hosting** (supervisor + cron, or Windows services) — nothing marketing- or billing-related runs without them.
+- **Legal pages**: disclose sponsored placements (how ads are chosen, "Sponsored" label) and marketing e-mails / consent / unsubscribe in the privacy policy and seller terms (ad billing, refunds on rejection, monthly credit expiry).
+- Brevo sender-domain setup (SPF/DKIM) before sending digests at volume; review `ads.*` defaults (floors, credits, caps) in admin → Sponsoring → Settings.
+- `AI_SERVICE_TOKEN` must be set on both sides in production; the AI service listens on 127.0.0.1 by default.
 
 ## Phase 5 — Emails & consent ✅
 - **Consent**: opt-in only (`users.marketing_emails_opt_in`, default off); signup checkbox (unchecked) → `marketing_opt_in` kept through e-mail verification; `GET|POST /api/account/marketing-consent`; toggle on the profile page and a footer newsletter box for signed-in shoppers; one-click `GET|POST /unsubscribe/{token}` (localized page, CSRF-exempt POST for RFC 8058) + `List-Unsubscribe` / `List-Unsubscribe-Post` headers on every marketing e-mail.

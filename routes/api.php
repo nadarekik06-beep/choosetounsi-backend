@@ -40,7 +40,6 @@ use App\Http\Controllers\Api\Seller\SellerAIController;
 use App\Http\Controllers\Api\Seller\BlackPepperController;
 use App\Http\Controllers\Admin\AdminVipRequestController;
 use App\Http\Controllers\Api\Seller\SponsorshipController;
-use App\Http\Controllers\Admin\AdminSponsorshipController;
 use App\Http\Controllers\Api\Delivery\DeliveryController;
 use App\Http\Controllers\Api\BrandProductController as PublicBrandProductController;
 use App\Http\Controllers\Admin\BrandProductController;
@@ -556,11 +555,17 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/ads/top-ups/{id}/confirm',     [\App\Http\Controllers\Admin\AdminAdWalletController::class, 'confirm'])->whereNumber('id');
         Route::post('/ads/top-ups/{id}/reject',      [\App\Http\Controllers\Admin\AdminAdWalletController::class, 'reject'])->whereNumber('id');
 
-        // ── Sponsorships ──────────────────────────────────────────────────
-        Route::get('/sponsorships/stats',         [AdminSponsorshipController::class, 'stats']);
-        Route::get('/sponsorships',               [AdminSponsorshipController::class, 'index']);
-        Route::patch('/sponsorships/{id}/cancel', [AdminSponsorshipController::class, 'cancel']);
-        Route::patch('/sponsorships/{id}/boost',  [AdminSponsorshipController::class, 'boost']);
+        // ── Ads: overview, campaigns (moderation), settings, wallets ─────
+        Route::get('/ads/overview',                  [\App\Http\Controllers\Admin\AdminAdsController::class, 'overview']);
+        Route::get('/ads/campaigns',                 [\App\Http\Controllers\Admin\AdminAdsController::class, 'campaigns']);
+        Route::get('/ads/campaigns/{id}',            [\App\Http\Controllers\Admin\AdminAdsController::class, 'campaign'])->whereNumber('id');
+        Route::post('/ads/campaigns/{id}/reject',    [\App\Http\Controllers\Admin\AdminAdsController::class, 'reject'])->whereNumber('id');
+        Route::post('/ads/campaigns/{id}/pause',     [\App\Http\Controllers\Admin\AdminAdsController::class, 'pause'])->whereNumber('id');
+        Route::post('/ads/campaigns/{id}/resume',    [\App\Http\Controllers\Admin\AdminAdsController::class, 'resume'])->whereNumber('id');
+        Route::get('/ads/settings',                  [\App\Http\Controllers\Admin\AdminAdsController::class, 'settings']);
+        Route::put('/ads/settings',                  [\App\Http\Controllers\Admin\AdminAdsController::class, 'updateSettings']);
+        Route::get('/ads/wallets',                   [\App\Http\Controllers\Admin\AdminAdsController::class, 'wallets']);
+        Route::get('/ads/wallets/{seller}',          [\App\Http\Controllers\Admin\AdminAdsController::class, 'wallet'])->whereNumber('seller');
 
 
 

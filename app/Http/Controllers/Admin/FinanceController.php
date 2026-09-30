@@ -60,6 +60,12 @@ class FinanceController extends Controller
             ')
             ->first();
 
+        // ── Ad revenue: paid click charges (plan credit reported apart, it isn't money) ──
+        $adRevenue = app(\App\Services\Ads\AdRevenue::class)->between(
+            $dateRange ? \App\Services\Ads\AdClock::dateOf($dateRange[0]) : null,
+            $dateRange ? \App\Services\Ads\AdClock::dateOf($dateRange[1]) : null,
+        );
+
         // ── Pending vs Ready vs Paid ─────────────────────────────────────────
 
         $payoutCounts = DB::table('seller_orders')
@@ -105,6 +111,8 @@ class FinanceController extends Controller
                     'total_shipping_cost'   => round((float) $totals->total_shipping_cost,  3),
                     'total_platform_profit' => round((float) $totals->total_platform_profit,3),
                     'orders_count'          => (int) $totals->orders_count,
+                    'ad_revenue'            => $adRevenue['paid'],
+                    'ad_credit_spent'       => $adRevenue['credit'],
                 ],
                 'payout_summary' => [
                     'pending' => [

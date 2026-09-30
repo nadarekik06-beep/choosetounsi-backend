@@ -200,7 +200,7 @@ class SponsoringFoundationsTest extends TestCase
         $cancelled = $this->sponsor($this->makeProduct($seller, $cat), ['status' => 'cancelled']);
 
         Sanctum::actingAs($this->makeUser('admin'));
-        $ids = collect($this->getJson('/api/admin/sponsorships?status=cancelled&search=Zyx%20Findable')->assertOk()->json('data.data'))->pluck('id')->all();
+        $ids = collect($this->getJson('/api/admin/ads/campaigns?status=cancelled&search=Zyx%20Findable')->assertOk()->json('data'))->pluck('id')->all();
 
         $this->assertContains($cancelled->id, $ids);
         $this->assertNotContains($active->id, $ids);
