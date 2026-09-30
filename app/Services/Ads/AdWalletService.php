@@ -115,6 +115,42 @@ class AdWalletService
         });
     }
 
+    /**
+     * A plan paid mid-month: bring this month's free credit up to the new plan's
+     * $amount. Nothing granted yet this period → the full amount becomes this month's
+     * grant ("credit:{period}", so the monthly job won't grant it again); otherwise only
+     * the difference is added. Never takes credit away; idempotent per $tag.
+     */
+    public function ensureMonthlyCredit(int $sellerId, float $amount, Carbon $expiresAt, string $period, string $tag): ?Tx
+    {
+        $amount = $this->money($amount);
+        if ($amount <= 0) {
+            return null;
+        }
+
+        return DB::transaction(function () use ($sellerId, $amount, $expiresAt, $period, $tag) {
+            $wallet = $this->lockedWallet($sellerId);
+            $grants = Tx::where('seller_id', $sellerId)->where('type', Tx::TYPE_MONTHLY_CREDIT)
+                ->where(fn ($q) => $q->where('reference', "credit:{$period}")->orWhere('reference', 'like', "credit:{$period}:%"));
+
+            if ((clone $grants)->where('reference', "credit:{$period}:{$tag}")->exists()) {
+                return null;
+            }
+            $hasGrant = (clone $grants)->where('reference', "credit:{$period}")->exists();
+            $diff     = $this->money($amount - (float) (clone $grants)->sum('credit_amount'));
+            if ($diff <= 0) {
+                return null;
+            }
+
+            $this->expireCredit($wallet);
+            $wallet->credit_expires_at = $expiresAt;
+            return $this->apply($wallet, Tx::TYPE_MONTHLY_CREDIT, 0, $diff, [
+                'reference' => $hasGrant ? "credit:{$period}:{$tag}" : "credit:{$period}",
+                'meta'      => ['expires_at' => $expiresAt->toIso8601String(), 'plan_change' => $tag],
+            ]);
+        });
+    }
+
     // ── Money out ───────────────────────────────────────────────────────────
 
     /**

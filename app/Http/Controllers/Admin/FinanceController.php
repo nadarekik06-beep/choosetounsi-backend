@@ -61,10 +61,15 @@ class FinanceController extends Controller
             ->first();
 
         // ── Ad revenue: paid click charges (plan credit reported apart, it isn't money) ──
-        $adRevenue = app(\App\Services\Ads\AdMetrics::class)->platformRevenue(
-            $dateRange ? \App\Services\Ads\AdClock::dateOf($dateRange[0]) : null,
-            $dateRange ? \App\Services\Ads\AdClock::dateOf($dateRange[1]) : null,
-        );
+        $adFrom    = $dateRange ? \App\Services\Ads\AdClock::dateOf($dateRange[0]) : null;
+        $adTo      = $dateRange ? \App\Services\Ads\AdClock::dateOf($dateRange[1]) : null;
+        $adMetrics = app(\App\Services\Ads\AdMetrics::class);
+        $adRevenue = $adMetrics->platformRevenue($adFrom, $adTo);
+        // Cash in: approved ad-wallet top-ups (real money, never plan credit) and plan payments.
+        $adTopUps  = $adMetrics->topUpsReceived($adFrom, $adTo);
+        $subRevenue = (float) DB::table('subscription_payments')->where('status', 'succeeded')
+            ->when($dateRange, fn ($q) => $q->whereBetween('created_at', $dateRange))
+            ->sum('amount');
 
         // ── Pending vs Ready vs Paid ─────────────────────────────────────────
 
@@ -113,6 +118,9 @@ class FinanceController extends Controller
                     'orders_count'          => (int) $totals->orders_count,
                     'ad_revenue'            => $adRevenue['paid'],
                     'ad_credit_spent'       => $adRevenue['credit'],
+                    'ad_top_ups_received'   => $adTopUps['amount'],
+                    'ad_top_ups_count'      => $adTopUps['count'],
+                    'subscription_revenue'  => round($subRevenue, 3),
                 ],
                 'payout_summary' => [
                     'pending' => [

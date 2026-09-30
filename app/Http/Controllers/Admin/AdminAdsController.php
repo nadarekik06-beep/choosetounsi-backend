@@ -79,6 +79,10 @@ class AdminAdsController extends Controller
             'top_advertisers' => $topSellers,
             'flags'           => $this->fraudFlags($metrics),
             'pending_top_ups' => AdTopUp::where('status', AdTopUp::STATUS_PENDING)->count(),
+            // Money actually received for ads (approved WhatsApp / transfer top-ups).
+            'top_ups_received'          => $metrics->topUpsReceived($from, $to),
+            'top_ups_received_all_time' => $metrics->topUpsReceived(null, null),
+            'pending_payment_requests'  => \App\Models\PaymentRequest::where('status', 'pending')->where('type', 'wallet_topup')->count(),
         ]]);
     }
 

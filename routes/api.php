@@ -227,6 +227,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/subscription/downgrade',     [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'downgrade']);    // NEW
     Route::delete('/subscription/downgrade',   [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'cancelDowngrade']); // NEW
     Route::get('/subscription/history',        [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'history']);
+
+    // ── Manual payments via WhatsApp (ad-wallet top-ups, plan upgrades) ──
+    Route::get('/payment-requests',              [\App\Http\Controllers\Api\Seller\SellerPaymentRequestController::class, 'index']);
+    Route::get('/payment-requests/{id}',         [\App\Http\Controllers\Api\Seller\SellerPaymentRequestController::class, 'show'])->whereNumber('id');
+    Route::post('/payment-requests/wallet-top-up', [\App\Http\Controllers\Api\Seller\SellerPaymentRequestController::class, 'topUp'])
+        ->middleware(['seller.feature:sponsorships', 'throttle:10,1']);
+    Route::post('/payment-requests/plan-upgrade', [\App\Http\Controllers\Api\Seller\SellerPaymentRequestController::class, 'planUpgrade'])->middleware('throttle:10,1');
+    Route::post('/payment-requests/{id}/cancel', [\App\Http\Controllers\Api\Seller\SellerPaymentRequestController::class, 'cancel'])->whereNumber('id');
         //----─ Commission Calculation (for frontend preview) ─────────────────────────
         Route::post('/commission/calculate', [CommissionController::class, 'calculate']);
         Route::get('/shipping-cost',         [CommissionController::class, 'shippingCost']);
@@ -548,6 +556,17 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/vip-requests/{id}/complete',  [AdminVipRequestController::class, 'complete']);
         Route::patch('/vip-requests/{id}/reject',    [AdminVipRequestController::class, 'reject']);
         Route::patch('/vip-requests/{id}/note',      [AdminVipRequestController::class, 'addNote']);
+
+        // ── Payment requests (manual WhatsApp payments) ───────────────────
+        Route::get('/payment-requests',                        [\App\Http\Controllers\Admin\AdminPaymentRequestController::class, 'index']);
+        Route::get('/payment-requests/pending-count',          [\App\Http\Controllers\Admin\AdminPaymentRequestController::class, 'pendingCount']);
+        Route::get('/payment-requests/settings',               [\App\Http\Controllers\Admin\AdminPaymentRequestController::class, 'settings']);
+        Route::put('/payment-requests/settings',               [\App\Http\Controllers\Admin\AdminPaymentRequestController::class, 'updateSettings']);
+        Route::post('/payment-requests/direct/wallet-top-up',  [\App\Http\Controllers\Admin\AdminPaymentRequestController::class, 'directTopUp']);
+        Route::post('/payment-requests/direct/plan-change',    [\App\Http\Controllers\Admin\AdminPaymentRequestController::class, 'directPlanChange']);
+        Route::get('/payment-requests/{id}',                   [\App\Http\Controllers\Admin\AdminPaymentRequestController::class, 'show'])->whereNumber('id');
+        Route::post('/payment-requests/{id}/approve',          [\App\Http\Controllers\Admin\AdminPaymentRequestController::class, 'approve'])->whereNumber('id');
+        Route::post('/payment-requests/{id}/reject',           [\App\Http\Controllers\Admin\AdminPaymentRequestController::class, 'reject'])->whereNumber('id');
 
         // ── Ads: wallets & top-ups ────────────────────────────────────────
         Route::post('/ads/wallets/{seller}/adjust',  [\App\Http\Controllers\Admin\AdminAdWalletController::class, 'adjust'])->whereNumber('seller');

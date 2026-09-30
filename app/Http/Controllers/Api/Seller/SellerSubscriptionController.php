@@ -9,7 +9,7 @@
 //
 // PRESERVED endpoints (same URL, extended response):
 //   GET  /api/seller/subscription                 — now returns full lifecycle data
-//   POST /api/seller/subscription/upgrade         — unchanged params, extended logic
+//   POST /api/seller/subscription/upgrade         — retired (410): see SellerPaymentRequestController
 //
 // ZERO REGRESSIONS: the original upgrade flow still works identically.
 // SellerPlanMiddleware still reads seller_applications.plan (unchanged).
@@ -21,11 +21,9 @@ use App\Models\SellerApplication;
 use App\Models\SellerSubscription;
 use App\Models\SubscriptionPayment;
 use App\Models\User;
-use App\Notifications\SellerUpgradedNotification;
 use App\Services\SubscriptionService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class SellerSubscriptionController extends Controller
@@ -126,118 +124,19 @@ class SellerSubscriptionController extends Controller
     // ─────────────────────────────────────────────────────────────────────────
     // POST /api/seller/subscription/upgrade
     //
-    // Processes a subscription upgrade payment (mock for PFE).
-    // Logic is identical to the original — extended to also update the
-    // seller_subscriptions lifecycle row.
+    // Retired: it accepted any card number and switched the plan without any
+    // money moving. Paid plans are now requested through
+    // POST /api/seller/payment-requests/plan-upgrade (paid via WhatsApp, activated
+    // by an admin); Konnect / Flouci will plug into that flow later.
     // ─────────────────────────────────────────────────────────────────────────
 
     public function upgrade(Request $request): JsonResponse
     {
-        /** @var User $user */
-        $user = $request->user();
-
-        // ── 1. Validate request payload ───────────────────────────────────────
-        $validated = $request->validate([
-            'plan'            => ['required', 'string', Rule::exists('subscription_plans', 'slug')->whereNull('archived_at')->where('is_active', true)],
-            'billing_period'  => ['nullable', Rule::in(['monthly', 'yearly'])],
-            'card_number'     => ['required', 'string', 'regex:/^\d{13,19}$/'],
-            'expiry_date'     => ['required', 'string', 'regex:/^(0[1-9]|1[0-2])\/\d{2}$/'],
-            'cvv'             => ['required', 'string', 'regex:/^\d{3,4}$/'],
-            'cardholder_name' => ['required', 'string', 'min:2', 'max:100'],
-        ], [
-            'card_number.regex' => __('seller.subscription.card_invalid'),
-            'expiry_date.regex' => __('seller.subscription.expiry_format'),
-            'cvv.regex'         => __('seller.subscription.cvv_format'),
-        ]);
-
-        // ── 2. Find approved seller application ───────────────────────────────
-        $application = SellerApplication::where('user_id', $user->id)
-            ->where('status', 'approved')
-            ->first();
-
-        if (! $application) {
-            return response()->json([
-                'success' => false,
-                'message' => __('seller.subscription.need_seller'),
-            ], 403);
-        }
-
-        // ── 3. Validate upgrade direction (plans are admin-managed) ─────────────
-        $target  = \App\Models\SubscriptionPlan::forSlug($validated['plan']);
-        $sub     = $this->subscriptionService->getOrCreateSubscription($application);
-        $period  = $validated['billing_period'] ?? 'monthly';
-
-        if ($sub->isSuspended()) {
-            return response()->json([
-                'success' => false,
-                'message' => __('seller.subscription.suspended'),
-                'code'    => 'SUBSCRIPTION_SUSPENDED',
-            ], 403);
-        }
-        $convertingTrial = $sub->isTrial() && $sub->current_plan === $target->slug;
-        if ($target->isFree() || (!$sub->isUpgrade($target->slug) && !$convertingTrial)) {
-            return response()->json([
-                'success' => false,
-                'message' => __('seller.subscription.already_on_plan'),
-            ], 422);
-        }
-        if ($period === 'yearly' && $target->price_yearly === null) {
-            return response()->json(['success' => false, 'message' => __('seller.subscription.no_yearly', ['plan' => $target->name])], 422);
-        }
-
-        // ── 4. Determine amount ───────────────────────────────────────────────
-        $amount = $target->priceFor($period);
-
-        // ── 5. Mock payment + DB updates in a transaction ─────────────────────
-        DB::beginTransaction();
-        try {
-            // Create payment record
-            $payment = SubscriptionPayment::create([
-                'user_id'         => $user->id,
-                'plan'            => $validated['plan'],
-                'amount'          => $amount,
-                'currency'        => 'TND',
-                'status'          => 'succeeded',
-                'card_last4'      => substr(preg_replace('/\D/', '', $validated['card_number']), -4),
-                'cardholder_name' => $validated['cardholder_name'],
-            ]);
-
-            // Update both seller_applications.plan AND the subscription lifecycle
-            // SubscriptionService handles: application.plan + subscription row + audit log
-            $this->subscriptionService->upgrade($application, $validated['plan'], $payment, $user, $period);
-
-            DB::commit();
-        } catch (\Throwable $e) {
-            DB::rollBack();
-            \Log::error('[SellerSubscriptionController::upgrade] ' . $e->getMessage());
-            return response()->json([
-                'success' => false,
-                'message' => __('seller.subscription.payment_failed'),
-            ], 500);
-        }
-
-        // ── 6. Notify all admins ──────────────────────────────────────────────
-        try {
-            $admins = User::where('role', 'admin')->get();
-            foreach ($admins as $admin) {
-                $admin->notify(new SellerUpgradedNotification($user, $payment));
-            }
-        } catch (\Throwable $e) {
-            \Log::warning('SellerUpgradedNotification failed: ' . $e->getMessage());
-        }
-
-        // ── 7. Return success response ────────────────────────────────────────
-        $planLabel = $target->name;
-
         return response()->json([
-            'success' => true,
-            'message' => __('seller.subscription.upgraded', ['plan' => $planLabel]),
-            'data'    => [
-                'plan'       => $validated['plan'],
-                'amount'     => $amount,
-                'payment_id' => $payment->id,
-            ],
-        ]);
+            'success' => false,
+            'message' => __('payments.errors.use_payment_request'),
+            'code'    => 'USE_PAYMENT_REQUEST',
+        ], 410);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

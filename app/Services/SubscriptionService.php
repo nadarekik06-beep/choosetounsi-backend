@@ -223,6 +223,65 @@ class SubscriptionService
         return $sub->fresh();
     }
 
+    /**
+     * An admin confirmed the payment of a paid plan (manual / WhatsApp payment).
+     * Renewing the plan the seller already pays for extends the running cycle;
+     * any other plan starts a new cycle today. Upgrade effects (products back,
+     * paused campaigns resumed) or downgrade ripples are applied like the other paths.
+     */
+    public function activatePaidPlan(
+        SellerApplication $app,
+        string $targetPlan,
+        string $billingPeriod,
+        SubscriptionPayment $payment,
+        User $admin,
+        string $reason
+    ): SellerSubscription {
+        $plan = SubscriptionPlan::where('slug', $targetPlan)->firstOrFail();
+        if ($plan->isFree() || $plan->isArchived()) {
+            throw new \InvalidArgumentException("The {$plan->name} plan can't be paid for.");
+        }
+
+        $sub    = $this->getOrCreateSubscription($app);
+        $from   = SubscriptionPlan::forSlug($sub->current_plan);
+        $before = $this->snapshot($sub);
+
+        $renewal = $sub->current_plan === $plan->slug && !$sub->isTrial()
+            && $sub->billing_cycle_end !== null && $sub->billing_cycle_end->isFuture();
+        $start = $renewal ? $sub->billing_cycle_start ?? today() : today();
+        $end   = $this->cycleEnd($renewal ? $sub->billing_cycle_end->copy() : today(), $billingPeriod);
+        $type  = $renewal ? 'renewal' : ($plan->isHigherThan($from) || $sub->isTrial() ? 'upgrade' : 'downgrade');
+
+        DB::transaction(function () use ($sub, $app, $plan, $billingPeriod, $payment, $admin, $reason, $before, $start, $end, $type) {
+            $sub->update([
+                'current_plan'         => $plan->slug,
+                'pending_plan'         => null,
+                'status'               => 'active',
+                'billing_period'       => $billingPeriod,
+                'billing_cycle_start'  => $start,
+                'billing_cycle_end'    => $end,
+                'trial_ends_at'        => null,
+                'grace_period_ends_at' => null,
+                'canceled_at'          => null,
+                'cancel_reason'        => null,
+                'last_payment_at'      => now(),
+            ]);
+            $app->update(['plan' => $plan->slug]);
+
+            $change = $this->planChange($sub, $before['plan'], $plan->slug, $type, $admin->id,
+                "Payment #{$payment->id} — {$payment->amount} TND — {$reason}", (float) $payment->amount);
+
+            $type === 'downgrade'
+                ? $this->downgradeService->applyRippleEffects($app, $plan->slug)
+                : $this->downgradeService->applyUpgradeEffects($app->user_id, $plan->slug);
+
+            $this->audit($sub, 'paid_plan_activated', $admin, 'admin',
+                "Payment #{$payment->id} ({$payment->amount} TND, {$billingPeriod}) — {$reason}", $before, $change->id);
+        });
+
+        return $sub->fresh();
+    }
+
     /** Move the end of the current period (billing cycle or trial). */
     public function changeEndDate(SellerSubscription $sub, Carbon $newEnd, User $admin, string $reason): SellerSubscription
     {

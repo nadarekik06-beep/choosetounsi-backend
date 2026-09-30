@@ -102,6 +102,23 @@ class AdMetrics
         return ['paid' => $s['paid_spend'], 'credit' => $s['credit_spend'], 'total' => $s['spend']];
     }
 
+    /**
+     * Real money sellers paid into their ad wallets (settled top-ups: WhatsApp / manual
+     * transfers approved by an admin, and later Konnect / Flouci), on the day it was
+     * confirmed. Sandbox top-ups and free plan credit are not money and never count.
+     *
+     * @return array{amount: float, count: int}
+     */
+    public function topUpsReceived(?string $from, ?string $to): array
+    {
+        $row = DB::table('ad_top_ups')->where('status', 'paid')->where('gateway', '!=', 'sandbox')
+            ->when($from, fn ($q) => $q->where('paid_at', '>=', AdClock::dayStart($from)))
+            ->when($to, fn ($q) => $q->where('paid_at', '<=', AdClock::dayEnd($to)))
+            ->selectRaw('COALESCE(SUM(amount), 0) AS amount, COUNT(*) AS n')->first();
+
+        return ['amount' => round((float) $row->amount, 3), 'count' => (int) $row->n];
+    }
+
     /** @return array<int, array{date: string, paid: float, credit: float}> days with spend only */
     public function platformRevenueDaily(string $from, string $to): array
     {
