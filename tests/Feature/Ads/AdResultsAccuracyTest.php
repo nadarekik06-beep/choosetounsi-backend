@@ -7,9 +7,14 @@ use App\Models\Order;
 use App\Models\Product;
 use App\Models\Sponsorship;
 use App\Models\User;
+use App\Notifications\Ads\AdWalletLow;
+use App\Notifications\Ads\CampaignBudgetAlert;
+use App\Notifications\Ads\CampaignPaused;
+use App\Services\Ads\AdClock;
 use App\Services\Ads\AdEventService;
 use App\Services\Ads\AdMetrics;
 use App\Services\Ads\AdTokenService;
+use App\Services\Ads\AdWalletService;
 use App\Services\Ads\AttributionService;
 use App\Services\Ads\SponsorshipService;
 use Carbon\Carbon;
@@ -205,6 +210,40 @@ class AdResultsAccuracyTest extends TestCase
         $this->assertSame(['2026-09-30', '2026-10-01'], DB::table('ad_wallet_transactions')->where('sponsorship_id', $c->id)
             ->orderBy('rollup_date')->pluck('rollup_date')->map(fn ($d) => substr((string) $d, 0, 10))->all());
         $this->assertEqualsWithDelta(0.4, app(AdMetrics::class)->platformRevenue('2026-10-01', '2026-10-01')['paid'] - 0, 0.0005);
+    }
+
+    public function test_budget_and_wallet_alerts_go_to_the_bell_and_email_once_a_day(): void
+    {
+        $cat = $this->makeCategory();
+        $seller = $this->seller();
+        $c = $this->campaign($seller, $this->readyProduct($seller, $cat));
+        $c->update(['spent_today' => 3.7, 'spent_today_date' => AdClock::today()]);   // 5.000 a day
+        app(AdWalletService::class)->adminAdjust($seller->id, -90, 0, 'test', $this->makeUser('admin')->id);
+
+        $this->assertTrue($this->click($c, $this->makeUser())['billable']);   // 4.100 ≥ 80 %
+        $this->assertTrue($this->click($c, $this->makeUser())['billable']);
+
+        $both = fn ($n, array $channels) => $channels === ['database', 'mail'];
+        Notification::assertSentToTimes($seller, CampaignBudgetAlert::class, 1);
+        Notification::assertSentTo($seller, CampaignBudgetAlert::class, $both);
+        Notification::assertSentToTimes($seller, AdWalletLow::class, 1);   // 9.2 left < 3 days × 5
+        Notification::assertSentTo($seller, AdWalletLow::class, $both);
+    }
+
+    public function test_out_of_stock_pauses_and_restock_resumes(): void
+    {
+        $cat = $this->makeCategory();
+        $seller = $this->seller();
+        $c = $this->campaign($seller, $this->readyProduct($seller, $cat));
+
+        $c->product->update(['stock' => 0]);
+        $this->artisan('ads:stock-watch')->assertExitCode(0);
+        $this->assertSame([Sponsorship::STATUS_PAUSED, Sponsorship::PAUSE_OUT_OF_STOCK], [$c->fresh()->status, $c->fresh()->paused_reason]);
+        Notification::assertSentTo($seller, CampaignPaused::class);
+
+        $c->product->update(['stock' => 5]);
+        $this->artisan('ads:stock-watch')->assertExitCode(0);
+        $this->assertSame(Sponsorship::STATUS_ACTIVE, $c->fresh()->status);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
