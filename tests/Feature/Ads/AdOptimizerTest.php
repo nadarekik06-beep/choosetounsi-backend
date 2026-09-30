@@ -5,10 +5,8 @@ namespace Tests\Feature\Ads;
 use App\Jobs\GenerateAdCopy;
 use App\Models\Sponsorship;
 use App\Notifications\Ads\CampaignLowPerformance;
-use App\Services\Ads\AdClock;
 use App\Services\Ads\AdOptimizer;
 use App\Services\Ads\AdServer;
-use App\Services\Ads\AdStats;
 use App\Services\Ads\SponsorshipService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Bus;
@@ -45,8 +43,9 @@ class AdOptimizerTest extends TestCase
     public function test_placement_without_orders_is_down_weighted_and_low_roas_alerts_once(): void
     {
         $c = $this->campaign();
-        AdStats::add($c->id, 'search_top', ['impressions' => 900, 'clicks' => 40, 'cost' => 12]);
-        AdStats::add($c->id, 'home_row', ['impressions' => 600, 'clicks' => 20, 'cost' => 6, 'orders' => 1, 'revenue' => 10]);
+        $this->rawActivity($c, 'search_top', ['impressions' => 900, 'clicks' => 40, 'cost' => 12]);
+        $this->rawActivity($c, 'home_row', ['impressions' => 600, 'clicks' => 20, 'cost' => 6, 'orders' => 1, 'revenue' => 10]);
+        $this->artisan('ads:rebuild-stats')->assertExitCode(0);   // the ad server reads the roll-up
 
         $result = app(AdOptimizer::class)->optimize($c);
 
@@ -76,8 +75,8 @@ class AdOptimizerTest extends TestCase
     public function test_overview_endpoint(): void
     {
         $c = $this->campaign();
-        AdStats::add($c->id, 'home_row', ['impressions' => 100, 'clicks' => 5, 'cost' => 1.5, 'orders' => 1, 'revenue' => 45]);
-        AdStats::add($c->id, 'home_row', ['impressions' => 50, 'clicks' => 1, 'cost' => 0.3], AdClock::now()->subDays(40)->toDateString());
+        $this->rawActivity($c, 'home_row', ['impressions' => 100, 'clicks' => 5, 'cost' => 1.5, 'orders' => 1, 'revenue' => 45]);
+        $this->rawActivity($c, 'home_row', ['impressions' => 50, 'clicks' => 1, 'cost' => 0.3], now()->subDays(40));
 
         Sanctum::actingAs($c->seller);
         $this->getJson('/api/seller/ads/overview?days=30')->assertOk()
@@ -85,7 +84,8 @@ class AdOptimizerTest extends TestCase
             ->assertJsonPath('data.totals.clicks', 5)
             ->assertJsonPath('data.totals.roas', 30)
             ->assertJsonPath('data.open_campaigns', 1)
-            ->assertJsonCount(1, 'data.daily');
+            ->assertJsonCount(30, 'data.daily')           // every day, zeros included
+            ->assertJsonPath('data.daily.29.clicks', 5);
         $this->getJson("/api/seller/ads/campaigns/{$c->id}")->assertOk()->assertJsonStructure(['data' => ['tips']]);
     }
 }

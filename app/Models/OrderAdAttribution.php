@@ -4,7 +4,11 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 
-/** Order line → the ad click it came from. pending → converted (delivered) | reversed (cancel/refund). */
+/**
+ * Order line → the ad click it came from. Whether it still counts is read live from
+ * the order (AdMetrics); `status` is only a snapshot refreshed by ads:rebuild-stats
+ * (pending → converted when delivered, reversed when cancelled/refunded).
+ */
 class OrderAdAttribution extends Model
 {
     public const STATUS_PENDING   = 'pending';

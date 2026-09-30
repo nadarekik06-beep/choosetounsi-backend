@@ -15,14 +15,18 @@ use Illuminate\Support\Facades\Log;
  * Impressions and clicks reported by the storefront (with the signed ad token).
  *
  * Impressions are free, deduplicated per viewer/campaign/placement (30 min) and
- * feed the frequency cap. Clicks are always logged; they are billable only once
- * per viewer and campaign per 24 h, never for bots, bursts from one IP or the
- * seller themselves. A billable click is charged from the wallet at the price
+ * feed the frequency cap. Clicks are always logged; a click counts (countable)
+ * once per viewer and campaign per 24 h — whatever the campaign's state — and
+ * never for bots, bursts from one IP or the seller themselves (see AdMetrics).
+ * Only a counted click can be billable. A billable click is charged from the wallet at the price
  * sealed in the token, capped by what's left of today's (and the total) budget.
  * When the budget or the wallet runs out the campaign pauses itself.
  */
 class AdEventService
 {
+    /** Clicks that are never real: logged, but neither counted nor charged. */
+    const INVALID = ['bot', 'ip_burst', 'self_click'];
+
     const BOT_UA = '/bot|crawl|spider|slurp|facebookexternalhit|embedly|preview|headless|lighthouse|pingdom|curl|wget|python-requests|httpclient|scrapy/i';
 
     public function __construct(
@@ -98,8 +102,9 @@ class AdEventService
         $result = DB::transaction(function () use ($c, $ctx, &$reason, &$pauseReason) {
             $c = Sponsorship::whereKey($c->id)->lockForUpdate()->first();
 
-            // Under the campaign lock: one billable click per viewer per window.
-            if ($reason === null && $ctx['actor'] && $this->recentBillableClick($c->id, $ctx)) {
+            // Under the campaign lock: one counted click per viewer per window, also for
+            // clicks that won't be charged (legacy campaign, paused, budget spent…).
+            if (!in_array($reason, self::INVALID, true) && $ctx['actor'] && $this->recentCountedClick($c->id, $ctx)) {
                 $reason = 'duplicate';
             }
 
@@ -134,7 +139,7 @@ class AdEventService
 
             $billable = $reason === null;
             // Counters show real clicks: no duplicates, bots or self-clicks (they're still logged).
-            $countable = !in_array($reason, ['duplicate', 'bot', 'ip_burst', 'self_click'], true);
+            $countable = !in_array($reason, self::INVALID, true) && $reason !== 'duplicate';
             $this->insertEvent($c, SponsorshipEvent::CLICK, $ctx, [
                 'billable' => $billable, 'countable' => $countable, 'cost' => $cost, 'credit_cost' => $credit,
             ]);
@@ -159,12 +164,7 @@ class AdEventService
     /** Why this click can't be charged (null = it can, pending the duplicate check under lock). */
     private function nonBillableReason(Sponsorship $c, array $ctx): ?string
     {
-        if ($c->pricing_model !== Sponsorship::PRICING_CPC || $ctx['cpc'] <= 0) {
-            return 'not_cpc';
-        }
-        if ($c->status !== Sponsorship::STATUS_ACTIVE) {
-            return 'not_active';
-        }
+        // Invalid clicks first, so they never count on any campaign (legacy ones included).
         if ($ctx['bot']) {
             return 'bot';
         }
@@ -178,14 +178,20 @@ class AdEventService
                 return 'ip_burst';
             }
         }
+        if ($c->pricing_model !== Sponsorship::PRICING_CPC || $ctx['cpc'] <= 0) {
+            return 'not_cpc';
+        }
+        if ($c->status !== Sponsorship::STATUS_ACTIVE) {
+            return 'not_active';
+        }
         return null;
     }
 
-    private function recentBillableClick(int $campaignId, array $ctx): bool
+    private function recentCountedClick(int $campaignId, array $ctx): bool
     {
         $since = now()->subHours(max(1, $this->settings->int('click_dedupe_hours')));
         return SponsorshipEvent::where('sponsorship_id', $campaignId)->where('event', SponsorshipEvent::CLICK)
-            ->where('billable', true)->where('created_at', '>=', $since)
+            ->where('countable', true)->where('created_at', '>=', $since)
             ->where(function ($q) use ($ctx) {
                 if ($ctx['user_id']) {
                     $q->orWhere('user_id', $ctx['user_id']);

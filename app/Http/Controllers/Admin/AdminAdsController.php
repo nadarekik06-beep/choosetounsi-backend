@@ -13,7 +13,7 @@ use App\Models\AdWalletTransaction;
 use App\Models\Sponsorship;
 use App\Models\User;
 use App\Services\Ads\AdClock;
-use App\Services\Ads\AdRevenue;
+use App\Services\Ads\AdMetrics;
 use App\Services\Ads\AdSettings;
 use App\Services\Ads\SponsorshipService;
 use Illuminate\Http\JsonResponse;
@@ -43,20 +43,17 @@ class AdminAdsController extends Controller
 
     // ── Overview ────────────────────────────────────────────────────────────
 
-    public function overview(Request $request, AdRevenue $revenue): JsonResponse
+    public function overview(Request $request, AdMetrics $metrics): JsonResponse
     {
         $days = min(365, max(1, (int) $request->query('days', 30)));
         $to   = AdClock::today();
         $from = AdClock::now()->subDays($days - 1)->toDateString();
 
-        $stats = DB::table('sponsorship_daily_stats')->whereBetween('date', [$from, $to]);
-
-        $byPlacement = (clone $stats)->groupBy('placement')
-            ->get(['placement', DB::raw('SUM(impressions) i'), DB::raw('SUM(clicks) c'), DB::raw('SUM(orders) o'), DB::raw('SUM(revenue) r')])
-            ->map(fn ($r) => [
-                'placement' => $r->placement, 'impressions' => (int) $r->i, 'clicks' => (int) $r->c,
-                'ctr' => $r->i > 0 ? round($r->c / $r->i, 4) : null, 'orders' => (int) $r->o, 'revenue' => round((float) $r->r, 3),
-            ]);
+        $totals = $metrics->summary(null, $from, $to);
+        $byPlacement = array_map(fn ($r) => [
+            'placement' => $r['placement'], 'impressions' => $r['impressions'], 'clicks' => $r['clicks'],
+            'ctr' => $r['ctr'], 'orders' => $r['orders'], 'revenue' => $r['revenue'],
+        ], $metrics->byPlacement(null, $from, $to));
 
         $topSellers = DB::table('ad_wallet_transactions as t')->join('users as u', 'u.id', '=', 't.seller_id')
             ->where('t.type', AdWalletTransaction::TYPE_CLICK_CHARGE)->whereBetween('t.rollup_date', [$from, $to])
@@ -68,19 +65,19 @@ class AdminAdsController extends Controller
 
         return response()->json(['success' => true, 'data' => [
             'days'      => $days,
-            'revenue'   => $revenue->between($from, $to),
-            'all_time'  => $revenue->between(null, null),
-            'daily'     => $revenue->daily($from, $to),
+            'revenue'   => $metrics->platformRevenue($from, $to),
+            'all_time'  => $metrics->platformRevenue(null, null),
+            'daily'     => $metrics->platformRevenueDaily($from, $to),
             'totals'    => [
-                'impressions' => (int) (clone $stats)->sum('impressions'),
-                'clicks'      => (int) (clone $stats)->sum('clicks'),
-                'orders'      => (int) (clone $stats)->sum('orders'),
-                'sales'       => round((float) (clone $stats)->sum('revenue'), 3),
+                'impressions' => $totals['impressions'],
+                'clicks'      => $totals['clicks'],
+                'orders'      => $totals['orders'],
+                'sales'       => $totals['revenue'],
             ],
             'by_placement'    => $byPlacement,
             'campaigns'       => Sponsorship::query()->selectRaw('status, COUNT(*) n')->groupBy('status')->pluck('n', 'status'),
             'top_advertisers' => $topSellers,
-            'flags'           => $this->fraudFlags(),
+            'flags'           => $this->fraudFlags($metrics),
             'pending_top_ups' => AdTopUp::where('status', AdTopUp::STATUS_PENDING)->count(),
         ]]);
     }
@@ -89,7 +86,7 @@ class AdminAdsController extends Controller
      * Things worth a look: IPs / sessions producing many unbilled (duplicate/bot/burst) clicks,
      * and campaigns whose CTR is far above the placement's usual rate.
      */
-    private function fraudFlags(): array
+    private function fraudFlags(AdMetrics $metrics): array
     {
         $since = now()->subDays(7);
 
@@ -101,14 +98,12 @@ class AdminAdsController extends Controller
                    DB::raw('COUNT(DISTINCT sponsorship_id) AS campaigns')]);
 
         $priors = (array) $this->settings->get('pctr_prior', []);
-        $ctr = DB::table('sponsorship_daily_stats as d')->join('sponsorships as s', 's.id', '=', 'd.sponsorship_id')
-            ->join('users as u', 'u.id', '=', 's.seller_id')
-            ->where('d.date', '>=', AdClock::now()->subDays(6)->toDateString())
-            ->groupBy('d.sponsorship_id', 'd.placement', 'u.name')->havingRaw('SUM(d.clicks) >= 30')
-            ->get(['d.sponsorship_id', 'd.placement', 'u.name', DB::raw('SUM(d.impressions) i'), DB::raw('SUM(d.clicks) c')])
-            ->filter(fn ($r) => $r->i > 0 && $r->c / $r->i > 3 * (float) ($priors[$r->placement] ?? 0.02))
-            ->map(fn ($r) => ['campaign_id' => (int) $r->sponsorship_id, 'seller' => $r->name, 'placement' => $r->placement,
-                'ctr' => round($r->c / $r->i, 4), 'expected' => (float) ($priors[$r->placement] ?? 0.02)])
+        $sellers = DB::table('sponsorships as s')->join('users as u', 'u.id', '=', 's.seller_id')->pluck('u.name', 's.id');
+        $ctr = collect($metrics->byPlacement(null, AdClock::now()->subDays(6)->toDateString(), AdClock::today(), perCampaign: true))
+            ->filter(fn ($r) => $r['clicks'] >= 30 && $r['impressions'] > 0
+                && $r['clicks'] / $r['impressions'] > 3 * (float) ($priors[$r['placement']] ?? 0.02))
+            ->map(fn ($r) => ['campaign_id' => $r['campaign_id'], 'seller' => $sellers[$r['campaign_id']] ?? null, 'placement' => $r['placement'],
+                'ctr' => $r['ctr'], 'expected' => (float) ($priors[$r['placement']] ?? 0.02)])
             ->values();
 
         return ['suspicious_ips' => $ips, 'high_ctr' => $ctr];
@@ -127,6 +122,8 @@ class AdminAdsController extends Controller
                 ->orWhereHas('seller', fn ($u) => $u->where('name', 'like', "%{$search}%")->orWhere('email', 'like', "%{$search}%"))))
             ->orderByDesc('id')
             ->paginate(min(100, (int) $request->query('per_page', 25)));
+        $metrics = app(AdMetrics::class)->perCampaign($page->getCollection()->pluck('id')->all());
+        $page->getCollection()->each(fn (Sponsorship $c) => $c->metrics = $metrics[$c->id]);
 
         return response()->json([
             'success' => true,
@@ -141,14 +138,9 @@ class AdminAdsController extends Controller
     {
         $c = Sponsorship::with(['product', 'product.primaryImage', 'seller:id,name,email'])->findOrFail($id);
 
-        $daily = DB::table('sponsorship_daily_stats')->where('sponsorship_id', $c->id)
-            ->where('date', '>=', AdClock::now()->subDays(29)->toDateString())
-            ->groupBy('date')->orderBy('date')
-            ->get(['date', DB::raw('SUM(impressions) impressions'), DB::raw('SUM(clicks) clicks'), DB::raw('SUM(cost) cost'),
-                   DB::raw('SUM(orders) orders'), DB::raw('SUM(revenue) revenue')]);
-        $placements = DB::table('sponsorship_daily_stats')->where('sponsorship_id', $c->id)->groupBy('placement')
-            ->get(['placement', DB::raw('SUM(impressions) impressions'), DB::raw('SUM(clicks) clicks'), DB::raw('SUM(cost) cost'),
-                   DB::raw('SUM(orders) orders'), DB::raw('SUM(revenue) revenue')]);
+        $metrics = app(AdMetrics::class);
+        $daily = $metrics->daily([$c->id], AdClock::now()->subDays(29)->toDateString(), AdClock::today());
+        $placements = $metrics->byPlacement([$c->id]);
         $wallet = AdWallet::where('seller_id', $c->seller_id)->first();
 
         return response()->json(['success' => true, 'data' => (new AdCampaignResource($c))->resolve() + [

@@ -4,6 +4,7 @@ namespace App\Http\Resources\Ads;
 
 use App\Models\Sponsorship;
 use App\Services\Ads\AdClock;
+use App\Services\Ads\AdMetrics;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Facades\Storage;
 
@@ -17,7 +18,7 @@ class AdCampaignResource extends JsonResource
         $product = $c->relationLoaded('product') ? $c->product : null;
         $image   = $product && $product->relationLoaded('primaryImage') ? $product->primaryImage : null;
         $today   = $c->spent_today_date?->toDateString() === AdClock::today();
-        $ctr     = $c->impressions > 0 ? round($c->clicks / $c->impressions, 4) : null;
+        $m       = $c->metrics ?? app(AdMetrics::class)->summary([$c->id]);
 
         return [
             'id'               => $c->id,
@@ -54,12 +55,13 @@ class AdCampaignResource extends JsonResource
             'tips_checked_at'  => $c->optimizer['checked_at'] ?? null,
             'ad_copy'          => $c->ai_ad_copy,
             'tags'             => $c->ai_tags,
-            'stats'            => [
-                'impressions' => (int) $c->impressions,
-                'clicks'      => (int) $c->clicks,
-                'ctr'         => $ctr,
-                'orders'      => (int) $c->attributed_orders,
-                'revenue'     => (float) $c->attributed_revenue,
+            'stats'            => [                               // all-time, AdMetrics definitions
+                'impressions' => $m['impressions'],
+                'clicks'      => $m['clicks'],
+                'ctr'         => $m['ctr'],
+                'spend'       => $m['spend'],
+                'orders'      => $m['orders'],
+                'revenue'     => $m['revenue'],
             ],
             'can'              => [
                 'edit'   => $c->isOpen(),

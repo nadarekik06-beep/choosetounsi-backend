@@ -52,6 +52,9 @@ class Sponsorship extends Model
         'product_similar', 'cart_cross_sell', 'entry_popup', 'email_digest',
     ];
 
+    /** Results preloaded by AdMetrics::perCampaign() for list pages (not a column). */
+    public ?array $metrics = null;
+
     protected $fillable = [
         'seller_id',
         'product_id',

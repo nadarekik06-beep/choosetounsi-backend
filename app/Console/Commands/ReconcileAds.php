@@ -109,6 +109,7 @@ class ReconcileAds extends Command
 
         // A valid click: not flagged as bot/burst, not the seller's own, and not a repeat by the
         // same viewer (user or browser session) within the dedupe window of their last valid click.
+        // Recomputed here on purpose, instead of trusting the stored countable flag.
         $valid = [];
         foreach ($clicks as $e) {
             $self = $e->user_id && (int) $e->user_id === (int) $c->seller_id;
@@ -121,7 +122,8 @@ class ReconcileAds extends Command
                     break;
                 }
             }
-            if (!$self && !$dupe && ($e->countable || $e->billable)) {
+            // A charged click always stands (money was taken for it).
+            if ($e->billable || (!$self && !$dupe && $e->countable)) {
                 $valid[] = $e;
             }
         }
@@ -181,7 +183,7 @@ class ReconcileAds extends Command
     {
         $ctl = app(AdCampaignController::class);
         $req = $this->sellerRequest((int) $c->seller_id);
-        $detail = $ctl->show($req, $c->id)->getData(true)['data'];
+        $detail = app()->call([$ctl, 'show'], ['request' => $req, 'id' => $c->id])->getData(true)['data'];
 
         $list = collect($ctl->index($this->sellerRequest((int) $c->seller_id, ['per_page' => 50]))->getData(true)['data'])
             ->firstWhere('id', $c->id) ?? [];
@@ -191,7 +193,7 @@ class ReconcileAds extends Command
 
     private function overview(int $sellerId): array
     {
-        return app(AdCampaignController::class)->overview($this->sellerRequest($sellerId, ['days' => 30]))->getData(true)['data'];
+        return app()->call([app(AdCampaignController::class), 'overview'], ['request' => $this->sellerRequest($sellerId, ['days' => 30])])->getData(true)['data'];
     }
 
     private function sellerRequest(int $sellerId, array $query = []): Request

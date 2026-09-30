@@ -14,6 +14,7 @@ use App\Models\UserInteraction;
 use App\Services\Ads\AdClock;
 use App\Services\Ads\AdEventService;
 use App\Services\Ads\AdRequest;
+use App\Services\Ads\AdMetrics;
 use App\Services\Ads\AdServer;
 use App\Services\Ads\AdTokenService;
 use App\Services\Ads\AttributionService;
@@ -278,26 +279,25 @@ class AdServingTest extends TestCase
         $c     = $this->campaign($cat);
         $buyer = $this->interestedBuyer($cat);
         $this->events->record($this->serveFor($buyer)['ads'][0]['ad_token'], 'click', $this->viewer($buyer));
+        $metrics = app(AdMetrics::class);
 
         $order = $this->order($buyer, $c->product, 50);
         $this->assertSame(1, app(AttributionService::class)->recordOrder($order));
-        $this->assertSame('pending', OrderAdAttribution::where('order_id', $order->id)->value('status'));
+        $this->assertSame(1, $metrics->summary([$c->id])['orders'], 'counted once placed');
+        $this->assertEquals(50.0, $metrics->summary([$c->id])['revenue']);
 
-        $order->update(['status' => 'delivered']);
-        $order->update(['status' => 'completed']);   // a second "done" status must not count twice
-        $c->refresh();
-        $this->assertSame(1, $c->attributed_orders);
-        $this->assertEquals(50.0, (float) $c->attributed_revenue);
-        $this->assertSame(1, (int) DB::table('sponsorship_daily_stats')->where('sponsorship_id', $c->id)->sum('orders'));
+        // Status changes go through the query builder in the app (no model events): still seen.
+        Order::where('id', $order->id)->update(['status' => 'delivered']);
+        Order::where('id', $order->id)->update(['status' => 'completed']);
+        $this->assertSame(1, $metrics->summary([$c->id])['orders'], 'a second "done" status never counts twice');
 
-        $order->update(['status' => 'refunded']);
-        $c->refresh();
-        $this->assertSame(0, $c->attributed_orders);
-        $this->assertEquals(0.0, (float) $c->attributed_revenue);
+        Order::where('id', $order->id)->update(['status' => 'refunded']);
+        $this->assertSame(0, $metrics->summary([$c->id])['orders']);
+        $this->assertEquals(0.0, $metrics->summary([$c->id])['revenue']);
+
+        // The nightly rebuild snapshots the same thing.
+        $this->artisan('ads:rebuild-stats')->assertExitCode(0);
         $this->assertSame('reversed', OrderAdAttribution::where('order_id', $order->id)->value('status'));
-
-        // The nightly rebuild agrees with the incremental counters.
-        $this->artisan('ads:reconcile-stats')->assertExitCode(0);
         $this->assertSame(0, $c->fresh()->attributed_orders);
         $this->assertSame(1, $c->fresh()->clicks);
     }

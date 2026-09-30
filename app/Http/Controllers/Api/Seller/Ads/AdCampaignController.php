@@ -9,16 +9,16 @@ use App\Http\Requests\Ads\UpdateAdCampaignRequest;
 use App\Http\Resources\Ads\AdCampaignResource;
 use App\Models\Sponsorship;
 use App\Services\Ads\AdClock;
+use App\Services\Ads\AdMetrics;
 use App\Services\Ads\SponsorshipService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 /**
  * Seller campaigns (CPC). Business rules live in SponsorshipService; this only
  * scopes to the seller's own campaigns and shapes responses.
  *
- *   GET    /api/seller/ads/overview                ?days=30 — totals + daily series for the ads home
+ *   GET    /api/seller/ads/overview                ?days=30 — totals + daily series (every day) for the ads home
  *   GET    /api/seller/ads/campaigns               ?status=active|paused|…
  *   POST   /api/seller/ads/campaigns
  *   GET    /api/seller/ads/campaigns/{id}          + summary, daily (30 days), placement_stats
@@ -37,6 +37,7 @@ class AdCampaignController extends Controller
             ->orderByRaw("FIELD(status, 'active', 'paused', 'draft') = 0")   // open ones first
             ->orderByDesc('created_at')
             ->paginate(min(50, (int) $request->query('per_page', 20)));
+        $this->preloadMetrics($page->getCollection());
 
         return response()->json([
             'success' => true,
@@ -45,37 +46,17 @@ class AdCampaignController extends Controller
         ]);
     }
 
-    public function overview(Request $request): JsonResponse
+    public function overview(Request $request, AdMetrics $metrics): JsonResponse
     {
-        $days  = min(90, max(1, (int) $request->query('days', 30)));
-        $since = AdClock::now()->subDays($days - 1)->toDateString();
-        $base  = DB::table('sponsorship_daily_stats as d')
-            ->join('sponsorships as s', 's.id', '=', 'd.sponsorship_id')
-            ->where('s.seller_id', $request->user()->id)->where('d.date', '>=', $since);
-
-        $daily = (clone $base)->groupBy('d.date')->orderBy('d.date')
-            ->selectRaw('d.date, SUM(d.impressions) AS impressions, SUM(d.clicks) AS clicks, SUM(d.cost) AS cost, SUM(d.orders) AS orders, SUM(d.revenue) AS revenue')
-            ->get()->map(fn ($r) => [
-                'date' => (string) $r->date, 'impressions' => (int) $r->impressions, 'clicks' => (int) $r->clicks,
-                'cost' => round((float) $r->cost, 3), 'orders' => (int) $r->orders, 'revenue' => round((float) $r->revenue, 3),
-            ]);
-
-        $spend   = round((float) $daily->sum('cost'), 3);
-        $revenue = round((float) $daily->sum('revenue'), 3);
-        $clicks  = (int) $daily->sum('clicks');
-        $imp     = (int) $daily->sum('impressions');
-        $orders  = (int) $daily->sum('orders');
+        $days = min(90, max(1, (int) $request->query('days', 30)));
+        $to   = AdClock::today();
+        $from = AdClock::now()->subDays($days - 1)->toDateString();
+        $ids  = Sponsorship::forSeller($request->user()->id)->pluck('id')->all();
 
         return response()->json(['success' => true, 'data' => [
-            'days'   => $days,
-            'totals' => [
-                'spend' => $spend, 'impressions' => $imp, 'clicks' => $clicks,
-                'ctr' => $imp > 0 ? round($clicks / $imp, 4) : null,
-                'orders' => $orders, 'revenue' => $revenue,
-                'roas' => $spend > 0 ? round($revenue / $spend, 2) : null,
-                'cost_per_order' => $orders > 0 ? round($spend / $orders, 3) : null,
-            ],
-            'daily'  => $daily,
+            'days'           => $days,
+            'totals'         => $metrics->summary($ids, $from, $to),
+            'daily'          => $metrics->daily($ids, $from, $to),
             'open_campaigns' => Sponsorship::forSeller($request->user()->id)->open()->count(),
         ]]);
     }
@@ -87,34 +68,16 @@ class AdCampaignController extends Controller
         return $this->campaignResponse($campaign, 201);
     }
 
-    public function show(Request $request, int $id): JsonResponse
+    public function show(Request $request, int $id, AdMetrics $metrics): JsonResponse
     {
         $campaign = $this->find($request, $id);
-        $since    = AdClock::now()->subDays(29)->toDateString();
-
-        $daily = DB::table('sponsorship_daily_stats')->where('sponsorship_id', $campaign->id)->where('date', '>=', $since)
-            ->groupBy('date')->orderBy('date')
-            ->selectRaw('date, SUM(impressions) AS impressions, SUM(clicks) AS clicks, SUM(cost) AS cost, SUM(orders) AS orders, SUM(revenue) AS revenue')
-            ->get()->map(fn ($r) => [
-                'date' => (string) $r->date, 'impressions' => (int) $r->impressions, 'clicks' => (int) $r->clicks,
-                'cost' => round((float) $r->cost, 3), 'orders' => (int) $r->orders, 'revenue' => round((float) $r->revenue, 3),
-            ]);
-
-        $placements = DB::table('sponsorship_daily_stats')->where('sponsorship_id', $campaign->id)
-            ->groupBy('placement')
-            ->selectRaw('placement, SUM(impressions) AS impressions, SUM(clicks) AS clicks, SUM(cost) AS cost, SUM(orders) AS orders, SUM(revenue) AS revenue')
-            ->get()->map(fn ($r) => [
-                'placement' => $r->placement, 'impressions' => (int) $r->impressions, 'clicks' => (int) $r->clicks,
-                'ctr' => $r->impressions > 0 ? round($r->clicks / $r->impressions, 4) : null,
-                'cost' => round((float) $r->cost, 3), 'orders' => (int) $r->orders, 'revenue' => round((float) $r->revenue, 3),
-            ]);
 
         return response()->json([
             'success' => true,
             'data'    => (new AdCampaignResource($campaign))->resolve() + [
-                'summary'    => $this->campaigns->summary($campaign),
-                'daily'           => $daily,
-                'placement_stats' => $placements,
+                'summary'         => $this->campaigns->summary($campaign),
+                'daily'           => $metrics->daily([$campaign->id], AdClock::now()->subDays(29)->toDateString(), AdClock::today()),
+                'placement_stats' => $metrics->byPlacement([$campaign->id]),
             ],
         ]);
     }
@@ -143,6 +106,12 @@ class AdCampaignController extends Controller
             'success' => true,
             'data'    => (new AdCampaignResource($campaign->load(['product', 'product.primaryImage'])))->resolve() + ['refunded' => 0.0],
         ]);
+    }
+
+    private function preloadMetrics($campaigns): void
+    {
+        $all = app(AdMetrics::class)->perCampaign($campaigns->pluck('id')->all());
+        $campaigns->each(fn (Sponsorship $c) => $c->metrics = $all[$c->id]);
     }
 
     private function find(Request $request, int $id): Sponsorship

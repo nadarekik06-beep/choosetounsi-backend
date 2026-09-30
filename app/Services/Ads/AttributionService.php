@@ -4,7 +4,6 @@ namespace App\Services\Ads;
 
 use App\Models\Order;
 use App\Models\OrderAdAttribution;
-use App\Models\Sponsorship;
 use App\Models\SponsorshipEvent;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -12,14 +11,13 @@ use Illuminate\Support\Facades\Log;
 /**
  * Orders credited to ads — only when the buyer actually clicked the ad.
  *
- *   order created   → each line whose product the buyer clicked (last click, within
- *                     ads.attribution_days, billable — or any click for legacy prepaid
- *                     campaigns) gets a pending attribution
- *   delivered / completed → converted once: one conversion event per campaign and order,
- *                     campaign counters and daily stats updated
- *   cancelled / refunded  → reversed: counters and stats taken back
+ * At checkout, each order line whose product the buyer (account or browser session)
+ * clicked as an ad gets one attribution row to that campaign: the last valid
+ * (countable) click on that product within ads.attribution_days before the order.
+ * Idempotent (unique order_item_id).
  *
- * Every step is idempotent (unique order_item_id and (campaign, order, event)).
+ * Nothing else happens here: whether the order still counts (not cancelled or
+ * refunded) is read live from the order by AdMetrics, so no status hook is needed.
  */
 class AttributionService
 {
@@ -44,7 +42,7 @@ class AttributionService
                     ->join('sponsorships as s', 's.id', '=', 'sponsorship_events.sponsorship_id')
                     ->where('s.product_id', $item->product_id)
                     ->where('sponsorship_events.event', SponsorshipEvent::CLICK)
-                    ->where(fn ($q) => $q->where('sponsorship_events.billable', true)->orWhere('s.pricing_model', Sponsorship::PRICING_LEGACY))
+                    ->where('sponsorship_events.countable', true)
                     ->whereBetween('sponsorship_events.created_at', [$since, $orderedAt])
                     ->where(function ($q) use ($order, $sessionId) {
                         if ($order->user_id) {
@@ -79,103 +77,5 @@ class AttributionService
             Log::warning('[AttributionService] recordOrder #' . $order->id . ': ' . $e->getMessage());
             return 0;
         }
-    }
-
-    /** React to an order status change (OrderObserver). */
-    public function onStatusChange(Order $order, string $status): void
-    {
-        try {
-            if (in_array($status, ['delivered', 'completed'], true)) {
-                $this->convert($order);
-            } elseif (in_array($status, ['cancelled', 'refunded'], true)) {
-                $this->reverse($order);
-            }
-        } catch (\Throwable $e) {
-            Log::warning('[AttributionService] status ' . $status . ' #' . $order->id . ': ' . $e->getMessage());
-        }
-    }
-
-    public function convert(Order $order): void
-    {
-        DB::transaction(function () use ($order) {
-            $pending = OrderAdAttribution::where('order_id', $order->id)
-                ->where('status', OrderAdAttribution::STATUS_PENDING)->lockForUpdate()->get();
-
-            foreach ($pending->groupBy('sponsorship_id') as $campaignId => $rows) {
-                $revenue = round((float) $rows->sum('revenue'), 3);
-                $click   = SponsorshipEvent::find($rows->first()->click_event_id);
-
-                $inserted = DB::table('sponsorship_events')->insertOrIgnore([
-                    'sponsorship_id' => $campaignId,
-                    'event'          => SponsorshipEvent::CONVERSION,
-                    'placement'      => $click->placement ?? 'unknown',
-                    'user_id'        => $order->user_id,
-                    'session_id'     => $click->session_id ?? null,
-                    'request_id'     => $click->request_id ?? '00000000-0000-0000-0000-000000000000',
-                    'billable'       => false,
-                    'order_id'       => $order->id,
-                    'revenue'        => $revenue,
-                    'click_event_id' => $click->id ?? null,
-                    'created_at'     => now(),
-                ]);
-
-                if ($inserted) {
-                    Sponsorship::whereKey($campaignId)->update([
-                        'conversions'        => DB::raw('conversions + 1'),
-                        'attributed_orders'  => DB::raw('attributed_orders + 1'),
-                        'attributed_revenue' => DB::raw('attributed_revenue + ' . $revenue),
-                    ]);
-                    AdStats::add((int) $campaignId, $click->placement ?? 'unknown', ['orders' => 1, 'revenue' => $revenue]);
-                }
-            }
-
-            OrderAdAttribution::whereIn('id', $pending->pluck('id'))
-                ->update(['status' => OrderAdAttribution::STATUS_CONVERTED, 'converted_at' => now()]);
-        });
-    }
-
-    public function reverse(Order $order): void
-    {
-        DB::transaction(function () use ($order) {
-            $rows = OrderAdAttribution::where('order_id', $order->id)
-                ->whereIn('status', [OrderAdAttribution::STATUS_PENDING, OrderAdAttribution::STATUS_CONVERTED])
-                ->lockForUpdate()->get();
-
-            foreach ($rows->where('status', OrderAdAttribution::STATUS_CONVERTED)->groupBy('sponsorship_id') as $campaignId => $group) {
-                $conversion = SponsorshipEvent::where('sponsorship_id', $campaignId)->where('order_id', $order->id)
-                    ->where('event', SponsorshipEvent::CONVERSION)->first();
-                if (!$conversion) {
-                    continue;
-                }
-
-                $inserted = DB::table('sponsorship_events')->insertOrIgnore([
-                    'sponsorship_id' => $campaignId,
-                    'event'          => SponsorshipEvent::CONVERSION_REVERSED,
-                    'placement'      => $conversion->placement,
-                    'user_id'        => $order->user_id,
-                    'request_id'     => $conversion->request_id,
-                    'billable'       => false,
-                    'order_id'       => $order->id,
-                    'revenue'        => $conversion->revenue,
-                    'click_event_id' => $conversion->click_event_id,
-                    'created_at'     => now(),
-                ]);
-
-                if ($inserted) {
-                    $revenue = (float) $conversion->revenue;
-                    Sponsorship::whereKey($campaignId)->update([
-                        'conversions'        => DB::raw('GREATEST(CAST(conversions AS SIGNED) - 1, 0)'),
-                        'attributed_orders'  => DB::raw('GREATEST(CAST(attributed_orders AS SIGNED) - 1, 0)'),
-                        'attributed_revenue' => DB::raw('GREATEST(attributed_revenue - ' . $revenue . ', 0)'),
-                    ]);
-                    // Taken back from the day the conversion was counted.
-                    AdStats::add((int) $campaignId, $conversion->placement, ['orders' => -1, 'revenue' => -$revenue],
-                        AdClock::dateOf($conversion->created_at));
-                }
-            }
-
-            OrderAdAttribution::whereIn('id', $rows->pluck('id'))
-                ->update(['status' => OrderAdAttribution::STATUS_REVERSED, 'reversed_at' => now()]);
-        });
     }
 }

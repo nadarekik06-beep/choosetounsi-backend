@@ -45,14 +45,14 @@ class AdOptimizer
         $ageDays   = $c->start_at ? $c->start_at->diffInDays(now()) : 0;
         $old       = (array) ($c->optimizer ?? []);
 
-        $rows = DB::table('sponsorship_daily_stats')->where('sponsorship_id', $c->id)
-            ->groupBy('placement')
-            ->get(['placement', DB::raw('SUM(impressions) i'), DB::raw('SUM(clicks) c'), DB::raw('SUM(cost) cost'),
-                   DB::raw('SUM(orders) o'), DB::raw('SUM(revenue) rev')]);
-        $imp = (int) $rows->sum('i');
-        $clk = (int) $rows->sum('c');
-        $cost = (float) $rows->sum('cost');
-        $rev = (float) $rows->sum('rev');
+        $metrics = app(AdMetrics::class);
+        $rows  = collect($metrics->byPlacement([$c->id]))
+            ->map(fn ($r) => (object) ['placement' => $r['placement'], 'i' => $r['impressions'], 'c' => $r['clicks'], 'o' => $r['orders']]);
+        $total = $metrics->summary([$c->id]);
+        $imp  = $total['impressions'];
+        $clk  = $total['clicks'];
+        $cost = $total['spend'];
+        $rev  = $total['revenue'];
 
         $tips = [];
         $weights = [];

@@ -47,8 +47,8 @@ class Kernel extends ConsoleKernel
         $schedule->command('ads:stock-watch')->everyFifteenMinutes()->withoutOverlapping();
         // Campaign check-up: tips, placement weights, low-performance alerts.
         $schedule->command('ads:optimize')->dailyAt('04:00')->timezone(config('ads.timezone'))->withoutOverlapping()->runInBackground();
-        // Daily stats and campaign counters rebuilt from events.
-        $schedule->command('ads:reconcile-stats')->dailyAt('03:45')->timezone(config('ads.timezone'))->withoutOverlapping()->runInBackground();
+        // Click flags, attributions, daily stats and campaign counters rebuilt from raw data.
+        $schedule->command('ads:rebuild-stats')->dailyAt('03:45')->timezone(config('ads.timezone'))->withoutOverlapping()->runInBackground();
         // Marketing e-mails (opt-in only; queued — needs php artisan queue:work).
         $digest = $this->digestSchedule();
         $schedule->command('ads:send-digest')

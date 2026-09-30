@@ -79,4 +79,56 @@ trait MakesAds
         SubscriptionPlan::flushCache();
         return $slug;
     }
+
+    /**
+     * Raw ad activity as the app writes it (events, a ledger charge, credited orders),
+     * for tests that need volume: {impressions, clicks, cost, orders, revenue}.
+     */
+    protected function rawActivity(\App\Models\Sponsorship $c, string $placement, array $n, ?\Carbon\Carbon $at = null): void
+    {
+        $at ??= now();
+        $n += ['impressions' => 0, 'clicks' => 0, 'cost' => 0, 'orders' => 0, 'revenue' => 0];
+        $row = fn (string $event, array $extra = []) => $extra + [
+            'sponsorship_id' => $c->id, 'event' => $event, 'placement' => $placement, 'user_id' => null,
+            'session_id' => (string) Str::uuid(), 'request_id' => (string) Str::uuid(), 'billable' => false,
+            'countable' => true, 'cost' => 0, 'created_at' => $at,
+        ];
+        for ($i = 0; $i < $n['impressions']; $i++) {
+            DB::table('sponsorship_events')->insert($row('impression'));
+        }
+        $clickIds = [];
+        for ($i = 0; $i < $n['clicks']; $i++) {
+            $clickIds[] = DB::table('sponsorship_events')->insertGetId($row('click', [
+                'billable' => true, 'cost' => round($n['cost'] / $n['clicks'], 3),
+            ]));
+        }
+        if ($n['cost'] > 0) {
+            // One click_charge row per campaign and ad day, as AdWalletService keeps it.
+            $day = \App\Services\Ads\AdClock::dateOf($at);
+            $tx = DB::table('ad_wallet_transactions')->where(['sponsorship_id' => $c->id, 'type' => 'click_charge', 'rollup_date' => $day]);
+            $tx->exists()
+                ? $tx->update(['amount' => DB::raw('amount - ' . (float) $n['cost'])])
+                : DB::table('ad_wallet_transactions')->insert([
+                    'seller_id' => $c->seller_id, 'type' => 'click_charge', 'amount' => -$n['cost'], 'credit_amount' => 0,
+                    'balance_after' => 0, 'credit_after' => 0, 'sponsorship_id' => $c->id, 'rollup_date' => $day,
+                    'created_at' => $at, 'updated_at' => $at,
+                ]);
+        }
+        for ($i = 0; $i < $n['orders']; $i++) {
+            $revenue = round($n['revenue'] / $n['orders'], 3);
+            $orderId = DB::table('orders')->insertGetId([
+                'user_id' => $this->makeUser()->id, 'order_number' => 'RAW-' . Str::random(10), 'total_amount' => $revenue,
+                'status' => 'pending', 'created_at' => $at, 'updated_at' => $at,
+            ]);
+            $itemId = DB::table('order_items')->insertGetId([
+                'order_id' => $orderId, 'product_id' => $c->product_id, 'quantity' => 1, 'price' => $revenue,
+                'total' => $revenue, 'net_total' => $revenue, 'created_at' => $at, 'updated_at' => $at,
+            ]);
+            DB::table('order_ad_attributions')->insert([
+                'order_id' => $orderId, 'order_item_id' => $itemId, 'sponsorship_id' => $c->id,
+                'click_event_id' => $clickIds[$i] ?? null, 'revenue' => $revenue, 'status' => 'pending',
+                'created_at' => $at, 'updated_at' => $at,
+            ]);
+        }
+    }
 }

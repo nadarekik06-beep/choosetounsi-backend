@@ -342,28 +342,10 @@ class SponsorshipService
 
     // ── Reporting ───────────────────────────────────────────────────────────
 
-    /** @return array{spend: float, paid_spend: float, credit_spend: float, clicks: int, impressions: int, orders: int, revenue: float, roas: ?float, cost_per_order: ?float} */
+    /** All-time results of one campaign (AdMetrics definitions). */
     public function summary(Sponsorship $c): array
     {
-        $ledger = Tx::where('sponsorship_id', $c->id)->whereIn('type', [Tx::TYPE_CLICK_CHARGE, Tx::TYPE_REFUND])
-            ->selectRaw('SUM(amount) AS total, SUM(credit_amount) AS credit')->first();
-
-        $spend  = round(-(float) ($ledger->total ?? 0), 3);
-        $credit = round(-(float) ($ledger->credit ?? 0), 3);
-        $revenue = (float) $c->attributed_revenue;
-        $orders  = (int) $c->attributed_orders;
-
-        return [
-            'spend'          => $spend,
-            'paid_spend'     => round($spend - $credit, 3),
-            'credit_spend'   => $credit,
-            'clicks'         => (int) $c->clicks,
-            'impressions'    => (int) $c->impressions,
-            'orders'         => $orders,
-            'revenue'        => round($revenue, 3),
-            'roas'           => $spend > 0 ? round($revenue / $spend, 2) : null,
-            'cost_per_order' => $orders > 0 ? round($spend / $orders, 3) : null,
-        ];
+        return app(AdMetrics::class)->summary([$c->id]);
     }
 
     // ── Internals ───────────────────────────────────────────────────────────

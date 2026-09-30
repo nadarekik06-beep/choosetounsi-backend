@@ -44,6 +44,28 @@ class AdClock
         return $instant->copy()->setTimezone(config('app.timezone'));
     }
 
+    /**
+     * SQL for the ad-time date of a stored timestamp column. Africa/Tunis has no DST,
+     * so a fixed offset is exact and MySQL needs no time zone tables.
+     */
+    public static function sqlDate(string $column): string
+    {
+        $from = Carbon::now(config('app.timezone'))->format('P');
+        return "DATE(CONVERT_TZ({$column}, '{$from}', '" . self::now()->format('P') . "'))";
+    }
+
+    /** First stored instant of an ad-time date (Y-m-d). */
+    public static function dayStart(string $date): Carbon
+    {
+        return self::toStorage(Carbon::parse($date, self::timezone())->startOfDay());
+    }
+
+    /** Last stored instant of an ad-time date (Y-m-d). */
+    public static function dayEnd(string $date): Carbon
+    {
+        return self::toStorage(Carbon::parse($date, self::timezone())->endOfDay());
+    }
+
     /** A stored instant's date (Y-m-d) in ad time. */
     public static function dateOf(Carbon $instant): string
     {

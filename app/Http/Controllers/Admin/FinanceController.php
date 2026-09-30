@@ -61,7 +61,7 @@ class FinanceController extends Controller
             ->first();
 
         // ── Ad revenue: paid click charges (plan credit reported apart, it isn't money) ──
-        $adRevenue = app(\App\Services\Ads\AdRevenue::class)->between(
+        $adRevenue = app(\App\Services\Ads\AdMetrics::class)->platformRevenue(
             $dateRange ? \App\Services\Ads\AdClock::dateOf($dateRange[0]) : null,
             $dateRange ? \App\Services\Ads\AdClock::dateOf($dateRange[1]) : null,
         );
