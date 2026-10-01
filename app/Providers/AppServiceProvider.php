@@ -37,13 +37,9 @@ class AppServiceProvider extends ServiceProvider
         SellerOrder::observe(SellerOrderObserver::class);
 
         // Search index sync (Meilisearch); Scout itself syncs the Product documents.
-        // (ProductAttributeValue lives in Productattributevalue.php: only autoloadable through an
-        // optimized classmap on case-sensitive filesystems, hence the class_exists guard.)
         foreach ([Product::class, \App\Models\ProductImage::class, \App\Models\ProductAttributeValue::class,
                   \App\Models\Category::class, \App\Models\Subcategory::class] as $model) {
-            if (class_exists($model)) {
-                $model::observe(\App\Observers\SearchIndexObserver::class);
-            }
+            $model::observe(\App\Observers\SearchIndexObserver::class);
         }
 
         // Requests to the embedding service (choosetounsi-ai-service) carry its shared secret:
