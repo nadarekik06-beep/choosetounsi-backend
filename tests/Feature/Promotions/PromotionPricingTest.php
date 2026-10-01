@@ -362,6 +362,50 @@ class PromotionPricingTest extends TestCase
         $this->assertSame(2, $flash->fresh()->flash_stock_used);
     }
 
+    public function test_abandoned_card_order_is_cancelled_after_30_minutes_and_gives_everything_back(): void
+    {
+        $flash  = $this->flashSale($this->jeans, ['flash_stock' => 5]);
+        $coupon = \App\Models\Coupon::create([
+            'seller_id' => $this->seller->id, 'code' => 'BACK' . Str::upper(Str::random(5)),
+            'discount_type' => 'fixed', 'discount_value' => 5, 'is_active' => true,
+        ]);
+        // Coupons skip promoted products: it applies to the plain one in the same order
+        $plain = $this->makeProduct("Plain {$this->token}", 40);
+        $coupon->products()->attach($plain->id);
+        Cart::create(['user_id' => $this->customer->id, 'product_id' => $this->jeans->id, 'quantity' => 2]);
+        Cart::create(['user_id' => $this->customer->id, 'product_id' => $plain->id, 'quantity' => 1]);
+        $card = $this->asCustomer()->postJson('/api/checkout', array_merge($this->address(), [
+            'payment_method' => 'card', 'coupon_codes' => [$coupon->code],
+        ]))->assertCreated()->json();
+        $cod = $this->asCustomer()->postJson('/api/checkout/buy-now', $this->address() + [
+            'product_id' => $this->jeans->id, 'quantity' => 1,
+        ])->assertCreated()->json();
+        $this->assertSame(3, $flash->fresh()->flash_stock_used);
+        $this->assertSame(27, $this->jeans->fresh()->stock);
+        $this->assertSame(1, $coupon->fresh()->usage_count);
+
+        // 29 minutes: still waiting for the payment
+        $this->travel(29)->minutes();
+        $this->artisan('orders:cancel-abandoned-card')->assertExitCode(0);
+        $this->assertSame('pending', Order::find($card['order_id'])->status);
+
+        $this->travel(2)->minutes();
+        $this->artisan('orders:cancel-abandoned-card')->assertExitCode(0);
+
+        $order = Order::find($card['order_id']);
+        $this->assertSame('cancelled', $order->status);
+        $this->assertSame(['cancelled'], $order->sellerOrders->pluck('status')->unique()->values()->all());
+        $this->assertSame(1, $flash->fresh()->flash_stock_used, 'card order units released, COD order keeps its unit');
+        $this->assertSame(29, $this->jeans->fresh()->stock);
+        $this->assertSame(30, $plain->fresh()->stock);
+        $this->assertSame(0, $coupon->fresh()->usage_count);
+        $this->assertSame('pending', Order::find($cod['order_id'])->status, 'cash on delivery is never auto-cancelled');
+
+        // Running again changes nothing
+        $this->artisan('orders:cancel-abandoned-card')->assertExitCode(0);
+        $this->assertSame(29, $this->jeans->fresh()->stock);
+    }
+
     // ── Paginated lists filter and sort on the final price, in SQL ─────────
 
     public function test_products_list_filters_and_sorts_on_the_final_price_with_pagination(): void

@@ -151,6 +151,15 @@ class PaymentController extends Controller
             return; // Idempotent — already processed
         }
 
+        // Cancelled meanwhile (orders:cancel-abandoned-card): its stock and flash
+        // units are gone, so it can't ship. Record the payment and flag a refund.
+        if ($order->status === 'cancelled') {
+            \Illuminate\Support\Facades\DB::table('orders')->where('id', $order->id)
+                ->update(['payment_status' => 'paid', 'updated_at' => now()]);
+            Log::error("[Stripe Webhook] Order #{$order->order_number} was paid after being cancelled — refund it manually.");
+            return;
+        }
+
         \Illuminate\Support\Facades\DB::table('orders')
             ->where('id', $order->id)
             ->update([

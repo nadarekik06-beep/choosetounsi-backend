@@ -37,6 +37,8 @@ class Kernel extends ConsoleKernel
        });
         // ── Promotions sync (existing) ─────────────────────────────────────
         $schedule->command('promotions:sync')->everyMinute();
+        // Unpaid card orders older than 30 min: stock, flash quota and coupon use go back
+        $schedule->command('orders:cancel-abandoned-card')->everyFiveMinutes()->withoutOverlapping();
 
         // ── Sponsoring ──────────────────────────────────────────────────────
         // Ends overdue sponsorships (read paths only filter, they never write).

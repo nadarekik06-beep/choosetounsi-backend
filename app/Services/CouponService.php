@@ -145,4 +145,15 @@ class CouponService
             $locked->increment('usage_count');
         });
     }
+
+    /** Undo redeem() for a cancelled order: the customer gets the coupon use back. */
+    public function releaseForOrder(Order $order): void
+    {
+        DB::transaction(function () use ($order) {
+            foreach (CouponRedemption::where('order_id', $order->id)->lockForUpdate()->get() as $redemption) {
+                Coupon::where('id', $redemption->coupon_id)->where('usage_count', '>', 0)->decrement('usage_count');
+                $redemption->delete();
+            }
+        });
+    }
 }
