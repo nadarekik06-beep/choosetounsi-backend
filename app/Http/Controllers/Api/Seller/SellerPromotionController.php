@@ -129,7 +129,6 @@ if (!empty($businessErrors)) {
             ]);
 
             $promo->products()->attach($productIds);
-            $this->promoService->bustCacheForProducts($productIds);
 
             DB::commit();
 
@@ -167,13 +166,7 @@ if (!empty($businessErrors)) {
             ], fn($v) => $v !== null));
 
             if ($request->has('product_ids')) {
-                $productIds = array_unique($request->product_ids);
-                $promo->products()->sync($productIds);
-                $this->promoService->bustCacheForProducts($productIds);
-            } else {
-                $this->promoService->bustCacheForProducts(
-                    $promo->products->pluck('id')->toArray()
-                );
+                $promo->products()->sync(array_unique($request->product_ids));
             }
 
             DB::commit();
@@ -194,9 +187,7 @@ if (!empty($businessErrors)) {
     public function destroy(Request $request, int $id)
     {
         $promo = Promotion::where('seller_id', $request->user()->id)->findOrFail($id);
-        $productIds = $promo->products->pluck('id')->toArray();
         $promo->delete();
-        $this->promoService->bustCacheForProducts($productIds);
         return response()->json(['success' => true, 'message' => __('seller.promotion.deleted')]);
     }
 

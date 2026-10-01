@@ -537,8 +537,9 @@ class ProductController extends Controller
             ->whereNull('p.deleted_at')
             ->get();
 
+        $pricing = $this->promoService->priceMany($rows);
         $indexed = $rows->keyBy('id');
-        $ordered = collect($ids)->map(function ($id) use ($indexed) {
+        $ordered = collect($ids)->map(function ($id) use ($indexed, $pricing) {
             $p = $indexed->get($id);
             if (!$p) return null;
             $p->category_name    = \App\Support\Localization::column($p, 'category_name');
@@ -558,7 +559,7 @@ class ProductController extends Controller
                 'subcategory_name' => $p->subcategory_name,
                 'subcategory_slug' => $p->subcategory_slug,
                 'primary_image'    => $p->primary_image ? Storage::url($p->primary_image) : null,
-            ];
+            ] + $pricing[$p->id];
         })->filter()->values();
 
         return response()->json(['success' => true, 'products' => $ordered, 'count' => $ordered->count()]);

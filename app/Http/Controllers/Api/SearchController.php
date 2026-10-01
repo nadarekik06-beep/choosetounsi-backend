@@ -4,6 +4,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\PromotionService;
 use App\Services\Recommendation\InteractionTracker;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -416,11 +417,12 @@ class SearchController extends Controller
         if ($products->isEmpty()) return [];
 
         // Preserve AI ranking order
+        $pricing = app(PromotionService::class)->priceMany($products);
         $indexed = $products->keyBy('id');
         $ordered = [];
         foreach ($productIds as $id) {
             if ($indexed->has($id)) {
-                $ordered[] = $this->formatProduct($indexed->get($id));
+                $ordered[] = $this->formatProduct($indexed->get($id), $pricing[$id]);
             }
         }
 
@@ -434,7 +436,8 @@ class SearchController extends Controller
         return array_slice($ordered, 0, $limit);
     }
 
-    private function formatProduct(object $product): array
+    /** Search card; $pricing is the PromotionService block (final price, promo badge…). */
+    private function formatProduct(object $product, array $pricing): array
     {
         $product->category_name    = Localization::column($product, 'category_name');
         $product->subcategory_name = Localization::column($product, 'subcategory_name');
@@ -456,7 +459,7 @@ class SearchController extends Controller
             'primary_image'    => $product->primary_image
                 ? config('app.url') . '/storage/' . $product->primary_image
                 : null,
-        ];
+        ] + $pricing;
     }
 
     private function fallbackTextSearch(string $query, array $filters, int $limit): array
@@ -497,8 +500,11 @@ class SearchController extends Controller
         if (!empty($filters['min_price']))   $dbQuery->where('p.price', '>=', $filters['min_price']);
         if (!empty($filters['max_price']))   $dbQuery->where('p.price', '<=', $filters['max_price']);
 
-        return $dbQuery->orderByDesc('relevance_score')->orderByDesc('p.featured')->orderByDesc('p.views')
-            ->limit($limit)->get()->map(fn($p) => $this->formatProduct($p))->toArray();
+        $products = $dbQuery->orderByDesc('relevance_score')->orderByDesc('p.featured')->orderByDesc('p.views')
+            ->limit($limit)->get();
+        $pricing  = app(PromotionService::class)->priceMany($products);
+
+        return $products->map(fn($p) => $this->formatProduct($p, $pricing[$p->id]))->toArray();
     }
 
     /** Personalization signal: remember what was searched and which category it pointed at. */

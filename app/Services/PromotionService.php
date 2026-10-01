@@ -7,66 +7,127 @@ use App\Models\ProductImage;
 use App\Models\Promotion;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
+/**
+ * The one place product prices meet promotions. Every storefront payload, the
+ * cart, checkout, the chatbot and the admin review price through here.
+ *
+ * Active promotion: status active|scheduled (dates decide, never the cron),
+ * starts_at <= now < ends_at, flash quota not used up. Dates are stored and
+ * compared in UTC, the same instant as Africa/Tunis wall-clock time.
+ *
+ * When several apply: flash sale first, then higher `priority`, then newest.
+ *
+ * Pricing block (see pricing()):
+ *   original_price   crossed-out price: lowest price of the last 30 days when discounted
+ *   final_price      what the customer pays (effective_price is the same number, kept for old callers)
+ *   discount_amount, discount_percent
+ *   promo_type       flash_sale | promotion | null
+ *   promo_label      the promotion's name
+ *   ends_at          ISO-8601, for countdowns
+ *   promotion        full promotion object (formatPromotion) or null
+ */
 class PromotionService
 {
+    // ── Resolution ────────────────────────────────────────────────────────
+
     /**
-     * Returns the effective price data for a product.
-     * NEVER modifies the product record.
+     * Active promotion per product, in one query.
      *
-     * @return array{
-     *   original_price: float,
-     *   effective_price: float,
-     *   discount_amount: float,
-     *   promotion: array|null
-     * }
+     * @param  int[] $productIds
+     * @return array<int, Promotion> product id => winning promotion (missing = none)
      */
-    public function getEffectivePrice(Product $product, ?float $basePrice = null, ?int $variantId = null): array
+    public function activePromotionsFor(array $productIds): array
     {
-        $currentPrice = $basePrice ?? (float) $product->price;
-        $promotion    = $this->getActivePromotionForProduct($product->id);
+        $ids = array_values(array_unique(array_filter(array_map('intval', $productIds))));
+        if (!$ids) return [];
 
-        if (!$promotion) {
-            return [
-                'original_price'  => $currentPrice,
-                'effective_price' => $currentPrice,
-                'discount_amount' => 0.0,
-                'promotion'       => null,
-            ];
+        $promotions = Promotion::active()
+            ->join('promotion_products as pp', 'pp.promotion_id', '=', 'promotions.id')
+            ->whereIn('pp.product_id', $ids)
+            ->orderByRaw("CASE WHEN promotions.type = 'flash_sale' THEN 0 ELSE 1 END")
+            ->orderByDesc('promotions.priority')
+            ->orderByDesc('promotions.created_at')
+            ->orderByDesc('promotions.id')
+            ->get(['promotions.*', 'pp.product_id as priced_product_id']);
+
+        $out = [];
+        foreach ($promotions as $promo) {
+            $out[(int) $promo->priced_product_id] ??= $promo;
         }
+        return $out;
+    }
 
-        // Anti fake-discount: the crossed-out price is the lowest price of the
-        // last 30 days, so raising the price before a promotion gains nothing.
-        $originalPrice = $this->referencePrice($product, $currentPrice, $variantId);
-        $discounted    = $this->applyDiscount($originalPrice, $promotion);
-        $discounted = max(0, $discounted);
+    public function getActivePromotionForProduct(int $productId): ?Promotion
+    {
+        return $this->activePromotionsFor([$productId])[$productId] ?? null;
+    }
 
-        return [
-            'original_price'  => $originalPrice,
-            'effective_price' => round($discounted, 3),
-            'discount_amount' => round($originalPrice - $discounted, 3),
-            'promotion'       => $this->formatPromotion($promotion),
-        ];
+    // ── Pricing ───────────────────────────────────────────────────────────
+
+    /**
+     * Pricing blocks for a list of products (base price, no variant): one promotion
+     * query and two price-history queries whatever the list size.
+     *
+     * @param  iterable $products models or DB rows with `id` and `price`
+     * @return array<int, array> product id => pricing block
+     */
+    public function priceMany(iterable $products): array
+    {
+        $prices = [];
+        foreach ($products as $p) {
+            $prices[(int) $p->id] = (float) $p->price;
+        }
+        if (!$prices) return [];
+
+        $promos     = $this->activePromotionsFor(array_keys($prices));
+        $references = PriceHistory::lowestMany(array_intersect_key($prices, $promos));
+
+        $out = [];
+        foreach ($prices as $id => $price) {
+            $promo    = $promos[$id] ?? null;
+            $out[$id] = $this->pricing($price, $promo ? $references[$id] : $price, $promo);
+        }
+        return $out;
     }
 
     /**
-     * Get the highest-priority active promotion for a product.
-     * Flash sales always outrank discounts (type priority).
-     * Within same type, higher `priority` column wins.
-     * Tie-break: most recently created.
+     * Pricing block for one product, optionally one variant's price
+     * (cart, checkout, detail page variants).
      */
-    public function getActivePromotionForProduct(int $productId): ?Promotion
+    public function getEffectivePrice(Product $product, ?float $basePrice = null, ?int $variantId = null, ?Promotion $promotion = null): array
     {
-        return Cache::remember("promo_product_{$productId}", 60, function () use ($productId) {
-            return Promotion::active()
-                ->whereHas('products', fn($q) => $q->where('products.id', $productId))
-                ->orderByRaw("CASE WHEN type = 'flash_sale' THEN 0 ELSE 1 END")
-                ->orderByDesc('priority')
-                ->orderByDesc('created_at')
-                ->first();
-        });
+        $currentPrice = $basePrice ?? (float) $product->price;
+        $promotion  ??= $this->getActivePromotionForProduct($product->id);
+
+        // Anti fake-discount: the crossed-out price is the lowest price of the
+        // last 30 days, so raising the price before a promotion gains nothing.
+        $reference = $promotion ? $this->referencePrice($product, $currentPrice, $variantId) : $currentPrice;
+
+        return $this->pricing($currentPrice, $reference, $promotion);
+    }
+
+    /**
+     * Copy a pricing block onto a product model or row, for list payloads.
+     * `price` itself is left untouched (filters and sorting read it).
+     */
+    public function attach(object $product, array $pricing): object
+    {
+        foreach ($pricing as $key => $value) {
+            $product->{$key} = $value;
+        }
+        return $product;
+    }
+
+    /** priceMany() + attach() on every item. */
+    public function attachMany(iterable $products): void
+    {
+        $pricing = $this->priceMany($products);
+        foreach ($products as $p) {
+            $this->attach($p, $pricing[(int) $p->id]);
+        }
     }
 
     /**
@@ -82,15 +143,49 @@ class PromotionService
         return PriceHistory::lowest($product->id, $variantId, $currentPrice);
     }
 
-    /**
-     * Compute discounted price.
-     */
+    private function pricing(float $currentPrice, float $reference, ?Promotion $promo): array
+    {
+        if (!$promo) {
+            return [
+                'original_price'   => round($currentPrice, 3),
+                'final_price'      => round($currentPrice, 3),
+                'effective_price'  => round($currentPrice, 3),
+                'discount_amount'  => 0.0,
+                'discount_percent' => 0,
+                'promo_type'       => null,
+                'promo_label'      => null,
+                'ends_at'          => null,
+                'promotion'        => null,
+            ];
+        }
+
+        $final  = round(max(0, $this->applyDiscount($reference, $promo)), 3);
+        $amount = round($reference - $final, 3);
+
+        return [
+            'original_price'   => round($reference, 3),
+            'final_price'      => $final,
+            'effective_price'  => $final,
+            'discount_amount'  => $amount,
+            'discount_percent' => $reference > 0 ? (int) round($amount / $reference * 100) : 0,
+            'promo_type'       => $promo->type === 'flash_sale' ? 'flash_sale' : 'promotion',
+            'promo_label'      => $promo->name,
+            'ends_at'          => $this->endsAt($promo)->toISOString(),
+            'promotion'        => $this->formatPromotion($promo),
+        ];
+    }
+
     private function applyDiscount(float $price, Promotion $promo): float
     {
         if ($promo->discount_type === 'percentage') {
             return $price * (1 - ((float) $promo->discount_value / 100));
         }
-        return max(0, $price - (float) $promo->discount_value);
+        return $price - (float) $promo->discount_value;
+    }
+
+    private function endsAt(Promotion $promo): Carbon
+    {
+        return $promo->ends_at instanceof Carbon ? $promo->ends_at : Carbon::parse($promo->ends_at);
     }
 
     /**
@@ -98,10 +193,6 @@ class PromotionService
      */
     public function formatPromotion(Promotion $promo): array
     {
-        $endsAt = $promo->ends_at instanceof Carbon
-            ? $promo->ends_at
-            : Carbon::parse($promo->ends_at);
-
         return [
             'id'                    => $promo->id,
             'type'                  => $promo->type,
@@ -111,17 +202,45 @@ class PromotionService
             'discount_label'        => $promo->discount_type === 'percentage'
                                           ? __('messages.discount.percent_off', ['value' => (int) $promo->discount_value])
                                           : __('messages.discount.amount_off', ['value' => number_format($promo->discount_value, 3)]),
-            'ends_at'               => $endsAt->toISOString(),
+            'ends_at'               => $this->endsAt($promo)->toISOString(),
             'flash_stock_remaining' => $promo->flashStockRemaining(),
             'is_flash_sale'         => $promo->type === 'flash_sale',
         ];
     }
 
+    // ── Flash-sale quota ──────────────────────────────────────────────────
+
+    /**
+     * Take `$qty` units from a flash sale's quota. Atomic: fails when fewer than
+     * `$qty` units are left. Promotions without a quota always succeed.
+     */
+    public function reserveFlashStock(int $promotionId, int $qty): bool
+    {
+        return DB::table('promotions')
+            ->where('id', $promotionId)
+            ->where(fn ($q) => $q->whereNull('flash_stock')
+                ->orWhereRaw('flash_stock_used + ? <= flash_stock', [$qty]))
+            ->update(['flash_stock_used' => DB::raw('flash_stock_used + ' . (int) $qty)]) === 1;
+    }
+
+    /** Give units back to a flash sale's quota (order cancelled, payment failed). */
+    public function releaseFlashStock(int $promotionId, int $qty): void
+    {
+        DB::table('promotions')
+            ->where('id', $promotionId)
+            ->whereNotNull('flash_stock')
+            ->update(['flash_stock_used' => DB::raw('GREATEST(0, flash_stock_used - ' . (int) $qty . ')')]);
+    }
+
+    // ── Public promotion listings (/deals, seller storefront) ─────────────
+
     /**
      * Active promotions (flash_sale + discount) with their products, formatted
      * for public API responses. Shared by /flash-sales, /discounts, and the
-     * seller storefront endpoint so the discount/pricing shape is computed
-     * in exactly one place.
+     * seller storefront endpoint.
+     *
+     * A product is listed under a promotion only when that promotion is the one
+     * it is actually priced with, so /deals never shows a price the cart won't charge.
      *
      * @param \Closure|null $filter Optional extra constraint on the Promotion query,
      *                              e.g. fn($q) => $q->where('type', 'flash_sale')
@@ -129,11 +248,7 @@ class PromotionService
      */
     public function getActivePromotionsFormatted(?\Closure $filter = null): Collection
     {
-        $now = now();
-
-        $query = Promotion::where('status', 'active')
-            ->where('starts_at', '<=', $now)
-            ->where('ends_at', '>', $now)
+        $query = Promotion::active()
             ->with([
                 'products' => fn ($q) => $q
                     ->where('is_approved', true)
@@ -150,41 +265,42 @@ class PromotionService
             ->orderBy('ends_at')
             ->get();
 
-        $allProductIds = $promotions->flatMap(fn ($promo) => $promo->products->pluck('id'))->unique()->toArray();
-        $allColorImages = ProductImage::whereIn('product_id', $allProductIds)
+        $allProducts = $promotions->flatMap(fn ($promo) => $promo->products)->unique('id')->values();
+        $pricing     = $this->priceMany($allProducts);
+        $winners     = $this->activePromotionsFor($allProducts->pluck('id')->all());
+
+        $allColorImages = ProductImage::whereIn('product_id', $allProducts->pluck('id'))
             ->whereNotNull('color_option_id')
             ->select('product_id', 'image_path')
             ->get()
             ->groupBy('product_id');
 
-        return $promotions->map(function ($promo) use ($allColorImages) {
-            $products = $promo->products->map(function ($product) use ($allColorImages) {
-                $promoData = $this->getEffectivePrice($product);
-
-                $variantImages = [];
-                foreach ($allColorImages->get($product->id, collect()) as $img) {
-                    $url = Storage::url($img->image_path);
-                    if (!in_array($url, $variantImages, true)) {
-                        $variantImages[] = $url;
+        return $promotions->map(function ($promo) use ($allColorImages, $pricing, $winners) {
+            $products = $promo->products
+                ->filter(fn ($product) => $product->stock > 0
+                    && ($winners[$product->id]->id ?? null) === $promo->id)
+                ->map(function ($product) use ($allColorImages, $pricing) {
+                    $variantImages = [];
+                    foreach ($allColorImages->get($product->id, collect()) as $img) {
+                        $url = Storage::url($img->image_path);
+                        if (!in_array($url, $variantImages, true)) {
+                            $variantImages[] = $url;
+                        }
                     }
-                }
 
-                return [
-                    'id'                => $product->id,
-                    'name'              => $product->name,
-                    'slug'              => $product->slug,
-                    'price'             => (float) $product->price,
-                    'original_price'    => $promoData['original_price'],
-                    'effective_price'   => $promoData['effective_price'],
-                    'discount_amount'   => $promoData['discount_amount'],
-                    'primary_image_url' => $product->primary_image_url,
-                    'variant_images'    => $variantImages,
-                    'stock'             => $product->stock,
-                    'seller'            => $product->seller
-                        ? ['name' => $product->seller->name]
-                        : null,
-                ];
-            })->filter(fn ($p) => $p['stock'] > 0)->values();
+                    return [
+                        'id'                => $product->id,
+                        'name'              => $product->name,
+                        'slug'              => $product->slug,
+                        'price'             => (float) $product->price,
+                        'primary_image_url' => $product->primary_image_url,
+                        'variant_images'    => $variantImages,
+                        'stock'             => $product->stock,
+                        'seller'            => $product->seller
+                            ? ['name' => $product->seller->name]
+                            : null,
+                    ] + $pricing[$product->id];
+                })->values();
 
             if ($products->isEmpty()) return null;
 
@@ -207,15 +323,7 @@ class PromotionService
         ->values();
     }
 
-    /**
-     * Bust cache after promotion create/update/delete.
-     */
-    public function bustCacheForProducts(array $productIds): void
-    {
-        foreach ($productIds as $id) {
-            Cache::forget("promo_product_{$id}");
-        }
-    }
+    // ── Validation ────────────────────────────────────────────────────────
 
     /**
      * Validate a promotion payload against business rules.

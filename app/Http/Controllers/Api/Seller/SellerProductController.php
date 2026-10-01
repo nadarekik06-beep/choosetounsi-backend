@@ -451,7 +451,6 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         if (!$product->is_approved) {
             $this->notifyAdmins('updated', $product, $seller);
         }
-        app(\App\Services\PromotionService::class)->bustCacheForProducts([$product->id]);
         if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class, 'clearSellerCache')) {
             \App\Http\Controllers\Api\Seller\BlackPepperController::clearSellerCache($seller->id);
         }

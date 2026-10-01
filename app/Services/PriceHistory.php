@@ -48,6 +48,46 @@ class PriceHistory
         return self::$memo[$key] = round($lowest, 3);
     }
 
+    /**
+     * lowest() for many products' base prices in two queries.
+     *
+     * @param  array<int, float> $currentPrices product id => current base price
+     * @return array<int, float> product id => lowest 30-day price
+     */
+    public static function lowestMany(array $currentPrices): array
+    {
+        $out = [];
+        $ids = [];
+        foreach ($currentPrices as $id => $price) {
+            $key = "{$id}:p:" . (float) $price;
+            if (isset(self::$memo[$key])) $out[$id] = self::$memo[$key];
+            else $ids[] = (int) $id;
+        }
+        if (!$ids) return $out;
+
+        $since = now()->subDays(self::WINDOW_DAYS);
+        $base  = fn() => ProductPriceHistory::query()->whereIn('product_id', $ids)->whereNull('variant_id')->where('price', '>', 0);
+
+        $inWindow = $base()->where('changed_at', '>=', $since)
+            ->groupBy('product_id')->selectRaw('product_id, MIN(price) AS price')->pluck('price', 'product_id');
+
+        // Price already active when the window opened: each product's last row before it
+        $atStart = [];
+        foreach ($base()->where('changed_at', '<', $since)->orderByDesc('changed_at')->orderByDesc('id')
+                     ->get(['product_id', 'price']) as $row) {
+            $atStart[$row->product_id] ??= (float) $row->price;
+        }
+
+        foreach ($ids as $id) {
+            $lowest = (float) $currentPrices[$id];
+            foreach ([$inWindow[$id] ?? null, $atStart[$id] ?? null] as $p) {
+                if ($p !== null) $lowest = min($lowest, (float) $p);
+            }
+            $out[$id] = self::$memo["{$id}:p:" . (float) $currentPrices[$id]] = round($lowest, 3);
+        }
+        return $out;
+    }
+
     /** Lowest 30-day price of a product's base price, or of one variant. */
     public static function lowestFor(Product $product, ?ProductVariant $variant = null): float
     {

@@ -248,7 +248,6 @@ class ProductChangeTracker
                 $product->update(['stock' => (int) $product->variants()->sum('stock')]);
                 $product->syncActiveStatusFromVariants();
             }
-            app(PromotionService::class)->bustCacheForProducts([$product->id]);
 
             $this->record($product, $current, $admin, 'admin_revert', false);
         }

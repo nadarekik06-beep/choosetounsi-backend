@@ -34,12 +34,22 @@ class Promotion extends Model
 
     // ── Scopes ────────────────────────────────────────────────────────────
 
+    /**
+     * Statuses under which a promotion prices products. Dates decide the rest, so
+     * pricing never waits on `promotions:sync` to flip scheduled → active → expired.
+     */
+    public const PRICING_STATUSES = ['active', 'scheduled'];
+
+    /** Pricing products right now: live status, inside its window, flash quota left. */
     public function scopeActive($q)
     {
-        $now = Carbon::now();
-        return $q->where('status', 'active')
-                 ->where('starts_at', '<=', $now)
-                 ->where('ends_at',   '>',  $now);
+        $now   = Carbon::now();
+        $table = $q->getModel()->getTable();
+        return $q->whereIn("{$table}.status", self::PRICING_STATUSES)
+                 ->where("{$table}.starts_at", '<=', $now)
+                 ->where("{$table}.ends_at",   '>',  $now)
+                 ->where(fn ($q) => $q->whereNull("{$table}.flash_stock")
+                     ->orWhereColumn("{$table}.flash_stock_used", '<', "{$table}.flash_stock"));
     }
 
     public function scopeFlashSales($q) { return $q->where('type', 'flash_sale'); }
@@ -47,10 +57,12 @@ class Promotion extends Model
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
+    /** Same rule as scopeActive(), for an already loaded promotion. */
     public function isCurrentlyActive(): bool
     {
-        return $this->status === 'active'
-            && now()->between($this->starts_at, $this->ends_at);
+        return in_array($this->status, self::PRICING_STATUSES, true)
+            && $this->starts_at <= now() && $this->ends_at > now()
+            && $this->hasFlashStockRemaining();
     }
 
     public function hasFlashStockRemaining(): bool
