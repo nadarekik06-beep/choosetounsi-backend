@@ -7,14 +7,15 @@
 # Multi-word entries are fine ("huile d'olive").
 #
 # Avoid very common words that mean something else in another language
-# (French "or" = gold but also "or", French "the" = tea).
+# (French "or" = gold but also "or", French "the" = tea), and words that also name
+# another product ("basket" = sneakers in Tunisia, but also "Woven Storage Basket").
 #
 # After editing:  php artisan search:sync-settings   (the nightly reindex also picks it up)
 # Queries that find nothing are listed in the admin panel (Search > Missed queries):
 # that's the best source of new lines for this file.
 
 # ── Fashion ────────────────────────────────────────────────────────────────
-shoes, shoe, sneakers, sneaker, baskets, basket, chaussures, chaussure, running, sabbat, sabbet, sbabet, sbabit, sobbat, صباط, سباط, حذاء, احذيه, سبادري, espadrille
+shoes, shoe, sneakers, sneaker, baskets, chaussures, chaussure, running, sabbat, sabbet, sbabet, sbabit, sobbat, صباط, سباط, حذاء, احذيه, سبادري, espadrille
 sandals, sandal, sandales, sandale, nu pieds, claquettes, chlaka, chleka, شلاكه, صندل
 boots, bottes, bottines, botte, جزمه
 dress, robe, robes, roba, روبه, فستان, فساتين
@@ -38,6 +39,9 @@ necklace, pendant, collier, pendentif, عقد, سلسله, selsla
 khomsa, khamsa, خمسه, main de fatma
 gold, dore, ذهب, dheb
 silver, argent, فضه, fadha
+
+high waist, taille haute, taille haut
+wide leg, jambe large, pattes larges
 
 # ── Who it's for ──────────────────────────────────────────────────────────
 women, woman, femme, femmes, nsa, نساء, نسائي, mra, مرا
