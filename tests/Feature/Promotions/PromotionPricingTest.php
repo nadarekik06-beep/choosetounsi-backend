@@ -406,6 +406,35 @@ class PromotionPricingTest extends TestCase
         $this->assertSame(29, $this->jeans->fresh()->stock);
     }
 
+    public function test_partial_return_gives_the_returned_flash_units_back(): void
+    {
+        \Illuminate\Support\Facades\Notification::fake();
+        $flash = $this->flashSale($this->jeans, ['flash_stock' => 5]);
+        $plain = $this->makeProduct("Plain {$this->token}", 40);
+        Cart::create(['user_id' => $this->customer->id, 'product_id' => $this->jeans->id, 'quantity' => 2]);
+        Cart::create(['user_id' => $this->customer->id, 'product_id' => $plain->id, 'quantity' => 1]);
+        $res = $this->asCustomer()->postJson('/api/checkout', $this->address())->assertCreated()->json();
+        $this->assertSame(2, $flash->fresh()->flash_stock_used);
+
+        $sellerOrder = SellerOrder::where('order_id', $res['order_id'])->first();
+        $sellerOrder->update(['status' => 'delivered']);
+        $jeansLine = DB::table('order_items')->where('order_id', $res['order_id'])->where('product_id', $this->jeans->id)->first();
+
+        // Only the jeans line comes back; the plain product stays sold
+        $complaint = \App\Models\Complaint::create([
+            'user_id' => $this->customer->id, 'order_id' => $res['order_id'], 'seller_id' => $this->seller->id,
+            'order_item_ids' => [$jeansLine->id], 'complaint_type' => 'damaged', 'resolution_type' => 'return_refund',
+            'description' => 'Wrong size', 'status' => 'approved',
+        ]);
+        $task = \App\Models\RefundDeliveryTask::create(['complaint_id' => $complaint->id, 'seller_id' => $this->seller->id, 'status' => 'completed']);
+        (new \App\Listeners\MarkOrderRefunded())->handle(new \App\Events\RefundCompleted($task));
+
+        $this->assertSame('delivered', $sellerOrder->fresh()->status, 'partial return keeps the seller order');
+        $this->assertSame(0, $flash->fresh()->flash_stock_used);
+        $this->assertSame(0, (int) DB::table('order_items')->where('id', $jeansLine->id)->value('flash_reserved'));
+        $this->assertSame(30, $this->jeans->fresh()->stock);
+    }
+
     // ── Paginated lists filter and sort on the final price, in SQL ─────────
 
     public function test_products_list_filters_and_sorts_on_the_final_price_with_pagination(): void

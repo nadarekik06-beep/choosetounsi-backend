@@ -317,6 +317,14 @@ class PromotionService
             : 0;
     }
 
+    /** Give back the quota held by these order lines (returned to the seller). */
+    public function releaseForOrderItems(array $orderItemIds): int
+    {
+        return $orderItemIds
+            ? $this->releaseOrderItems(fn ($q) => $q->whereIn('id', $orderItemIds))
+            : 0;
+    }
+
     /** Safety net (promotions:sync): every cancelled seller order still holding quota. */
     public function releaseCancelled(): int
     {

@@ -175,6 +175,10 @@ class MarkOrderRefunded
                 $this->restoreStock($item);
             }
 
+            // Returned lines give their flash-sale units back (partial returns
+            // too; a full return is also covered by the seller-order observer)
+            app(\App\Services\PromotionService::class)->releaseForOrderItems($returnedItems->pluck('id')->all());
+
             // ── 2. Calculate financial impact of returned items ────────────
             // subtotal is gross (pre-coupon); the coupon share on each returned
             // line is reversed separately so seller_order.discount_amount stays
