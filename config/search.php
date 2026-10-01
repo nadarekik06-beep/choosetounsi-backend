@@ -29,10 +29,11 @@ return [
     'semantic' => [
         // Multilingual text vectors (FR/AR/EN meet in one space). Off = keyword search only.
         'enabled'  => (bool) env('SEARCH_SEMANTIC', true),
-        // Share of the hybrid ranking given to vector similarity (0 = keyword only, 1 = vectors only).
-        'ratio'    => (float) env('SEARCH_SEMANTIC_RATIO', 0.35),
-        // A result found ONLY by vectors (no keyword matched) must reach this ranking score.
-        'min_score' => (float) env('SEARCH_SEMANTIC_MIN_SCORE', 0.62),
+        // A result found ONLY by vectors (no keyword matched) must reach this ranking score
+        // ((1 + cosine) / 2 in Meilisearch). Calibrated on the live catalog: 99% of
+        // query/unrelated-product pairs score <= 0.73, while the queries where vectors help
+        // (Arabic, French phrases) reach their products at 0.74-0.88.
+        'min_score' => (float) env('SEARCH_SEMANTIC_MIN_SCORE', 0.73),
         'timeout'  => (float) env('SEARCH_EMBED_TIMEOUT', 1.5),
     ],
 
@@ -50,8 +51,10 @@ return [
 
     // ── Search by image ─────────────────────────────────────────────────
     'image' => [
-        // CLIP cosine similarity between two photos. Unrelated product photos already score
-        // ~0.55-0.70, the same product from another angle ~0.85+.
+        // CLIP cosine similarity between two photos (search converts Meilisearch's
+        // (1 + cosine) / 2 back to cosine). Calibrated on the live catalog: another photo of
+        // the same product >= 0.79, unrelated real photos <= 0.71 (99% of cross-category
+        // pairs <= 0.66).
         'min_similarity'  => (float) env('IMAGE_SEARCH_MIN_SIMILARITY', 0.72),
         // Also drop anything this far below the best match.
         'max_gap'         => (float) env('IMAGE_SEARCH_MAX_GAP', 0.18),

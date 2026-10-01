@@ -50,11 +50,13 @@ php artisan search:sync-settings        # push resources/search/synonyms.txt + s
 
 1. **Normalize** (`QueryNormalizer`): lowercase, Latin accents, Arabic ا/أ/إ/آ, ى→ي, ة→ه, ؤ, ئ,
    diacritics, tatweel, Arabic digits, leading "ال". Indexed text goes through the same function.
-2. **Hybrid query**: keywords (1 typo from 4 letters, 2 from 8) + the synonym file, blended
-   (`SEARCH_SEMANTIC_RATIO`, default 0.35) with multilingual vector similarity. A product found
-   only through vectors must reach `SEARCH_SEMANTIC_MIN_SCORE`.
-3. **Did you mean**: if no keyword matched, words that aren't in the catalog vocabulary are
-   corrected (edit distance 1, or 2 for long words) and the search runs again.
+2. **Keyword + vector query** (one Meilisearch multi-search): keywords (1 typo from 4 letters,
+   2 from 8) + the synonym file, and multilingual vector similarity. Keyword matches always
+   come first; up to 6 vector-only matches with score ≥ `SEARCH_SEMANTIC_MIN_SCORE` (0.73,
+   = (1 + cosine) / 2) are added after them, or shown alone when no keyword matched.
+3. **Did you mean**: fewer than 3 keyword matches → words that aren't in the catalog
+   vocabulary are corrected (edit distance 1, or 2 for long words) and the search runs again;
+   the corrected search is kept when it matches more products.
 4. **Alternatives**: still nothing → the closest products, flagged `alternatives: true`.
 5. **Business signals** (`config/search.php` → `boosts`): in stock, rating (damped below
    5 reviews), 90-day sales, featured. Small weights: they reorder close matches only.

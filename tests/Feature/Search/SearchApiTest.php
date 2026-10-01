@@ -43,8 +43,13 @@ class SearchApiTest extends TestCase
             if (str_starts_with($r->url(), 'http://ai.test')) {
                 return $embedder ? Http::response(['vectors' => [array_fill(0, 384, 0.1)]]) : Http::response('down', 503);
             }
-            if (str_contains($r->url(), '/products/search')) {
-                return Http::response(['hits' => $hitsByQuery[$r['q']] ?? []]);
+            if (str_ends_with($r->url(), '/multi-search')) {
+                // [keyword query, vector query?]: keyword hits by query text, vector hits for the vector query.
+                $keywordQuery = $r['queries'][0]['q'];
+                $all = $hitsByQuery[$keywordQuery] ?? [];
+                $isVector = fn ($h) => isset($h['_rankingScoreDetails']['vectorSort']);
+                return Http::response(['results' => array_map(fn ($q) => ['hits' => array_values(array_filter($all,
+                    fn ($h) => isset($q['vector']) ? $isVector($h) : !$isVector($h)))], $r['queries'])]);
             }
             return Http::response([], 404);
         });
@@ -52,7 +57,15 @@ class SearchApiTest extends TestCase
 
     private function hit(int $id, float $score, array $fields = ['name']): array
     {
-        return ['id' => $id, '_rankingScore' => $score, '_matchesPosition' => array_fill_keys($fields, [['start' => 0, 'length' => 3]])];
+        return ['id' => $id, '_rankingScore' => $score, '_rankingScoreDetails' => ['words' => ['score' => 1.0]],
+                '_matchesPosition' => array_fill_keys($fields, [['start' => 0, 'length' => 3]])];
+    }
+
+    /** A hit found only through vectors (it may still contain a query word). */
+    private function vectorHit(int $id, float $score): array
+    {
+        return ['id' => $id, '_rankingScore' => $score, '_rankingScoreDetails' => ['vectorSort' => ['similarity' => 2 * $score - 1]],
+                '_matchesPosition' => ['name' => [['start' => 0, 'length' => 3]]]];
     }
 
     public function test_name_matches_come_first_and_semantic_only_noise_is_dropped(): void
@@ -66,7 +79,7 @@ class SearchApiTest extends TestCase
         $this->fakeEngines(['sabbat' => [
             $this->hit($named->id, 0.95),
             $this->hit($sameCat->id, 0.80, ['category']),
-            ['id' => $noise->id, '_rankingScore' => 0.41, '_matchesPosition' => []],   // vector-only, weak
+            $this->vectorHit($noise->id, 0.41),   // vector-only, weak
         ]]);
 
         $res = $this->postJson('/api/search/text', ['query' => 'Sabbat'])->assertOk();
@@ -76,8 +89,23 @@ class SearchApiTest extends TestCase
         $this->assertSame([$sameCat->id], array_column($res['sections']['same_category'], 'id'));
         $this->assertSame([], $res['sections']['related']);
         $this->assertFalse($res['alternatives']);
-        Http::assertSent(fn (Request $r) => str_contains($r->url(), '/products/search')
-            && $r['hybrid']['embedder'] === 'text' && count($r['vector']) === 384);
+        Http::assertSent(fn (Request $r) => str_ends_with($r->url(), '/multi-search')
+            && $r['queries'][1]['hybrid']['embedder'] === 'text' && count($r['queries'][1]['vector']) === 384);
+    }
+
+    public function test_keyword_matches_rank_before_stronger_vector_only_matches(): void
+    {
+        $seller = $this->makeUser('seller');
+        $cat = $this->makeCategory();
+        $parfum = $this->makeProduct($seller, $cat, ['name' => 'Jasmine Eau de Parfum']);
+        $polo = $this->makeProduct($seller, $cat, ['name' => 'Set polo pour femme']);
+        $this->fakeEngines(['parfum femme' => [$this->vectorHit($polo->id, 0.75), $this->hit($parfum->id, 0.49)]]);
+        config(['search.semantic.min_score' => 0.73]);
+
+        $res = $this->postJson('/api/search/text', ['query' => 'parfum femme'])->assertOk();
+
+        $this->assertSame([$parfum->id], array_column($res['sections']['direct'], 'id'));
+        $this->assertNotContains($polo->id, array_column($res['sections']['direct'], 'id'), 'one shared word does not make a direct hit');
     }
 
     public function test_query_is_keyword_only_when_the_embedder_is_down(): void
@@ -86,7 +114,7 @@ class SearchApiTest extends TestCase
         $this->fakeEngines(['casque' => [$this->hit($p->id, 0.9)]], embedder: false);
 
         $this->postJson('/api/search/text', ['query' => 'casque'])->assertOk()->assertJsonPath('count', 1);
-        Http::assertSent(fn (Request $r) => str_contains($r->url(), '/products/search') && !isset($r['vector']));
+        Http::assertSent(fn (Request $r) => str_ends_with($r->url(), '/multi-search') && count($r['queries']) === 1);
     }
 
     public function test_in_stock_and_better_rated_products_win_ties(): void
@@ -116,7 +144,7 @@ class SearchApiTest extends TestCase
     public function test_no_match_returns_close_alternatives_and_logs_the_query(): void
     {
         $p = $this->makeProduct($this->makeUser('seller'), $this->makeCategory(), ['name' => 'Olive Oil']);
-        $this->fakeEngines(['xyzzy plop' => [['id' => $p->id, '_rankingScore' => 0.3, '_matchesPosition' => []]]]);
+        $this->fakeEngines(['xyzzy plop' => [$this->vectorHit($p->id, 0.3)]]);
 
         $res = $this->postJson('/api/search/text', ['query' => 'Xyzzy plop'])->assertOk();
 

@@ -8,10 +8,12 @@ use Illuminate\Support\Facades\Log;
  * The search bar.
  *
  *  1. Normalize the query (QueryNormalizer).
- *  2. Meilisearch hybrid search: keywords with typo tolerance and the synonym file, blended
- *     with multilingual vector similarity when semantic search is on and the embedding
- *     service answers. Results found ONLY through vectors must clear a similarity bar.
- *  3. Nothing matched by keyword → "did you mean" (catalog vocabulary), searched again.
+ *  2. Meilisearch keyword search (typo tolerance + the synonym file) and, when semantic
+ *     search is on and the embedding service answers, a multilingual vector search, in one
+ *     multi-search call. Keyword matches come first; up to 6 vector-only matches that clear
+ *     a similarity bar are added after them (or stand alone when no keyword matched).
+ *  3. Fewer than 3 keyword matches → "did you mean" (catalog vocabulary), searched again;
+ *     kept when it matches more. Keyword matches rank before vector-only ones.
  *  4. Still nothing → close alternatives (best vector matches) instead of an empty page.
  *  5. Business signals (stock, rating, recent sales, featured) reorder close matches.
  *  6. Meilisearch down → basic MySQL search (source "fallback").
@@ -21,6 +23,8 @@ use Illuminate\Support\Facades\Log;
 class ProductSearch
 {
     const CANDIDATES = 100;
+    const VECTOR_CANDIDATES = 20;
+    const VECTOR_EXTRAS = 6;
     const NAME_FIELDS = ['name', 'name_en', 'name_fr', 'name_ar'];
 
     public function __construct(
@@ -51,11 +55,13 @@ class ProductSearch
         try {
             [$hits, $result['semantic']] = $this->engine($normalized, $categoryId);
 
-            if (!$this->hasKeywordHits($hits)) {
+            // Few keyword matches (a typo too far for the engine, or a typo that loses the synonyms):
+            // try the corrected query and keep it if it matches more products.
+            if ($this->keywordCount($hits) < (int) config('search.low_results', 3)) {
                 $corrected = $this->didYouMean->suggest($normalized);
                 if ($corrected !== null) {
                     [$retry, $semantic] = $this->engine($corrected, $categoryId);
-                    if ($this->hasKeywordHits($retry)) {
+                    if ($this->keywordCount($retry) > $this->keywordCount($hits)) {
                         [$hits, $result['semantic'], $result['did_you_mean']] = [$retry, $semantic, $corrected];
                     }
                 }
@@ -100,57 +106,72 @@ class ProductSearch
     }
 
     /**
-     * @return array{0: array<int, array>, 1: bool} hits by id (engine order) + whether vectors were used
+     * Keyword search and (when available) vector search in one multi-search call, merged here:
+     * keyword hits first, vector-only hits after. Meilisearch's own hybrid mode blends both into
+     * one list cut at `limit`, where vector hits can crowd out every keyword match.
+     *
+     * @return array{0: array<int, array>, 1: bool} hits by id (keyword first) + whether vectors were used
      * @throws SearchUnavailable
      */
     private function engine(string $normalized, ?int $categoryId): array
     {
-        $params = [
-            'q'                   => $normalized,
-            'limit'               => self::CANDIDATES,
+        $filter = $categoryId ? ['filter' => 'category_id = ' . (int) $categoryId] : [];
+        $queries = [['products', [
+            'q'                    => $normalized,
+            'limit'                => self::CANDIDATES,
             'attributesToRetrieve' => ['id'],
-            'showRankingScore'    => true,
-            'showMatchesPosition' => true,
-            // Long queries: drop the least important words until something matches.
-            'matchingStrategy'    => 'frequency',
-        ];
-        if ($categoryId) {
-            $params['filter'] = 'category_id = ' . (int) $categoryId;
-        }
+            'showRankingScore'     => true,
+            'showMatchesPosition'  => true,
+            // Long queries: drop words from the end until something matches (people type the
+            // product first: "jean femme taille haute", "robe soiree rouge").
+            'matchingStrategy'     => 'last',
+        ] + $filter]];
 
         $vector = $this->embeddings->queryVector($normalized);
         if ($vector) {
-            $params['vector'] = $vector;
-            $params['hybrid'] = ['embedder' => 'text', 'semanticRatio' => (float) config('search.semantic.ratio')];
+            $queries[] = ['products', [
+                'q'                    => '',
+                'vector'               => $vector,
+                'hybrid'               => ['embedder' => 'text', 'semanticRatio' => 1.0],
+                'limit'                => self::VECTOR_CANDIDATES,
+                'attributesToRetrieve' => ['id'],
+                'showRankingScore'     => true,
+            ] + $filter];
         }
 
+        $results = $this->meili->multiSearch($queries);
+
         $hits = [];
-        foreach ($this->meili->search('products', $params)['hits'] ?? [] as $hit) {
+        foreach ($results[0]['hits'] ?? [] as $hit) {
             $matched = array_keys($hit['_matchesPosition'] ?? []);
             $hits[(int) $hit['id']] = [
                 'score'      => (float) ($hit['_rankingScore'] ?? 0),
-                'keyword'    => (bool) $matched,
+                'keyword'    => true,
                 'name_match' => (bool) array_intersect($matched, self::NAME_FIELDS),
             ];
+        }
+        foreach ($results[1]['hits'] ?? [] as $hit) {
+            // Score = (1 + cosine) / 2.
+            $hits[(int) $hit['id']] ??= ['score' => (float) ($hit['_rankingScore'] ?? 0), 'keyword' => false, 'name_match' => false];
         }
         return [$hits, (bool) $vector];
     }
 
-    private function hasKeywordHits(array $hits): bool
+    private function keywordCount(array $hits): int
     {
-        foreach ($hits as $hit) {
-            if ($hit['keyword']) {
-                return true;
-            }
-        }
-        return false;
+        return count(array_filter($hits, fn ($h) => $h['keyword']));
     }
 
-    /** Keyword matches always count; vector-only matches must be similar enough. */
+    /**
+     * Keyword matches always count. Vector-only matches must be similar enough, and next to
+     * keyword matches only a few of them are added (they widen the results, not replace them).
+     */
     private function relevant(array $hits): array
     {
         $min = (float) config('search.semantic.min_score');
-        return array_filter($hits, fn ($h) => $h['keyword'] || $h['score'] >= $min);
+        $keyword = array_filter($hits, fn ($h) => $h['keyword']);
+        $vector = array_filter($hits, fn ($h) => !$h['keyword'] && $h['score'] >= $min);
+        return $keyword + ($keyword ? array_slice($vector, 0, self::VECTOR_EXTRAS, true) : $vector);
     }
 
     private function rerank(array $hits): array
@@ -166,7 +187,9 @@ class ProductSearch
             $hit['score'] = round($hit['score'] + (isset($signals[$id]) ? $this->signals->boost($signals[$id], $maxSold) : 0), 4);
         }
         unset($hit);
-        uasort($hits, fn ($a, $b) => $b['score'] <=> $a['score']);
+        // Keyword matches first (their scores and vector scores aren't on the same scale),
+        // then by relevance + business signals.
+        uasort($hits, fn ($a, $b) => [$b['keyword'], $b['score']] <=> [$a['keyword'], $a['score']]);
         return $hits;
     }
 }

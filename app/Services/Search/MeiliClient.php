@@ -33,6 +33,17 @@ class MeiliClient
         return $this->send('post', "indexes/{$this->index($index)}/search", $params, $timeout);
     }
 
+    /**
+     * Several searches in one HTTP round trip.
+     * @param  array<int, array{0: string, 1: array}> $queries [index key, search params]
+     * @return array<int, array> one search response per query, same order
+     */
+    public function multiSearch(array $queries, ?float $timeout = null): array
+    {
+        $body = ['queries' => array_map(fn ($q) => ['indexUid' => $this->index($q[0])] + $q[1], $queries)];
+        return $this->send('post', 'multi-search', $body, $timeout)['results'] ?? [];
+    }
+
     public function similar(string $index, array $params): array
     {
         return $this->send('post', "indexes/{$this->index($index)}/similar", $params);
