@@ -357,7 +357,7 @@ class DemoCatalog extends Command
 
     private function generateImages(array $specs): bool
     {
-        $python = $this->option('python') ?: base_path('../choosetounsi-ai-service/venv/Scripts/python.exe');
+        $python = $this->option('python') ?: base_path('../choosetounsi-ai-service/.venv/Scripts/python.exe');
         $json = tempnam(sys_get_temp_dir(), 'demo') . '.json';
         file_put_contents($json, json_encode($specs, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
