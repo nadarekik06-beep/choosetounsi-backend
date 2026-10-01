@@ -22,7 +22,7 @@ use Symfony\Component\Process\Process;
  *
  * Everything it creates is recognisable: users *@choosetounsi.test,
  * product slugs "demo-…", images in storage/app/public/products/demo/.
- * Undo it by restoring the mysqldump you took before running it.
+ * Undo it with `php artisan demo:purge` (or restore the mysqldump you took before running it).
  *
  *   php artisan demo:catalog
  *   php artisan demo:catalog --python="C:\path\to\python.exe"
