@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Favorite;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Services\PromotionService;
 use App\Services\Recommendation\InteractionTracker;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -25,8 +26,10 @@ class FavoriteController extends Controller
                 'variant.attributeOptions.attribute',
                 'variant.images',
             ])
-            ->get()
-            ->map(fn($fav) => $this->formatFavorite($fav));
+            ->get();
+
+        $promos    = app(PromotionService::class)->activePromotionsFor($favorites->pluck('product_id')->all());
+        $favorites = $favorites->map(fn($fav) => $this->formatFavorite($fav, $promos[$fav->product_id] ?? null));
 
         return response()->json(['success' => true, 'data' => $favorites]);
     }
@@ -78,7 +81,7 @@ class FavoriteController extends Controller
 
         return response()->json([
             'success' => true,
-            'data'    => $this->formatFavorite($fav),
+            'data'    => $this->formatFavorite($fav, app(PromotionService::class)->getActivePromotionForProduct($fav->product_id)),
             'message' => __('messages.favorite.added'),
         ]);
     }
@@ -111,16 +114,13 @@ class FavoriteController extends Controller
     /**
      * Format a single favorite with the correct variant-aware image URL.
      */
-    private function formatFavorite(Favorite $fav): array
+    private function formatFavorite(Favorite $fav, ?\App\Models\Promotion $promotion): array
     {
         $product = $fav->product;
         $variant = $fav->variant;
 
-        $price = $variant
-            ? ($variant->price_override !== null
-                ? (float) $variant->price_override
-                : (float) $product->price)
-            : (float) $product->price;
+        $price   = PromotionService::basePrice($product, $variant);
+        $pricing = app(PromotionService::class)->priceWith($product, $price, $variant?->id, $promotion);
 
         $stock = $variant ? $variant->stock : $product->stock;
 
@@ -151,7 +151,7 @@ class FavoriteController extends Controller
             'image_url'       => $imageUrl,
             'variant_label'   => $variantLabel,
             'variant_options' => $variantOptions,
-        ];
+        ] + $pricing;
     }
 
     /** Main image of the variant's color group, else the product cover (sizes share images). */

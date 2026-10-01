@@ -162,7 +162,7 @@ class ProductController extends Controller
         };
         $perPage  = (int) $request->query('per_page', 20);
         $products = $query->paginate(min($perPage, 60));
-        $products->getCollection()->transform(fn($p) => $this->transformProductItem($p));
+        $products->setCollection(collect($this->transformProductCollection($products->getCollection())));
 
         return response()->json(['success' => true, 'data' => $products]);
     }
@@ -209,10 +209,8 @@ class ProductController extends Controller
             ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name'])
             ->orderByDesc('created_at')
             ->take(12)
-            ->get()
-            ->map(function ($p) {
-                return $this->transformProductItem($p);
-            });
+            ->get();
+        $products = $this->transformProductCollection($products);
 
         return response()->json(['success' => true, 'data' => $products]);
     }
@@ -285,6 +283,7 @@ class ProductController extends Controller
         $product->images->each(fn($img) => $img->url = Storage::url($img->image_path));
 
         // ── Variant system ─────────────────────────────────────────────────
+        $activePromo         = $this->promoService->getActivePromotionForProduct($product->id);
         $hasVariants         = $product->variants->isNotEmpty();
         $variantsPayload     = [];
         $selectableAxes      = [];
@@ -312,7 +311,7 @@ class ProductController extends Controller
             }
 
             $variantsPayload = $product->variants->map(function ($v) use (
-                $productImageUrls, $colorImages, $product
+                $productImageUrls, $colorImages, $product, $activePromo
             ) {
                 $colorIds      = \App\Services\ProductImages::colorIdsOf($v);
                 $colorGroupKey = $colorIds ? implode('|', $colorIds) : null;
@@ -320,13 +319,10 @@ class ProductController extends Controller
                 $variantImageUrls = ($colorGroupKey ? ($colorImages[$colorGroupKey] ?? []) : []) ?: $productImageUrls;
                 $primaryImageUrl  = $variantImageUrls[0] ?? null;
 
-                $productBasePrice = (float) $product->price;
-                $effectiveBase    = $v->price_override !== null
-                    ? (float) $v->price_override
-                    : $productBasePrice;
+                $effectiveBase = PromotionService::basePrice($product, $v);
 
                 // With a promotion: discounted from this variant's lowest 30-day price
-                $variantPromo = $this->promoService->getEffectivePrice($product, $effectiveBase, $v->id);
+                $variantPromo = $this->promoService->priceWith($product, $effectiveBase, $v->id, $activePromo);
 
                 return [
                     'id'              => $v->id,
@@ -336,6 +332,8 @@ class ProductController extends Controller
                     // Effective price = variant override OR product base price
                     'price'           => $effectiveBase,
                     'effective_price' => $variantPromo['effective_price'],
+                    'final_price'     => $variantPromo['final_price'],
+                    'discount_percent' => $variantPromo['discount_percent'],
                     // Crossed-out price when discounted (equals price otherwise)
                     'original_price'  => $variantPromo['original_price'],
                     'price_override'  => $v->price_override !== null ? (float) $v->price_override : null,
@@ -452,7 +450,7 @@ class ProductController extends Controller
         }
 
         // ── Promotion data ─────────────────────────────────────────────────
-        $promoData = $this->promoService->getEffectivePrice($product);
+        $promoData = $this->promoService->priceWith($product, null, null, $activePromo);
 
         // ── Assemble response ──────────────────────────────────────────────
         $data                    = $product->toArray();
@@ -461,10 +459,7 @@ class ProductController extends Controller
         $data['selectable_axes'] = $selectableAxes;
         $data['attribute_data']  = $product->attribute_data;
         $data['color_images']    = $colorImages;
-        $data['effective_price'] = $promoData['effective_price'];
-        $data['original_price']  = $promoData['original_price'];
-        $data['discount_amount'] = $promoData['discount_amount'];
-        $data['promotion']       = $promoData['promotion'];
+        $data                    = $promoData + $data;   // pricing block wins over raw columns
 
         return response()->json(['success' => true, 'data' => $data]);
     }
@@ -572,8 +567,9 @@ private function transformProductCollection($products): array
 {
     $productIds = $products->pluck('id')->toArray();
     $colorImagesMap = $this->batchLoadColorImages($productIds);
+    $pricing        = $this->promoService->priceMany($products);
 
-    return $products->map(fn($p) => $this->transformProductItem($p, $colorImagesMap))
+    return $products->map(fn($p) => $this->transformProductItem($p, $colorImagesMap, $pricing[$p->id]))
         ->values()
         ->toArray();
 }
@@ -586,8 +582,7 @@ private function safeSessionId(Request $request): ?string
     }
 }
 
-// AFTER — add variant_images collection before stripping:
-private function transformProductItem($p, ?\Illuminate\Support\Collection $colorImagesMap = null): mixed
+private function transformProductItem($p, \Illuminate\Support\Collection $colorImagesMap, array $pricing): mixed
 {
     $p->primary_image_url  = $p->primaryImage ? Storage::url($p->primaryImage->image_path) : null;
     // Organic listing: never labelled as an ad (paid placements come from /api/ads).
@@ -608,14 +603,8 @@ private function transformProductItem($p, ?\Illuminate\Support\Collection $color
     $p->color_swatches = $swatches;
 
     // Load color-keyed images directly — these have color_option_id set, NOT variant_id
-// AFTER (uses pre-loaded map, falls back to single query if map not provided):
 $variantImages = [];
-$colorImgs = $colorImagesMap
-    ? $colorImagesMap->get($p->id, collect())
-    : \App\Models\ProductImage::where('product_id', $p->id)
-        ->whereNotNull('color_option_id')
-        ->select('image_path')
-        ->get();
+$colorImgs = $colorImagesMap->get($p->id, collect());
 foreach ($colorImgs as $img) {
     $url = Storage::url($img->image_path);
     if (!in_array($url, $variantImages, true)) {
@@ -625,15 +614,10 @@ foreach ($colorImgs as $img) {
 $p->variant_images = $variantImages;
     $p->setRelation('variants', $p->variants->map(fn($v) => ['id' => $v->id, 'stock' => $v->stock])->values());
 
-    $promoData          = $this->promoService->getEffectivePrice($p);
-    $p->effective_price = $promoData['effective_price'];
-    $p->original_price  = $promoData['original_price'];   // lowest 30-day price when discounted
-    $p->discount_amount = $promoData['discount_amount'];
-    $p->promotion       = $promoData['promotion'];
-
-    return $p;
+    // Promotion pricing block (final_price, original_price = lowest 30-day price, badges…)
+    return $this->promoService->attach($p, $pricing);
 }
-// Add this NEW private method to ProductController:
+// Color-keyed images for a page of products, one query
 private function batchLoadColorImages(array $productIds): \Illuminate\Support\Collection
 {
     return \App\Models\ProductImage::whereIn('product_id', $productIds)

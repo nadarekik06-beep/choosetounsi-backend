@@ -410,14 +410,13 @@ class SearchController extends Controller
             ->where('p.is_approved', 1)->where('p.is_active', 1)->whereNull('p.deleted_at');
 
         if (!empty($filters['category_id'])) $query->where('p.category_id', $filters['category_id']);
-        if (!empty($filters['min_price']))   $query->where('p.price', '>=', $filters['min_price']);
-        if (!empty($filters['max_price']))   $query->where('p.price', '<=', $filters['max_price']);
 
         $products = $query->get();
         if ($products->isEmpty()) return [];
 
         // Preserve AI ranking order
-        $pricing = app(PromotionService::class)->priceMany($products);
+        $pricing  = app(PromotionService::class)->priceMany($products);
+        $products = $products->filter(fn($p) => $this->withinPrice($pricing[$p->id], $filters));
         $indexed = $products->keyBy('id');
         $ordered = [];
         foreach ($productIds as $id) {
@@ -497,14 +496,24 @@ class SearchController extends Controller
             });
 
         if (!empty($filters['category_id'])) $dbQuery->where('p.category_id', $filters['category_id']);
-        if (!empty($filters['min_price']))   $dbQuery->where('p.price', '>=', $filters['min_price']);
-        if (!empty($filters['max_price']))   $dbQuery->where('p.price', '<=', $filters['max_price']);
-
+        // Price filters apply to the promo price, so over-fetch before filtering
+        $priceFiltered = !empty($filters['min_price']) || !empty($filters['max_price']);
         $products = $dbQuery->orderByDesc('relevance_score')->orderByDesc('p.featured')->orderByDesc('p.views')
-            ->limit($limit)->get();
+            ->limit($priceFiltered ? $limit * 4 : $limit)->get();
         $pricing  = app(PromotionService::class)->priceMany($products);
 
-        return $products->map(fn($p) => $this->formatProduct($p, $pricing[$p->id]))->toArray();
+        return $products->filter(fn($p) => $this->withinPrice($pricing[$p->id], $filters))
+            ->take($limit)
+            ->map(fn($p) => $this->formatProduct($p, $pricing[$p->id]))->values()->toArray();
+    }
+
+    /** min/max price filters compare the price the customer pays (after promotion). */
+    private function withinPrice(array $pricing, array $filters): bool
+    {
+        $price = $pricing['final_price'];
+        if (!empty($filters['min_price']) && $price < (float) $filters['min_price']) return false;
+        if (!empty($filters['max_price']) && $price > (float) $filters['max_price']) return false;
+        return true;
     }
 
     /** Personalization signal: remember what was searched and which category it pointed at. */

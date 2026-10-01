@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Product;
+use App\Services\PromotionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 
@@ -50,7 +51,7 @@ class BrandProductController extends Controller
         };
 
         $products = $query->paginate(min((int) $request->query('per_page', 20), 60));
-        $products->getCollection()->transform(fn($p) => $this->transformListItem($p));
+        $products->setCollection($this->transformList($products->getCollection()));
 
         return response()->json(['success' => true, 'data' => $products]);
     }
@@ -60,8 +61,8 @@ class BrandProductController extends Controller
         $products = Product::availableBrand()->featured()->inStock()
             ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage'])
             ->orderByDesc('created_at')
-            ->take(12)->get()
-            ->map(fn($p) => $this->transformListItem($p));
+            ->take(12)->get();
+        $products = $this->transformList($products);
 
         return response()->json(['success' => true, 'data' => $products]);
     }
@@ -87,7 +88,7 @@ class BrandProductController extends Controller
 
         $product->incrementViews();
 
-        $data                    = $this->transformListItem($product);
+        $data                    = $this->transformListItem($product, app(PromotionService::class)->getEffectivePrice($product));
         $data['description']     = $product->description;
         $data['sku']             = $product->sku;
         $data['images']          = $product->images->map(fn($img) => [
@@ -101,7 +102,14 @@ class BrandProductController extends Controller
         return response()->json(['success' => true, 'data' => $data]);
     }
 
-    private function transformListItem(Product $p): array
+    private function transformList($products)
+    {
+        $pricing = app(PromotionService::class)->priceMany($products);
+        return $products->map(fn($p) => $this->transformListItem($p, $pricing[$p->id]))->values();
+    }
+
+    /** $pricing: PromotionService pricing block (final_price, original_price, promo badges). */
+    private function transformListItem(Product $p, array $pricing): array
     {
         return [
             'id'                => $p->id,
@@ -116,6 +124,6 @@ class BrandProductController extends Controller
                 ? ['id' => $p->category->id, 'name' => $p->category->name, 'slug' => $p->category->slug]
                 : null,
             'primary_image_url' => $p->primary_image_url,
-        ];
+        ] + $pricing;
     }
 }

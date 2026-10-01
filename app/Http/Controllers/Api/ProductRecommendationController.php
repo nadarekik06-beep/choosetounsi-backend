@@ -314,53 +314,9 @@ class ProductRecommendationController extends Controller
     // =========================================================================
     // Private helpers
     // =========================================================================
-// AFTER — add variant_images before stripping variants:
+/** Storefront cards with promotion pricing — same payload as the home feed. */
 private function transformCollection($products): array
 {
-    $productIds = $products->pluck('id')->toArray();
-
-    $allColorImages = \App\Models\ProductImage::whereIn('product_id', $productIds)
-        ->whereNotNull('color_option_id')
-        ->select('product_id', 'image_path')
-        ->get()
-        ->groupBy('product_id');
-
-    // Resolve once outside the loop
-    $promotionService = app(\App\Services\PromotionService::class);
-
-    return $products->map(function ($p) use ($allColorImages, $promotionService) {
-        $p->primary_image_url  = $p->primaryImage
-            ? Storage::url($p->primaryImage->image_path)
-            : null;
-        // Organic recommendations are never labelled as ads.
-        $p->is_sponsored       = false;
-        unset($p->sponsored_priority);
-
-        // Variant images
-        $variantImages = [];
-        foreach ($allColorImages->get($p->id, collect()) as $img) {
-            $url = Storage::url($img->image_path);
-            if (!in_array($url, $variantImages, true)) {
-                $variantImages[] = $url;
-            }
-        }
-        $p->variant_images = $variantImages;
-
-        // Promotion data + effective price
-        $promoData          = $promotionService->getEffectivePrice($p);
-        $p->effective_price = $promoData['effective_price'];
-        $p->original_price  = $promoData['original_price'];   // lowest 30-day price when discounted
-        $p->discount_amount = $promoData['discount_amount'];
-        $p->promotion       = $promoData['promotion'];
-
-        if ($p->relationLoaded('variants')) {
-            $p->setRelation(
-                'variants',
-                $p->variants->map(fn($v) => ['id' => $v->id, 'stock' => $v->stock])->values()
-            );
-        }
-
-        return $p;
-    })->values()->toArray();
+    return app(\App\Services\Recommendation\ProductCardPresenter::class)->present(collect($products));
 }
 }

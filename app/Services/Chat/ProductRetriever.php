@@ -3,8 +3,9 @@
 namespace App\Services\Chat;
 
 use App\Models\User;
+use App\Services\PromotionService;
 use Illuminate\Database\Query\Builder;
-use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -20,10 +21,10 @@ use Illuminate\Support\Facades\Storage;
  * Price = what the customer pays:
  *   base  = lowest in-stock active variant price (price_override ?? price),
  *           or products.price when the product has no in-stock variants
- *   final = base after the product's active promotion, chosen exactly like
- *           PromotionService::getActivePromotionForProduct()
- *           (flash_sale first, then priority, then newest)
- * Min/max filters and price sorting use `final`, inside SQL.
+ *   final = base priced by PromotionService (same promotion, 30-day reference
+ *           and flash quota rules as the storefront and checkout)
+ * The best CANDIDATES rows are fetched by relevance, priced in one batch, then
+ * min/max filters and price sorting apply to `final`.
  *
  * Semantic search (FastAPI /search/text) is used when available and silently
  * skipped when the service is down; SQL keyword matching always runs.
@@ -31,6 +32,9 @@ use Illuminate\Support\Facades\Storage;
 class ProductRetriever
 {
     public const LIMIT = 8;
+
+    /** Rows priced per search before price filters / sorting pick the LIMIT shown. */
+    private const CANDIDATES = 300;
 
     private const DOWN_FLAG = 'chat:ai_service_down';
 
@@ -52,22 +56,24 @@ class ProductRetriever
             $query->orderByDesc('x.views');
         }
 
-        $this->applyPrice($query, $filters['min_price'] ?? null, $filters['max_price'] ?? null);
-
-        switch ($filters['sort'] ?? 'relevance') {
-            case 'price_asc':
-                $query->orderBy('final_price');
-                break;
-            case 'price_desc':
-                $query->orderByDesc('final_price');
-                break;
-            case 'rating':
-                $query->orderByDesc('x.rating')->orderByDesc('x.rating_count');
-                break;
+        if (($filters['sort'] ?? null) === 'rating') {
+            $query->orderByDesc('x.rating')->orderByDesc('x.rating_count');
         }
         $query->orderByDesc('x.relevance')->orderByDesc('x.rating')->orderByDesc('x.views');
 
-        $rows = $query->limit(self::LIMIT)->get();
+        $rows = $this->withinPrice(
+            $this->price($query->limit(self::CANDIDATES)->get()),
+            $filters['min_price'] ?? null,
+            $filters['max_price'] ?? null,
+        );
+
+        // Stable sorts: equal prices keep their relevance order
+        $rows = match ($filters['sort'] ?? 'relevance') {
+            'price_asc'  => $rows->sortBy('final_price'),
+            'price_desc' => $rows->sortByDesc('final_price'),
+            default      => $rows,
+        };
+        $rows = $rows->take(self::LIMIT)->values();
 
         return ['products' => $this->format($rows), 'semantic' => (bool) $semantic];
     }
@@ -86,8 +92,8 @@ class ProductRetriever
         }
 
         $semantic = $this->semanticScores($filters['keywords_en'] ?? '' ?: implode(' ', $keywords));
-        $rows     = $this->pricedQuery($keywords, $semantic, $filters['category'] ?? null, [])
-            ->limit(50)->get();
+        $rows     = $this->price($this->pricedQuery($keywords, $semantic, $filters['category'] ?? null, [])
+            ->limit(50)->get());
 
         $topSlug = $rows->pluck('category_slug')->filter()->countBy()->sortDesc()->keys()->first();
         $top     = $topSlug ? $rows->firstWhere('category_slug', $topSlug) : null;
@@ -107,8 +113,6 @@ class ProductRetriever
 
     private function pricedQuery(array $keywords, array $semantic, ?string $category, array $excludeIds): Builder
     {
-        $now = now();
-
         $inner = DB::table('products as p')
             ->join('users as u', 'u.id', '=', 'p.seller_id')
             ->leftJoin('categories as c', 'c.id', '=', 'p.category_id')
@@ -128,14 +132,11 @@ class ProductRetriever
             ->select('p.id', 'p.name', 'p.translations', 'p.slug', 'p.seller_id', 'p.price', 'p.views', 'c.name as category_name', 'c.name_ar as category_name_ar', 'c.name_fr as category_name_fr', 'c.slug as category_slug')
             ->selectRaw('(SELECT MIN(COALESCE(v.price_override, p.price)) FROM product_variants v
                           WHERE v.product_id = p.id AND v.is_active = 1 AND v.stock > 0) AS variant_min')
+            ->selectRaw('(SELECT v.id FROM product_variants v
+                          WHERE v.product_id = p.id AND v.is_active = 1 AND v.stock > 0
+                          ORDER BY COALESCE(v.price_override, p.price), v.id LIMIT 1) AS variant_min_id')
             ->selectRaw('(SELECT COUNT(DISTINCT COALESCE(v.price_override, p.price)) FROM product_variants v
                           WHERE v.product_id = p.id AND v.is_active = 1 AND v.stock > 0) AS variant_prices')
-            ->selectRaw("(SELECT pr.id FROM promotions pr
-                          JOIN promotion_products pp ON pp.promotion_id = pr.id
-                          WHERE pp.product_id = p.id AND pr.status = 'active'
-                            AND pr.starts_at <= ? AND pr.ends_at > ?
-                          ORDER BY (pr.type = 'flash_sale') DESC, pr.priority DESC, pr.created_at DESC
-                          LIMIT 1) AS promo_id", [$now, $now])
             ->selectRaw("(SELECT AVG(r.rating) FROM reviews r WHERE r.product_id = p.id AND r.status = 'approved') AS rating")
             ->selectRaw("(SELECT COUNT(*) FROM reviews r WHERE r.product_id = p.id AND r.status = 'approved') AS rating_count");
 
@@ -186,33 +187,32 @@ class ProductRetriever
             });
         }
 
-        return DB::query()
-            ->fromSub($inner, 'x')
-            ->leftJoin('promotions as pr', 'pr.id', '=', 'x.promo_id')
-            ->select('x.*', 'pr.discount_type', 'pr.discount_value', 'pr.type as promo_type', 'pr.ends_at as promo_ends_at')
-            ->selectRaw($this->finalPriceSql() . ' AS final_price')
-            ->selectRaw('COALESCE(x.variant_min, x.price) AS base_price');
+        return DB::query()->fromSub($inner, 'x')->select('x.*');
     }
 
-    private function finalPriceSql(): string
+    /** Adds base_price, final_price, old_price and promo fields, via PromotionService. */
+    private function price(Collection $rows): Collection
     {
-        $base = 'COALESCE(x.variant_min, x.price)';
+        $promotions = app(PromotionService::class);
+        $active     = $promotions->activePromotionsFor($rows->pluck('id')->all());
 
-        return "ROUND(CASE
-                    WHEN pr.id IS NULL THEN {$base}
-                    WHEN pr.discount_type = 'percentage' THEN {$base} * (1 - pr.discount_value / 100)
-                    ELSE GREATEST(0, {$base} - pr.discount_value)
-                 END, 3)";
+        return $rows->each(function ($r) use ($promotions, $active) {
+            $variantId = $r->variant_min !== null ? (int) $r->variant_min_id : null;
+            $base      = (float) ($r->variant_min ?? $r->price);
+            $pricing   = $promotions->priceWith($r, $base, $variantId, $active[$r->id] ?? null);
+
+            $r->base_price    = $base;
+            $r->final_price   = $pricing['final_price'];
+            $r->old_price     = $pricing['promo_type'] ? $pricing['original_price'] : null;
+            $r->promo_type    = $pricing['promo_type'];
+            $r->promo_ends_at = $pricing['ends_at'];
+        });
     }
 
-    private function applyPrice(Builder $query, ?float $min, ?float $max): void
+    private function withinPrice(Collection $rows, ?float $min, ?float $max): Collection
     {
-        if ($min !== null) {
-            $query->whereRaw($this->finalPriceSql() . ' >= ?', [$min]);
-        }
-        if ($max !== null) {
-            $query->whereRaw($this->finalPriceSql() . ' <= ?', [$max]);
-        }
+        return $rows->filter(fn ($r) => ($min === null || $r->final_price >= $min)
+                                     && ($max === null || $r->final_price <= $max));
     }
 
     // ── Semantic search (optional) ────────────────────────────────────────
@@ -284,23 +284,20 @@ class ProductRetriever
 
         return $rows->map(function ($r) use ($images, $sellers) {
             $final = (float) $r->final_price;
-            $base  = (float) $r->base_price;
             $r     = \App\Support\Localization::productRow($r, ['name']);
 
             return [
                 'id'           => (int) $r->id,
                 'name'         => $r->name,
                 'price'        => round($final, 3),
-                'old_price'    => $r->promo_type !== null && $base > $final ? round($base, 3) : null,
+                'old_price'    => $r->old_price !== null && $r->old_price > $final ? round($r->old_price, 3) : null,
                 'price_from'   => (int) $r->variant_prices > 1,
                 'image'        => $images[$r->id] ?? null,
                 'seller'       => $sellers[$r->seller_id] ?? null,
                 'rating'       => $r->rating !== null ? round((float) $r->rating, 1) : null,
                 'rating_count' => (int) $r->rating_count,
                 'flash_sale'   => $r->promo_type === 'flash_sale',
-                'flash_ends_at' => $r->promo_type === 'flash_sale' && $r->promo_ends_at
-                    ? Carbon::parse($r->promo_ends_at)->toISOString()
-                    : null,
+                'flash_ends_at' => $r->promo_type === 'flash_sale' ? $r->promo_ends_at : null,
                 'category'     => $r->category_name ? ['name' => $r->category_name, 'name_ar' => $r->category_name_ar, 'name_fr' => $r->category_name_fr, 'slug' => $r->category_slug] : null,
                 'url'          => '/products/' . $r->slug,
             ];

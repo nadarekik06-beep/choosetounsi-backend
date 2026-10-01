@@ -60,7 +60,9 @@ class ProductCardPresenter
             ->get()
             ->groupBy('product_id');
 
-        return $products->map(function ($p) use ($colorImages) {
+        $pricing = $this->promotions->priceMany($products);
+
+        return $products->map(function ($p) use ($colorImages, $pricing) {
             $p->primary_image_url  = $p->primaryImage ? Storage::url($p->primaryImage->image_path) : null;
             $p->is_sponsored       = false;
             unset($p->sponsored_priority);
@@ -74,11 +76,7 @@ class ProductCardPresenter
             }
             $p->variant_images = $variantImages;
 
-            $promo              = $this->promotions->getEffectivePrice($p);
-            $p->effective_price = $promo['effective_price'];
-            $p->original_price  = $promo['original_price'];
-            $p->discount_amount = $promo['discount_amount'];
-            $p->promotion       = $promo['promotion'];
+            $this->promotions->attach($p, $pricing[$p->id]);
 
             if ($p->relationLoaded('variants')) {
                 $p->setRelation('variants', $p->variants->map(fn ($v) => ['id' => $v->id, 'stock' => $v->stock])->values());

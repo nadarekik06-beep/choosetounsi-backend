@@ -248,14 +248,11 @@ class ProductReviewResource extends JsonResource
             ])
             ->values();
 
-        $active = $promotions->first(fn($promo) => $promo->isCurrentlyActive());
-
-        $effective = $base;
-        if ($active) {
-            $effective = $active->discount_type === 'percentage'
-                ? $base * (1 - (float) $active->discount_value / 100)
-                : max(0, $base - (float) $active->discount_value);
-        }
+        // Same price the storefront shows and checkout charges
+        $promoService = app(PromotionService::class);
+        $active       = $promoService->getActivePromotionForProduct($p->id);
+        $priced       = $promoService->priceWith($p, null, null, $active);
+        $effective    = $priced['final_price'];
 
         $plan       = $this->context['seller_plan'] ?? 'free';
         $commission = app(CommissionService::class);
@@ -271,7 +268,7 @@ class ProductReviewResource extends JsonResource
             'discount_value' => (float) $promo->discount_value,
             'starts_at'      => optional($promo->starts_at)->toISOString(),
             'ends_at'        => optional($promo->ends_at)->toISOString(),
-            'is_active_now'  => $promo->isCurrentlyActive(),
+            'is_active_now'  => $active !== null && $promo->id === $active->id,
             'flash_stock_remaining' => $promo->flashStockRemaining(),
         ];
 
@@ -279,8 +276,10 @@ class ProductReviewResource extends JsonResource
             'base_price'      => round($base, 3),
             'min_price'       => round($min, 3),
             'max_price'       => round($max, 3),
-            'effective_price' => round($effective, 3),
-            'discount_amount' => round($base - $effective, 3),
+            'effective_price' => $effective,
+            'original_price'  => $priced['original_price'],
+            'discount_amount' => $priced['discount_amount'],
+            'discount_percent' => $priced['discount_percent'],
             'active_promotion' => $active ? $formatPromo($active) : null,
             'promotions'      => $promotions->map($formatPromo)->values(),
             'coupons'         => $p->coupons->where('is_active', true)->map(fn($c) => [

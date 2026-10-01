@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Product;
 use App\Models\ProductImage;
+use App\Models\ProductVariant;
 use App\Models\Promotion;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
@@ -97,16 +98,36 @@ class PromotionService
      * Pricing block for one product, optionally one variant's price
      * (cart, checkout, detail page variants).
      */
-    public function getEffectivePrice(Product $product, ?float $basePrice = null, ?int $variantId = null, ?Promotion $promotion = null): array
+    public function getEffectivePrice(Product $product, ?float $basePrice = null, ?int $variantId = null): array
+    {
+        return $this->priceWith($product, $basePrice, $variantId, $this->getActivePromotionForProduct($product->id));
+    }
+
+    /** Pricing block for a product line: the variant's own price when it has one. */
+    public function priceLine(Product $product, ?ProductVariant $variant = null): array
+    {
+        return $this->getEffectivePrice($product, self::basePrice($product, $variant), $variant?->id);
+    }
+
+    /**
+     * getEffectivePrice() with the promotion already resolved (null = none),
+     * for lists that batch activePromotionsFor(). $product: model or DB row with id + price.
+     */
+    public function priceWith(object $product, ?float $basePrice, ?int $variantId, ?Promotion $promotion): array
     {
         $currentPrice = $basePrice ?? (float) $product->price;
-        $promotion  ??= $this->getActivePromotionForProduct($product->id);
 
         // Anti fake-discount: the crossed-out price is the lowest price of the
         // last 30 days, so raising the price before a promotion gains nothing.
         $reference = $promotion ? $this->referencePrice($product, $currentPrice, $variantId) : $currentPrice;
 
         return $this->pricing($currentPrice, $reference, $promotion);
+    }
+
+    /** Pre-promotion unit price: the variant's override, else the product price. */
+    public static function basePrice(Product $product, ?ProductVariant $variant = null): float
+    {
+        return (float) ($variant?->price_override ?? $product->price);
     }
 
     /**
@@ -134,7 +155,7 @@ class PromotionService
      * Price a discount is computed from and shown crossed out: the lowest price
      * of the last 30 days for this product (or this variant), capped at today's.
      */
-    public function referencePrice(Product $product, float $currentPrice, ?int $variantId = null): float
+    public function referencePrice(object $product, float $currentPrice, ?int $variantId = null): float
     {
         // A variant price passed without its id can't be matched to a timeline
         if ($variantId === null && abs($currentPrice - (float) $product->price) > 0.0005) {
