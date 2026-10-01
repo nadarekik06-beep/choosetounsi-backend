@@ -613,7 +613,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         // subtotal stays PRE-discount (matches store()'s convention — SellerOrder.subtotal
         // is the gross item total, discount_amount is tracked separately).
         $subtotal    = (float) $commission['total_price'];
-        $deliveryFee = $product->getEffectiveDeliveryFee();
+        $deliveryFee = Product::orderDeliveryFee([$product]);
         $total       = round($subtotal - $discountAmount + $deliveryFee, 3);
 
         if ($changed = $this->priceChanged($request, $total)) {
@@ -830,19 +830,13 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         ), 3);
     }
 
+    /** One shipment per order: see Product::orderDeliveryFee() (sellers' custom fees included). */
     private function resolveCartDeliveryFee($cartItems): float
     {
-        // Packs always require delivery
-        if ($cartItems->contains(fn($i) => $i->isPack())) {
-            return \App\Models\Product::DEFAULT_DELIVERY_FEE;
-        }
- 
-        // Check if every product in the cart has free delivery
-        $allFreeDelivery = $cartItems->every(function ($item) {
-            return $item->product && $item->product->isFreeDelivery();
-        });
- 
-        return $allFreeDelivery ? 0.0 : \App\Models\Product::DEFAULT_DELIVERY_FEE;
+        return Product::orderDeliveryFee(
+            $cartItems->reject(fn($i) => $i->isPack())->pluck('product')->filter(),
+            $cartItems->contains(fn($i) => $i->isPack()),
+        );
     }
 
     private function getSellerCol(): string

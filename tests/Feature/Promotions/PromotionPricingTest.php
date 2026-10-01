@@ -435,6 +435,48 @@ class PromotionPricingTest extends TestCase
         $this->assertSame(30, $this->jeans->fresh()->stock);
     }
 
+    // ── Delivery fee: sellers' custom fees, same rule for cart and buy-now ──
+
+    private function cartTotalFor(array $lines): array
+    {
+        Cart::where('user_id', $this->customer->id)->delete();
+        foreach ($lines as $product) {
+            Cart::create(['user_id' => $this->customer->id, 'product_id' => $product->id, 'quantity' => 1]);
+        }
+        return $this->asCustomer()->postJson('/api/checkout', $this->address())->assertCreated()->json();
+    }
+
+    public function test_cart_checkout_charges_the_sellers_custom_delivery_fee(): void
+    {
+        $custom5  = $this->makeProduct("Custom5 {$this->token}", 20);
+        $custom5->update(['delivery_fee' => 5]);
+        $custom12 = $this->makeProduct("Custom12 {$this->token}", 30);
+        $custom12->update(['delivery_fee' => 12]);
+        $free     = $this->makeProduct("Free {$this->token}", 10);
+        $free->update(['delivery_fee' => 0]);
+        $default  = $this->makeProduct("Default {$this->token}", 15);
+
+        $res = $this->cartTotalFor([$custom5]);
+        $this->assertEqualsWithDelta(5, $res['shipping_fee'], 0.0005, 'custom fee, like buy-now');
+        $this->assertEqualsWithDelta(25, $res['total'], 0.0005);
+
+        $this->assertEqualsWithDelta(5,  $this->cartTotalFor([$custom5, $free])['shipping_fee'], 0.0005, 'free item adds nothing');
+        $this->assertEqualsWithDelta(12, $this->cartTotalFor([$custom5, $custom12])['shipping_fee'], 0.0005, 'one shipment: highest fee');
+        $this->assertEqualsWithDelta(8,  $this->cartTotalFor([$custom5, $default])['shipping_fee'], 0.0005, 'platform default counts');
+        $this->assertEqualsWithDelta(0,  $this->cartTotalFor([$free])['shipping_fee'], 0.0005);
+
+        // Buy-now uses the same rule
+        $buy = $this->asCustomer()->postJson('/api/checkout/buy-now', $this->address() + ['product_id' => $custom12->id, 'quantity' => 1])
+            ->assertCreated()->json();
+        $this->assertEqualsWithDelta(42, $buy['total'], 0.0005);
+
+        // The cart lines expose what the checkout page needs to show the same fee
+        Cart::create(['user_id' => $this->customer->id, 'product_id' => $custom12->id, 'quantity' => 1]);
+        $line = collect($this->asCustomer()->getJson('/api/cart')->json('data.items'))->firstWhere('product_id', $custom12->id);
+        $this->assertEqualsWithDelta(12, $line['delivery_fee'], 0.0005);
+        $this->assertFalse($line['is_free_delivery']);
+    }
+
     // ── Paginated lists filter and sort on the final price, in SQL ─────────
 
     public function test_products_list_filters_and_sorts_on_the_final_price_with_pagination(): void

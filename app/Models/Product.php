@@ -284,6 +284,25 @@ class Product extends Model
      * This is the SINGLE source of truth for delivery fee calculation.
      * Use this method in ALL controllers — never hardcode 8 anywhere.
      */
+    /**
+     * Delivery fee the customer pays for one order (one shipment): 0 when every
+     * product ships free, otherwise the highest fee among the others — a
+     * seller's custom fee or the platform default. Packs count at the default.
+     * Buy-now is the one-product case. The checkout page mirrors this rule.
+     *
+     * @param iterable<Product> $products
+     */
+    public static function orderDeliveryFee(iterable $products, bool $hasPack = false): float
+    {
+        $fee = $hasPack ? self::DEFAULT_DELIVERY_FEE : 0.0;
+        foreach ($products as $product) {
+            if (!$product->isFreeDelivery()) {
+                $fee = max($fee, $product->getEffectiveDeliveryFee());
+            }
+        }
+        return round($fee, 3);
+    }
+
     public function getEffectiveDeliveryFee(): float
     {
         if ($this->delivery_fee === null) {
