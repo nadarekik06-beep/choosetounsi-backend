@@ -411,7 +411,10 @@ class SellerOrderNotificationsTest extends TestCase
         $notification = Notification::sent($seller, SellerOrderConfirmedNotification::class)->first();
         $so  = $notification->sellerOrder;
         $ref = $order->order_number . '-S' . $so->id;
-        $normalize = fn(string $s) => str_replace([$ref, 'order=' . $so->id, date('Y')], ['{REF}', 'order={ID}', '{YEAR}'], $s);
+        // Line endings normalized: git may check views and snapshots out as CRLF on Windows.
+        $normalize = fn(string $s) => str_replace(["
+", $ref, 'order=' . $so->id, date('Y')], ["
+", '{REF}', 'order={ID}', '{YEAR}'], $s);
 
         foreach (['en', 'ar'] as $locale) {
             [$html, $text] = $this->withLocale($locale, function () use ($notification, $seller) {
@@ -425,7 +428,9 @@ class SellerOrderNotificationsTest extends TestCase
                     file_put_contents($file, $normalize($content));
                 }
                 $this->assertFileExists($file);
-                $this->assertSame(file_get_contents($file), $normalize($content), "confirmed-{$locale}.{$ext} changed");
+                $this->assertSame(str_replace("
+", "
+", file_get_contents($file)), $normalize($content), "confirmed-{$locale}.{$ext} changed");
             }
         }
     }
