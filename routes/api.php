@@ -588,6 +588,10 @@ Route::middleware('auth:sanctum')->group(function () {
 
 
 
+        // Search: missed queries (grow resources/search/synonyms.txt) + index health
+        Route::get('/search/missed',                     [\App\Http\Controllers\Admin\AdminSearchController::class, 'missed']);
+        Route::get('/search/health',                     [\App\Http\Controllers\Admin\AdminSearchController::class, 'health']);
+
         Route::get('/reviews/stats',                     [AdminReviewController::class, 'stats']);
         Route::get('/reviews',                           [AdminReviewController::class, 'index']);
         Route::patch('/reviews/{id}/approve',            [AdminReviewController::class, 'approve']);
