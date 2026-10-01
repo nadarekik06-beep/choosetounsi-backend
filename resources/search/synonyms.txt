@@ -1,0 +1,104 @@
+# Search synonyms: one group of equivalent words per line, comma separated.
+#
+# Mix any languages and scripts: English, French, Arabic, Tunisian derja in Latin letters.
+# Include the English word when products are named in English, so "sabbat" finds "Sneakers".
+# Spelling doesn't need to be exact: accents, case, أ/ا, ى/ي, ة/ه and the Arabic "ال"
+# are normalized away ("Soirée" = "soiree", "الأحذية" = "احذيه").
+# Multi-word entries are fine ("huile d'olive").
+#
+# Avoid very common words that mean something else in another language
+# (French "or" = gold but also "or", French "the" = tea).
+#
+# After editing:  php artisan search:sync-settings   (the nightly reindex also picks it up)
+# Queries that find nothing are listed in the admin panel (Search > Missed queries):
+# that's the best source of new lines for this file.
+
+# ── Fashion ────────────────────────────────────────────────────────────────
+shoes, shoe, sneakers, sneaker, baskets, basket, chaussures, chaussure, running, sabbat, sabbet, sbabet, sbabit, sobbat, صباط, سباط, حذاء, احذيه, سبادري, espadrille
+sandals, sandal, sandales, sandale, nu pieds, claquettes, chlaka, chleka, شلاكه, صندل
+boots, bottes, bottines, botte, جزمه
+dress, robe, robes, roba, روبه, فستان, فساتين
+evening dress, robe de soiree, robe soiree, roba sahra, فستان سهره
+jeans, jean, denim, jinz, djinz, جينز, جين
+trousers, pants, pantalon, sirwel, serwel, sarwel, سروال, بنطلون
+shorts, short, bermuda, شورت
+t shirt, tshirt, tee, tee shirt, tricot, maryoul, mriyoul, mrioul, مريول, تيشرت, تيشيرت
+shirt, chemise, سوريه, souriya, قميص
+hoodie, sweat, sweatshirt, sweat a capuche, capuche, هودي
+jacket, veste, blouson, kabbout, kabout, جاكيت, كبوط, manteau, coat
+tracksuit, survetement, survet, jogging, سوفيتمان
+set, ensemble, tenue, طقم
+scarf, foulard, echarpe, chal, شال, منديل, mendil
+bag, sac, sac a main, handbag, chanta, shanta, شنطه, حقيبه
+backpack, sac a dos, cartable, محفظه
+watch, montre, mongela, manguela, mongala, منقاله, ساعه
+jewelry, jewellery, bijoux, bijou, مجوهرات, صياغه
+earrings, boucles d oreilles, boucle d oreille, حلق, اقراط
+necklace, pendant, collier, pendentif, عقد, سلسله, selsla
+khomsa, khamsa, خمسه, main de fatma
+gold, dore, ذهب, dheb
+silver, argent, فضه, fadha
+
+# ── Who it's for ──────────────────────────────────────────────────────────
+women, woman, femme, femmes, nsa, نساء, نسائي, mra, مرا
+men, man, homme, hommes, rjel, rjal, رجال, رجالي
+kids, kid, children, child, enfant, enfants, sghar, صغار, اطفال
+baby, bebe, رضيع, نونو
+
+# ── Electronics ───────────────────────────────────────────────────────────
+phone, smartphone, mobile, telephone, portable, gsm, hatef, هاتف, جوال, تلفون, تليفون
+phone case, coque, pochette, etui, غلاف
+headphones, headphone, headset, casque, casque audio, ecouteurs, ecouteur, earphones, earbuds, سماعه, سماعات
+speaker, enceinte, haut parleur, baffle, مكبر صوت
+laptop, ordinateur portable, pc portable, ordinateur, pc, حاسوب, كمبيوتر, ultrabook
+tablet, tablette, لوحه
+tv, television, tele, تلفاز, تلفزه
+charger, chargeur, شاحن
+console, playstation, ps5, ps 5, ps4, xbox, manette
+smartwatch, montre connectee, ساعه ذكيه
+microwave, micro onde, micro ondes, ميكروويف
+
+# ── Home ───────────────────────────────────────────────────────────────────
+rug, carpet, tapis, zarbia, zerbia, زربيه, mergoum, مرقوم, klim, kilim, كليم
+sofa, canape, salon, صالون, كنبه
+table, طاوله, tawla, mida, ميده
+curtains, curtain, rideau, rideaux, ستاره, ستائر
+bed sheets, sheets, draps, drap, parure de lit, ملايه, izar
+candle, bougie, chamaa, شمعه
+plate, plates, assiette, assiettes, sahn, صحن, صحون
+bowl, bol, سلطانيه
+pottery, poterie, ceramique, fakhar, فخار
+storage basket, panier, قفه, guffa, koffa
+
+# ── Food & grocery ──────────────────────────────────────────────────────────
+honey, miel, 3sal, asal, 3assel, عسل
+olive oil, huile d olive, huile olive, zit zitouna, zit zitoun, زيت زيتون
+dates, dattes, tmar, tmer, تمر, deglet nour, دقله
+harissa, hrissa, هريسه
+couscous, kosksi, kousksi, كسكسي
+coffee, cafe, kahwa, gahwa, 9ahwa, قهوه
+tea, tey, tay, شاي, infusion, tisane
+spices, epices, tabil, توابل, بهارات
+tuna, thon, تن
+
+# ── Beauty & health ─────────────────────────────────────────────────────────
+perfume, parfum, eau de parfum, 3tour, 3tor, عطر, عطور
+makeup, maquillage, makiyaj, مكياج
+lipstick, rouge a levres, احمر شفاه
+mascara, ماسكارا, rimmel
+foundation, fond de teint
+moisturiser, moisturizer, creme hydratante, creme, cream, كريم
+shampoo, shampoing, شامبو
+serum, سيروم
+argan, argane, ارقان
+protein, proteine, whey, بروتين
+vitamins, vitamin, vitamine, vitamines, فيتامين
+thermometer, thermometre, ميزان حراره
+
+# ── Sport ──────────────────────────────────────────────────────────────────
+sport, sports, sportif, رياضه, رياضي
+dumbbells, dumbbell, halteres, haltere, اثقال
+yoga mat, tapis de yoga
+football, foot, ballon, koura, kora, كوره
+jersey, maillot
+goggles, lunettes de natation
