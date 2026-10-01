@@ -26,6 +26,8 @@
         <server name="DB_DATABASE" value="choosetounsi_test" force="true"/>
         <server name="MAIL_MAILER" value="array"/>
         <server name="QUEUE_CONNECTION" value="sync"/>
+        <server name="SCOUT_DRIVER" value="null"/>
+        <server name="SEARCH_INDEXING" value="false"/>
         <server name="SESSION_DRIVER" value="array"/>
         <server name="TELESCOPE_ENABLED" value="false"/>
     </php>

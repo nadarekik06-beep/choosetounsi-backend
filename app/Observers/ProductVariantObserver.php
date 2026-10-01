@@ -16,6 +16,7 @@ class ProductVariantObserver
     public function saved(ProductVariant $variant): void
     {
         $variant->product->syncActiveStatusFromVariants();
+        $this->refreshSearch($variant);
     }
 
     /**
@@ -48,5 +49,20 @@ class ProductVariantObserver
         }
 
         $variant->product->syncActiveStatusFromVariants();
+        $this->refreshSearch($variant);
+    }
+
+    /**
+     * Variant options (colors, sizes) are part of the product's search document, and
+     * syncActiveStatusFromVariants() saves quietly, so Scout doesn't see a status change.
+     */
+    private function refreshSearch(ProductVariant $variant): void
+    {
+        if (!config('search.indexing')
+            || (!$variant->wasRecentlyCreated && !$variant->wasChanged('is_active') && $variant->exists)) {
+            return;
+        }
+        $variant->product->searchable();
+        \App\Jobs\IndexProductImages::dispatch($variant->product_id);
     }
 }

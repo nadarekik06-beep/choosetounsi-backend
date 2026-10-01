@@ -63,9 +63,10 @@ class Kernel extends ConsoleKernel
             ->monthlyOn(1, '00:10')->timezone(config('ads.timezone'))
             ->withoutOverlapping();
 
-        // ── AI search / similarity index ────────────────────────────────────
-        // Nightly rebuild so products added during the day get embeddings.
-        $schedule->command('search:rebuild')
+        // ── Search indexes (Meilisearch) ────────────────────────────────────
+        // Observers + queued jobs keep them current; this nightly pass is the safety net
+        // (and adds text vectors missed while the embedding service was down).
+        $schedule->command('search:reindex')
             ->dailyAt('02:30')->timezone(config('ads.timezone'))
             ->withoutOverlapping()->runInBackground();
 

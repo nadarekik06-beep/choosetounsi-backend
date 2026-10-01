@@ -36,8 +36,18 @@ class AppServiceProvider extends ServiceProvider
         // Cancelled seller orders give their flash-sale units back
         SellerOrder::observe(SellerOrderObserver::class);
 
-        // Requests to the Python AI service (search, similarity, index rebuild) carry
-        // its shared secret: Http::ai()->timeout(2)->post(config('services.ai.url') . '/similar', ...)
+        // Search index sync (Meilisearch); Scout itself syncs the Product documents.
+        // (ProductAttributeValue lives in Productattributevalue.php: only autoloadable through an
+        // optimized classmap on case-sensitive filesystems, hence the class_exists guard.)
+        foreach ([Product::class, \App\Models\ProductImage::class, \App\Models\ProductAttributeValue::class,
+                  \App\Models\Category::class, \App\Models\Subcategory::class] as $model) {
+            if (class_exists($model)) {
+                $model::observe(\App\Observers\SearchIndexObserver::class);
+            }
+        }
+
+        // Requests to the embedding service (choosetounsi-ai-service) carry its shared secret:
+        // Http::ai()->post(config('services.ai.url') . '/embed/text', ...)
         Http::macro('ai', fn () => Http::withHeaders(array_filter([
             'X-AI-Token' => config('services.ai.token'),
         ])));

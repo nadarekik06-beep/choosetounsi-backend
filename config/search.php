@@ -15,6 +15,9 @@ return [
         'timeout' => (float) env('MEILISEARCH_TIMEOUT', 2),
     ],
 
+    // Observers/jobs that keep the indexes in sync (off in the test suite).
+    'indexing' => (bool) env('SEARCH_INDEXING', true),
+
     'indexes' => [
         'products' => env('SEARCH_PRODUCTS_INDEX', 'products'),
         'images'   => env('SEARCH_IMAGES_INDEX', 'product_images'),
