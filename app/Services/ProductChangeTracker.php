@@ -45,8 +45,10 @@ class ProductChangeTracker
         'category_id'       => ['category', 'Category'],
         'subcategory_id'    => ['category', 'Subcategory'],
         'is_active'         => ['settings', 'Active'],
-        'is_pack'           => ['settings', 'Sold as pack'],
-        'season'            => ['settings', 'Seasons'],
+        'is_pack'           => ['settings', 'Multi-pack'],
+        'pack_quantity'     => ['settings', 'Units per pack'],
+        'pack_contents'     => ['settings', 'Pack contents'],
+        'occasions'         => ['settings', 'Season / occasion'],
         'delivery_fee'      => ['settings', 'Delivery fee'],
     ];
 
@@ -65,9 +67,11 @@ class ProductChangeTracker
 
         $fields = [];
         foreach (array_keys(self::FIELDS) as $f) {
-            $v = $f === 'name' || $f === 'description' || $f === 'short_description'
-                ? $product->getRawOriginal($f)
-                : $product->getAttributes()[$f] ?? null;
+            $v = match ($f) {
+                'name', 'description', 'short_description' => $product->getRawOriginal($f),
+                'occasions' => $product->occasions,   // product_occasions pivot, not a column
+                default     => $product->getAttributes()[$f] ?? null,
+            };
             $fields[$f] = $this->normalize($f, $v);
         }
 
@@ -272,7 +276,9 @@ class ProductChangeTracker
     private function apply(Product $product, string $field, $value): void
     {
         if (isset(self::FIELDS[$field])) {
-            $product->forceFill([$field => $field === 'season' ? json_decode($value ?? '[]', true) : $value])->save();
+            $field === 'occasions'
+                ? $product->syncOccasions((array) json_decode($value ?? '[]', true))
+                : $product->forceFill([$field => $value])->save();
             return;
         }
         if (str_starts_with($field, 'attribute.')) {
@@ -298,7 +304,8 @@ class ProductChangeTracker
         if ($field === 'subcategory_id') return Subcategory::find($value)?->name ?? "#$value";
         if ($field === 'delivery_fee')   return (float) $value === 0.0 ? 'Free delivery' : number_format((float) $value, 3) . ' TND';
         if ($field === 'price' || str_ends_with($field, '.price_override')) return number_format((float) $value, 3) . ' TND';
-        if ($field === 'season')         return implode(', ', (array) json_decode($value, true));
+        // 'season' = change logs written before occasions replaced products.season
+        if ($field === 'occasions' || $field === 'season') return implode(', ', (array) json_decode($value, true));
         if (is_bool($value))             return $value ? 'Yes' : 'No';
         if (str_starts_with($field, 'attribute.')) {
             $decoded = json_decode($value, true);
@@ -362,9 +369,9 @@ class ProductChangeTracker
         if ($v === null) return null;
         return match ($field) {
             'price', 'delivery_fee'          => round((float) $v, 3),
-            'stock', 'category_id', 'subcategory_id' => (int) $v,
+            'stock', 'category_id', 'subcategory_id', 'pack_quantity' => (int) $v,
             'is_active', 'is_pack'           => (bool) $v,
-            'season'                         => json_encode(array_values((array) (is_string($v) ? json_decode($v, true) : $v))),
+            'occasions'                      => json_encode(array_values((array) (is_string($v) ? json_decode($v, true) : $v))),
             default                          => (string) $v === '' ? null : (string) $v,
         };
     }

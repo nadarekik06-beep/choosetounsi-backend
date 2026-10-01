@@ -11,12 +11,15 @@ use App\Models\ProductVariant;
 use App\Services\PriceHistory;
 use App\Services\ProductImages;
 use App\Services\ProductChangeTracker;
+use App\Support\Occasions;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class SellerProductController extends Controller
 {
@@ -223,6 +226,8 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
     {
         try {
             return $this->doStore($request);
+        } catch (ValidationException $e) {
+            throw $e;
         } catch (\Throwable $e) {
             Log::error('[SellerProduct::store] CRASH: ' . $e->getMessage(), [
                 'file' => $e->getFile(),
@@ -253,6 +258,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         'stock'       => 'required|integer|min:0',
         'category_id' => 'required|exists:categories,id',
     ]);
+    $merch = $this->validateMerchandising($request, null);
 } catch (\Throwable $e) {
     Log::error('[SellerProduct::store] VALIDATION FAILED', ['error' => $e->getMessage()]);
     throw $e;
@@ -290,11 +296,12 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                 'is_approved'       => false,
                 'featured'          => false,
                 'views'             => 0,
-                'is_pack'           => filter_var($request->input('is_pack', false), FILTER_VALIDATE_BOOLEAN) ? 1 : 0,
-                // ── FIX: read 'seasons' (array from frontend), fall back to ['all_seasons']
-                'season'            => $this->parseSeasons($request, null),
+                'is_pack'           => $merch['is_pack'],
+                'pack_quantity'     => $merch['pack_quantity'],
+                'pack_contents'     => $merch['pack_contents'],
                 'delivery_fee' => $this->parseDeliveryFee($request, null),
             ]);
+            $product->syncOccasions($merch['occasions']);
             Log::info('[SellerProduct::store] Product created', ['id' => $product->id]);
         } catch (\Throwable $e) {
             Log::error('[SellerProduct::store] PRODUCT CREATE FAILED', ['error' => $e->getMessage()]);
@@ -350,6 +357,8 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
         Log::info('[SellerProduct::update] START', ['id' => $id]);
 
+        $merch = $this->validateMerchandising($request, $product);
+
         $images = $this->readImageManifest($request, $product, $this->requestedGroupKeys($request, $product));
         if ($images instanceof \Illuminate\Http\JsonResponse) return $images;
 
@@ -393,13 +402,12 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                 'category_id'       => $request->category_id       ?? $product->category_id,
                 'subcategory_id'    => $request->subcategory_id    ?? $product->subcategory_id,
                 'is_active'         => $isActive,
-                'is_pack'           => $request->has('is_pack')
-                    ? (filter_var($request->input('is_pack'), FILTER_VALIDATE_BOOLEAN) ? 1 : 0)
-                    : $product->is_pack,
-                // ── FIX: read 'seasons' (array from frontend), fall back to existing value
-                'season'            => $this->parseSeasons($request, $product->season),
+                'is_pack'           => $merch['is_pack'],
+                'pack_quantity'     => $merch['pack_quantity'],
+                'pack_contents'     => $merch['pack_contents'],
                 'delivery_fee' => $this->parseDeliveryFee($request, $product->delivery_fee),
             ] + ($resubmitting ? ['changes_requested_at' => null] : []));
+            if ($merch['occasions'] !== null) $product->syncOccasions($merch['occasions']);
             Log::info('[SellerProduct::update] Product updated');
         } catch (\Throwable $e) {
             Log::error('[SellerProduct::update] PRODUCT UPDATE FAILED', ['error' => $e->getMessage()]);
@@ -677,48 +685,49 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
     // ── Private helpers ─────────────────────────────────────────────────────────
 
     /**
-     * Parse the seasons value sent by the frontend.
-     *
-     * The frontend sends:  seasons = '["summer","winter"]'  (JSON-stringified array)
-     * This method decodes it, validates each value, and returns a clean PHP array
-     * ready to be assigned to $product->season (which has 'array' cast on the model).
-     *
-     * Falls back to $existingValue (on update) or ['all_seasons'] (on create)
-     * when the request does not contain a 'seasons' key at all.
+     * Multi-pack + Season/Occasion fields, validated against fixed values (422 on error).
+     * On update, omitted fields keep their stored value. A product saved as a pack
+     * must have pack_quantity ≥ 2. Occasions only apply to Occasions::CATEGORY_SLUGS;
+     * other categories are stored as all_season. 'occasions' is null when unchanged.
      */
-    private function parseSeasons(Request $request, mixed $existingValue): array
+    private function validateMerchandising(Request $request, ?Product $product): array
     {
-        $validSeasons = array_keys(Product::SEASONS);
+        $isPack = $request->has('is_pack')
+            ? filter_var($request->input('is_pack'), FILTER_VALIDATE_BOOLEAN)
+            : (bool) $product?->is_pack;
+        $qtyMissing = !$request->filled('pack_quantity') && ($request->has('pack_quantity') || !$product?->pack_quantity);
 
-        // If the request doesn't include 'seasons' at all, keep existing or default
-        if (!$request->has('seasons')) {
-            if (is_array($existingValue) && !empty($existingValue)) {
-                return $existingValue;
-            }
-            return ['all_seasons'];
-        }
+        $request->validate([
+            'is_pack'       => 'sometimes|boolean',
+            'pack_quantity' => [Rule::requiredIf($isPack && $qtyMissing), 'nullable', 'integer', 'min:2', 'max:1000'],
+            'pack_contents' => 'nullable|string|max:500',
+            'occasions'     => 'sometimes|array',
+            'occasions.*'   => ['string', Rule::in(Occasions::keys())],
+        ], [
+            'pack_quantity.required' => __('seller.product.pack_quantity_required'),
+            'occasions.*.in'         => __('seller.product.occasion_invalid'),
+        ]);
 
-        $raw = $request->input('seasons');
+        $categoryId = (int) ($request->input('category_id') ?: $product?->category_id);
+        $occasions  = match (true) {
+            $request->has('occasions')                    => Occasions::forCategory($categoryId, (array) $request->input('occasions')),
+            !Occasions::appliesToCategory($categoryId)    => [Occasions::DEFAULT],
+            $product === null                             => [Occasions::DEFAULT],
+            default                                       => null,
+        };
 
-        // Frontend sends a JSON string: '["summer","winter"]'
-        if (is_string($raw)) {
-            $decoded = json_decode($raw, true);
-            $seasons = is_array($decoded) ? $decoded : [$raw];
-        } elseif (is_array($raw)) {
-            // Just in case it arrives already decoded
-            $seasons = $raw;
-        } else {
-            return ['all_seasons'];
-        }
-
-        // Validate — keep only known season values
-        $seasons = array_values(array_filter(
-            $seasons,
-            fn($s) => is_string($s) && in_array($s, $validSeasons, true)
-        ));
-
-        return !empty($seasons) ? $seasons : ['all_seasons'];
+        return [
+            'is_pack'       => $isPack,
+            'pack_quantity' => $isPack
+                ? ($request->filled('pack_quantity') ? (int) $request->input('pack_quantity') : $product?->pack_quantity)
+                : null,
+            'pack_contents' => $isPack
+                ? ($request->has('pack_contents') ? (trim((string) $request->input('pack_contents')) ?: null) : $product?->pack_contents)
+                : null,
+            'occasions'     => $occasions,
+        ];
     }
+
     private function parseDeliveryFee(\Illuminate\Http\Request $request, mixed $existingValue): ?float
     {
         if (!$request->has('delivery_fee')) {

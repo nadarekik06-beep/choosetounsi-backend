@@ -169,13 +169,12 @@ public function index(Request $request)
             'is_active'         => 'sometimes|boolean',
             'is_approved'       => 'sometimes|boolean',
             'featured'          => 'sometimes|boolean',
-            'season'            => 'sometimes|nullable|string|max:30',
             'delivery_fee'      => 'sometimes|nullable|numeric|min:0',
         ]);
 
         $fieldsToUpdate = [];
         foreach (['name', 'description', 'short_description', 'price', 'stock',
-                  'category_id', 'subcategory_id', 'is_approved', 'featured', 'season','delivery_fee'] as $field) {
+                  'category_id', 'subcategory_id', 'is_approved', 'featured', 'delivery_fee'] as $field) {
             if ($request->has($field)) {
                 $fieldsToUpdate[$field] = $request->input($field);
             }

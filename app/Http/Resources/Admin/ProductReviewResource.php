@@ -3,6 +3,7 @@
 namespace App\Http\Resources\Admin;
 
 use App\Models\Product;
+use App\Support\Occasions;
 use App\Models\ProductImage;
 use App\Models\ProductModerationLog;
 use App\Models\ProductVariant;
@@ -67,8 +68,10 @@ class ProductReviewResource extends JsonResource
             'is_sponsored'        => (bool) $p->is_sponsored,
             'hidden_reason'       => $p->hidden_reason,
             'rejection_reason'    => $p->rejection_reason,
-            'seasons'             => collect((array) $p->season)
-                ->map(fn($s) => ['value' => $s, 'label' => Product::SEASONS[$s] ?? $s])->values(),
+            'pack_quantity'       => $p->pack_quantity,
+            'pack_contents'       => $p->pack_contents,
+            'occasions'           => collect($p->occasions)
+                ->map(fn($o) => ['value' => $o, 'label' => Occasions::VALUES[$o] ?? $o])->values(),
 
             'created_at'           => optional($p->created_at)->toISOString(),
             'updated_at'           => optional($p->updated_at)->toISOString(),

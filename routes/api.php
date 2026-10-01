@@ -78,6 +78,7 @@ Route::post('/auth/resend-verification', [AuthController::class, 'resendVerifica
 
 Route::get('/products/{slug}/reviews', [ProductReviewController::class, 'index']);
 
+Route::get('/product-occasions', [ProductController::class, 'occasions']);
 Route::post('/products/by-ids', [ProductController::class, 'byIds']);
 Route::get('/products',          [ProductController::class, 'index']);
 Route::get('/products/featured', [ProductController::class, 'featured']);

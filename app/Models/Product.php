@@ -21,7 +21,7 @@ class Product extends Model
     protected $translatable     = ['name', 'description', 'short_description'];
     protected $translatableBase = ['name'];
 
-    protected $hidden = ['translations', 'translations_hash', 'admin_note'];
+    protected $hidden = ['translations', 'translations_hash', 'admin_note', 'occasionRows'];
 
     // ── Platform-level delivery constants ──────────────────────────────────────
     // Change this ONE constant when the platform delivery fee changes.
@@ -43,7 +43,7 @@ class Product extends Model
         'name', 'slug', 'description', 'short_description',
         'price', 'delivery_fee', 'stock', 'sku',
         'is_approved', 'is_active', 'is_platform_product', 'featured', 'views',
-        'is_pack', 'season', 'rejection_reason', 'deleted_by_seller',
+        'is_pack', 'pack_quantity', 'pack_contents', 'rejection_reason', 'deleted_by_seller',
         'changes_requested_at',
         'admin_note', 'admin_edited_at', 'admin_edited_by',
     ];
@@ -56,7 +56,7 @@ class Product extends Model
         'price'               => 'decimal:3',
         'delivery_fee'        => 'decimal:3',   // ← NEW: null = platform default
         'is_pack'             => 'boolean',
-        'season'              => 'array',
+        'pack_quantity'       => 'integer',
         'deleted_by_seller'   => 'boolean',
         'changes_requested_at' => 'datetime',
         'admin_edited_at'     => 'datetime',
@@ -64,21 +64,11 @@ class Product extends Model
         'translated_at'       => 'datetime',
     ];
 
-    public const SEASONS = [
-        'all_seasons'    => 'All Seasons',
-        'summer'         => 'Summer',
-        'winter'         => 'Winter',
-        'spring'         => 'Spring',
-        'autumn'         => 'Autumn',
-        'ramadan'        => 'Ramadan',
-        'eid_al_fitr'    => 'Eid al-Fitr',
-        'eid_al_adha'    => 'Eid al-Adha',
-        'back_to_school' => 'Back to School',
-        'new_year'       => 'New Year',
-    ];
+    // Occasions live in product_occasions (see App\Support\Occasions); exposed as `occasions`.
+    protected $with   = ['occasionRows'];
 
     // ── NEW: expose computed delivery fields in all toArray() / API responses ──
-    protected $appends = ['primary_image_url', 'is_free_delivery', 'effective_delivery_fee'];
+    protected $appends = ['primary_image_url', 'is_free_delivery', 'effective_delivery_fee', 'occasions'];
 
     // ── Boot ──────────────────────────────────────────────────────────────────
 
@@ -90,9 +80,11 @@ class Product extends Model
             if (empty($product->slug)) {
                 $product->slug = Str::slug($product->getAttributes()['name'] ?? '');
             }
-            if (empty($product->season)) {
-                $product->season = ['all_seasons'];
-            }
+        });
+
+        // Every product has at least one occasion; callers that know better sync over it
+        static::created(function ($product) {
+            if (!$product->occasionRows()->exists()) $product->syncOccasions([\App\Support\Occasions::DEFAULT]);
         });
 
         static::deleting(function ($product) {
@@ -183,6 +175,26 @@ class Product extends Model
     public function seller()         { return $this->belongsTo(User::class, 'seller_id'); }
     public function category()       { return $this->belongsTo(Category::class); }
     public function subcategory()    { return $this->belongsTo(Subcategory::class); }
+    public function occasionRows()   { return $this->hasMany(ProductOccasion::class); }
+
+    /** Occasion values, in canonical order. */
+    public function getOccasionsAttribute(): array
+    {
+        $values = $this->occasionRows->pluck('occasion')->all();
+        return array_values(array_intersect(\App\Support\Occasions::keys(), $values)) ?: [\App\Support\Occasions::DEFAULT];
+    }
+
+    /** Replace this product's occasions (normalized: known values, all_season exclusive). */
+    public function syncOccasions(array $values): void
+    {
+        $values = \App\Support\Occasions::normalize($values);
+        DB::transaction(function () use ($values) {
+            ProductOccasion::where('product_id', $this->id)->delete();
+            ProductOccasion::insert(array_map(fn($o) => ['product_id' => $this->id, 'occasion' => $o], $values));
+        });
+        $this->unsetRelation('occasionRows');
+    }
+
     public function images()         { return $this->hasMany(ProductImage::class)->orderBy('order'); }
     public function primaryImage()   { return $this->hasOne(ProductImage::class)->where('is_primary', true); }
     public function orderItems()     { return $this->hasMany(OrderItem::class); }
@@ -271,12 +283,14 @@ class Product extends Model
     public function scopeSeller($query)         { return $query->where('is_platform_product', false); }
     public function scopeAvailableBrand($query) { return $query->where('is_platform_product', true)->where('is_active', true); }
 
-    public function scopeHasSeason($query, string $season)
+    /** Products tagged with any of $occasions; optionally all_season products too. */
+    public function scopeWithOccasions($query, array $occasions, bool $includeAllSeason = false)
     {
-        return $query->where(function ($q) use ($season) {
-            $q->whereJsonContains('season', $season)
-              ->orWhereJsonContains('season', 'all_seasons');
-        });
+        $occasions = array_values(array_intersect(\App\Support\Occasions::keys(), $occasions));
+        if ($includeAllSeason) $occasions[] = \App\Support\Occasions::DEFAULT;
+        if (!$occasions) return $query;
+        return $query->whereIn($this->qualifyColumn('id'), fn($q) => $q
+            ->select('product_id')->from('product_occasions')->whereIn('occasion', array_unique($occasions)));
     }
 
     public function scopeHasAttribute($query, string $attrSlug, array $values)

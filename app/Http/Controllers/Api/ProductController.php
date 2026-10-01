@@ -88,7 +88,11 @@ class ProductController extends Controller
             }
         }
         if ($request->filled('is_pack')) {
-            $query->where('is_pack', (int) $request->query('is_pack'));
+            $query->where('is_pack', $request->boolean('is_pack'));
+        }
+        // ?occasions[]=summer&occasions[]=aid  or  ?occasions=summer,aid  (exact tags; all_season only when asked for)
+        if ($occasions = $this->occasionsParam($request)) {
+            $query->withOccasions($occasions);
         }
         if ($request->filled('is_platform_product')) {
             $query->where('is_platform_product', (bool) $request->boolean('is_platform_product'));
@@ -127,7 +131,8 @@ class ProductController extends Controller
 
             $sorted = $this->scoringService->scoreAndSort($allProducts, $prefs, $activityWeights);
 
-            if ($sorted->isEmpty()) {
+            // Fallback only for a plain listing — an explicit filter shows its (empty) result
+            if ($sorted->isEmpty() && !$this->hasExplicitFilters($request)) {
                 $sorted = $this->buildFallbackProducts($request, $user, $prefs, $activityWeights);
             }
 
@@ -166,6 +171,26 @@ class ProductController extends Controller
         $products->setCollection(collect($this->transformProductCollection($products->getCollection())));
 
         return response()->json(['success' => true, 'data' => $products]);
+    }
+
+    /** Occasion values from ?occasions[]= or ?occasions=a,b (unknown values ignored). */
+    private function occasionsParam(Request $request): array
+    {
+        $raw = $request->query('occasions', []);
+        $raw = is_array($raw) ? $raw : explode(',', (string) $raw);
+        return array_values(array_intersect(\App\Support\Occasions::keys(), array_map('trim', $raw)));
+    }
+
+    /** Any filter the shopper chose (category/subcategory are the page context, not filters). */
+    private function hasExplicitFilters(Request $request): bool
+    {
+        foreach (['search', 'seller_id', 'price_min', 'price_max', 'attrs', 'is_pack', 'min_rating'] as $key) {
+            if ($request->filled($key)) return true;
+        }
+        return $this->occasionsParam($request) !== []
+            || filter_var($request->query('in_stock'), FILTER_VALIDATE_BOOLEAN)
+            || $request->boolean('free_delivery')
+            || $request->boolean('has_coupon');
     }
 
     /**
@@ -508,6 +533,16 @@ class ProductController extends Controller
         return response()->json(['success' => true, 'data' => $attributes]);
     }
 
+    /** Season / Occasion values and the categories that use them (App\Support\Occasions). */
+    public function occasions()
+    {
+        return response()->json(['success' => true, 'data' => [
+            'values'         => \App\Support\Occasions::keys(),
+            'default'        => \App\Support\Occasions::DEFAULT,
+            'category_slugs' => \App\Support\Occasions::CATEGORY_SLUGS,
+        ]]);
+    }
+
     public function byIds(\Illuminate\Http\Request $request)
     {
         $request->validate(['ids' => 'required|array|max:50', 'ids.*' => 'integer|min:1']);
@@ -515,7 +550,7 @@ class ProductController extends Controller
         $rows = DB::table('products as p')
             ->select([
                 'p.id','p.name','p.slug','p.description','p.translations','p.price','p.stock',
-                'p.views','p.featured',
+                'p.views','p.featured','p.is_pack','p.pack_quantity','p.pack_contents',
                 'c.name as category_name','c.slug as category_slug',
                 'c.name_fr as category_name_fr','c.name_ar as category_name_ar',
                 's.name as subcategory_name','s.slug as subcategory_slug',
@@ -533,9 +568,11 @@ class ProductController extends Controller
             ->whereNull('p.deleted_at')
             ->get();
 
-        $pricing = $this->promoService->priceMany($rows);
-        $indexed = $rows->keyBy('id');
-        $ordered = collect($ids)->map(function ($id) use ($indexed, $pricing) {
+        $pricing   = $this->promoService->priceMany($rows);
+        $indexed   = $rows->keyBy('id');
+        $occasions = DB::table('product_occasions')->whereIn('product_id', $rows->pluck('id'))
+            ->get()->groupBy('product_id')->map(fn($g) => $g->pluck('occasion')->all());
+        $ordered = collect($ids)->map(function ($id) use ($indexed, $pricing, $occasions) {
             $p = $indexed->get($id);
             if (!$p) return null;
             $p->category_name    = \App\Support\Localization::column($p, 'category_name');
@@ -550,6 +587,11 @@ class ProductController extends Controller
                 'stock'            => (int) $p->stock,
                 'views'            => (int) ($p->views ?? 0),
                 'featured'         => (bool) ($p->featured ?? false),
+                'is_pack'          => (bool) $p->is_pack,
+                'pack_quantity'    => $p->pack_quantity !== null ? (int) $p->pack_quantity : null,
+                'pack_contents'    => $p->pack_contents,
+                'occasions'        => array_values(array_intersect(\App\Support\Occasions::keys(), $occasions[$p->id] ?? []))
+                                      ?: [\App\Support\Occasions::DEFAULT],
                 'category_name'    => $p->category_name,
                 'category_slug'    => $p->category_slug,
                 'subcategory_name' => $p->subcategory_name,

@@ -50,8 +50,9 @@ class ForecastEngine
     // For each declared season slug, defines which calendar months are
     // strong (>1.0), neutral (≈1.0), or weak (<1.0) for that product type.
     // Scale: 0.5 (very suppressed) → 2.0 (very strong peak)
+    // Keys = App\Support\Occasions values (product_occasions pivot).
     private const SEASON_MONTHLY_PROFILES = [
-        'all_seasons' => [
+        'all_season' => [
             // Flat — no seasonal preference, all months roughly equal
             1=>1.00, 2=>1.00, 3=>1.05, 4=>1.05, 5=>1.00,
             6=>1.00, 7=>1.00, 8=>1.00, 9=>1.00, 10=>1.00,
@@ -71,18 +72,6 @@ class ForecastEngine
             6=>1.55, 7=>1.70, 8=>1.65, 9=>1.20, 10=>0.80,
             11=>0.55, 12=>0.60,
         ],
-        'spring' => [
-            // Peak: Mar–May
-            1=>0.75, 2=>0.80, 3=>1.45, 4=>1.55, 5=>1.50,
-            6=>1.10, 7=>0.80, 8=>0.75, 9=>0.80, 10=>0.90,
-            11=>0.85, 12=>0.80,
-        ],
-        'autumn' => [
-            // Peak: Sep–Nov
-            1=>0.80, 2=>0.75, 3=>0.80, 4=>0.85, 5=>0.90,
-            6=>0.85, 7=>0.80, 8=>0.90, 9=>1.45, 10=>1.60,
-            11=>1.55, 12=>1.10,
-        ],
         'ramadan' => [
             // Ramadan shifts each year — for 2025-2026 it's Feb-Mar range
             // We approximate a broader pre-Islamic-holiday peak
@@ -91,17 +80,12 @@ class ForecastEngine
             6=>0.90, 7=>0.85, 8=>0.85, 9=>0.90, 10=>0.95,
             11=>1.00, 12=>1.05,
         ],
-        'eid_al_fitr' => [
-            // Eid Al-Fitr follows Ramadan — typically Mar-Apr
-            1=>1.00, 2=>1.30, 3=>1.65, 4=>1.80, 5=>1.20,
-            6=>0.90, 7=>0.85, 8=>0.85, 9=>0.90, 10=>0.95,
+        'aid' => [
+            // Both Eids: Aïd el-Fitr (Mar–Apr) and Aïd el-Adha (May–Jun) —
+            // month by month, the stronger of the two former profiles
+            1=>1.00, 2=>1.30, 3=>1.65, 4=>1.80, 5=>1.50,
+            6=>1.75, 7=>1.30, 8=>0.95, 9=>0.90, 10=>0.95,
             11=>1.00, 12=>1.05,
-        ],
-        'eid_al_adha' => [
-            // Eid Al-Adha is typically May-Jun range in current years
-            1=>0.90, 2=>0.90, 3=>0.95, 4=>1.00, 5=>1.50,
-            6=>1.75, 7=>1.30, 8=>0.95, 9=>0.90, 10=>0.90,
-            11=>0.90, 12=>0.95,
         ],
         'back_to_school' => [
             // Sharp Aug-Sep peak, very suppressed otherwise
@@ -109,11 +93,11 @@ class ForecastEngine
             6=>0.80, 7=>0.95, 8=>1.85, 9=>1.90, 10=>1.10,
             11=>0.75, 12=>0.70,
         ],
-        'new_year' => [
-            // Dec-Jan peak (Soldes + New Year gifts)
-            1=>1.55, 2=>1.10, 3=>0.90, 4=>0.85, 5=>0.85,
-            6=>0.90, 7=>0.90, 8=>0.90, 9=>0.95, 10=>1.00,
-            11=>1.10, 12=>1.65,
+        'wedding_season' => [
+            // Tunisian weddings cluster in summer, after exams and before back-to-school
+            1=>0.70, 2=>0.70, 3=>0.80, 4=>0.90, 5=>1.20,
+            6=>1.55, 7=>1.80, 8=>1.75, 9=>1.35, 10=>0.95,
+            11=>0.80, 12=>0.75,
         ],
     ];
 
@@ -145,7 +129,7 @@ class ForecastEngine
             ->whereNull('p.deleted_at')
             ->selectRaw("
                 p.id, p.name, p.price, p.stock, p.views,
-                p.season, p.category_id, p.subcategory_id,
+                p.category_id, p.subcategory_id,
                 c.name as category_name, c.slug as category_slug,
                 s.name as subcategory_name
             ")
@@ -156,7 +140,9 @@ class ForecastEngine
         }
 
         // ── Parse declared product seasons ────────────────────────────────
-        $declaredSeasons = $this->parseDeclaredSeasons($product->season);
+        $declaredSeasons = $this->parseDeclaredSeasons(
+            DB::table('product_occasions')->where('product_id', $productId)->pluck('occasion')->all()
+        );
 
         // ── Build the blended monthly index for this specific product ─────
         $productMonthlyIndex = $this->buildProductMonthlyIndex($declaredSeasons);
@@ -347,29 +333,11 @@ class ForecastEngine
     // NEW PRIVATE METHODS
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    /**
-     * Parse the product's season column into a clean array of slugs.
-     * Handles: JSON array, plain string, null.
-     */
-    private function parseDeclaredSeasons(mixed $raw): array
+    /** The product's occasions (product_occasions rows), limited to known profiles. */
+    private function parseDeclaredSeasons(array $occasions): array
     {
-        $knownSlugs = array_keys(self::SEASON_MONTHLY_PROFILES);
-
-        if (is_string($raw)) {
-            $decoded = json_decode($raw, true);
-            $arr = is_array($decoded) ? $decoded : [$raw];
-        } elseif (is_array($raw)) {
-            $arr = $raw;
-        } else {
-            $arr = ['all_seasons'];
-        }
-
-        $valid = array_values(array_filter(
-            $arr,
-            fn($s) => in_array($s, $knownSlugs, true)
-        ));
-
-        return !empty($valid) ? $valid : ['all_seasons'];
+        $valid = array_values(array_intersect(array_keys(self::SEASON_MONTHLY_PROFILES), $occasions));
+        return !empty($valid) ? $valid : ['all_season'];
     }
 
     /**
@@ -383,7 +351,7 @@ class ForecastEngine
      * This means:
      *   - A winter product gets its highest blended index in Dec/Jan/Feb
      *   - A back-to-school product peaks in Aug/Sep
-     *   - An all_seasons product still follows the general commerce curve
+     *   - An all_season product still follows the general commerce curve
      */
     private function buildProductMonthlyIndex(array $declaredSeasons): array
     {
@@ -395,7 +363,7 @@ class ForecastEngine
             $seasonCount = 0;
 
             foreach ($declaredSeasons as $slug) {
-                $profile      = self::SEASON_MONTHLY_PROFILES[$slug] ?? self::SEASON_MONTHLY_PROFILES['all_seasons'];
+                $profile      = self::SEASON_MONTHLY_PROFILES[$slug] ?? self::SEASON_MONTHLY_PROFILES['all_season'];
                 $seasonSum   += (float) ($profile[$m] ?? 1.0);
                 $seasonCount++;
             }
@@ -457,15 +425,15 @@ class ForecastEngine
      * the boost should be dampened — winter products don't benefit from summer tourism.
      *
      * If there's alignment (e.g. ramadan product + ramadan event), keep full boost.
-     * If neutral (e.g. all_seasons + any event), keep full boost.
+     * If neutral (e.g. all_season + any event), keep full boost.
      */
     private function resolveEventBoost(object $event, array $declaredSeasons): float
     {
         $rawBoost  = (float) $event->boost_score;
         $eventType = $event->event_type;
 
-        // all_seasons products benefit from all events at full strength
-        if (in_array('all_seasons', $declaredSeasons, true)) {
+        // all_season products benefit from all events at full strength
+        if (in_array('all_season', $declaredSeasons, true)) {
             return $rawBoost;
         }
 
@@ -473,33 +441,28 @@ class ForecastEngine
         // 1.0 = full boost (aligned), 0.5 = half (neutral), 0.2 = dampened (misaligned)
         $alignmentMap = [
             'ramadan' => [
-                'ramadan' => 1.0, 'eid_al_fitr' => 1.0, 'eid_al_adha' => 0.8,
-                'winter'  => 0.7, 'all_seasons' => 1.0,
-                'summer'  => 0.3, 'back_to_school' => 0.3, 'new_year' => 0.5,
+                'ramadan' => 1.0, 'aid' => 1.0, 'winter' => 0.7, 'all_season' => 1.0,
+                'summer'  => 0.3, 'back_to_school' => 0.3, 'wedding_season' => 0.3,
             ],
             'eid' => [
-                'eid_al_fitr' => 1.0, 'eid_al_adha' => 1.0, 'ramadan' => 1.0,
-                'all_seasons' => 1.0, 'winter' => 0.6, 'summer' => 0.5,
-                'back_to_school' => 0.4, 'new_year' => 0.5,
+                'aid' => 1.0, 'ramadan' => 1.0, 'all_season' => 1.0,
+                'winter' => 0.6, 'summer' => 0.5, 'back_to_school' => 0.4, 'wedding_season' => 0.6,
             ],
             'summer' => [
-                'summer' => 1.0, 'all_seasons' => 1.0,
-                'winter' => 0.2, 'back_to_school' => 0.6, 'spring' => 0.7,
-                'autumn' => 0.5, 'ramadan' => 0.5, 'eid_al_fitr' => 0.5,
-                'eid_al_adha' => 0.6, 'new_year' => 0.3,
+                'summer' => 1.0, 'wedding_season' => 1.0, 'all_season' => 1.0,
+                'winter' => 0.2, 'back_to_school' => 0.6, 'ramadan' => 0.5, 'aid' => 0.6,
             ],
             'school' => [
-                'back_to_school' => 1.0, 'all_seasons' => 1.0,
-                'winter' => 0.7, 'autumn' => 0.7, 'summer' => 0.5,
-                'spring' => 0.5, 'ramadan' => 0.4, 'new_year' => 0.4,
+                'back_to_school' => 1.0, 'all_season' => 1.0,
+                'winter' => 0.7, 'summer' => 0.5, 'ramadan' => 0.4, 'aid' => 0.4, 'wedding_season' => 0.4,
             ],
             'economy' => [
                 // New year / soldes benefit most products
-                'new_year' => 1.0, 'winter' => 0.9, 'all_seasons' => 1.0,
-                'summer' => 0.6, 'back_to_school' => 0.7, 'ramadan' => 0.7,
+                'winter' => 0.9, 'all_season' => 1.0,
+                'summer' => 0.6, 'back_to_school' => 0.7, 'ramadan' => 0.7, 'aid' => 0.7, 'wedding_season' => 0.6,
             ],
             'tourism' => [
-                'summer' => 1.0, 'spring' => 0.8, 'all_seasons' => 1.0,
+                'summer' => 1.0, 'wedding_season' => 0.8, 'all_season' => 1.0,
                 'winter' => 0.3, 'back_to_school' => 0.5, 'ramadan' => 0.5,
             ],
         ];

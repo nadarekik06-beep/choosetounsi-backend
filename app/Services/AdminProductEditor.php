@@ -14,6 +14,7 @@ use App\Models\ProductVariant;
 use App\Models\Subcategory;
 use App\Models\User;
 use App\Notifications\ProductReviewedNotification;
+use App\Support\Occasions;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -76,8 +77,10 @@ class AdminProductEditor
                 'is_active'         => (bool) $product->is_active,
                 'is_approved'       => (bool) $product->is_approved,
                 'is_pack'           => (bool) $product->is_pack,
+                'pack_quantity'     => $product->pack_quantity,
+                'pack_contents'     => $product->pack_contents,
                 'featured'          => (bool) $product->featured,
-                'seasons'           => array_values((array) ($product->season ?: ['all_seasons'])),
+                'occasions'         => $product->occasions,
                 'free_delivery'     => $product->isFreeDelivery(),
                 'admin_note'        => $product->admin_note,
                 'admin_edited_at'   => optional($product->admin_edited_at)->toISOString(),
@@ -127,7 +130,10 @@ class AdminProductEditor
                 'max_colors_per_group' => self::MAX_COLORS_PER_GROUP,
                 'max_file_kb'          => 5120,
             ],
-            'seasons' => Product::SEASONS,
+            'occasions' => [
+                'values'         => Occasions::VALUES,
+                'category_slugs' => Occasions::CATEGORY_SLUGS,
+            ],
         ];
     }
 
@@ -209,9 +215,11 @@ class AdminProductEditor
             'subcategory_id'    => 'nullable|integer|exists:subcategories,id',
             'is_active'         => 'required|boolean',
             'is_pack'           => 'required|boolean',
+            'pack_quantity'     => 'nullable|required_if:is_pack,true|integer|min:2|max:1000',
+            'pack_contents'     => 'nullable|string|max:500',
             'free_delivery'     => 'required|boolean',
-            'seasons'           => 'required|array|min:1',
-            'seasons.*'         => 'string|in:' . implode(',', array_keys(Product::SEASONS)),
+            'occasions'         => 'required|array|min:1',
+            'occasions.*'       => 'string|in:' . implode(',', Occasions::keys()),
             'admin_note'        => 'nullable|string|max:5000',
             'attributes'        => 'present|array',
             'variants'          => 'present|array|max:200',
@@ -233,8 +241,9 @@ class AdminProductEditor
         ], [
             'slug.regex'      => 'Use lowercase letters, numbers and single hyphens only.',
             'price.gt'        => 'Price must be greater than 0.',
-            'seasons.required'=> 'Select at least one season.',
-            'seasons.min'     => 'Select at least one season.',
+            'pack_quantity.required_if' => 'Enter how many units the multi-pack contains (at least 2).',
+            'occasions.required' => 'Select at least one season / occasion.',
+            'occasions.min'      => 'Select at least one season / occasion.',
             'images.gallery.max' => 'The gallery can hold at most ' . self::GALLERY_MAX . ' images.',
             'images.color_groups.*.items.max' => 'A color group can hold at most ' . self::SET_MAX . ' images.',
             'variants.*.price_override.gt'    => 'Variant price must be greater than 0.',
@@ -354,12 +363,14 @@ class AdminProductEditor
             'subcategory_id'    => !empty($data['subcategory_id']) ? (int) $data['subcategory_id'] : null,
             'is_active'         => (bool) $data['is_active'],
             'is_pack'           => (bool) $data['is_pack'],
-            'season'            => array_values(array_unique($data['seasons'])),
+            'pack_quantity'     => $data['is_pack'] ? (int) $data['pack_quantity'] : null,
+            'pack_contents'     => $data['is_pack'] ? (trim((string) ($data['pack_contents'] ?? '')) ?: null) : null,
             // Same mapping as the seller form: free → 0, otherwise platform default (null)
             'delivery_fee'      => $data['free_delivery'] ? 0 : null,
             'admin_note'        => trim((string) ($data['admin_note'] ?? '')) ?: null,
         ]);
         $product->save();
+        $product->syncOccasions(Occasions::forCategory($product->category_id, $data['occasions']));
     }
 
     private function saveAttributes(Product $product, array $values): void
@@ -490,7 +501,9 @@ class AdminProductEditor
                 'subcategory_id'    => $product->subcategory_id,
                 'is_active'         => (bool) $product->is_active,
                 'is_pack'           => (bool) $product->is_pack,
-                'seasons'           => implode(', ', (array) $product->season),
+                'pack_quantity'     => $product->pack_quantity,
+                'pack_contents'     => $product->pack_contents,
+                'occasions'         => implode(', ', $product->occasions),
                 'free_delivery'     => $product->isFreeDelivery(),
                 'admin_note'        => $product->admin_note,
             ],

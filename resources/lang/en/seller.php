@@ -19,6 +19,8 @@ return [
         'color_images_required' => 'Add at least one image for each color: :colors.',
         'price_decrease_discount' => 'To lower the price of a live product, create a discount: customers then see the old price crossed out and the "-%" badge.',
         'created_review' => 'Product created! It will be reviewed by an admin.',
+        'pack_quantity_required' => 'Enter how many units the multi-pack contains (at least 2).',
+        'occasion_invalid' => 'Pick a season / occasion from the list.',
         'created_review_long' => 'Product created successfully! It will be reviewed by admin.',
         'updated' => 'Product updated.',
         'updated_long' => 'Product updated successfully.',

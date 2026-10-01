@@ -421,36 +421,30 @@ EOT;
         $sellerCol = $this->sellerCol();
         $totalExpr = $this->totalExpr();
 
+        // Keys = App\Support\Occasions values
         $seasonMonthMap = [
             'summer'         => [6, 7, 8],
             'winter'         => [12, 1, 2],
-            'spring'         => [3, 4, 5],
-            'autumn'         => [9, 10, 11],
             'ramadan'        => [],
-            'eid_al_fitr'    => [],
-            'eid_al_adha'    => [],
+            'aid'            => [],
             'back_to_school' => [8, 9],
-            'new_year'       => [12, 1],
-            'all_seasons'    => [],
+            'wedding_season' => [6, 7, 8, 9],
+            'all_season'     => [],
         ];
 
         $seasonMultiplierTable = [
             'ramadan'        => 1.40,
-            'eid_al_fitr'    => 1.35,
-            'eid_al_adha'    => 1.28,
+            'aid'            => 1.35,
             'back_to_school' => 1.22,
-            'new_year'       => 1.18,
+            'wedding_season' => 1.15,
             'winter'         => 1.10,
             'summer'         => 1.08,
-            'spring'         => 1.05,
-            'autumn'         => 1.03,
-            'all_seasons'    => 1.00,
+            'all_season'     => 1.00,
         ];
 
         $weeklyWeightMap = [
             'ramadan'        => [0.18, 0.30, 0.32, 0.20],
-            'eid_al_fitr'    => [0.15, 0.35, 0.35, 0.15],
-            'eid_al_adha'    => [0.20, 0.30, 0.30, 0.20],
+            'aid'            => [0.18, 0.32, 0.32, 0.18],
             'back_to_school' => [0.25, 0.30, 0.28, 0.17],
             'default'        => [0.23, 0.27, 0.27, 0.23],
         ];
@@ -464,7 +458,6 @@ EOT;
             ->selectRaw("
                 p.id, p.name, p.price, p.stock, p.views,
                 p.subcategory_id, p.category_id,
-                p.season,
                 c.name  as category_name,
                 s.name  as subcategory_name
             ")
@@ -474,17 +467,7 @@ EOT;
             return response()->json(['success' => false, 'message' => __('seller.common.product_not_found')], 404);
         }
 
-        $rawSeason = $product->season;
-        if (is_string($rawSeason)) {
-            $decoded = json_decode($rawSeason, true);
-            $productSeasons = is_array($decoded) && !empty($decoded)
-                ? $decoded
-                : ($rawSeason !== '' ? [$rawSeason] : ['all_seasons']);
-        } elseif (is_array($rawSeason)) {
-            $productSeasons = !empty($rawSeason) ? $rawSeason : ['all_seasons'];
-        } else {
-            $productSeasons = ['all_seasons'];
-        }
+        $productSeasons = DB::table('product_occasions')->where('product_id', $product->id)->pluck('occasion')->all();
 
         $knownSlugs     = array_keys($seasonMonthMap);
         $productSeasons = array_values(array_filter(
@@ -492,7 +475,7 @@ EOT;
             fn($s) => in_array($s, $knownSlugs, true)
         ));
         if (empty($productSeasons)) {
-            $productSeasons = ['all_seasons'];
+            $productSeasons = ['all_season'];
         }
 
         $requestedTargets = $request->input('target_seasons', []);
@@ -506,7 +489,7 @@ EOT;
             $targetSeasons = $productSeasons;
         }
 
-        $allSeasonLabels    = \App\Models\Product::SEASONS;
+        $allSeasonLabels    = \App\Support\Occasions::VALUES;
         $targetSeasonLabels = array_map(
             fn($s) => $allSeasonLabels[$s] ?? ucfirst(str_replace('_', ' ', $s)),
             $targetSeasons
@@ -515,7 +498,7 @@ EOT;
 
         $primarySeason = collect($targetSeasons)
             ->sortByDesc(fn($s) => $seasonMultiplierTable[$s] ?? 1.0)
-            ->first() ?? 'all_seasons';
+            ->first() ?? 'all_season';
 
         $categoryId = $product->category_id;
 
@@ -588,7 +571,7 @@ EOT;
                 ->join('products as p', 'p.id',  '=', 'oi.product_id')
                 ->where('p.category_id', $categoryId)
                 ->where('p.id', '!=', $request->product_id)
-                ->whereJsonContains('p.season', $slug)
+                ->whereIn('p.id', fn($q) => $q->select('product_id')->from('product_occasions')->where('occasion', $slug))
                 ->whereIn('o.status', ['completed', 'delivered'])
                 ->where('o.created_at', '>=', Carbon::now()->subMonths(12))
                 ->selectRaw("
@@ -1026,7 +1009,7 @@ EOT;
             ->whereNull('p.deleted_at')
             ->selectRaw("
                 p.id, p.name, p.price, p.stock, p.description,
-                p.short_description, p.sku, p.season, p.views,
+                p.short_description, p.sku, p.views,
                 c.name as category_name,
                 s.name as subcategory_name
             ")
@@ -1094,16 +1077,8 @@ EOT;
 
         $variantStr = !empty($variants) ? implode(', ', $variants) : '';
 
-        $rawSeason = $product->season;
-        if (is_string($rawSeason)) {
-            $decoded = json_decode($rawSeason, true);
-            $seasons = is_array($decoded) ? $decoded : [$rawSeason];
-        } elseif (is_array($rawSeason)) {
-            $seasons = $rawSeason;
-        } else {
-            $seasons = ['all_seasons'];
-        }
-        $seasonLabels = \App\Models\Product::SEASONS;
+        $seasons = DB::table('product_occasions')->where('product_id', $product->id)->pluck('occasion')->all() ?: ['all_season'];
+        $seasonLabels = \App\Support\Occasions::VALUES;
         $seasonStr    = implode(', ', array_map(
             fn($s) => $seasonLabels[$s] ?? ucfirst(str_replace('_', ' ', $s)),
             $seasons

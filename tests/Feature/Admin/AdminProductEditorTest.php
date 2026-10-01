@@ -150,7 +150,9 @@ class AdminProductEditorTest extends TestCase
             'is_active'         => $p['is_active'],
             'is_pack'           => $p['is_pack'],
             'free_delivery'     => $p['free_delivery'],
-            'seasons'           => $p['seasons'],
+            'occasions'         => $p['occasions'],
+            'pack_quantity'     => $p['pack_quantity'],
+            'pack_contents'     => $p['pack_contents'],
             'admin_note'        => $p['admin_note'],
             'attributes'        => (array) $payload['attributes'],
             'variants'          => array_map(fn($v) => [
@@ -333,16 +335,16 @@ class AdminProductEditorTest extends TestCase
         $doc = $this->documentFrom($this->load($d['product']));
 
         $doc['price'] = '0';
-        $doc['seasons'] = [];
+        $doc['occasions'] = [];
         $doc['attributes'][$this->material->slug] = null;          // required info attribute
         $doc['variants'][1]['option_ids'] = $doc['variants'][0]['option_ids']; // duplicate combo
         $doc['variants'][2]['option_ids'] = [$this->opt['black']->id];        // missing size
         $doc['images']['gallery'][] = ['id' => 999999999];
 
-        $this->saveDoc($d['product'], $doc)->assertStatus(422)->assertJsonValidationErrors(['price', 'seasons']);
+        $this->saveDoc($d['product'], $doc)->assertStatus(422)->assertJsonValidationErrors(['price', 'occasions']);
 
         $doc['price'] = '20';
-        $doc['seasons'] = ['summer'];
+        $doc['occasions'] = ['summer'];
         $this->saveDoc($d['product'], $doc)->assertStatus(422)->assertJsonValidationErrors([
             'attributes.' . $this->material->slug,
             'variants.1.option_ids',
