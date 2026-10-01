@@ -4,8 +4,8 @@ The app uses the **database queue** (`QUEUE_CONNECTION=database`, tables `jobs` 
 
 | Process | What depends on it |
 |---|---|
-| `php artisan queue:work` | e-mails (marketing digests, campaign notifications, seller-application mails), AI ad copy |
-| `php artisan schedule:run` (every minute) | `ads:*` (complete-ended, reset-daily, stock-watch, optimize, reconcile-stats, grant-monthly-credit, send-digest, send-interest-emails), `search:rebuild`, subscriptions, promotions, recommendations |
+| `php artisan queue:work` | e-mails (marketing digests, campaign notifications, seller-application mails), AI ad copy, search index sync (product documents, photo embeddings — see SEARCH.md) |
+| `php artisan schedule:run` (every minute) | `ads:*` (complete-ended, reset-daily, stock-watch, optimize, reconcile-stats, grant-monthly-credit, send-digest, send-interest-emails), `search:reindex`, subscriptions, promotions, recommendations |
 
 Check what is scheduled: `php artisan schedule:list`. Ad jobs run in Africa/Tunis time (`config/ads.php` → `timezone`).
 
