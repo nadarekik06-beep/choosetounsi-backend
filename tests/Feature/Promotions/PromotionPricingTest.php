@@ -112,7 +112,11 @@ class PromotionPricingTest extends TestCase
 
     private function address(): array
     {
-        return ['wilaya' => 'Tunis', 'address' => '1 rue Test', 'phone' => '22123456', 'payment_method' => 'cod'];
+        return [
+            'recipient_name' => 'Test Buyer', 'phone' => '22123456', 'wilaya' => 'Tunis',
+            'delegation' => 'Bab Bhar', 'address' => '1 rue Test', 'postal_code' => '1000',
+            'payment_method' => 'cod',
+        ];
     }
 
     /** Finds the product in any response shape (list, paginated, sections, single). */

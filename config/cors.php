@@ -25,7 +25,8 @@ return [
 
     'allowed_headers' => ['*'],
 
-    'exposed_headers' => [],
+    // Lets the admin panel read the server's file name on PDF downloads.
+    'exposed_headers' => ['Content-Disposition'],
 
     'max_age' => 0,
 

@@ -49,7 +49,7 @@ class DeliveryController extends Controller
                 'order.user:id,name,email',
                 'items.product:id,name',
                 'seller:id,name,email',
-                'seller.sellerApplication:id,user_id,phone_number,wilaya,city,business_name',
+                'seller.sellerApplication:id,user_id,full_name,phone_number,wilaya,city,business_name,pickup_address,pickup_postal_code,pickup_notes',
             ])
             ->latest()
             ->paginate((int) $request->query('per_page', 15));
@@ -72,7 +72,7 @@ class DeliveryController extends Controller
                 'order.user:id,name,email',
                 'items.product:id,name',
                 'seller:id,name,email',
-                'seller.sellerApplication:id,user_id,phone_number,wilaya,city,business_name',
+                'seller.sellerApplication:id,user_id,full_name,phone_number,wilaya,city,business_name,pickup_address,pickup_postal_code,pickup_notes',
                 'deliveryAssignment.deliveryGuy:id,name,email',
             ])
             ->latest()
@@ -198,10 +198,10 @@ if ($sellerOrder->status !== 'completed') {
             })
             ->with([
                 'order.user:id,name,email',
-                'order'       => fn($q) => $q->select('id', 'order_number', 'wilaya', 'address', 'phone', 'notes', 'user_id'),
+                'order'       => fn($q) => $q->select('id', 'order_number', 'wilaya', 'address', 'phone', 'notes', 'recipient_name', 'phone_secondary', 'delegation', 'postal_code', 'user_id'),
                 'items.product:id,name',
                 'seller:id,name,email',
-                'seller.sellerApplication:id,user_id,phone_number,wilaya,city,business_name',
+                'seller.sellerApplication:id,user_id,full_name,phone_number,wilaya,city,business_name,pickup_address,pickup_postal_code,pickup_notes',
                 'deliveryAssignment',
             ])
             ->latest()
@@ -320,10 +320,10 @@ if ($sellerOrder->status !== 'completed') {
     {
         $sellerOrder = SellerOrder::with([
             'order.user:id,name,email',
-            'order'  => fn($q) => $q->select('id', 'order_number', 'wilaya', 'address', 'phone', 'notes', 'user_id', 'payment_method'),
+            'order'  => fn($q) => $q->select('id', 'order_number', 'wilaya', 'address', 'phone', 'notes', 'recipient_name', 'phone_secondary', 'delegation', 'postal_code', 'user_id', 'payment_method'),
             'items.product:id,name',
             'seller:id,name,email',
-            'seller.sellerApplication:id,user_id,phone_number,wilaya,city,business_name',
+            'seller.sellerApplication:id,user_id,full_name,phone_number,wilaya,city,business_name,pickup_address,pickup_postal_code,pickup_notes',
             'deliveryAssignment.deliveryGuy:id,name,email',
         ])->findOrFail($id);
 
@@ -425,6 +425,11 @@ if ($sellerOrder->status !== 'completed') {
             'address'        => $order?->address,
             'phone'          => $order?->phone,
             'notes'          => $order?->notes,
+            // Structured address snapshot (2026-10) — null on legacy orders
+            'recipient_name'  => $order?->recipient_name ?: $order?->user?->name,
+            'phone_secondary' => $order?->phone_secondary,
+            'delegation'      => $order?->delegation,
+            'postal_code'     => $order?->postal_code,
             'customer'       => $order?->user ? [
                 'id'    => $order->user->id,
                 'name'  => $order->user->name,
@@ -438,6 +443,11 @@ if ($sellerOrder->status !== 'completed') {
                 'wilaya'        => $application?->wilaya,
                 'city'          => $application?->city,
                 'business_name' => $application?->business_name,
+                // Pickup point (2026-10)
+                'contact'            => $application?->full_name,
+                'pickup_address'     => $application?->pickup_address,
+                'pickup_postal_code' => $application?->pickup_postal_code,
+                'pickup_notes'       => $application?->pickup_notes,
             ] : null,
             'items' => $so->relationLoaded('items')
                 ? $so->items->map(fn($i) => [

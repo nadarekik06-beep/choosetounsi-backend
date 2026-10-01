@@ -25,6 +25,8 @@ class AuthServiceProvider extends ServiceProvider
     {
         $this->registerPolicies();
 
-        //
+        // Buyer addresses and delivery documents (slips, internal summary).
+        // Routes are already behind role:admin; this is the second lock.
+        Gate::define('export-order-documents', fn($user) => $user->role === 'admin' && $user->is_active);
     }
 }

@@ -102,6 +102,7 @@ Route::get('/categories/{slug}/filter-attributes', [ProductController::class, 'f
 Route::post('/ai/chat', [\App\Http\Controllers\Api\AiChatController::class, 'handle'])
     ->middleware('throttle:20,1');
 Route::get('/seller-plans',          [\App\Http\Controllers\Api\PlatformInfoController::class, 'sellerPlans']);
+Route::get('/seller-landing',        [\App\Http\Controllers\Api\PlatformInfoController::class, 'sellerLanding']);
 Route::get('/checkout/payment-info', [\App\Http\Controllers\Api\PlatformInfoController::class, 'paymentInfo']);
 
 Route::post('/search/text',  [\App\Http\Controllers\Api\SearchController::class, 'searchText']);
@@ -288,6 +289,8 @@ Route::middleware('auth:sanctum')->group(function () {
         // ── Store profile (branding) ─────────────────────────────────────────
         Route::get('/store-profile',              [SellerStoreProfileController::class, 'show']);
         Route::post('/store-profile/cover-photo', [SellerStoreProfileController::class, 'updateCoverPhoto']);
+        Route::get('/pickup-address',             [SellerStoreProfileController::class, 'pickupAddress']);
+        Route::put('/pickup-address',             [SellerStoreProfileController::class, 'updatePickupAddress']);
 
         // ── Products ──────────────────────────────────────────────────────
         Route::get('/products/stats',   [SellerProductController::class, 'stats']);
@@ -529,6 +532,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/orders/{id}/confirm-payment',  [\App\Http\Controllers\Admin\OrderController::class, 'confirmPayment']);
         Route::patch('/orders/{id}/confirm-order',     [AdminOrderController::class, 'confirmOrder']);
         Route::patch('/orders/{id}/note',              [AdminOrderController::class, 'saveNote']);
+        // Delivery documents (PDF) + seller pickup address fixes from the order drawer
+        Route::post('/orders/export/slips',                         [\App\Http\Controllers\Admin\OrderExportController::class, 'bulk']);
+        Route::get('/orders/{id}/export/slips',                     [\App\Http\Controllers\Admin\OrderExportController::class, 'slips'])->whereNumber('id');
+        Route::get('/orders/{id}/export/slips/{sellerOrderId}',     [\App\Http\Controllers\Admin\OrderExportController::class, 'slip'])->whereNumber(['id', 'sellerOrderId']);
+        Route::get('/orders/{id}/export/summary',                   [\App\Http\Controllers\Admin\OrderExportController::class, 'summary'])->whereNumber('id');
+        Route::put('/sellers/{sellerId}/pickup-address',            [AdminOrderController::class, 'updateSellerPickup'])->whereNumber('sellerId');
 
         // ── Admin Notifications ───────────────────────────────────────────
         Route::prefix('notifications')->group(function () {

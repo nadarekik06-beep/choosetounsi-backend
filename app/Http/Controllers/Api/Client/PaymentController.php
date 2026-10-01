@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Client;
 
 use App\Http\Controllers\Controller;
 use App\Models\Order;
+use App\Services\Orders\SellerOrderNotifier;
 use App\Services\PromotionService;
 use App\Services\WalletService;
 use Illuminate\Http\Request;
@@ -87,7 +88,8 @@ class PaymentController extends Controller
             ]);
 
             // Store the intent ID so the webhook can find this order
-            $order->update(['stripe_payment_intent_id' => $intent->id]);
+            // (not in Order::$fillable — update() silently dropped it)
+            $order->forceFill(['stripe_payment_intent_id' => $intent->id])->save();
 
             return response()->json([
                 'success'       => true,
@@ -178,6 +180,9 @@ class PaymentController extends Controller
 
         // Paid at the flash price after a failed attempt released the units
         app(PromotionService::class)->reclaimForOrder($order->id);
+
+        // Card orders reach the sellers only now that the payment went through.
+        app(SellerOrderNotifier::class)->orderPlaced($order->fresh());
 
         Log::info("[Stripe Webhook] Order #{$order->order_number} marked as paid.");
     }

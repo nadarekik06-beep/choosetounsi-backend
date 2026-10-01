@@ -1,0 +1,31 @@
+Prepare the package
+
+Hello Mohamed,
+The order is confirmed. A courier will pick it up at your pickup address.
+
+Write this reference on the package: {REF}
+Customer: سارة · Ben Arous
+
+Items:
+- Snapshot Lamp × 2 — 50.000 DT
+
+Items total: 50.000 DT
+Choose'Tounsi commission: -7.500 DT
+Your net earnings: 42.500 DT
+
+Pickup address:
+Atelier Snapshot
+Route de Tunis km 5, Sakiet Ezzit, 3021 Sfax
+
+Packing tips:
+- Pack every item in a sealed, sturdy package (tape all openings).
+- Write the order reference {REF} clearly on the package.
+- Protect fragile items with bubble wrap or paper.
+- Have the package ready at your pickup address — the courier will call before coming.
+When the package is ready, set the order to “Completed” in your dashboard.
+
+View the order: https://choosetounsi.test/seller/orders?order={ID}
+
+--
+You receive this e-mail because you sell on Choose'Tounsi and it concerns an order in your shop.
+Questions? Contact us at hello@choosetounsi.test.

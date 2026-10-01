@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\Order;
 use App\Services\CouponService;
+use App\Services\Orders\SellerOrderNotifier;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -70,6 +71,10 @@ class CancelAbandonedCardOrders extends Command
             }
 
             $coupons->releaseForOrder($locked);
+
+            // Unpaid card orders were never announced, so this normally sends
+            // nothing; it keeps "cancelled → tell notified sellers" true here too.
+            app(SellerOrderNotifier::class)->orderCancelled($locked);
 
             Log::info("[AbandonedCard] Order #{$locked->order_number} cancelled: card payment not completed.");
             return true;

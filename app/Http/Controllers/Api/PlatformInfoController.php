@@ -34,4 +34,16 @@ class PlatformInfoController extends Controller
             ],
         ]);
     }
+
+    /** GET /api/seller-landing: live stats + approved shops for /become-a-vendor */
+    public function sellerLanding(): JsonResponse
+    {
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'stats'   => $this->facts->sellerLandingStats(),
+                'sellers' => $this->facts->sellerShowcase(),
+            ],
+        ]);
+    }
 }

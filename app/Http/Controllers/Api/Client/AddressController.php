@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Client;
 
 use App\Http\Controllers\Controller;
 use App\Models\UserAddress;
+use App\Support\ShippingAddress;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -66,15 +67,17 @@ class AddressController extends Controller
             ], 422);
         }
 
-        $data = $request->validate([
-            'label'   => 'nullable|string|max:100',
-            'wilaya'  => 'required|string|max:100',
-            'address' => 'required|string|max:500',
-            'phone'   => 'required|string|max:30',
-            'notes'   => 'nullable|string|max:1000',
+        // Same rules as checkout: a saved address always passes checkout.
+        ShippingAddress::prepare($request);
+        $request->validate(ShippingAddress::rules() + [
+            'label'      => 'nullable|string|max:100',
             'is_default' => 'nullable|boolean',
         ]);
 
+        $data = ShippingAddress::columns($request) + [
+            'label'      => $request->label,
+            'is_default' => $request->boolean('is_default'),
+        ];
         $data['user_id']    = $user->id;
         $data['label']      = $data['label'] ?? 'Home';
         $data['is_default'] = $data['is_default'] ?? false;
@@ -114,15 +117,13 @@ class AddressController extends Controller
         $user    = $request->user();
         $address = UserAddress::where('user_id', $user->id)->findOrFail($id);
 
-        $data = $request->validate([
-            'label'   => 'nullable|string|max:100',
-            'wilaya'  => 'required|string|max:100',
-            'address' => 'required|string|max:500',
-            'phone'   => 'required|string|max:30',
-            'notes'   => 'nullable|string|max:1000',
+        ShippingAddress::prepare($request);
+        $request->validate(ShippingAddress::rules() + [
+            'label' => 'nullable|string|max:100',
         ]);
 
-        $data['label'] = $data['label'] ?? 'Home';
+        $data = ShippingAddress::columns($request);
+        $data['label'] = $request->label ?? 'Home';
         $address->update($data);
 
         return response()->json([

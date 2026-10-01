@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Seller;
 
 use App\Http\Controllers\Controller;
 use App\Models\SellerApplication;
+use App\Support\SellerPickup;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -75,5 +76,52 @@ class SellerStoreProfileController extends Controller
             'message' => __('seller.store.cover_updated'),
             'data'    => ['cover_photo' => Storage::url($path)],
         ]);
+    }
+
+    /**
+     * GET /api/seller/pickup-address
+     *
+     * Where the courier collects this seller's parcels, plus which fields are
+     * still missing (delivery slips can't be printed until it's complete).
+     */
+    public function pickupAddress(Request $request): JsonResponse
+    {
+        $seller = $request->user();
+        $pickup = SellerPickup::for($seller);
+
+        return response()->json(['success' => true, 'data' => [
+            'full_name'          => $pickup['contact'],
+            'phone_number'       => $pickup['phone'],
+            'pickup_address'     => $pickup['address'],
+            'city'               => $pickup['city'],
+            'pickup_postal_code' => $pickup['postal_code'],
+            'wilaya'             => $pickup['wilaya'],
+            'pickup_notes'       => $pickup['notes'],
+            'complete'           => $pickup['complete'],
+            'missing'            => $pickup['missing'],
+        ]]);
+    }
+
+    /**
+     * PUT /api/seller/pickup-address
+     *
+     * Updates only the pickup fields of the seller's latest application —
+     * no re-review, unlike SellerApplicationController::update().
+     */
+    public function updatePickupAddress(Request $request): JsonResponse
+    {
+        $application = SellerApplication::where('user_id', $request->user()->id)->latest()->first();
+
+        if (!$application) {
+            return response()->json([
+                'success' => false,
+                'message' => __('seller.store.no_application'),
+            ], 422);
+        }
+
+        SellerPickup::prepare($request);
+        $application->update($request->validate(SellerPickup::rules()));
+
+        return $this->pickupAddress($request);
     }
 }

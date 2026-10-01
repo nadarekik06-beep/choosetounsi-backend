@@ -4,7 +4,15 @@ namespace App\Http\Controllers\Admin;
 
 use App\Helpers\PlatformUser;
 use App\Http\Controllers\Controller;
+use App\Http\Resources\Admin\OrderExportResource;
+use App\Http\Resources\Admin\SellerPickupResource;
+use App\Http\Resources\Admin\ShippingAddressResource;
 use App\Models\Order;
+use App\Models\OrderExport;
+use App\Models\SellerApplication;
+use App\Services\Orders\DeliveryDocumentService;
+use App\Services\Orders\SellerOrderNotifier;
+use App\Support\SellerPickup;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -17,7 +25,19 @@ class OrderController extends Controller
      */
     public function index(Request $request)
     {
-        $query = Order::with(['user:id,name,email', 'sellerOrders:id,order_id,seller_id,status,subtotal,coupon_code,discount_amount']);
+        $query = Order::with([
+            'user:id,name,email',
+            'sellerOrders:id,order_id,seller_id,status,subtotal,coupon_code,discount_amount',
+            'sellerOrders.seller:id,name',
+            'sellerOrders.seller.sellerApplication', // pickup completeness → export readiness
+        ])
+            ->withMax(['exports as slips_exported_at' => fn($q) => $q->whereIn('type', OrderExport::SLIP_TYPES)], 'created_at');
+
+        // Confirmed orders whose slips were never exported: the courier hand-off queue.
+        if ($request->boolean('needs_slips')) {
+            $query->where('status', 'confirmed')
+                  ->whereDoesntHave('exports', fn($q) => $q->whereIn('type', OrderExport::SLIP_TYPES));
+        }
 
         if ($s = $request->query('status')) {
             $query->where('status', $s);
@@ -25,6 +45,8 @@ class OrderController extends Controller
         if ($s = $request->query('search')) {
             $query->where(function ($q) use ($s) {
                 $q->where('order_number', 'like', "%$s%")
+                  ->orWhere('recipient_name', 'like', "%$s%")
+                  ->orWhere('phone', 'like', "%$s%")
                   ->orWhereHas('user', fn($q2) =>
                       $q2->where('name', 'like', "%$s%")
                          ->orWhere('email', 'like', "%$s%")
@@ -57,7 +79,9 @@ class OrderController extends Controller
         $orders = $query->orderByDesc('created_at')
             ->paginate((int) $request->query('per_page', 15));
 
-        $orders->getCollection()->transform(function ($order) use ($platformUserId) {
+        $documents = app(DeliveryDocumentService::class);
+
+        $orders->getCollection()->transform(function ($order) use ($platformUserId, $documents) {
             // Same figure as the detail drawer: what the customer pays
             $money = $order->moneySummary();
             $order->subtotal        = $money['subtotal'];
@@ -68,6 +92,11 @@ class OrderController extends Controller
             $order->has_platform_items = $platformUserId
                 ? $order->sellerOrders->contains('seller_id', $platformUserId)
                 : false;
+
+            // Lets the list disable bulk export with a reason, without opening each order.
+            $order->setAttribute('address_status', ShippingAddressResource::make($order)->resolve()['status']);
+            $order->setAttribute('export_issues', $documents->exportIssues($order));
+
             $order->unsetRelation('sellerOrders');
             return $order;
         });
@@ -88,8 +117,11 @@ class OrderController extends Controller
             'items.variant:id,product_id,sku',
             'items.variant.images',
             'items.variant.attributeOptions.attribute:id,slug,name,name_fr,name_ar,type',
-            'sellerOrders',
+            'sellerOrders' => fn($q) => $q->orderBy('id'),
             'sellerOrders.seller:id,name,email',
+            'sellerOrders.seller.sellerApplication',
+            'exports' => fn($q) => $q->latest('created_at'),
+            'exports.exporter:id,name',
         ])->findOrFail($id);
 
         $order->items->each(function ($item) {
@@ -186,12 +218,86 @@ class OrderController extends Controller
             ? $order->sellerOrders->contains('seller_id', $platformUserId)
             : false;
 
+        $this->attachDeliveryData($order);
+
         return response()->json(['success' => true, 'data' => $order]);
+    }
+
+    /**
+     * Shipping address card, per-sub-order pickup + slip money, export
+     * readiness and history for the order drawer. Admin-only data.
+     */
+    private function attachDeliveryData(Order $order): void
+    {
+        $documents = app(DeliveryDocumentService::class);
+        $activeIds = $documents->activeSellerOrders($order)->pluck('id')->all();
+
+        $order->setAttribute('shipping_address', ShippingAddressResource::make($order)->resolve());
+
+        foreach ($order->sellerOrders as $so) {
+            $pickup     = SellerPickup::for($so->seller, $so->seller_id);
+            $shippable  = in_array($so->id, $activeIds, true);
+            $so->setAttribute('pickup', SellerPickupResource::make($pickup)->resolve());
+            $so->setAttribute('reference', $documents->reference($order, $so));
+            $so->setAttribute('is_shippable', $shippable);
+            $so->setAttribute('slip_money', $shippable ? $documents->money($order, $so) : null);
+            $so->seller?->unsetRelation('sellerApplication'); // pickup above is all the drawer needs
+        }
+
+        $issues = $documents->exportIssues($order);
+        $order->setAttribute('export_readiness', ['ready' => $issues === [], 'issues' => $issues]);
+        $order->setAttribute('export_history', OrderExportResource::collection($order->exports)->resolve());
+        $order->setAttribute('slips_exported_at', optional($order->exports->whereIn('type', OrderExport::SLIP_TYPES)->first()?->created_at)->toIso8601String());
+        $order->unsetRelation('exports');
+    }
+
+    /**
+     * PUT /api/admin/sellers/{sellerId}/pickup-address
+     *
+     * Lets the admin complete a seller's pickup address (typically after a
+     * phone call) so slips can be exported. Touches only the pickup fields of
+     * the seller's latest application — never its review status.
+     */
+    public function updateSellerPickup(Request $request, int $sellerId)
+    {
+        $application = SellerApplication::where('user_id', $sellerId)->latest()->first();
+        if (!$application) {
+            return response()->json([
+                'success' => false,
+                'message' => $sellerId === PlatformUser::id()
+                    ? "CHOOSE'Tounsi's own pickup address is set in the server .env (PLATFORM_PICKUP_*)."
+                    : 'This seller has no seller profile to update.',
+            ], 422);
+        }
+
+        SellerPickup::prepare($request);
+        $application->update($request->validate(SellerPickup::rules()));
+
+        Log::info('[AdminOrder::updateSellerPickup] seller ' . $sellerId . ' pickup updated by admin ' . $request->user()->id);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Pickup address saved.',
+            'data'    => SellerPickupResource::make(SellerPickup::for(null, $sellerId))->resolve(),
+        ]);
     }
 
     /**
      * PATCH /api/admin/orders/{id}/status
      */
+    /**
+     * A D17 / card payment just recorded as paid: the sellers can now hear
+     * about the order. (COD "paid" is cash collected at delivery — those
+     * sellers were told at checkout.)
+     */
+    private function notifyOnlinePayment(int $orderId): void
+    {
+        $order = Order::find($orderId);
+        if ($order && in_array($order->payment_method, SellerOrderNotifier::ONLINE_METHODS, true)) {
+            app(SellerOrderNotifier::class)->orderPlaced($order);
+        }
+    }
+
     /** Cancelled seller orders written with DB::table skip the observer: release here. */
     private function releaseFlashQuota(int $orderId): void
     {
@@ -219,20 +325,30 @@ class OrderController extends Controller
                 $sellerOrderQuery->where('seller_id', '!=', $platformUserId);
             }
 
-            $sellerOrderQuery->update([
-                'status'     => $request->status,
-                'updated_at' => now(),
-            ]);
-
-            DB::table('orders')
-                ->where('id', $id)
-                ->update(['status' => $request->status, 'updated_at' => now()]);
-
-            if ($request->status === 'cancelled') {
-                $this->releaseFlashQuota((int) $id);
-            }
-
             $order = Order::findOrFail($id);
+
+            DB::transaction(function () use ($request, $id, $order, $sellerOrderQuery) {
+                $affectedIds = (clone $sellerOrderQuery)->pluck('id')->all();
+
+                $sellerOrderQuery->update([
+                    'status'     => $request->status,
+                    'updated_at' => now(),
+                ]);
+
+                DB::table('orders')
+                    ->where('id', $id)
+                    ->update(['status' => $request->status, 'updated_at' => now()]);
+
+                // One e-mail + bell entry per affected seller sub-order (after commit, never twice)
+                if ($request->status === 'cancelled') {
+                    $this->releaseFlashQuota((int) $id);
+                    app(SellerOrderNotifier::class)->orderCancelled($order, $affectedIds);
+                } elseif ($request->status === 'confirmed') {
+                    app(SellerOrderNotifier::class)->orderConfirmed($order, $affectedIds);
+                }
+            });
+
+            $order->refresh();
 
             return response()->json([
                 'success' => true,
@@ -289,40 +405,23 @@ public function confirmOrder(Request $request, $id)
             $updateData['confirmed_at'] = now();
         }
 
-        DB::table('orders')->where('id', $id)->update($updateData);
+        DB::transaction(function () use ($id, $order, $newStatus, $updateData) {
+            DB::table('orders')->where('id', $id)->update($updateData);
 
-        // Cascade to all seller sub-orders
-        DB::table('seller_orders')
-            ->where('order_id', $id)
-            ->update(['status' => $newStatus, 'updated_at' => now()]);
-
-        if ($newStatus === 'cancelled') {
-            $this->releaseFlashQuota((int) $id);
-        }
-
-        // ── Notify each seller whose sub-order is affected ────────────────
-        if ($newStatus === 'confirmed') {
-            $sellerIds = DB::table('seller_orders')
+            // Cascade to all seller sub-orders
+            DB::table('seller_orders')
                 ->where('order_id', $id)
-                ->pluck('seller_id')
-                ->unique();
+                ->update(['status' => $newStatus, 'updated_at' => now()]);
 
-            $orderNumber = $order->order_number ?? "#{$order->id}";
-            $adminNote   = $request->admin_note ?? null;
-
-            foreach ($sellerIds as $sellerId) {
-                $seller = \App\Models\User::find($sellerId);
-                if ($seller) {
-                    $seller->notify(
-                        new \App\Notifications\OrderConfirmedNotification(
-                            $order,
-                            $orderNumber,
-                            $adminNote
-                        )
-                    );
-                }
+            // Each seller gets one e-mail + bell entry for their sub-order
+            // (sent after the commit, never twice).
+            if ($newStatus === 'cancelled') {
+                $this->releaseFlashQuota((int) $id);
+                app(SellerOrderNotifier::class)->orderCancelled($order);
+            } else {
+                app(SellerOrderNotifier::class)->orderConfirmed($order);
             }
-        }
+        });
 
         return response()->json([
             'success' => true,
@@ -392,6 +491,10 @@ public function confirmOrder(Request $request, $id)
                     'updated_at'     => now(),
                 ]);
 
+            if ($request->payment_status === 'paid') {
+                $this->notifyOnlinePayment((int) $id);
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Payment status updated.',
@@ -440,6 +543,8 @@ public function confirmOrder(Request $request, $id)
             DB::table('seller_orders')
                 ->where('order_id', $id)
                 ->update(['payment_status' => 'paid', 'updated_at' => now()]);
+
+            $this->notifyOnlinePayment((int) $id);
 
             return response()->json([
                 'success' => true,

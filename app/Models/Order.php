@@ -27,6 +27,11 @@ class Order extends Model
         'address',
         'phone',
         'notes',
+        // Shipping address snapshot (2026-10): NULL on legacy orders
+        'recipient_name',
+        'phone_secondary',
+        'delegation',
+        'postal_code',
         'woocommerce_order_id',
     ];
 
@@ -91,6 +96,40 @@ public function complaints()
 {
     return $this->hasMany(\App\Models\Complaint::class);
 }
+
+    /** Delivery documents generated for this order (admin audit trail). */
+    public function exports()
+    {
+        return $this->hasMany(OrderExport::class);
+    }
+
+    /**
+     * Orders placed before structured addresses (2026-10) only have the free
+     * text wilaya / address / phone — no recipient, delegation or postal code.
+     */
+    public function hasStructuredAddress(): bool
+    {
+        return filled($this->recipient_name) && filled($this->postal_code);
+    }
+
+    /** Enough for a courier to find the buyer: someone to call and a place. */
+    public function hasDeliverableAddress(): bool
+    {
+        return filled($this->phone) && filled($this->address) && filled($this->wilaya);
+    }
+
+    /** Recipient name, falling back to the account name on legacy orders. */
+    public function recipientName(): ?string
+    {
+        return $this->recipient_name ?: $this->user?->name;
+    }
+
+    /** "12 rue X, El Menzah, 1004 Tunis" — one line, empty parts skipped. */
+    public function formattedShippingAddress(): string
+    {
+        $city = trim(implode(' ', array_filter([$this->postal_code, $this->wilaya])));
+        return implode(', ', array_filter([$this->address, $this->delegation, $city], 'filled'));
+    }
     /**
      * Money breakdown shown on every order screen (customer, admin).
      *

@@ -10,7 +10,11 @@ use App\Models\User;
 use App\Models\SellerApplication;
 use App\Notifications\NewSellerApplicationNotification;
 use App\Notifications\SellerApplicationReviewedNotification;
+use App\Support\SellerPickup;
+use App\Support\TunisianPhone;
+use App\Support\Wilayas;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
@@ -26,7 +30,7 @@ class SellerApplicationController extends Controller
 
         return [
             'full_name'                  => "{$required}|string|max:255",
-            'phone_number'               => "{$required}|string|max:30",
+            'phone_number'               => [...explode('|', $required), 'string', 'regex:' . TunisianPhone::PATTERN],
             'business_name'              => "{$required}|string|max:255",
             'business_category'          => "{$required}|string|max:255",
             'business_categories'        => 'nullable|array|max:5',
@@ -34,8 +38,12 @@ class SellerApplicationController extends Controller
             'business_subcategories'     => 'nullable|array',           // ← NEW
             'business_subcategories.*'   => 'string|max:255',           // ← NEW
             'business_description'       => 'nullable|string|max:2000', // ← NOW OPTIONAL
-            'wilaya'                     => "{$required}|string|max:100",
+            'wilaya'                     => [...explode('|', $required), 'string', Rule::in(Wilayas::ALL)],
             'city'                       => "{$required}|string|max:100",
+            // Pickup point for the courier (2026-10): required for new sellers
+            'pickup_address'             => "{$required}|string|min:5|max:500",
+            'pickup_postal_code'         => "{$required}|digits:4",
+            'pickup_notes'               => 'nullable|string|max:500',
             'profile_picture'            => 'nullable|image|mimes:jpg,jpeg,png,webp|max:4096',
             'sample_images'              => 'nullable|array|max:5',
             'sample_images.*'            => 'image|mimes:jpg,jpeg,png,webp|max:4096',
@@ -166,6 +174,7 @@ class SellerApplicationController extends Controller
             ], 422);
         }
 
+        SellerPickup::prepare($request);
         $validated = $request->validate($this->validationRules(false));
         $cats      = $this->resolveCategories($validated);
 
@@ -183,6 +192,9 @@ class SellerApplicationController extends Controller
             'business_description'   => $validated['business_description'] ?? null,
             'wilaya'                 => $validated['wilaya'],
             'city'                   => $validated['city'],
+            'pickup_address'         => $validated['pickup_address'],
+            'pickup_postal_code'     => $validated['pickup_postal_code'],
+            'pickup_notes'           => $validated['pickup_notes'] ?? null,
             'profile_picture'        => $profilePicturePath,
             'sample_images'          => $sampleImagePaths ?: null,
             'sample_captions'        => $validated['sample_captions'] ?? null,
@@ -237,6 +249,7 @@ class SellerApplicationController extends Controller
             ], 422);
         }
 
+        SellerPickup::prepare($request);
         $validated = $request->validate($this->validationRules(true));
         $cats      = $this->resolveCategories($validated);
 
@@ -261,6 +274,9 @@ class SellerApplicationController extends Controller
             'business_description'   => $validated['business_description'] ?? $application->business_description,
             'wilaya'                 => $validated['wilaya']            ?? $application->wilaya,
             'city'                   => $validated['city']              ?? $application->city,
+            'pickup_address'         => $validated['pickup_address']     ?? $application->pickup_address,
+            'pickup_postal_code'     => $validated['pickup_postal_code'] ?? $application->pickup_postal_code,
+            'pickup_notes'           => array_key_exists('pickup_notes', $validated) ? $validated['pickup_notes'] : $application->pickup_notes,
             'profile_picture'        => $profilePicturePath,
             'sample_images'          => $sampleImagePaths ?: $application->sample_images,
             'sample_captions'        => $validated['sample_captions']  ?? $application->sample_captions,
@@ -399,6 +415,9 @@ class SellerApplicationController extends Controller
             // Step 2
             'wilaya'                 => $app->wilaya,
             'city'                   => $app->city,
+            'pickup_address'         => $app->pickup_address,
+            'pickup_postal_code'     => $app->pickup_postal_code,
+            'pickup_notes'           => $app->pickup_notes,
             // Step 3
             'business_description'   => $app->business_description,
             'profile_picture_url'    => $app->profile_picture

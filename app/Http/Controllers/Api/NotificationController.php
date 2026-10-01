@@ -27,6 +27,7 @@ class NotificationController extends Controller
 
             $perPage       = min((int) $request->query('per_page', 20), 100);
             $notifications = $user->notifications()
+                ->when($request->boolean('unread'), fn($q) => $q->whereNull('read_at'))
                 ->orderByDesc('created_at')
                 ->paginate($perPage);
 

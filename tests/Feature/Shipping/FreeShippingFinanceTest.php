@@ -65,8 +65,11 @@ class FreeShippingFinanceTest extends TestCase
         $this->app['auth']->forgetGuards();
         $res = $this->withHeaders(['Authorization' => 'Bearer ' . $customer->createToken('t')->plainTextToken])
             ->postJson('/api/checkout', [
+                'recipient_name' => 'Test Buyer',
                 'wilaya'         => 'Tunis',
+                'delegation'     => 'Bab Bhar',
                 'address'        => '1 rue Test',
+                'postal_code'    => '1000',
                 'phone'          => '22123456',
                 'payment_method' => 'cod',
             ])

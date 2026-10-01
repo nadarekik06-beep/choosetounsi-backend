@@ -17,10 +17,12 @@ use App\Models\Coupon;
 use App\Services\CommissionService;
 use App\Services\CouponService;
 use App\Services\FinancialSnapshotService;
+use App\Services\Orders\SellerOrderNotifier;
 use App\Services\WalletService;
 use App\Services\StockAlertService;
 use App\Services\PromotionService;
 use App\Services\Recommendation\InteractionTracker;
+use App\Support\ShippingAddress;
 use App\Http\Controllers\Api\Seller\SellerForecastController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -41,6 +43,7 @@ class CheckoutController extends Controller
         private FinancialSnapshotService $financialSnapshot,
         private InteractionTracker       $tracker,
         private CouponService            $couponService,
+        private SellerOrderNotifier      $sellerNotifier,
     ) {}
 
     /**
@@ -54,11 +57,8 @@ class CheckoutController extends Controller
      */
     public function store(Request $request)
     {
-        $request->validate([
-            'wilaya'         => 'required|string|max:255',
-            'address'        => 'required|string|max:500',
-            'phone' => ['required', 'string', 'regex:/^((\+216|00216)\s?)?[2459][0-9]{7}$/', 'max:20'],
-            'notes'          => 'nullable|string|max:1000',
+        ShippingAddress::prepare($request);
+        $request->validate(ShippingAddress::rules() + [
             'payment_method' => 'nullable|string|in:cod,card,d17,wallet',
             'item_ids'       => 'nullable|array',
             'item_ids.*'     => 'integer',
@@ -214,10 +214,8 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 'shipping_cost'   => Product::shippingCost(),
                 'shipping_paid_by' => FinancialSnapshotService::shippingPayer($shippingFee),
                 'total_amount'    => $total,
-                'wilaya'          => $request->wilaya,
-                'address'         => $request->address,
-                'phone'           => $request->phone,
-                'notes'           => $request->notes ?? null,
+                // Address snapshot: later address-book edits never touch this order.
+                ...ShippingAddress::columns($request),
             ]);
 
             // ── A) Regular product rows ───────────────────────────────────────
@@ -458,6 +456,10 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             Cart::where('user_id', $user->id)
                 ->whereIn('id', $checkingOutIds)
                 ->delete();
+
+            // COD / wallet: sellers hear about it now (sent after the commit).
+            // Card / D17 wait for the payment: see SellerOrderNotifier.
+            $this->sellerNotifier->orderPlaced($order);
             DB::commit();
 
             // ── CHANGE 3a: Log purchase activity for preferences ──────────────
@@ -529,13 +531,11 @@ $checkingOutIds = $cartItems->pluck('id')->all();
      */
     public function buyNow(Request $request)
     {
-        $request->validate([
+        ShippingAddress::prepare($request);
+        $request->validate(ShippingAddress::rules() + [
             'product_id'     => 'required|integer|exists:products,id',
             'variant_id'     => 'nullable|integer|exists:product_variants,id',
             'quantity'       => 'required|integer|min:1|max:100',
-            'wilaya'         => 'required|string|max:255',
-            'address'        => 'required|string|max:500',
-            'phone' => ['required', 'string', 'regex:/^((\+216|00216)\s?)?[2459][0-9]{7}$/', 'max:20'],            'notes'          => 'nullable|string|max:1000',
             'payment_method' => 'nullable|string|in:cod,card,d17,wallet',
             'coupon_code'    => 'nullable|string',
             'expected_total' => 'nullable|numeric|min:0',
@@ -644,10 +644,8 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 'shipping_cost'   => Product::shippingCost(),
                 'shipping_paid_by' => FinancialSnapshotService::shippingPayer($deliveryFee),
                 'total_amount'    => $total,
-                'wilaya'          => $request->wilaya,
-                'address'         => $request->address,
-                'phone'           => $request->phone,
-                'notes'           => $request->notes ?? null,
+                // Address snapshot: later address-book edits never touch this order.
+                ...ShippingAddress::columns($request),
             ]);
 
             $sellerOrder = SellerOrder::create([
@@ -706,6 +704,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 $this->walletService->deductForOrder($user, $order);
             }
 
+            $this->sellerNotifier->orderPlaced($order);
             DB::commit();
 
             // ── CHANGE 3b: Log purchase activity for preferences ──────────────
