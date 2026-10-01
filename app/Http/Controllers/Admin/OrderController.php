@@ -192,6 +192,14 @@ class OrderController extends Controller
     /**
      * PATCH /api/admin/orders/{id}/status
      */
+    /** Cancelled seller orders written with DB::table skip the observer: release here. */
+    private function releaseFlashQuota(int $orderId): void
+    {
+        app(\App\Services\PromotionService::class)->releaseForSellerOrders(
+            DB::table('seller_orders')->where('order_id', $orderId)->where('status', 'cancelled')->pluck('id')->all()
+        );
+    }
+
     public function updateStatus(Request $request, $id)
     {
         $request->validate([
@@ -219,6 +227,10 @@ class OrderController extends Controller
             DB::table('orders')
                 ->where('id', $id)
                 ->update(['status' => $request->status, 'updated_at' => now()]);
+
+            if ($request->status === 'cancelled') {
+                $this->releaseFlashQuota((int) $id);
+            }
 
             $order = Order::findOrFail($id);
 
@@ -283,6 +295,10 @@ public function confirmOrder(Request $request, $id)
         DB::table('seller_orders')
             ->where('order_id', $id)
             ->update(['status' => $newStatus, 'updated_at' => now()]);
+
+        if ($newStatus === 'cancelled') {
+            $this->releaseFlashQuota((int) $id);
+        }
 
         // ── Notify each seller whose sub-order is affected ────────────────
         if ($newStatus === 'confirmed') {

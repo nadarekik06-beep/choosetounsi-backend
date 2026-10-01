@@ -3,12 +3,13 @@ namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
 use App\Models\Promotion;
+use App\Services\PromotionService;
 use Carbon\Carbon;
 
 class SyncPromotionStatuses extends Command
 {
     protected $signature   = 'promotions:sync';
-    protected $description = 'Activate scheduled promotions and expire ended ones';
+    protected $description = 'Update promotion statuses for seller/admin screens and release flash quota of cancelled orders';
 
     public function handle(): void
     {
@@ -25,6 +26,12 @@ class SyncPromotionStatuses extends Command
             ->where('ends_at', '<=', $now)
             ->update(['status' => 'expired']);
 
-        $this->info("Activated: {$activated} | Expired: {$expired}");
+        // Pricing never reads these statuses (PromotionService decides by dates);
+        // they only keep the seller/admin lists accurate.
+
+        // Safety net: cancellations written without the observer
+        $released = app(PromotionService::class)->releaseCancelled();
+
+        $this->info("Activated: {$activated} | Expired: {$expired} | Flash units released: {$released}");
     }
 }

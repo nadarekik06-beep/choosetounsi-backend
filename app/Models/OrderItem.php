@@ -25,6 +25,8 @@ class OrderItem extends Model
         'total',
         'discount_amount',   // share of the seller's coupon discount on this line
         'net_total',         // total − discount_amount (commission base)
+        'promotion_id',      // promotion that priced this line at checkout
+        'flash_reserved',    // units held in that flash sale's quota (0 once released)
         'image_url',
         // ── Commission columns (populated at checkout) ─────────────────────
         'commission_percentage',

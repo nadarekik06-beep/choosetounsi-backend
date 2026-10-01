@@ -63,6 +63,8 @@ return [
         'coupon_invalid_named' => 'Coupon ":code" is invalid.',
         'one_coupon_per_seller' => 'Only one coupon can be applied per seller.',
         'insufficient_wallet' => 'Insufficient wallet balance.',
+        'flash_sold_out' => 'The flash sale on ":product" just sold out. Your cart now shows the regular price; please review it before ordering.',
+        'price_changed' => 'Prices changed since you opened checkout (a promotion started or ended). Please review the new total and confirm again.',
         'order_failed' => 'Failed to place order. Please try again.',
         'order_placed' => 'Order placed successfully!',
         'product_unavailable' => 'This product is no longer available.',

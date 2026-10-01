@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Client;
 
 use App\Http\Controllers\Controller;
 use App\Models\Order;
+use App\Services\PromotionService;
 use App\Services\WalletService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -123,11 +124,13 @@ class PaymentController extends Controller
             return response()->json(['error' => 'Invalid signature'], 400);
         }
 
-        // Only handle the event we care about
-        if ($event->type === 'payment_intent.succeeded') {
-            $intent = $event->data->object;
-            $this->handlePaymentSuccess($intent->id);
-        }
+        $intent = $event->data->object;
+        match ($event->type) {
+            'payment_intent.succeeded'      => $this->handlePaymentSuccess($intent->id),
+            'payment_intent.payment_failed',
+            'payment_intent.canceled'       => $this->handlePaymentFailure($intent->id),
+            default                         => null,
+        };
 
         // Return 200 immediately — Stripe retries on non-2xx
         return response()->json(['received' => true]);
@@ -164,6 +167,21 @@ class PaymentController extends Controller
                 'updated_at'     => now(),
             ]);
 
+        // Paid at the flash price after a failed attempt released the units
+        app(PromotionService::class)->reclaimForOrder($order->id);
+
         Log::info("[Stripe Webhook] Order #{$order->order_number} marked as paid.");
+    }
+
+    /** Failed / cancelled card payment: the order's flash-sale units go back to the quota. */
+    private function handlePaymentFailure(string $intentId): void
+    {
+        $order = Order::where('stripe_payment_intent_id', $intentId)->first();
+        if (!$order || $order->payment_status === 'paid') {
+            return;
+        }
+
+        $released = app(PromotionService::class)->releaseForOrder($order->id);
+        Log::info("[Stripe Webhook] Payment failed for order #{$order->order_number}; released {$released} flash unit(s).");
     }
 }

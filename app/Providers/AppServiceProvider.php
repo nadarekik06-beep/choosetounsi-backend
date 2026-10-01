@@ -10,7 +10,9 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\ServiceProvider;
 use App\Models\Order;
+use App\Models\SellerOrder;
 use App\Observers\OrderObserver;
+use App\Observers\SellerOrderObserver;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -31,6 +33,8 @@ class AppServiceProvider extends ServiceProvider
         // Checkout decrement path is handled directly in CheckoutController.
         Product::observe(ProductObserver::class);
         Order::observe(OrderObserver::class);
+        // Cancelled seller orders give their flash-sale units back
+        SellerOrder::observe(SellerOrderObserver::class);
 
         // Requests to the Python AI service (search, similarity, index rebuild) carry
         // its shared secret: Http::ai()->timeout(2)->post(config('services.ai.url') . '/similar', ...)

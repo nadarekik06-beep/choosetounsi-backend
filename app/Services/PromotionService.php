@@ -253,6 +253,83 @@ class PromotionService
             ->update(['flash_stock_used' => DB::raw('GREATEST(0, flash_stock_used - ' . (int) $qty . ')')]);
     }
 
+    /**
+     * Hold quota for an order line priced with $pricing (priceLine/getEffectivePrice).
+     * Returns the units held (0 when the line's promotion has no quota), or null
+     * when the flash sale is sold out — the caller must not sell at that price.
+     */
+    public function reserveForLine(array $pricing, int $qty): ?int
+    {
+        $promo = $pricing['promotion'] ?? null;
+        if (!$promo || !$promo['is_flash_sale'] || $promo['flash_stock_remaining'] === null) {
+            return 0;
+        }
+        return $this->reserveFlashStock($promo['id'], $qty) ? $qty : null;
+    }
+
+    /** Give back the quota held by an order's lines (card payment failed). */
+    public function releaseForOrder(int $orderId): int
+    {
+        return $this->releaseOrderItems(fn ($q) => $q->where('order_id', $orderId));
+    }
+
+    /** Give back the quota held by these seller orders' lines (cancelled). */
+    public function releaseForSellerOrders(array $sellerOrderIds): int
+    {
+        return $sellerOrderIds
+            ? $this->releaseOrderItems(fn ($q) => $q->whereIn('seller_order_id', $sellerOrderIds))
+            : 0;
+    }
+
+    /** Safety net (promotions:sync): every cancelled seller order still holding quota. */
+    public function releaseCancelled(): int
+    {
+        return $this->releaseOrderItems(fn ($q) => $q->whereIn('seller_order_id',
+            DB::table('seller_orders')->where('status', 'cancelled')->select('id')));
+    }
+
+    /**
+     * A card payment that failed (quota released) later succeeded: the customer
+     * pays the flash price, so the units count against the quota again.
+     */
+    public function reclaimForOrder(int $orderId): void
+    {
+        $lines = DB::table('order_items as oi')
+            ->join('promotions as pr', 'pr.id', '=', 'oi.promotion_id')
+            ->where('oi.order_id', $orderId)
+            ->where('oi.flash_reserved', 0)
+            ->where('pr.type', 'flash_sale')
+            ->whereNotNull('pr.flash_stock')
+            ->get(['oi.id', 'oi.promotion_id', 'oi.quantity']);
+
+        foreach ($lines as $line) {
+            DB::table('promotions')->where('id', $line->promotion_id)
+                ->update(['flash_stock_used' => DB::raw('flash_stock_used + ' . (int) $line->quantity)]);
+            DB::table('order_items')->where('id', $line->id)->update(['flash_reserved' => $line->quantity]);
+        }
+    }
+
+    /** Release each line once: flash_reserved goes back to 0 in the same transaction. */
+    private function releaseOrderItems(\Closure $scope): int
+    {
+        return DB::transaction(function () use ($scope) {
+            $lines = DB::table('order_items')
+                ->where('flash_reserved', '>', 0)
+                ->whereNotNull('promotion_id')
+                ->where($scope)
+                ->lockForUpdate()
+                ->get(['id', 'promotion_id', 'flash_reserved']);
+
+            $released = 0;
+            foreach ($lines as $line) {
+                DB::table('order_items')->where('id', $line->id)->update(['flash_reserved' => 0]);
+                $this->releaseFlashStock($line->promotion_id, $line->flash_reserved);
+                $released += $line->flash_reserved;
+            }
+            return $released;
+        });
+    }
+
     // ── Public promotion listings (/deals, seller storefront) ─────────────
 
     /**

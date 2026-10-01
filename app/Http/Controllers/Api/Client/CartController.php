@@ -335,14 +335,9 @@ private function safeSessionId(Request $request): ?string
         $product = $item->product;
         $variant = $item->variant;
  
-        $basePrice = $variant
-            ? ($variant->price_override !== null
-                ? (float) $variant->price_override
-                : (float) $product->price)
-            : (float) $product->price;
- 
-        $promoData = $this->promotionService->getEffectivePrice($product, $basePrice, $variant?->id);
-        $price     = $promoData['effective_price'];
+        // Same pricing block (and rounding) as checkout's order lines
+        $promoData = $this->promotionService->priceLine($product, $variant);
+        $price     = $promoData['final_price'];
  
         $imageUrl = $this->resolveImageUrl($product, $variant);
         $stock    = $variant ? $variant->stock : $product->stock;
@@ -372,7 +367,9 @@ private function safeSessionId(Request $request): ?string
             'seller_id'        => $product->seller_id,
             'seller_name'      => $product->seller?->name,
             'price'            => $price,
-            'original_price'   => $basePrice,
+            'original_price'   => $promoData['original_price'],
+            'discount_percent' => $promoData['discount_percent'],
+            'promo_type'       => $promoData['promo_type'],
             'promotion'        => $promoData['promotion'],
             'quantity'         => $item->quantity,
             'stock'            => $stock,

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Client;
 
+use App\Exceptions\FlashSaleSoldOut;
 use App\Services\Ads\AttributionService;
 use App\Http\Controllers\Controller;
 use App\Models\Cart;
@@ -29,6 +30,9 @@ use Illuminate\Support\Str;
 class CheckoutController extends Controller
 {
     // InteractionTracker records purchase signals for homepage personalization
+    /** @var array<int, array> cart row id => pricing block (see linePricing()) */
+    private array $linePricing = [];
+
     public function __construct(
         private WalletService            $walletService,
         private StockAlertService        $stockAlertService,
@@ -60,6 +64,7 @@ class CheckoutController extends Controller
             'item_ids.*'     => 'integer',
             'coupon_codes'   => 'nullable|array',
             'coupon_codes.*' => 'string',
+            'expected_total' => 'nullable|numeric|min:0',
             ]);
 
         $user = $request->user();
@@ -181,6 +186,10 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         $shippingFee   = $this->resolveCartDeliveryFee($cartItems);
         $total         = round($subtotal - $totalDiscount + $shippingFee, 3);
 
+        if ($changed = $this->priceChanged($request, $total)) {
+            return $changed;
+        }
+
         if ($paymentMethod === 'wallet') {
             if ((float) $user->wallet_balance < $total) {
                 return response()->json(['success' => false, 'message' => __('messages.checkout.insufficient_wallet'), 'data' => ['wallet_balance' => (float) $user->wallet_balance, 'required' => $total]], 422);
@@ -247,6 +256,9 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                         $variant      = $item->variant;
                         $unitPrice    = $this->unitPrice($item);
                         $qty          = (int) $item->quantity;
+                        $pricing      = $this->linePricing($item);
+                        $held         = $this->promoService->reserveForLine($pricing, $qty)
+                            ?? throw new FlashSaleSoldOut($product->name);
                         $commission   = $this->commissionService->calculateForSeller($sellerIdForDb, $unitPrice, $qty, $itemDiscounts[$item->id] ?? 0.0);
                         $variantLabel = $variant ? $variant->attributeOptions->map(fn ($o) => $o->getAttributes()['value'])->join(' / ') : null;
 
@@ -255,6 +267,8 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                             'seller_order_id'       => $sellerOrder->id,
                             'product_id'            => $product->id,
                             'variant_id'            => $variant?->id,
+                            'promotion_id'          => $pricing['promotion']['id'] ?? null,
+                            'flash_reserved'        => $held,
                             'variant_label'         => $variantLabel,
                             'product_name'          => $product->getAttributes()['name'], // order snapshot keeps the seller's original text
                             'quantity'              => $qty,
@@ -462,6 +476,9 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             // Credit lines bought after clicking an ad to that campaign (never throws).
             app(AttributionService::class)->recordOrder($order, InteractionTracker::sessionIdFrom($request));
 
+        } catch (FlashSaleSoldOut $e) {
+            DB::rollBack();
+            return $this->flashSoldOut($e);
         } catch (\Throwable $e) {
             DB::rollBack();
             Log::error('[Checkout] store failed: ' . $e->getMessage(), ['file' => $e->getFile(), 'line' => $e->getLine()]);
@@ -521,6 +538,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             'phone' => ['required', 'string', 'regex:/^((\+216|00216)\s?)?[2459][0-9]{7}$/', 'max:20'],            'notes'          => 'nullable|string|max:1000',
             'payment_method' => 'nullable|string|in:cod,card,d17,wallet',
             'coupon_code'    => 'nullable|string',
+            'expected_total' => 'nullable|numeric|min:0',
         ]);
 
         $user          = $request->user();
@@ -556,9 +574,8 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             $sellerPlan = SellerApplication::where('user_id', $sellerId)->first()?->plan ?? 'free';
         }
 
-        $basePrice    = $variant ? (float) ($variant->price_override ?? $product->price) : (float) $product->price;
-        $priceData    = $this->promoService->getEffectivePrice($product, $basePrice, $variant?->id);
-        $unitPrice    = $priceData['effective_price'];
+        $priceData    = $this->promoService->priceLine($product, $variant);
+        $unitPrice    = $priceData['final_price'];
         $lineTotal    = round($unitPrice * $quantity, 3);
 
         // ── Coupon (single seller, so no per-seller grouping needed) ───────────
@@ -598,6 +615,10 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         $subtotal    = (float) $commission['total_price'];
         $deliveryFee = $product->getEffectiveDeliveryFee();
         $total       = round($subtotal - $discountAmount + $deliveryFee, 3);
+
+        if ($changed = $this->priceChanged($request, $total)) {
+            return $changed;
+        }
 
         $variantLabel = $variant ? $variant->attributeOptions->map(fn ($o) => $o->getAttributes()['value'])->join(' / ') : null;
 
@@ -642,11 +663,16 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 'discount_amount' => $discountAmount,
             ]);
 
+            $held = $this->promoService->reserveForLine($priceData, $quantity)
+                ?? throw new FlashSaleSoldOut($product->name);
+
             OrderItem::create([
                 'order_id'              => $order->id,
                 'seller_order_id'       => $sellerOrder->id,
                 'product_id'            => $product->id,
                 'variant_id'            => $variant?->id,
+                'promotion_id'          => $priceData['promotion']['id'] ?? null,
+                'flash_reserved'        => $held,
                 'variant_label'         => $variantLabel,
                 'product_name'          => $product->getAttributes()['name'], // order snapshot keeps the seller's original text
                 'quantity'              => $quantity,
@@ -690,6 +716,9 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             }
             app(AttributionService::class)->recordOrder($order, InteractionTracker::sessionIdFrom($request));
 
+        } catch (FlashSaleSoldOut $e) {
+            DB::rollBack();
+            return $this->flashSoldOut($e);
         } catch (\Throwable $e) {
             DB::rollBack();
             Log::error('[Checkout] buyNow failed: ' . $e->getMessage(), ['file' => $e->getFile(), 'line' => $e->getLine()]);
@@ -743,13 +772,48 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         }
     }
 
+    /**
+     * Pricing block of a regular (non-pack) cart row, computed once per request so
+     * the subtotal, coupon split, order lines and flash reservation all use the
+     * same price even if a promotion ends mid-request.
+     */
+    private function linePricing($item): array
+    {
+        return $this->linePricing[$item->id] ??= $this->promoService->priceLine($item->product, $item->variant);
+    }
+
     /** Post-promotion unit price for a regular (non-pack) cart row. */
     private function unitPrice($item): float
     {
-        $basePrice = $item->variant
-            ? (float) ($item->variant->price_override ?? $item->product->price)
-            : (float) $item->product->price;
-        return $this->promoService->getEffectivePrice($item->product, $basePrice, $item->variant?->id)['effective_price'];
+        return $this->linePricing($item)['final_price'];
+    }
+
+    /**
+     * The storefront sends the total it showed (expected_total). When the server's
+     * total differs (a promotion started/ended, a price changed) the order is not
+     * placed: the customer gets the new total and confirms again. The server's
+     * numbers are always the ones charged.
+     */
+    private function priceChanged(Request $request, float $total): ?\Illuminate\Http\JsonResponse
+    {
+        if (!$request->filled('expected_total') || abs((float) $request->expected_total - $total) < 0.0005) {
+            return null;
+        }
+        return response()->json([
+            'success' => false,
+            'code'    => 'price_changed',
+            'message' => __('messages.checkout.price_changed'),
+            'data'    => ['total' => $total],
+        ], 409);
+    }
+
+    private function flashSoldOut(FlashSaleSoldOut $e): \Illuminate\Http\JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'code'    => 'flash_sold_out',
+            'message' => __('messages.checkout.flash_sold_out', ['product' => $e->productName]),
+        ], 422);
     }
 
     private function lineTotal($item): float

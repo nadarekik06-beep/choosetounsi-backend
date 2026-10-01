@@ -63,6 +63,8 @@ return [
         'coupon_invalid_named' => 'Le code promo « :code » est invalide.',
         'one_coupon_per_seller' => 'Un seul code promo par vendeur est autorisé.',
         'insufficient_wallet' => 'Solde du portefeuille insuffisant.',
+        'flash_sold_out' => "La vente flash sur « :product » vient d'être épuisée. Votre panier affiche maintenant le prix normal ; vérifiez-le avant de commander.",
+        'price_changed' => "Les prix ont changé depuis l'ouverture de la commande (une promotion a commencé ou s'est terminée). Vérifiez le nouveau total et confirmez à nouveau.",
         'order_failed' => 'Impossible de passer la commande. Veuillez réessayer.',
         'order_placed' => 'Commande passée avec succès !',
         'product_unavailable' => 'Ce produit n\'est plus disponible.',
