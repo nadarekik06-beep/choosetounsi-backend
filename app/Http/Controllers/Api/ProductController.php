@@ -72,11 +72,12 @@ class ProductController extends Controller
         if ($sellerId = $request->query('seller_id')) {
             $query->where('seller_id', $sellerId);
         }
+        // Price filters and sorts use the price paid (after promotion)
         if ($priceMin = $request->query('price_min')) {
-            $query->where('price', '>=', (float) $priceMin);
+            $query->whereFinalPrice('>=', (float) $priceMin);
         }
         if ($priceMax = $request->query('price_max')) {
-            $query->where('price', '<=', (float) $priceMax);
+            $query->whereFinalPrice('<=', (float) $priceMax);
         }
         if (filter_var($request->query('in_stock'), FILTER_VALIDATE_BOOLEAN)) {
             $query->where('stock', '>', 0);
@@ -150,8 +151,8 @@ class ProductController extends Controller
         // The requested sort is honoured as-is: ads never jump ahead of it
         // (paid placements get their own labelled slots instead).
         match ($sort) {
-            'price_asc'    => $query->orderBy('price'),
-            'price_desc'   => $query->orderByDesc('price'),
+            'price_asc'    => $query->orderByFinalPrice('asc'),
+            'price_desc'   => $query->orderByFinalPrice('desc'),
             'views'        => $query->orderByDesc('views'),
             // Real sales ranking — sums order_items.quantity for completed/delivered
             // orders only, same convention as SellerAnalyticsController. No fabricated data.

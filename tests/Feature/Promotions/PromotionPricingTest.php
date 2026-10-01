@@ -362,6 +362,59 @@ class PromotionPricingTest extends TestCase
         $this->assertSame(2, $flash->fresh()->flash_stock_used);
     }
 
+    // ── Paginated lists filter and sort on the final price, in SQL ─────────
+
+    public function test_products_list_filters_and_sorts_on_the_final_price_with_pagination(): void
+    {
+        $this->promotion($this->jeans);                       // 98 → 53.90
+        $cheap = $this->makeProduct("Cheap {$this->token}", 50);
+        $mid   = $this->makeProduct("Mid {$this->token}", 60);
+        $ids   = fn ($res) => collect($res->json('data.data'))->pluck('id')->all();
+        $base  = "/api/products?seller_id={$this->seller->id}";
+
+        $this->assertEqualsCanonicalizing([$this->jeans->id, $cheap->id], $ids($this->getJson("{$base}&price_max=55")));
+        $this->assertSame([$mid->id], $ids($this->getJson("{$base}&price_min=55")));
+
+        // Sorted by price paid, one per page: 50, 53.90, 60
+        $page2 = $this->getJson("{$base}&sort=price_asc&per_page=1&page=2")->assertOk();
+        $this->assertSame([$this->jeans->id], $ids($page2));
+        $this->assertSame(3, $page2->json('data.total'));
+        $this->assertSame([$mid->id], $ids($this->getJson("{$base}&sort=price_desc&per_page=1&page=1")));
+
+        $cat = "/api/categories/{$this->category->slug}/products";
+        $this->assertEqualsCanonicalizing([$this->jeans->id, $cheap->id], $ids($this->getJson("{$cat}?price_max=55")));
+        $this->assertSame([$cheap->id, $this->jeans->id, $mid->id], $ids($this->getJson("{$cat}?sort=price&order=asc")));
+    }
+
+    public function test_sql_final_price_matches_php_pricing(): void
+    {
+        $flash   = $this->makeProduct("Flash {$this->token}", 80);
+        $fixed   = $this->makeProduct("Fixed {$this->token}", 40);
+        $soldOut = $this->makeProduct("SoldOut {$this->token}", 30);
+        $raised  = $this->makeProduct("Raised {$this->token}", 100);
+        $plain   = $this->makeProduct("Plain {$this->token}", 25);
+
+        $this->promotion($this->jeans);
+        $this->promotion($flash, ['discount_value' => 20]);
+        $this->flashSale($flash, ['discount_value' => 35]);
+        $this->promotion($fixed, ['discount_type' => 'fixed', 'discount_value' => 7.5]);
+        $this->flashSale($soldOut, ['flash_stock' => 1, 'flash_stock_used' => 1]);
+        // Price raised just before a promotion: discount computed from the 30-day lowest (100)
+        $raised->update(['price' => 150]);
+        $this->promotion($raised, ['discount_value' => 10]);
+
+        [$sql, $bindings] = app(PromotionService::class)->finalPriceSql();
+        $rows = Product::whereIn('id', [$this->jeans->id, $flash->id, $fixed->id, $soldOut->id, $raised->id, $plain->id])
+            ->select('id', 'price')->selectRaw("({$sql}) AS sql_final", $bindings)->get();
+        $php  = app(PromotionService::class)->priceMany($rows);
+
+        foreach ($rows as $r) {
+            $this->assertEqualsWithDelta($php[$r->id]['final_price'], (float) $r->sql_final, 0.0005, "product {$r->id}");
+        }
+        $this->assertEqualsWithDelta(90, (float) $rows->firstWhere('id', $raised->id)->sql_final, 0.0005);
+        $this->assertEqualsWithDelta(52, (float) $rows->firstWhere('id', $flash->id)->sql_final, 0.0005);
+    }
+
     // ── Chatbot uses the same pricing ─────────────────────────────────────
 
     public function test_chatbot_prices_and_filters_with_the_promo_price(): void

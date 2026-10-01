@@ -121,8 +121,9 @@ class CategoryController extends Controller
         }
 
         // ─── Price range ──────────────────────────────────────────────────
-        if ($min = $request->query('price_min')) $query->where('price', '>=', (float) $min);
-        if ($max = $request->query('price_max')) $query->where('price', '<=', (float) $max);
+        // On the price paid (after promotion)
+        if ($min = $request->query('price_min')) $query->whereFinalPrice('>=', (float) $min);
+        if ($max = $request->query('price_max')) $query->whereFinalPrice('<=', (float) $max);
 
         // ─── In stock ─────────────────────────────────────────────────────
         if (filter_var($request->query('in_stock'), FILTER_VALIDATE_BOOLEAN)) {
@@ -178,7 +179,7 @@ class CategoryController extends Controller
             : 'desc';
 
         match ($sort) {
-            'price'  => $query->orderBy('price', $order),
+            'price'  => $query->orderByFinalPrice($order),
             'views'  => $query->orderByDesc('views'),
             default  => $query->orderByDesc('created_at'),
         };

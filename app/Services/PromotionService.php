@@ -131,6 +131,42 @@ class PromotionService
     }
 
     /**
+     * The product's final price (base price, no variant) as a SQL expression, for
+     * filtering and sorting paginated lists in the database. Same rules as
+     * priceMany(): winning promotion (flash first, priority, newest; live
+     * status, inside its window, quota left), discount applied to the lowest
+     * price of the last 30 days. tests/Feature/Promotions checks both agree.
+     *
+     * @return array{0: string, 1: array} [sql, bindings]
+     */
+    public function finalPriceSql(string $table = 'products'): array
+    {
+        $now      = now();
+        $since    = now()->subDays(PriceHistory::WINDOW_DAYS);
+        $statuses = "'" . implode("','", Promotion::PRICING_STATUSES) . "'";
+        $history  = "FROM product_price_history h WHERE h.product_id = {$table}.id AND h.variant_id IS NULL AND h.price > 0";
+
+        $reference = "LEAST({$table}.price,
+            COALESCE((SELECT MIN(h.price) {$history} AND h.changed_at >= ?), {$table}.price),
+            COALESCE((SELECT h.price {$history} AND h.changed_at < ? ORDER BY h.changed_at DESC, h.id DESC LIMIT 1), {$table}.price))";
+
+        // Correlated subqueries only (MariaDB has no LATERAL), so the reference is inlined twice
+        $sql = "COALESCE((SELECT ROUND(GREATEST(0, CASE WHEN pr.discount_type = 'percentage'
+                        THEN ROUND({$reference}, 3) * (1 - pr.discount_value / 100)
+                        ELSE ROUND({$reference}, 3) - pr.discount_value END), 3)
+                FROM promotions pr
+                JOIN promotion_products pp ON pp.promotion_id = pr.id
+                WHERE pp.product_id = {$table}.id
+                  AND pr.status IN ({$statuses})
+                  AND pr.starts_at <= ? AND pr.ends_at > ?
+                  AND (pr.flash_stock IS NULL OR pr.flash_stock_used < pr.flash_stock)
+                ORDER BY (pr.type = 'flash_sale') DESC, pr.priority DESC, pr.created_at DESC, pr.id DESC
+                LIMIT 1), {$table}.price)";
+
+        return [$sql, [$since, $since, $since, $since, $now, $now]];
+    }
+
+    /**
      * Copy a pricing block onto a product model or row, for list payloads.
      * `price` itself is left untouched (filters and sorting read it).
      */

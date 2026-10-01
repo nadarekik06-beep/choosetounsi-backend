@@ -207,6 +207,22 @@ class Product extends Model
     public function scopeAvailable($query)      { return $query->where('is_approved', true)->where('is_active', true); }
     public function scopeFeatured($query)       { return $query->where('featured', true); }
     public function scopeInStock($query)        { return $query->where('stock', '>', 0); }
+
+    /** Filter on the price the customer pays (after promotion), in SQL so pagination stays exact. */
+    public function scopeWhereFinalPrice($query, string $operator, float $value)
+    {
+        abort_unless(in_array($operator, ['>=', '<=', '>', '<', '='], true), 500);
+        [$sql, $bindings] = app(\App\Services\PromotionService::class)->finalPriceSql($this->getTable());
+        return $query->whereRaw("({$sql}) {$operator} ?", [...$bindings, $value]);
+    }
+
+    /** Sort on the price the customer pays (after promotion). */
+    public function scopeOrderByFinalPrice($query, string $direction = 'asc')
+    {
+        $direction = strtolower($direction) === 'desc' ? 'DESC' : 'ASC';
+        [$sql, $bindings] = app(\App\Services\PromotionService::class)->finalPriceSql($this->getTable());
+        return $query->orderByRaw("({$sql}) {$direction}", $bindings);
+    }
     public function scopePlatform($query)       { return $query->where('is_platform_product', true); }
     public function scopeSeller($query)         { return $query->where('is_platform_product', false); }
     public function scopeAvailableBrand($query) { return $query->where('is_platform_product', true)->where('is_active', true); }

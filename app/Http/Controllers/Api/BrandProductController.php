@@ -44,8 +44,8 @@ class BrandProductController extends Controller
 
         $sort = $request->query('sort', 'created_at');
         match ($sort) {
-            'price_asc'  => $query->orderBy('price'),
-            'price_desc' => $query->orderByDesc('price'),
+            'price_asc'  => $query->orderByFinalPrice('asc'),
+            'price_desc' => $query->orderByFinalPrice('desc'),
             'views'      => $query->orderByDesc('views'),
             default      => $query->orderByDesc('created_at'),
         };
