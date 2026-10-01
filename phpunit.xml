@@ -28,6 +28,9 @@
         <server name="QUEUE_CONNECTION" value="sync"/>
         <server name="SCOUT_DRIVER" value="null"/>
         <server name="SEARCH_INDEXING" value="false"/>
+        <!-- Never reach the dev Meilisearch / embedding service from tests (port 1 refuses at once). -->
+        <server name="MEILISEARCH_HOST" value="http://127.0.0.1:1"/>
+        <server name="AI_SERVICE_URL" value="http://127.0.0.1:1"/>
         <server name="SESSION_DRIVER" value="array"/>
         <server name="TELESCOPE_ENABLED" value="false"/>
     </php>

@@ -412,22 +412,14 @@ class AdServer
         return $out;
     }
 
-    /** Semantic search score of each candidate for the query (AI service), falling back to a name match. */
+    /** Search relevance of each candidate for the query (storefront search engine), plus a plain name match. */
     private function searchScores(string $query, array $productIds): array
     {
         $query = mb_substr(trim($query), 0, 100);
         $ai = Cache::remember('ads:search:' . md5(mb_strtolower($query)), 300, function () use ($query) {
-            try {
-                $res = Http::ai()->timeout(2)->post(rtrim((string) config('services.ai.url'), '/') . '/search/text', ['query' => $query, 'limit' => 200]);
-                if (!$res->successful()) {
-                    return null;
-                }
-                $rows = collect($res->json('results', []));
-                $max  = (float) ($rows->max('score') ?: 1);
-                return $rows->mapWithKeys(fn ($r) => [(int) $r['product_id'] => round(max(0, (float) $r['score']) / $max, 4)])->all();
-            } catch (\Throwable $e) {
-                return null;
-            }
+            $scores = app(\App\Services\Search\ProductSearch::class)->scores($query, 200);
+            $max = $scores ? max($scores) : 0;
+            return $max > 0 ? array_map(fn ($s) => round(max(0, $s) / $max, 4), $scores) : [];
         });
 
         $out = [];

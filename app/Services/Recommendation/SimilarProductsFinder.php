@@ -2,20 +2,21 @@
 
 namespace App\Services\Recommendation;
 
+use App\Services\Search\MeiliClient;
+use App\Services\Search\SearchUnavailable;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
  * "You might also like": products similar to a weighted set of seed products.
  *
- * Hybrid score = AI_WEIGHT × AI similarity (MiniLM text + CLIP image vectors from the
- * FAISS search indexes, via the FastAPI /similar endpoint, normalized to 0..1)
+ * Hybrid score = AI_WEIGHT × vector similarity (multilingual text + CLIP photo vectors
+ * stored in the Meilisearch indexes, normalized to 0..1)
  *              + (1 − AI_WEIGHT) × content similarity (same subcategory/category,
  * brand, price). The content part keeps results grounded when embeddings are noisy
- * and covers products added after the last index rebuild. If the AI service is slow
- * or down, content similarity is used alone and the service is skipped for a while.
+ * and covers products whose vectors aren't indexed yet. If Meilisearch is slow or down,
+ * content similarity is used alone and the index is skipped for a while.
  */
 class SimilarProductsFinder
 {
@@ -23,9 +24,16 @@ class SimilarProductsFinder
     const DOWN_FLAG     = 'reco:ai_similar_down';
     const CACHE_MINUTES = 30;
 
+    // Vector similarity: text (multilingual MiniLM) vs main photo (CLIP), when both exist.
+    const TEXT_WEIGHT    = 0.60;
+    // CLIP cosine between two unrelated product photos is already ~0.5: rescale from there.
+    const IMAGE_BASELINE = 0.50;
+    const MIN_SIMILARITY = 0.20;
+
     public function __construct(
         private CandidatePools $pools,
         private InterestProfileService $profiles,
+        private MeiliClient $meili,
     ) {}
 
     /**
@@ -64,7 +72,14 @@ class SimilarProductsFinder
         return ['scores' => $scores, 'source' => 'ai', 'seeds_of' => $seedsOf];
     }
 
-    /** @return array{scores: array<int, float>, seeds_of: array<int, int>}|null  null when unavailable */
+    /**
+     * Vector similarity from the search indexes (Meilisearch "similar documents"):
+     * multilingual text vectors of the products, blended with CLIP vectors of their main
+     * photo when both have one. Score per candidate = max over seeds of weight × similarity
+     * (not an average: a user who viewed shoes and a phone should get both).
+     *
+     * @return array{scores: array<int, float>, seeds_of: array<int, int>}|null  null when unavailable
+     */
     private function fromAi(array $seeds, int $limit): ?array
     {
         if (Cache::has(self::DOWN_FLAG)) {
@@ -77,29 +92,70 @@ class SimilarProductsFinder
         }
 
         try {
-            $res = Http::ai()->timeout((int) config('recommendations.ai.similar_timeout', 2))
-                ->withOptions(['connect_timeout' => 1])
-                ->acceptJson()
-                ->post(rtrim(config('services.ai.url', 'http://localhost:8001'), '/') . '/similar', [
-                    'seeds' => (object) array_map('floatval', $seeds),
-                    'limit' => min($limit, 200),
-                ]);
-            if (!$res->successful()) {
-                throw new \RuntimeException('HTTP ' . $res->status());
-            }
+            $photos = DB::table('product_images')->whereIn('product_id', array_keys($seeds))
+                ->orderByDesc('is_primary')->orderBy('order')->orderBy('id')
+                ->get(['id', 'product_id'])->unique('product_id')->pluck('id', 'product_id');
 
             $out = ['scores' => [], 'seeds_of' => []];
-            foreach ($res->json('results', []) as $r) {
-                $out['scores'][(int) $r['product_id']]   = (float) $r['score'];
-                $out['seeds_of'][(int) $r['product_id']] = (int) $r['seed_id'];
+            foreach ($seeds as $seedId => $weight) {
+                $text = $this->similarByVector('products', 'text', $seedId, 'id', $limit);
+                $image = isset($photos[$seedId]) ? $this->similarByVector('images', 'clip', $photos[$seedId], 'product_id', $limit) : [];
+
+                foreach (array_keys($text + $image) as $id) {
+                    if (isset($seeds[$id])) {
+                        continue;
+                    }
+                    $imageSim = isset($image[$id])
+                        ? max(0, min(1, ($image[$id] - self::IMAGE_BASELINE) / (1 - self::IMAGE_BASELINE)))
+                        : null;
+                    $sim = match (true) {
+                        isset($text[$id]) && $imageSim !== null => self::TEXT_WEIGHT * $text[$id] + (1 - self::TEXT_WEIGHT) * $imageSim,
+                        isset($text[$id]) => $text[$id],
+                        default => $imageSim,
+                    };
+                    $score = (float) $weight * $sim;
+                    if ($score >= self::MIN_SIMILARITY && $score > ($out['scores'][$id] ?? 0)) {
+                        $out['scores'][$id] = round($score, 4);
+                        $out['seeds_of'][$id] = (int) $seedId;
+                    }
+                }
             }
+            arsort($out['scores']);
             Cache::put($key, $out, now()->addMinutes(self::CACHE_MINUTES));
             return $out;
         } catch (\Throwable $e) {
             Cache::put(self::DOWN_FLAG, true, now()->addMinutes((int) config('recommendations.ai.down_flag_minutes', 2)));
-            Log::info('[SimilarProductsFinder] AI service unavailable, using content similarity: ' . $e->getMessage());
+            Log::info('[SimilarProductsFinder] Search index unavailable, using content similarity: ' . $e->getMessage());
             return null;
         }
+    }
+
+    /**
+     * Cosine similarity of the nearest documents to one document, by product.
+     * A seed missing from the index (or an embedder that is switched off) gives [].
+     *
+     * @return array<int, float> product_id => cosine
+     */
+    private function similarByVector(string $index, string $embedder, int $docId, string $productField, int $limit): array
+    {
+        try {
+            $hits = $this->meili->similar($index, [
+                'id' => $docId, 'embedder' => $embedder, 'limit' => min($limit, 200),
+                'showRankingScore' => true, 'attributesToRetrieve' => [$productField],
+            ])['hits'] ?? [];
+        } catch (SearchUnavailable $e) {
+            if (in_array($e->status, [400, 404], true)) {
+                return [];   // not indexed yet / embedder disabled
+            }
+            throw $e;
+        }
+
+        $out = [];
+        foreach ($hits as $hit) {
+            // Meilisearch ranks vector hits with (1 + cosine) / 2.
+            $out[(int) $hit[$productField]] ??= 2 * (float) $hit['_rankingScore'] - 1;
+        }
+        return $out;
     }
 
     private function fallback(array $seeds, int $limit): array

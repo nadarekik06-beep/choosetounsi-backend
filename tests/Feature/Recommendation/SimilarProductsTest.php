@@ -34,18 +34,19 @@ class SimilarProductsTest extends TestCase
         $sameCat   = $this->makeProduct($seller, $shoes);
         $aiOnly    = $this->makeProduct($seller, $phones);
 
-        Http::fake(['*/similar' => Http::response(['results' => [
-            ['product_id' => $aiOnly->id,  'score' => 0.8, 'seed_id' => $seed->id],
-            ['product_id' => $sameCat->id, 'score' => 0.7, 'seed_id' => $seed->id],
-        ], 'seeds_used' => [$seed->id]])]);
+        // Meilisearch "similar documents" on the text vectors; ranking score = (1 + cosine) / 2.
+        Http::fake(['*/products/similar' => Http::response(['hits' => [
+            ['id' => $aiOnly->id,  '_rankingScore' => 0.90],
+            ['id' => $sameCat->id, '_rankingScore' => 0.85],
+        ]])]);
 
         $out = app(SimilarProductsFinder::class)->similarTo([$seed->id => 1.0]);
 
         $this->assertSame('ai', $out['source']);
         $this->assertSame([$sameCat->id, $aiOnly->id], array_keys($out['scores']), 'AI + same category beats AI alone');
         $this->assertSame($seed->id, $out['seeds_of'][$aiOnly->id]);
-        Http::assertSent(fn (Request $r) => str_ends_with($r->url(), '/similar')
-            && (array) $r['seeds'] == [$seed->id => 1.0]);
+        Http::assertSent(fn (Request $r) => str_ends_with($r->url(), '/products/similar')
+            && $r['id'] === $seed->id && $r['embedder'] === 'text');
     }
 
     public function test_falls_back_to_content_similarity_and_backs_off_when_ai_is_down(): void
@@ -70,7 +71,7 @@ class SimilarProductsTest extends TestCase
     {
         $seller = $this->makeUser('seller');
         $seed   = $this->makeProduct($seller, $this->makeCategory());
-        Http::fake(['*/similar' => Http::response(['results' => [], 'seeds_used' => []])]);
+        Http::fake(['*/similar' => Http::response(['hits' => []])]);
 
         $finder = app(SimilarProductsFinder::class);
         $finder->similarTo([$seed->id => 1.0]);
@@ -97,9 +98,9 @@ class SimilarProductsTest extends TestCase
             \App\Models\UserInteraction::create(['user_id' => $user->id, 'product_id' => $p->id, 'seller_id' => $p->seller_id,
                 'category_id' => $p->category_id, 'event_type' => 'cart_add']);
         }
-        $results = array_map(fn ($p, $i) => ['product_id' => $p->id, 'score' => 0.9 - $i * 0.05, 'seed_id' => $viewed[0]->id], $targets, array_keys($targets));
-        $results[] = ['product_id' => $gone->id, 'score' => 0.95, 'seed_id' => $viewed[0]->id];
-        Http::fake(['*/similar' => Http::response(['results' => $results, 'seeds_used' => [$viewed[0]->id]])]);
+        $hits = array_map(fn ($p, $i) => ['id' => $p->id, '_rankingScore' => 0.95 - $i * 0.025], $targets, array_keys($targets));
+        $hits[] = ['id' => $gone->id, '_rankingScore' => 0.97];
+        Http::fake(['*/products/similar' => Http::response(['hits' => $hits])]);
 
         $token = $user->createToken('t')->plainTextToken;
         $feed  = $this->withHeaders(['Authorization' => "Bearer $token"])->getJson('/api/home/feed')->assertOk()->json();

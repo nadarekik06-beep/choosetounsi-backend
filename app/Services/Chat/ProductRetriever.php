@@ -4,12 +4,10 @@ namespace App\Services\Chat;
 
 use App\Models\User;
 use App\Services\PromotionService;
+use App\Services\Search\ProductSearch;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 /**
@@ -26,8 +24,8 @@ use Illuminate\Support\Facades\Storage;
  * The best CANDIDATES rows are fetched by relevance, priced in one batch, then
  * min/max filters and price sorting apply to `final`.
  *
- * Semantic search (FastAPI /search/text) is used when available and silently
- * skipped when the service is down; SQL keyword matching always runs.
+ * Relevance from the storefront search (App\Services\Search\ProductSearch: synonyms,
+ * typos, multilingual vectors) is added when available; SQL keyword matching always runs.
  */
 class ProductRetriever
 {
@@ -36,9 +34,7 @@ class ProductRetriever
     /** Rows priced per search before price filters / sorting pick the LIMIT shown. */
     private const CANDIDATES = 300;
 
-    private const DOWN_FLAG = 'chat:ai_service_down';
-
-    /** Per-request cache so search() and nearest() share one FastAPI call. */
+    /** Per-request cache so search() and nearest() share one search-engine call. */
     private array $semanticMemo = [];
 
     /**
@@ -225,41 +221,20 @@ class ProductRetriever
     private function semanticScores(string $query): array
     {
         $query = trim($query);
-        if ($query === '' || Cache::has(self::DOWN_FLAG)) {
+        if ($query === '') {
             return [];
         }
 
         return $this->semanticMemo[$query] ??= $this->fetchSemantic($query);
     }
 
+    /** Relevance from the storefront search engine (Meilisearch, typo tolerant, multilingual). */
     private function fetchSemantic(string $query): array
     {
-        try {
-            $response = Http::ai()->timeout((int) config('services.ai.chat_timeout', 3))
-                ->post(rtrim(config('services.ai.url'), '/') . '/search/text', [
-                    'query' => mb_substr($query, 0, 100),
-                    'limit' => 30,
-                ]);
+        $minScore = (float) config('services.ai.chat_min_score', 0.35);
+        $scores = app(ProductSearch::class)->scores(mb_substr($query, 0, 100), 30);
 
-            if (!$response->successful()) {
-                Log::warning('[ChatSearch] AI service returned ' . $response->status());
-                Cache::put(self::DOWN_FLAG, true, 60);
-                return [];
-            }
-
-            $minScore = (float) config('services.ai.chat_min_score', 0.35);
-            $scores   = [];
-            foreach ($response->json('results') ?? [] as $hit) {
-                if (isset($hit['product_id'], $hit['score']) && $hit['score'] >= $minScore) {
-                    $scores[(int) $hit['product_id']] = (float) $hit['score'];
-                }
-            }
-            return $scores;
-        } catch (\Throwable $e) {
-            Log::info('[ChatSearch] AI service unavailable, using SQL only: ' . $e->getMessage());
-            Cache::put(self::DOWN_FLAG, true, 60);
-            return [];
-        }
+        return array_filter($scores, fn ($score) => $score >= $minScore);
     }
 
     // ── Output ────────────────────────────────────────────────────────────
