@@ -36,7 +36,8 @@ class FavoriteController extends Controller
 
     /**
      * POST /api/favorites
-     * Toggle favorite (add if not exists, remove if exists).
+     * Add a favorite. Idempotent: adding twice keeps one row (never removes —
+     * removal is DELETE), so a storefront with a stale list can't flip it off.
      */
     public function store(Request $request)
     {
@@ -53,24 +54,15 @@ class FavoriteController extends Controller
         $product = Product::findOrFail($productId);
         $this->ensureNotProductOwner($request, $product);
 
-        $existing = Favorite::where('user_id', $user->id)
-            ->where('product_id', $productId)
-            ->where('variant_id', $variantId)
-            ->first();
-
-        if ($existing) {
-            $existing->delete();
-            app(InteractionTracker::class)->recordFromRequest($request, 'favorite_remove', $product);
-            return response()->json(['success' => true, 'data' => null, 'message' => __('messages.favorite.removed')]);
-        }
-
-        $fav = Favorite::create([
+        $fav = Favorite::firstOrCreate([
             'user_id'    => $user->id,
             'product_id' => $productId,
             'variant_id' => $variantId,
         ]);
 
-        app(InteractionTracker::class)->recordFromRequest($request, 'favorite_add', $product);
+        if ($fav->wasRecentlyCreated) {
+            app(InteractionTracker::class)->recordFromRequest($request, 'favorite_add', $product);
+        }
 
         $fav->load([
             'product.images',
@@ -80,9 +72,10 @@ class FavoriteController extends Controller
         ]);
 
         return response()->json([
-            'success' => true,
-            'data'    => $this->formatFavorite($fav, app(PromotionService::class)->getActivePromotionForProduct($fav->product_id)),
-            'message' => __('messages.favorite.added'),
+            'success'   => true,
+            'favorited' => true,
+            'data'      => $this->formatFavorite($fav, app(PromotionService::class)->getActivePromotionForProduct($fav->product_id)),
+            'message'   => __('messages.favorite.added'),
         ]);
     }
 
@@ -90,23 +83,21 @@ class FavoriteController extends Controller
      * DELETE /api/favorites
      * Remove a specific favorite by product_id (and optional variant_id).
      */
-    public function destroy(Request $request)
+    public function destroy(Request $request, int $productId)
     {
-        $request->validate([
-            'product_id' => 'required|exists:products,id',
-            'variant_id' => 'nullable|exists:product_variants,id',
-        ]);
+        $request->validate(['variant_id' => 'nullable|integer']);
 
+        // The product id comes from the URL (DELETE /favorites/{productId}).
+        // With a variant_id only that variant's favorite goes, otherwise all of the product's.
         $query = Favorite::where('user_id', $request->user()->id)
-            ->where('product_id', $request->product_id);
+            ->where('product_id', $productId)
+            ->when($request->filled('variant_id'), fn ($q) => $q->where('variant_id', $request->variant_id));
 
-        if ($request->has('variant_id')) {
-            $query->where('variant_id', $request->variant_id);
+        if ($query->delete() > 0 && ($product = Product::find($productId))) {
+            app(InteractionTracker::class)->recordFromRequest($request, 'favorite_remove', $product);
         }
 
-        $query->delete();
-
-        return response()->json(['success' => true, 'message' => __('messages.favorite.removed')]);
+        return response()->json(['success' => true, 'favorited' => false, 'message' => __('messages.favorite.removed')]);
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
