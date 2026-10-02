@@ -46,6 +46,7 @@ class AuthController extends Controller
             'is_active'            => (bool) $user->is_active,
             'avatar'               => $user->avatar ?? null,
             'onboarding_completed' => (bool) $user->onboarding_completed,
+            'profile_completed'    => $user->profileCompletion()->isComplete(),
         ];
     }
 
@@ -414,6 +415,7 @@ class AuthController extends Controller
                 'avatar'               => $user->avatar,
                 'active_plan'          => $application?->plan ?? 'free',
                 'onboarding_completed' => (bool) $user->onboarding_completed,
+                'profile_completed'    => $user->profileCompletion()->isComplete(),
             ],
         ]);
     }
@@ -455,9 +457,11 @@ class AuthController extends Controller
         $isNewUser = false;
 
         if ($user) {
+            // Keep a photo the user uploaded themselves; only refresh Google's own.
+            $ownAvatar = $user->avatar && str_starts_with($user->avatar, \Illuminate\Support\Facades\Storage::disk('public')->url('avatars/'));
             $user->update([
                 'google_id'         => $googleUser->getId(),
-                'avatar'            => $googleUser->getAvatar(),
+                'avatar'            => $ownAvatar ? $user->avatar : ($googleUser->getAvatar() ?? $user->avatar),
                 'email_verified_at' => $user->email_verified_at ?? now(),
             ]);
 
@@ -470,7 +474,10 @@ class AuthController extends Controller
                 'email'             => $googleUser->getEmail(),
                 'google_id'         => $googleUser->getId(),
                 'avatar'            => $googleUser->getAvatar(),
+                'first_name'        => $googleUser->user['given_name'] ?? null,
+                'last_name'         => $googleUser->user['family_name'] ?? null,
                 'password'          => Hash::make(Str::random(32)),
+                'has_password'      => false,
                 'role'              => 'client',
                 'is_active'         => true,
                 'is_approved'       => true,

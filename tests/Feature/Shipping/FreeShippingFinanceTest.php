@@ -32,13 +32,13 @@ class FreeShippingFinanceTest extends TestCase
 
     private function makeUser(string $role): User
     {
-        return User::create([
+        return $this->withCompleteProfile(User::create([
             'name'      => 'Ship Test ' . Str::random(5),
             'email'     => 'ship_' . Str::random(10) . '@test.local',
             'password'  => bcrypt('secret-password'),
             'role'      => $role,
             'is_active' => true,
-        ]);
+        ]));
     }
 
     private function makeProduct(User $seller, float $price, ?float $deliveryFee): Product

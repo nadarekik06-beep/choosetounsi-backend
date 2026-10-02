@@ -57,14 +57,14 @@ class OrderStockTest extends TestCase
 
     private function makeUser(string $role): User
     {
-        return User::create([
+        return $this->withCompleteProfile(User::create([
             'name'      => ucfirst($role) . ' ' . Str::random(5),
             'email'     => $role . '_' . Str::random(10) . '@test.local',
             'password'  => bcrypt('secret-password'),
             'role'      => $role,
             'is_active' => true,
             'locale'    => 'fr',
-        ]);
+        ]));
     }
 
     private function makeSeller(): User

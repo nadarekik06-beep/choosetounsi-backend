@@ -91,14 +91,14 @@ class SellerOrderNotificationsTest extends TestCase
 
     private function makeUser(string $role, string $locale = 'fr'): User
     {
-        return User::create([
+        return $this->withCompleteProfile(User::create([
             'name'      => ucfirst($role) . ' ' . Str::random(5),
             'email'     => $role . '_' . Str::random(10) . '@test.local',
             'password'  => bcrypt('secret-password'),
             'role'      => $role,
             'is_active' => true,
             'locale'    => $locale,
-        ]);
+        ]));
     }
 
     private function makeSeller(string $locale = 'fr', bool $completePickup = true): User

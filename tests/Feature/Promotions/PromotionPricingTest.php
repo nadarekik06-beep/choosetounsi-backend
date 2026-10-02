@@ -66,10 +66,10 @@ class PromotionPricingTest extends TestCase
 
     private function makeUser(string $role): User
     {
-        return User::create([
+        return $this->withCompleteProfile(User::create([
             'name' => 'Promo ' . Str::random(5), 'email' => "promo_{$role}_" . Str::random(10) . '@test.local',
             'password' => bcrypt('secret-password'), 'role' => $role, 'is_active' => true,
-        ]);
+        ]));
     }
 
     private function makeProduct(string $name, float $price, int $stock = 30): Product

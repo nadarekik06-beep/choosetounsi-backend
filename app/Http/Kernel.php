@@ -74,5 +74,6 @@ class Kernel extends HttpKernel
         'seller.plan' => \App\Http\Middleware\SellerPlanMiddleware::class,
         'seller.feature' => \App\Http\Middleware\SellerFeatureMiddleware::class,
         'delivery'      => \App\Http\Middleware\DeliveryMiddleware::class,
+        'profile.complete' => \App\Http\Middleware\EnsureProfileComplete::class,
         ];
 }

@@ -29,7 +29,11 @@ class ComplaintStatusChangedNotification extends Notification
 
     public function via($notifiable): array
     {
-        return ['database', 'mail'];
+        // Customer notification preferences (profile → Settings).
+        return array_values(array_filter([
+            $notifiable->wantsNotification('in_app_updates') ? 'database' : null,
+            $notifiable->wantsNotification('email_updates') ? 'mail' : null,
+        ]));
     }
 
     // ── In-app (database) notification ────────────────────────────────────

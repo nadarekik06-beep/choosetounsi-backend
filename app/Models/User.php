@@ -16,8 +16,15 @@ class User extends Authenticatable implements HasLocalePreference
 
     protected $fillable = [
         'name',
+        'first_name',
+        'last_name',
         'email',
+        'phone',
+        'date_of_birth',
+        'gender',
         'password',
+        'has_password',
+        'notification_preferences',
         'role',
         'is_active',
         'is_approved',
@@ -44,6 +51,9 @@ class User extends Authenticatable implements HasLocalePreference
         'is_active'           => 'boolean',
         'is_approved'         => 'boolean',
         'onboarding_completed' => 'boolean',
+        'has_password'         => 'boolean',
+        'date_of_birth'        => 'date:Y-m-d',
+        'notification_preferences' => 'array',
         'marketing_emails_opt_in' => 'boolean',
         'marketing_opt_in_at'     => 'datetime',
         'last_marketing_email_at' => 'datetime',
@@ -119,6 +129,27 @@ class User extends Authenticatable implements HasLocalePreference
     public function isEmailVerified()  { return (bool) $this->email_verified_at; }
     public function isDeliveryAdmin()  { return $this->role === 'delivery_admin'; }
     public function isDeliveryGuy()    { return $this->role === 'delivery_guy'; }
+
+    /** Unset on a freshly created model = the column default (true). */
+    public function getHasPasswordAttribute($value): bool
+    {
+        return $value === null ? true : (bool) $value;
+    }
+
+    /** Profile completion is only enforced on shoppers — see App\Support\ProfileCompletion. */
+    public function profileCompletion(): \App\Support\ProfileCompletion
+    {
+        return new \App\Support\ProfileCompletion($this);
+    }
+
+    /**
+     * Customer notification preference (missing keys default to on).
+     * Keys: email_updates (complaint/refund e-mails), in_app_updates (bell).
+     */
+    public function wantsNotification(string $key): bool
+    {
+        return (bool) (($this->notification_preferences ?? [])[$key] ?? true);
+    }
 
     public function needsOnboarding(): bool
     {

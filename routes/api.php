@@ -166,8 +166,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/auth/user',    [AuthController::class, 'user']);
    
     Route::get('/profile',                 [ProfileApiController::class, 'show']);
-    Route::put('/profile',                 [ProfileApiController::class, 'update']);
-    Route::put('/profile/password',        [ProfileApiController::class, 'updatePassword']);
+    Route::match(['put', 'patch'], '/profile', [ProfileApiController::class, 'update'])->middleware('throttle:30,1');
+    Route::put('/profile/password',        [ProfileApiController::class, 'updatePassword'])->middleware('throttle:6,1');
+    Route::post('/profile/avatar',         [ProfileApiController::class, 'uploadAvatar'])->middleware('throttle:10,1');
+    Route::delete('/profile/avatar',       [ProfileApiController::class, 'deleteAvatar'])->middleware('throttle:10,1');
+    Route::post('/profile/email',          [ProfileApiController::class, 'requestEmailChange'])->middleware('throttle:5,1');
+    Route::post('/profile/email/verify',   [ProfileApiController::class, 'confirmEmailChange'])->middleware('throttle:10,1');
+    Route::put('/profile/notifications',   [ProfileApiController::class, 'updateNotifications']);
+    Route::get('/profile/overview',        [\App\Http\Controllers\Api\Client\ProfileOverviewController::class, 'overview']);
+    Route::get('/profile/reviews',         [\App\Http\Controllers\Api\Client\ProfileOverviewController::class, 'reviews']);
+    Route::get('/profile/followed-sellers',[\App\Http\Controllers\Api\Client\ProfileOverviewController::class, 'followedSellers']);
     Route::post('/profile/request-seller', [ProfileApiController::class, 'requestSellerRole']);
 
     Route::post('/seller-applications',          [SellerApplicationController::class, 'store']);
@@ -206,8 +214,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/check/{sellerId}',  [SellerFollowController::class, 'check']);
     });
 
-    Route::post('/checkout',         [CheckoutController::class, 'store']);
-    Route::post('/checkout/buy-now', [CheckoutController::class, 'buyNow']);
+    Route::middleware('profile.complete')->group(function () {
+        Route::post('/checkout',         [CheckoutController::class, 'store']);
+        Route::post('/checkout/buy-now', [CheckoutController::class, 'buyNow']);
+    });
 
     // Client notifications
     Route::prefix('notifications')->group(function () {
