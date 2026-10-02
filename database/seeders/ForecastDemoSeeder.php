@@ -21,13 +21,16 @@ use Illuminate\Support\Str;
  * Log in to the seller dashboard as  forecast-demo@choosetounsi.test / demo-forecast-2026
  * (Red Pepper plan) and open Outils IA → Ventes.
  *
- * Everything lives in two hidden demo categories and belongs to users with
- * @choosetounsi.test e-mails, so it never mixes with real shops' data or priors.
+ * Everything lives in two hidden demo categories and belongs to users matching
+ * forecast-%@choosetounsi.test, so it never mixes with real shops' data or priors.
  * Deterministic (fixed random seed).
  */
 class ForecastDemoSeeder extends Seeder
 {
     public const DOMAIN   = '@choosetounsi.test';
+    /** Every account this seeder creates matches this LIKE pattern — and nothing else
+     *  (the older DemoCatalog accounts share the @choosetounsi.test domain). */
+    public const EMAIL_LIKE = 'forecast-%@choosetounsi.test';
     public const PASSWORD = 'demo-forecast-2026';
 
     private CarbonImmutable $today;
@@ -154,7 +157,7 @@ class ForecastDemoSeeder extends Seeder
 
         // ── Compute so the dashboard is ready ──────────────────────────────────
         $service = app(ForecastService::class);
-        foreach (DB::table('users')->where('email', 'like', '%' . self::DOMAIN)->where('role', 'seller')->pluck('id') as $sid) {
+        foreach (DB::table('users')->where('email', 'like', self::EMAIL_LIKE)->where('role', 'seller')->pluck('id') as $sid) {
             $service->computeSeller((int) $sid);
         }
         $this->command?->info('Forecast demo ready — log in as forecast-demo' . self::DOMAIN . ' / ' . self::PASSWORD);
@@ -182,10 +185,15 @@ class ForecastDemoSeeder extends Seeder
     private function seller(string $local, string $shop, string $plan): int
     {
         $id = $this->user($local, $shop, 'seller');
-        DB::table('seller_applications')->insert([
+        $appId = DB::table('seller_applications')->insertGetId([
             'user_id' => $id, 'full_name' => $shop, 'phone_number' => '20000000', 'business_name' => $shop,
             'business_category' => 'other', 'wilaya' => 'Tunis', 'city' => 'Tunis', 'status' => 'approved',
             'plan' => $plan, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        DB::table('seller_subscriptions')->insert([
+            'seller_application_id' => $appId, 'user_id' => $id, 'current_plan' => $plan, 'status' => 'active',
+            'billing_period' => 'monthly', 'billing_cycle_start' => $this->today->toDateString(),
+            'billing_cycle_end' => $this->today->addMonth()->toDateString(), 'created_at' => now(), 'updated_at' => now(),
         ]);
         return $id;
     }

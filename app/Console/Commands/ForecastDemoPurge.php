@@ -15,12 +15,12 @@ class ForecastDemoPurge extends Command
 
     public function handle(): int
     {
-        $users = DB::table('users')->where('email', 'like', '%' . ForecastDemoSeeder::DOMAIN)->pluck('id')->all();
+        $users = DB::table('users')->where('email', 'like', ForecastDemoSeeder::EMAIL_LIKE)->pluck('id')->all();
         if (!$users) {
             $this->info('No forecast demo data.');
             return self::SUCCESS;
         }
-        if (!$this->option('force') && !$this->confirm(count($users) . ' demo users (' . ForecastDemoSeeder::DOMAIN . ') and all their data will be deleted. Continue?')) {
+        if (!$this->option('force') && !$this->confirm(count($users) . ' forecast demo users (' . ForecastDemoSeeder::EMAIL_LIKE . ') and all their data will be deleted. Continue?')) {
             return self::FAILURE;
         }
 
