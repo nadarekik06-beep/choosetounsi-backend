@@ -86,7 +86,16 @@ class SellerAIController extends Controller
     // ═══════════════════════════════════════════════════════════════════════
     public function priceOptimizer(Request $request)
     {
-        $request->validate(['product_id' => 'required|integer']);
+        $request->validate(['product_id' => 'required|integer', 'language' => 'nullable|in:fr,en,ar']);
+        // Texts come back in the seller's dashboard language (AI and fallback alike)
+        $lang = $request->input('language') ?: (in_array(app()->getLocale(), ['fr', 'en', 'ar'], true) ? app()->getLocale() : 'fr');
+        $tr   = fn(string $key, array $r = []) => __("ai_price.$key", $r, $lang);
+        // 1234.5 → "1 234,5" (fr/ar) or "1,234.5" (en), up to 3 decimals, no trailing zeros
+        $num  = function ($v) use ($lang): string {
+            $v   = round((float) $v, 3);
+            $dec = strlen(rtrim(substr(strrchr(number_format($v, 3, '.', ''), '.'), 1), '0'));
+            return $lang === 'en' ? number_format($v, $dec, '.', ',') : number_format($v, $dec, ',', ' ');
+        };
 
         $sellerId  = auth()->id();
         $sellerCol = $this->sellerCol();
@@ -239,6 +248,7 @@ Be explicit in reasoning that this is based on general Tunisian market knowledge
 EOT;
         }
 
+        $langName = ['fr' => 'French', 'en' => 'English', 'ar' => 'Modern Standard Arabic'][$lang];
         $systemPrompt = <<<EOT
 You are a Tunisian e-commerce pricing strategist for ChooseTounsi.
 You receive REAL market data collected from Tunisian websites (Tayara, Mytek, Tunisianet).
@@ -251,6 +261,9 @@ ABSOLUTE RULES:
 5. platforms_compared must list only platforms from the data — never add platforms not in the data.
 6. All prices in TND. No zeros. No nulls.
 7. Respond with ONLY valid JSON. No markdown. No text outside JSON.
+8. Write every text value (strategy, reasoning, expected_impact, competitor_summary, overpriced_warning,
+   opportunity_note, psychological_tip) in {$langName}. Keep the enum values (confidence, risk,
+   market_positioning) and platform names exactly as specified, in English.
 EOT;
 
         $userPrompt = <<<EOT
@@ -336,12 +349,14 @@ EOT;
             }
 
             if ($hasMarketData) {
-                $reasonBase = "Based on {$marketReport['data_points']} real Tunisian market data points from " . implode(', ', $platformsUsed) . " (avg: {$marketReport['market_avg']} TND)";
+                $reasonBase = $tr('reason_market', ['count' => $marketReport['data_points'], 'platforms' => implode(', ', $platformsUsed), 'avg' => $num($marketReport['market_avg'])]);
             } elseif ($safeCatAvg > 0) {
-                $reasonBase = "Based on {$competitorCount} ChooseTounsi platform listings in this category (avg: {$safeCatAvg} TND)";
+                $reasonBase = $tr('reason_platform', ['count' => $competitorCount, 'avg' => $num($safeCatAvg)]);
             } else {
-                $reasonBase = "No market data available — recommendation based on general Tunisian market knowledge for {$product->category_name}";
+                $reasonBase = $tr('reason_none', ['category' => $product->category_name]);
             }
+            $positioningLabel = $tr("positioning.$positioning");
+            if (str_starts_with($positioningLabel, 'ai_price.')) $positioningLabel = $tr('positioning.unknown');
 
             $aiResult = [
                 'suggested_price'      => $suggested,
@@ -351,24 +366,21 @@ EOT;
                 'market_avg_price'     => round($bestRef, 3),
                 'confidence'           => $hasMarketData ? ($marketReport['confidence'] ?? 'medium') : ($safeCatAvg > 0 ? 'medium' : 'low'),
                 'risk'                 => 'low',
-                'strategy'             => $totalUnits === 0 ? 'Competitive entry pricing' : 'Market-aligned pricing',
-                'reasoning'            => "{$reasonBase}. Your current price of {$productPrice} TND is {$positioning}.",
-                'expected_impact'      => $totalUnits === 0
-                    ? 'A competitive entry price should attract first buyers on ChooseTounsi.'
-                    : 'Aligning with market pricing maintains conversion while optimizing revenue.',
+                'strategy'             => $tr($totalUnits === 0 ? 'strategy_entry' : 'strategy_market'),
+                'reasoning'            => $reasonBase . '. ' . $tr('reason_current', ['price' => $num($productPrice), 'positioning' => $positioningLabel]),
+                'expected_impact'      => $tr($totalUnits === 0 ? 'impact_entry' : 'impact_market'),
                 'market_positioning'   => $positioning,
                 'competitor_summary'   => $hasMarketData
-                    ? implode(', ', $platformsUsed) . " show {$marketReport['data_points']} listings ranging {$marketReport['market_min']}–{$marketReport['market_max']} TND."
+                    ? $tr('competitors_market', ['platforms' => implode(', ', $platformsUsed), 'count' => $marketReport['data_points'],
+                                                  'min' => $num($marketReport['market_min']), 'max' => $num($marketReport['market_max'])])
                     : ($safeCatAvg > 0
-                        ? "ChooseTounsi shows {$competitorCount} competitors (avg {$safeCatAvg} TND)."
-                        : 'No competitor data found.'),
-                'overpriced_warning'   => $positioningPct > 15
-                    ? "Your price is {$positioningPct}% above market average — consider reducing to improve conversion."
-                    : null,
+                        ? $tr('competitors_platform', ['count' => $competitorCount, 'avg' => $num($safeCatAvg)])
+                        : $tr('competitors_none')),
+                'overpriced_warning'   => $positioningPct > 15 ? $tr('overpriced', ['pct' => $num($positioningPct)]) : null,
                 'opportunity_note'     => $positioningPct < -10
-                    ? "Your price is " . abs($positioningPct) . "% below market — you may have room to increase."
-                    : ($totalUnits === 0 ? 'No sales yet — ensure listing has complete images.' : null),
-                'psychological_tip'    => "Use {$psychoTip} TND instead of {$suggested} TND — charm pricing converts better.",
+                    ? $tr('room_to_increase', ['pct' => $num(abs($positioningPct))])
+                    : ($totalUnits === 0 ? $tr('no_sales') : null),
+                'psychological_tip'    => $tr('psycho', ['psycho' => $num($psychoTip), 'price' => $num($suggested)]),
                 'platforms_compared'   => $platformsUsed,
                 'min_price'            => $minPrice,
                 'max_price'            => $maxPrice,
