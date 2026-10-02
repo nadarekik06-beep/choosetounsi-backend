@@ -44,14 +44,19 @@ class SellerSubscriptionController extends Controller
 
         $application = SellerApplication::where('user_id', $user->id)->first();
 
+        // Role-level truth, independent of the application row: some approved
+        // sellers have none, and they must never be offered the application form.
+        $isApprovedSeller = $user->role === 'seller' && (bool) $user->is_approved;
+
         if (! $application) {
             return response()->json([
                 'success' => true,
                 'data'    => [
-                    'has_application' => false,
-                    'status'          => null,
-                    'plan'            => null,
-                    'preferred_plan'  => null,
+                    'has_application'    => false,
+                    'is_approved_seller' => $isApprovedSeller,
+                    'status'             => null,
+                    'plan'               => null,
+                    'preferred_plan'     => null,
                 ],
             ]);
         }
@@ -69,8 +74,9 @@ class SellerSubscriptionController extends Controller
             ->first();
 
         $responseData = [
-            'has_application' => true,
-            'status'          => $application->status,
+            'has_application'    => true,
+            'is_approved_seller' => $isApprovedSeller,
+            'status'             => $application->status,
             'plan'            => $application->plan,
             'preferred_plan'  => $application->preferred_plan,
             'last_payment'    => $lastPayment ? [
