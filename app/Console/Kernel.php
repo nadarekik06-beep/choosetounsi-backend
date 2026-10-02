@@ -77,6 +77,17 @@ class Kernel extends ConsoleKernel
         $schedule->command('recommendations:refresh-profiles')->dailyAt('03:30')->withoutOverlapping()->runInBackground();
         $schedule->command('recommendations:prune')->weeklyOn(1, '04:00')->withoutOverlapping()->runInBackground();
 
+        // ── Sales forecasts ────────────────────────────────────────────────
+        // Nightly: measure finished events, then one queued job per eligible seller
+        // (needs php artisan queue:work). Forecasts also recompute after confirmed orders.
+        $schedule->command('forecast:compute')
+            ->dailyAt('01:30')->timezone(config('forecast.timezone'))
+            ->withoutOverlapping()->runInBackground();
+        // Opt-in weekly summary, Monday morning
+        $schedule->command('forecast:digest')
+            ->weeklyOn(1, '08:00')->timezone(config('forecast.timezone'))
+            ->withoutOverlapping()->runInBackground();
+
         // ── Black Pepper — daily smart notifications ───────────────────────
         // Runs every day at 08:00 server time.
         // Sends: auto-promo, stock-risk, weekend-spike, cooling notifications

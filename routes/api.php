@@ -53,7 +53,7 @@ use App\Http\Controllers\Api\PublicPromotionController;
 use App\Http\Controllers\Api\PublicSellerController;
 use App\Http\Controllers\Api\Seller\CommissionController;
 use App\Http\Controllers\Api\Delivery\DeliveryAuthController;
-use App\Http\Controllers\Api\Seller\SellerForecastController;
+use App\Http\Controllers\Api\Seller\SalesForecastController;
 use App\Http\Controllers\Api\ProductReviewController;
 use App\Http\Controllers\Api\Client\ReviewController as ClientReviewController;
 use App\Http\Controllers\Api\Seller\SellerReviewController;
@@ -249,13 +249,16 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::get('/products',  [SellerAnalyticsController::class, 'products']);
                 Route::get('/customers', [SellerAnalyticsController::class, 'customers']);
                 Route::get('/heatmap',   [SellerAnalyticsController::class, 'heatmap']);
-                Route::post('/forecast',          [SellerForecastController::class, 'fullForecast']);
-                Route::get('/forecast/regional',  [SellerForecastController::class, 'regionalDemand']);
-                Route::get('/forecast/similar',   [SellerForecastController::class, 'similarProducts']);
-                Route::get('/forecast/events',    [SellerForecastController::class, 'upcomingEvents']);
-                Route::post('/forecast/explain',  [SellerForecastController::class, 'aiExplain']);
-                Route::delete('/forecast/cache',   [SellerForecastController::class, 'invalidateCache']);
-                Route::get('/forecast/cache-age',  [SellerForecastController::class, 'cacheAge']);
+            });
+
+        // ── Sales forecast (Outils IA → Ventes) — same plan feature as analytics ──
+        Route::prefix('forecast')
+            ->middleware('seller.feature:analytics')
+            ->group(function () {
+                Route::get('/',          [SalesForecastController::class, 'show']);
+                Route::post('/refresh',  [SalesForecastController::class, 'refresh']);
+                Route::get('/explain',   [SalesForecastController::class, 'explain'])->middleware('throttle:30,1');
+                Route::put('/settings',  [SalesForecastController::class, 'updateSettings'])->middleware('throttle:20,1');
             });
 
         // ── AI Business Tools (Red Pepper +) ──────────────────────────────
@@ -263,7 +266,6 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('seller.feature:ai_tools')
             ->group(function () {
                 Route::post('/price-optimizer',       [SellerAIController::class, 'priceOptimizer']);
-                Route::post('/sales-predictor',       [SellerAIController::class, 'salesPredictor']);
                 Route::post('/description-generator', [SellerAIController::class, 'descriptionGenerator']);
                 Route::post('/quick-description', [SellerAIController::class, 'quickDescription']);
                 Route::post('/recommender',           [SellerAIController::class, 'recommender']);
@@ -419,6 +421,14 @@ Route::middleware('auth:sanctum')->group(function () {
     |----------------------------------------------------------------------
     */
     Route::prefix('admin')->middleware('role:admin')->group(function () {
+
+        // ── Tunisian calendar (sales forecast markers & reminders) ─────────
+        Route::get('/calendar-events',                 [\App\Http\Controllers\Admin\CalendarEventController::class, 'index']);
+        Route::post('/calendar-events',                [\App\Http\Controllers\Admin\CalendarEventController::class, 'store']);
+        Route::post('/calendar-events/generate-hijri', [\App\Http\Controllers\Admin\CalendarEventController::class, 'generateHijri']);
+        Route::put('/calendar-events/{id}',            [\App\Http\Controllers\Admin\CalendarEventController::class, 'update'])->whereNumber('id');
+        Route::delete('/calendar-events/{id}',         [\App\Http\Controllers\Admin\CalendarEventController::class, 'destroy'])->whereNumber('id');
+        Route::post('/calendar-events/{id}/measure',   [\App\Http\Controllers\Admin\CalendarEventController::class, 'measure'])->whereNumber('id');
 
         // ── Homepage personalization debug ────────────────────────────────
         Route::get('/recommendations/debug', [\App\Http\Controllers\Admin\RecommendationDebugController::class, 'show']);

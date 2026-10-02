@@ -35,6 +35,8 @@ class AppServiceProvider extends ServiceProvider
         Order::observe(OrderObserver::class);
         // Cancelled seller orders give their flash-sale units back
         SellerOrder::observe(SellerOrderObserver::class);
+        // Sales forecasts recompute when counted sales change (confirmed, cancelled, returned)
+        \App\Observers\ForecastTriggers::register();
 
         // Search index sync (Meilisearch); Scout itself syncs the Product documents.
         foreach ([Product::class, \App\Models\ProductImage::class, \App\Models\ProductAttributeValue::class,

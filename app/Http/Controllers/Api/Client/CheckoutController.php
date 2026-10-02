@@ -23,7 +23,6 @@ use App\Services\StockAlertService;
 use App\Services\PromotionService;
 use App\Services\Recommendation\InteractionTracker;
 use App\Support\ShippingAddress;
-use App\Http\Controllers\Api\Seller\SellerForecastController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -52,8 +51,6 @@ class CheckoutController extends Controller
      * Handles two types of cart rows:
      *   A) Regular product rows  (product_id set, pack_id null)
      *   B) Pack bundle rows      (pack_id set, product_id null)
-     *
-     * After success, clears forecast cache for ALL sellers in the order.
      */
     public function store(Request $request)
     {
@@ -490,19 +487,6 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         // ── Stock alerts ──────────────────────────────────────────────────────
         $this->fireStockAlerts($decrementedVariants, $decrementedProducts);
 
-        // ── Clear forecast cache for ALL sellers in this order ────────────────
-        try {
-            $order->load('sellerOrders.items');
-            foreach ($order->sellerOrders as $so) {
-                if (!$so->seller_id) continue;
-                $pids = $so->items->pluck('product_id')->filter()->unique();
-                foreach ($pids as $pid) {
-                    SellerForecastController::clearForecastCache((int) $pid, (int) $so->seller_id);
-                }
-            }
-        } catch (\Throwable $e) {
-            Log::warning('[Forecast] Cache clear after store() failed: ' . $e->getMessage());
-        }
 
         $sellerCount = $productRows->isNotEmpty()
             ? $productRows->groupBy(function ($i) use ($sellerCol) {
@@ -726,13 +710,6 @@ $checkingOutIds = $cartItems->pluck('id')->all();
 
         $this->fireStockAlerts($decrementedVariants, $decrementedProducts);
 
-        try {
-            if ($sellerId !== null) {
-                SellerForecastController::clearForecastCache((int) $product->id, (int) $sellerId);
-            }
-        } catch (\Throwable $e) {
-            Log::warning('[Forecast] Cache clear after buyNow() failed: ' . $e->getMessage());
-        }
 
         return response()->json([
             'success'       => true,

@@ -8,7 +8,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use App\Models\Order;
-use App\Http\Controllers\Api\Seller\SellerForecastController;
 use App\Models\Complaint;
 
 
@@ -316,14 +315,6 @@ public function updateStatus(Request $request, $id)
 
     $status = $request->status;
     $sellerOrder->update(['status' => $status]);
-
-    // ── Forecast cache invalidation ──────────────────────────────────────
-    if (in_array($status, ['completed', 'delivered'])) {
-        $productIds = $sellerOrder->items()->pluck('product_id')->unique();
-        foreach ($productIds as $productId) {
-            SellerForecastController::clearForecastCache((int) $productId, (int) $sellerId);
-        }
-    }
 
     // ── Create ReviewPrompts when order is delivered ─────────────────────
     if ($status === 'delivered') {

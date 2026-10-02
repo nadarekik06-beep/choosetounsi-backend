@@ -7,7 +7,6 @@ use App\Models\Product;
 use App\Services\RestockService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use App\Http\Controllers\Api\Seller\SellerForecastController;
 
 /**
  * RestockController
@@ -52,13 +51,14 @@ class RestockController extends Controller
         if ($hasVariants) {
             $response = $this->restockVariantProduct($request, $product);
         } else {
-            SellerForecastController::clearForecastCache($product->id, auth()->id());
             $response = $this->restockSimpleProduct($request, $product);
         }
 
         // Logged like any seller edit; stock-only changes don't notify admins
         if ($response->getStatusCode() < 300) {
             $tracker->record($product, $before, $seller, 'restock', (bool) $product->is_approved);
+            // New stock → new days-of-stock-left / reorder dates
+            \App\Observers\ForecastTriggers::dispatch((int) $product->seller_id);
         }
         return $response;
     }
