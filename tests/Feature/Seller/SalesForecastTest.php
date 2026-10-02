@@ -274,6 +274,36 @@ class SalesForecastTest extends TestCase
         $this->assertFalse($effect->isReliable());            // 7 orders < 30: reminder only, never in the math
     }
 
+    public function test_admin_calendar_crud_and_hijri_dates(): void
+    {
+        Sanctum::actingAs($this->makeUser('admin'));
+        $year = 2031;
+        DB::table('calendar_events')->whereYear('starts_on', $year)->delete();
+
+        $created = $this->postJson('/api/admin/calendar-events/generate-hijri', ['year' => $year])->assertOk()->json('created');
+        $this->assertGreaterThanOrEqual(4, $created);
+        $this->assertSame(0, $this->postJson('/api/admin/calendar-events/generate-hijri', ['year' => $year])->json('created'));
+
+        $id = $this->postJson('/api/admin/calendar-events', [
+            'key' => 'rentree', 'name_fr' => 'Rentrée scolaire', 'name_en' => 'Back to school', 'name_ar' => 'العودة المدرسية',
+            'starts_on' => "$year-09-10", 'ends_on' => "$year-09-20", 'category_ids' => [$this->category->id],
+            'boost_score' => 1.8,   // ignored: there is no uplift field
+        ])->assertCreated()->json('data.id');
+
+        $list = $this->getJson("/api/admin/calendar-events?year=$year")->assertOk()->json('data');
+        $row = collect($list)->firstWhere('id', $id);
+        $this->assertSame([$this->category->id], $row['category_ids']);
+        $this->assertArrayNotHasKey('boost_score', $row);
+        $this->assertSame('hijri', collect($list)->firstWhere('key', 'ramadan')['source']);
+
+        $this->putJson("/api/admin/calendar-events/$id", ['key' => 'rentree', 'name_fr' => 'Rentrée', 'name_en' => 'Back to school',
+            'name_ar' => 'العودة المدرسية', 'starts_on' => "$year-09-12", 'ends_on' => "$year-09-11"])->assertStatus(422);
+        $this->deleteJson("/api/admin/calendar-events/$id")->assertOk();
+
+        Sanctum::actingAs($this->seller);
+        $this->getJson("/api/admin/calendar-events?year=$year")->assertForbidden();
+    }
+
     public function test_stockout_alert_is_sent_once_and_respects_opt_out(): void
     {
         Notification::fake();
