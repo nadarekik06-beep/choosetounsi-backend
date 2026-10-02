@@ -97,11 +97,20 @@ class ProductController extends Controller
         if ($request->filled('is_platform_product')) {
             $query->where('is_platform_product', (bool) $request->boolean('is_platform_product'));
         }
+        // Every card shows its rating, so the average and count ride along with the page
+        $query->withAvg(['reviews as avg_rating' => fn ($q) => $q->where('status', 'approved')], 'rating')
+              ->withCount(['reviews as reviews_count' => fn ($q) => $q->where('status', 'approved')]);
         if ($minRating = $request->query('min_rating')) {
-            $query->withAvg(
-                ['reviews as avg_rating' => fn ($q) => $q->where('status', 'approved')],
-                'rating'
-            )->having('avg_rating', '>=', (float) $minRating);
+            $query->having('avg_rating', '>=', (float) $minRating);
+        }
+        // ?seller_plan=black  or  ?seller_plan=red,black  (pepper tier of the shop)
+        if ($tiers = $this->sellerPlanParam($request)) {
+            $query->whereIn('seller_id', $this->sellerIdsOnTiers($tiers));
+        }
+        // Only products the customer currently pays less for (an active promotion applies)
+        if ($request->boolean('on_sale')) {
+            [$finalSql, $finalBindings] = $this->promoService->finalPriceSql($query->getModel()->getTable());
+            $query->whereRaw("({$finalSql}) < products.price", $finalBindings);
         }
         if ($request->boolean('free_delivery')) {
             // 0 = explicitly free; null means "platform default", NOT free — same
@@ -159,6 +168,9 @@ class ProductController extends Controller
             'price_asc'    => $query->orderByFinalPrice('asc'),
             'price_desc'   => $query->orderByFinalPrice('desc'),
             'views'        => $query->orderByDesc('views'),
+            // Approved reviews only; unrated products last, then the most reviewed first
+            'rating'       => $query->orderByRaw('avg_rating IS NULL')->orderByDesc('avg_rating')
+                                    ->orderByDesc('reviews_count')->orderByDesc('views'),
             // Real sales ranking — sums order_items.quantity for completed/delivered
             // orders only, same convention as SellerAnalyticsController. No fabricated data.
             'best_selling' => $query->withSum(['orderItems as units_sold' => fn ($q) => $q
@@ -188,9 +200,39 @@ class ProductController extends Controller
             if ($request->filled($key)) return true;
         }
         return $this->occasionsParam($request) !== []
+            || $this->sellerPlanParam($request) !== []
             || filter_var($request->query('in_stock'), FILTER_VALIDATE_BOOLEAN)
+            || $request->boolean('on_sale')
             || $request->boolean('free_delivery')
             || $request->boolean('has_coupon');
+    }
+
+    /** Pepper tiers from ?seller_plan=red,black or ?seller_plan[]=red (unknown values ignored). */
+    private function sellerPlanParam(Request $request): array
+    {
+        $raw = $request->query('seller_plan', []);
+        $raw = is_array($raw) ? $raw : explode(',', (string) $raw);
+        return array_values(array_intersect(\App\Models\SubscriptionPlan::TIER_KEYS, array_map('trim', $raw)));
+    }
+
+    /**
+     * Sub-query of approved sellers whose current plan sits on one of $tiers.
+     * Admin-created plans count as their tier; a missing or unknown plan is Green.
+     */
+    private function sellerIdsOnTiers(array $tiers): \Closure
+    {
+        $tierNumbers = array_keys(array_intersect(\App\Models\SubscriptionPlan::TIER_KEYS, $tiers));
+        $slugs       = \App\Models\SubscriptionPlan::whereIn('tier', $tierNumbers)->pluck('slug')->all();
+        $known       = \App\Models\SubscriptionPlan::pluck('slug')->all();
+
+        return fn ($q) => $q->select('user_id')->from('seller_applications')
+            ->where('status', 'approved')
+            ->where(function ($w) use ($slugs, $known, $tierNumbers) {
+                $w->whereIn('plan', $slugs ?: ['']);
+                if (in_array(0, $tierNumbers, true)) {
+                    $w->orWhereNull('plan')->orWhereNotIn('plan', $known ?: ['']);
+                }
+            });
     }
 
     /**
@@ -611,11 +653,27 @@ private function transformProductCollection($products): array
     $productIds = $products->pluck('id')->toArray();
     $colorImagesMap = $this->batchLoadColorImages($productIds);
     $pricing        = $this->promoService->priceMany($products);
+    $shops          = \App\Services\ShopOverview::shopsFor($products->pluck('seller_id')->filter()->unique()->all());
 
-    return $products->map(fn($p) => $this->transformProductItem($p, $colorImagesMap, $pricing[$p->id]))
+    return $products->map(function ($p) use ($colorImagesMap, $pricing, $shops) {
+        // Cards show the shop's name and pepper tier, not the account's personal name
+        if ($p->relationLoaded('seller') && $p->seller && isset($shops[$p->seller_id])) {
+            $p->seller->setAttribute('business_name', $shops[$p->seller_id]['business_name']);
+            $p->seller->setAttribute('plan', $shops[$p->seller_id]['plan']);
+        }
+        $attributes = $p->getAttributes();
+        if (array_key_exists('avg_rating', $attributes)) {
+            $p->avg_rating = $p->avg_rating !== null ? round((float) $p->avg_rating, 1) : null;
+        }
+        if (array_key_exists('reviews_count', $attributes)) {
+            $p->reviews_count = (int) $p->reviews_count;
+        }
+        return $this->transformProductItem($p, $colorImagesMap, $pricing[$p->id]);
+    })
         ->values()
         ->toArray();
 }
+
 private function safeSessionId(Request $request): ?string
 {
     try {

@@ -439,7 +439,7 @@ class PromotionService
                         'variant_images'    => $variantImages,
                         'stock'             => $product->stock,
                         'seller'            => $product->seller
-                            ? ['name' => $product->seller->name]
+                            ? ['id' => $product->seller->id, 'name' => $product->seller->name]
                             : null,
                     ] + $pricing[$product->id];
                 })->values();

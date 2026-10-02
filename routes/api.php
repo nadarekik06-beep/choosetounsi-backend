@@ -116,6 +116,7 @@ Route::get('/recommendations/similar/{productId}', [ProductRecommendationControl
 
 // ── Homepage personalization ─────────────────────────────────────────────────
 Route::get('/home/feed', [\App\Http\Controllers\Api\HomeFeedController::class, 'index']);
+Route::get('/shop/overview', [\App\Http\Controllers\Api\ShopOverviewController::class, 'index']);
 
 // Signal tracking (fire-and-forget from the storefront)
 Route::post('/track', [\App\Http\Controllers\Api\TrackingController::class, 'store'])
