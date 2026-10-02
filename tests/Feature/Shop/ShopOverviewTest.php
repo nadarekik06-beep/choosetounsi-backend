@@ -80,6 +80,8 @@ class ShopOverviewTest extends TestCase
         $this->assertSame(Review::approved()->count(), $stats['reviews']);
         $this->assertGreaterThanOrEqual(1, $stats['sellers']);
         $this->assertGreaterThanOrEqual(1, $stats['categories']);
+        $this->assertEquals(Product::DEFAULT_DELIVERY_FEE, $stats['delivery_fee']);
+        $this->assertSame(Product::available()->where('delivery_fee', 0)->count(), $stats['free_delivery_products']);
     }
 
     public function test_categories_without_products_are_left_out(): void

@@ -25,7 +25,7 @@ class ShopOverview
 
     public function __construct(private PromotionService $promotions) {}
 
-    /** @return array{products: int, sellers: int, categories: int, average_rating: ?float, reviews: int} */
+    /** @return array{products: int, sellers: int, categories: int, average_rating: ?float, reviews: int, delivery_fee: float, free_delivery_products: int, complaint_window_hours: int} */
     public function stats(): array
     {
         return Cache::remember('shop:overview:stats', now()->addMinutes(self::CACHE_MINUTES), function () {
@@ -38,6 +38,10 @@ class ShopOverview
                 'categories'     => Category::active()->whereHas('activeProducts')->count(),
                 'average_rating' => $avg !== null ? round((float) $avg, 1) : null,
                 'reviews'        => Review::approved()->count(),
+                // Trust strip: what checkout really charges and allows
+                'delivery_fee'           => Product::DEFAULT_DELIVERY_FEE,
+                'free_delivery_products' => Product::available()->where('delivery_fee', 0)->count(),
+                'complaint_window_hours' => (int) \App\Models\Complaint::COMPLAINT_WINDOW_HOURS,
             ];
         });
     }
