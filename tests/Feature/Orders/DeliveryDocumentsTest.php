@@ -150,6 +150,15 @@ class DeliveryDocumentsTest extends TestCase
         $this->assertSame('2074', $order->postal_code);
     }
 
+    public function test_checkout_accepts_an_address_without_postal_code(): void
+    {
+        $order = $this->checkout($this->makeUser('client'), [$this->makeProduct($this->makeSeller(), 50)], ['postal_code' => '']);
+
+        $this->assertNull($order->postal_code);
+        $this->assertTrue($order->hasStructuredAddress());
+        $this->assertSame('12 rue de la Liberté, Résidence Yasmine, El Mourouj, Ben Arous', $order->formattedShippingAddress());
+    }
+
     public function test_checkout_rejects_invalid_tunisian_addresses(): void
     {
         $customer = $this->makeUser('client');

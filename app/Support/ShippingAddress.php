@@ -11,7 +11,7 @@ use Illuminate\Validation\Rule;
  *
  * Request keys (= orders / user_addresses columns):
  *   recipient_name, phone, phone_secondary?, wilaya, delegation,
- *   address (street), postal_code, notes? (landmark / delivery notes)
+ *   address (street), postal_code?, notes? (landmark / delivery notes)
  */
 class ShippingAddress
 {
@@ -43,7 +43,7 @@ class ShippingAddress
             'wilaya'          => ['required', 'string', Rule::in(Wilayas::ALL)],
             'delegation'      => ['required', 'string', 'min:2', 'max:100'],
             'address'         => ['required', 'string', 'min:5', 'max:500'],
-            'postal_code'     => ['required', 'digits:4'],
+            'postal_code'     => ['nullable', 'digits:4'],
             'notes'           => ['nullable', 'string', 'max:500'],
         ];
     }
@@ -60,7 +60,7 @@ class ShippingAddress
             'wilaya'          => $request->wilaya,
             'delegation'      => $clean($request->delegation),
             'address'         => $clean($request->address),
-            'postal_code'     => $request->postal_code,
+            'postal_code'     => $clean($request->postal_code),
             'notes'           => $clean($request->notes),
         ];
     }

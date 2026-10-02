@@ -109,7 +109,8 @@ public function complaints()
      */
     public function hasStructuredAddress(): bool
     {
-        return filled($this->recipient_name) && filled($this->postal_code);
+        // Postal code is optional, so it can't mark an order as structured.
+        return filled($this->recipient_name) && filled($this->delegation);
     }
 
     /** Enough for a courier to find the buyer: someone to call and a place. */
