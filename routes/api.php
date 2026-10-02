@@ -37,6 +37,7 @@ use App\Http\Controllers\Api\Seller\SellerSubscriptionController;
 use App\Http\Controllers\AIController;
 use App\Http\Controllers\Api\Seller\SellerAnalyticsController;
 use App\Http\Controllers\Api\Seller\SellerAIController;
+use App\Http\Controllers\Api\Seller\SellerDescriptionController;
 use App\Http\Controllers\Api\Seller\BlackPepperController;
 use App\Http\Controllers\Admin\AdminVipRequestController;
 use App\Http\Controllers\Api\Seller\SponsorshipController;
@@ -272,12 +273,20 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::put('/settings',  [SalesForecastController::class, 'updateSettings'])->middleware('throttle:20,1');
             });
 
+        // ── AI product descriptions (every plan; tiers enforced by DescriptionPolicy) ──
+        Route::prefix('ai')->group(function () {
+            Route::get('/description/options', [SellerDescriptionController::class, 'options']);
+            Route::post('/description',        [SellerDescriptionController::class, 'generate'])->middleware('throttle:8,1');
+            Route::put('/description/voice',   [SellerDescriptionController::class, 'saveVoice'])->middleware('throttle:20,1');
+            // Legacy alias used by older dashboard builds
+            Route::post('/quick-description',  [SellerDescriptionController::class, 'generate'])->middleware('throttle:8,1');
+        });
+
         // ── AI Business Tools (Red Pepper +) ──────────────────────────────
         Route::prefix('ai')
             ->middleware('seller.feature:ai_tools')
             ->group(function () {
                 Route::post('/price-optimizer',       [SellerAIController::class, 'priceOptimizer']);
-                Route::post('/quick-description', [SellerAIController::class, 'quickDescription']);
                 Route::post('/recommender',           [SellerAIController::class, 'recommender']);
             });
 

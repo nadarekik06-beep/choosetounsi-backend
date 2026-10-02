@@ -4,26 +4,17 @@
 namespace App\Http\Controllers\Api\Seller;
 
 use App\Http\Controllers\Controller;
+use App\Services\Chat\GroqClient;
 use App\Services\MarketIntelligenceService;
 use App\Services\PriceNormalizationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Carbon\Carbon;
 
 class SellerAIController extends Controller
 {
-    private string $groqApiUrl = 'https://api.groq.com/openai/v1/chat/completions';
-    private string $groqModel  = 'llama-3.1-8b-instant';
-
-
-    private function groqKey(): string
-    {
-        return config('services.groq.key', env('GROQ_API_KEY', ''));
-    }
-
     private function sellerCol(): string
     {
         static $col = null;
@@ -47,38 +38,20 @@ class SellerAIController extends Controller
         return 'COALESCE(' . implode(', ', $parts) . ')';
     }
 
+    /**
+     * Through the shared GroqClient: configured model (services.groq.model), free-tier
+     * budget and 429 handling. Null on any failure — every tool has a math fallback.
+     */
     private function callGroq(string $system, string $user, int $maxTokens = 700): ?string
     {
-        $key = $this->groqKey();
-        if (empty($key)) {
-            Log::warning('[SellerAI] GROQ_API_KEY not configured');
-            return null;
-        }
-
-        try {
-            $res = Http::withHeaders([
-                'Authorization' => "Bearer {$key}",
-                'Content-Type'  => 'application/json',
-            ])->timeout(25)->post($this->groqApiUrl, [
-                'model'       => $this->groqModel,
-                'messages'    => [
-                    ['role' => 'system', 'content' => $system],
-                    ['role' => 'user',   'content' => $user],
-                ],
-                'max_tokens'  => $maxTokens,
-                'temperature' => 0.7,
-            ]);
-
-            if (!$res->successful()) {
-                Log::warning('[SellerAI] Groq error ' . $res->status() . ': ' . $res->body());
-                return null;
-            }
-
-            return $res->json('choices.0.message.content');
-        } catch (\Throwable $e) {
-            Log::error('[SellerAI] ' . $e->getMessage());
-            return null;
-        }
+        // Reasoning models spend part of the completion budget thinking first
+        return app(GroqClient::class)->chat(
+            [['role' => 'system', 'content' => $system], ['role' => 'user', 'content' => $user]],
+            'seller_ai_tools',
+            false,
+            $maxTokens + 400,
+            ['temperature' => 0.7, 'timeout' => 30]
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -419,322 +392,7 @@ EOT;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // 4. QUICK DESCRIPTION — IMPROVED (category-aware tone, no SEO)
-    // ═══════════════════════════════════════════════════════════════════════
-    public function quickDescription(Request $request)
-    {
-        $request->validate([
-            'name'              => 'required|string|max:255',
-            'category'          => 'nullable|string|max:100',
-            'subcategory'       => 'nullable|string|max:100',
-            'price'             => 'nullable|numeric|min:0',
-            'short_description' => 'nullable|string|max:500',
-            'attributes'        => 'nullable|array',
-            'variants'          => 'nullable|array',
-            'image_count'       => 'nullable|integer|min:0',
-            'tone'              => 'nullable|in:professional,casual,exciting,trust-focused',
-            'language'          => 'nullable|in:en,fr,ar',
-        ]);
-
-        $name        = trim($request->name);
-        $category    = trim($request->input('category',    'General')) ?: 'General';
-        $subcategory = trim($request->input('subcategory', '')) ?: '';
-        $price       = (float) $request->input('price', 0);
-        $shortDesc   = trim($request->input('short_description', ''));
-        $attributes  = (array)  $request->input('attributes', []);
-        $variants    = array_slice((array) $request->input('variants', []), 0, 12);
-        $imageCount  = (int)    $request->input('image_count', 0);
-        $sellerTone  = $request->input('tone', 'professional');
-        $language    = $request->input('language') ?: app()->getLocale();
-
-        $priceLabel = match (true) {
-            $price >= 500 => 'Luxury / Ultra-premium',
-            $price >= 200 => 'Premium / High-end',
-            $price >= 80  => 'Mid-range / Quality',
-            $price >= 30  => 'Value / Accessible',
-            $price > 0    => 'Budget-friendly',
-            default       => 'Price not set',
-        };
-
-        $attrParts = [];
-        foreach ($attributes as $slug => $val) {
-            if ($val !== null && $val !== '') {
-                $attrParts[] = ucfirst(str_replace('_', ' ', (string) $slug)) . ': ' . $val;
-            }
-        }
-        $attrStr    = implode(' | ', $attrParts);
-        $variantStr = !empty($variants) ? implode(', ', $variants) : '';
-
-        $catLower = mb_strtolower($category . ' ' . $subcategory);
-
-        $toneProfiles = [
-            'fashion|mode|vetement|habit|robe|chemise|pantalon|jupe|pull|manteau|accessoir|sac|chaussure|bijou|lingerie|sportswear' => [
-                'persona'  => 'Style copywriter — trend-forward, aspirational, sensory language. Reference fabrics, silhouettes, occasions.',
-                'cta_pool' => [
-                    "Ajoutez au panier et faites tourner les têtes dès demain.",
-                    "Votre prochain look signature vous attend.",
-                    "Commandez maintenant — les stocks s'épuisent vite.",
-                    "Offrez-vous un style qui vous ressemble vraiment.",
-                    "Disponible maintenant — livraison express partout en Tunisie.",
-                ],
-            ],
-            'artisan|handmade|broderie|poterie|ceramique|maroquinerie|tapis|artisanat|decor|decoration' => [
-                'persona'  => 'Artisan storyteller — authentic, warm, craft-proud. Emphasise the human hands, local materials, tradition.',
-                'cta_pool' => [
-                    "Faites entrer l'artisanat tunisien dans votre quotidien.",
-                    "Chaque piece est unique — commandez la votre avant qu'elle parte.",
-                    "Soutenez l'artisanat local en passant votre commande aujourd'hui.",
-                    "Un savoir-faire transmis de generation en generation, livre chez vous.",
-                    "Offrez l'authentique — commandez maintenant.",
-                ],
-            ],
-            'food|alimentaire|alimentation|epicerie|cuisine|gateau|patisserie|miel|huile|olive|harissa|biscuit|confiture|dattes|cafe|the|poisson' => [
-                'persona'  => 'Food copywriter — appetising, sensory, evocative. Use taste, smell, texture. Reference Tunisian flavours.',
-                'cta_pool' => [
-                    "Commandez maintenant et regalez votre table ce soir.",
-                    "Livraison fraiche — commandez avant midi.",
-                    "Goutez la difference — ajoutez au panier maintenant.",
-                    "Un gout authentique qui vous ramene a la maison.",
-                    "Pour vos repas en famille — commandez avant la rupture de stock.",
-                ],
-            ],
-            'beaute|beauty|cosmetique|soin|skincare|parfum|creme|maquillage|serum|lotion|hygiene|cheveux|hair|shampoo|masque|visage' => [
-                'persona'  => 'Beauty editor — elegant, self-care focused, sensory. Emphasise transformation, ritual, and confidence.',
-                'cta_pool' => [
-                    "Prenez soin de vous — ajoutez au panier maintenant.",
-                    "Votre rituel beaute commence ici.",
-                    "Commandez et ressentez la difference des la premiere utilisation.",
-                    "Livraison rapide — commencez votre routine des demain.",
-                    "Offrez-vous ce soin des aujourd'hui.",
-                ],
-            ],
-            'tech|electronique|informatique|telephone|smartphone|ordinateur|laptop|tablette|gadget|audio|casque|enceinte|batterie|chargeur' => [
-                'persona'  => 'Tech reviewer — modern, practical, spec-confident. Lead with the key spec advantage, then practical use case.',
-                'cta_pool' => [
-                    "Commandez maintenant et recevez votre appareil sous 24-48h.",
-                    "Stock limite — securisez le votre aujourd'hui.",
-                    "Compatible, fiable, disponible — ajoutez au panier.",
-                    "Performance garantie — commandez des maintenant.",
-                    "Livraison rapide partout en Tunisie.",
-                ],
-            ],
-            'maison|mobilier|meuble|electromenager|four|refrigerateur|aspirateur|canape|matelas|luminaire|lampe|rideau' => [
-                'persona'  => 'Home lifestyle writer — warm, practical, aspirational. Paint a picture of the home environment this product improves.',
-                'cta_pool' => [
-                    "Transformez votre interieur — commandez maintenant.",
-                    "Livraison rapide — votre maison vous remerciera.",
-                    "Stock limite — ajoutez au panier avant qu'il ne parte.",
-                    "Qualite et confort reunis — a votre porte en 48h.",
-                    "Commandez aujourd'hui et profitez des cette semaine.",
-                ],
-            ],
-            'sport|fitness|musculation|velo|football|basket|tennis|yoga|randonnee|maillot|equipement sportif' => [
-                'persona'  => 'Sports coach copywriter — energetic, motivating, performance-focused. Use active verbs and challenge language.',
-                'cta_pool' => [
-                    "Entrainez-vous mieux — commandez maintenant.",
-                    "Votre prochain record vous attend — ajoutez au panier.",
-                    "Performance garantie — livre en 48h.",
-                    "Ne laissez pas vos objectifs attendre.",
-                    "Commandez et passez au niveau superieur des demain.",
-                ],
-            ],
-            'bebe|enfant|jouet|puericulture|biberon' => [
-                'persona'  => 'Parenting copywriter — reassuring, warm, safety-first. Speak directly to the loving parent.',
-                'cta_pool' => [
-                    "Offrez le meilleur a votre enfant — commandez maintenant.",
-                    "Securise, teste, et livre rapidement — ajoutez au panier.",
-                    "Votre bebe merite le meilleur — commandez aujourd'hui.",
-                    "Stock limite — ne tardez pas.",
-                    "Livraison rapide partout en Tunisie.",
-                ],
-            ],
-        ];
-
-        $matchedPersona = null;
-        $ctaPool        = [];
-
-        foreach ($toneProfiles as $keywords => $profile) {
-            $kwArray = explode('|', $keywords);
-            foreach ($kwArray as $kw) {
-                if (mb_strpos($catLower, mb_strtolower(trim($kw))) !== false) {
-                    $matchedPersona = $profile['persona'];
-                    $ctaPool        = $profile['cta_pool'];
-                    break 2;
-                }
-            }
-        }
-
-        if (!$matchedPersona) {
-            $matchedPersona = 'Conversion copywriter — clear, benefits-first, trustworthy. Lead with the key value, support with proof, close with action.';
-            $ctaPool = [
-                "Commandez maintenant — livraison rapide partout en Tunisie.",
-                "Ajoutez au panier et recevez sous 24-48h.",
-                "Stock disponible — commandez avant rupture.",
-                "Qualite garantie — commandez des aujourd'hui.",
-                "Offrez-vous ce produit maintenant.",
-            ];
-        }
-
-        $cta = $ctaPool[array_rand($ctaPool)];
-
-        $introOpenersJson = json_encode([
-            "Il y a des produits que l'on garde pour toujours.",
-            "Certaines choses meritent d'etre vecues, pas seulement achetees.",
-            "Tout commence par le bon choix.",
-            "Imaginez.",
-            "Vous le cherchiez — le voila.",
-            "La difference, elle se ressent des le premier instant.",
-            "Derriere chaque bonne decision, il y a une bonne raison.",
-            "Pense pour vous. Fait pour durer.",
-            "Ce n'est pas un achat. C'est un investissement dans votre quotidien.",
-            "Parce que vous meritez mieux que l'ordinaire.",
-            "Le detail qui change tout.",
-            "Simple. Efficace. Tunisien.",
-            "Quand qualite et accessibilite se rencontrent.",
-            "Voici ce que vous attendiez.",
-            "Moins de compromis. Plus de satisfaction.",
-            "Une seule regle : ne jamais sacrifier la qualite.",
-            "Le produit dont on parle — maintenant disponible chez vous.",
-            "Chaque jour merite le meilleur.",
-            "Concu pour ceux qui exigent l'excellence.",
-            "Quand on y goute, on ne revient plus en arriere.",
-        ], JSON_UNESCAPED_UNICODE);
-
-        $toneInstruction = match ($sellerTone) {
-            'casual'        => 'Register: friendly, conversational, like a trusted friend recommending. Simple sentences.',
-            'exciting'      => 'Register: high energy, bold, create desire and urgency. Strong action verbs. Short punchy sentences.',
-            'trust-focused' => 'Register: reassuring, credible, cite quality signals. Emphasise reliability and guarantees.',
-            default         => 'Register: clear, authoritative, benefits-first. Professional and credible without being cold.',
-        };
-
-        $langInstruction = match ($language) {
-            'ar'    => 'Write EVERYTHING in Modern Standard Arabic. All text in Arabic script.',
-            'en'    => 'Write EVERYTHING in English. Optimise for Tunisian diaspora and international buyers.',
-            default => 'Write EVERYTHING in French. Both fields must be in French.',
-        };
-
-        $contextLines = array_filter([
-            "Product name: {$name}",
-            "Category: {$category}" . ($subcategory ? " > {$subcategory}" : ''),
-            $price > 0   ? "Price: {$price} TND ({$priceLabel} positioning)" : null,
-            $imageCount  ? "Photos available: {$imageCount}" : 'Photos: none yet',
-            $variantStr  ? "Available options/variants: {$variantStr}" : null,
-            $attrStr     ? "Product attributes: {$attrStr}" : null,
-            $shortDesc   ? "Seller draft (improve and expand): \"{$shortDesc}\"" : null,
-        ]);
-        $context = implode("\n", $contextLines);
-
-        $systemPrompt = <<<EOT
-You are a senior product copywriter for ChooseTounsi, Tunisia's leading multi-vendor e-commerce marketplace.
-
-WRITING IDENTITY: {$matchedPersona}
-
-LANGUAGE RULE: {$langInstruction}
-
-TONE RULE: {$toneInstruction}
-
-STRUCTURE RULE — always follow this arc:
-  1. Hook / Opening line — unique, emotionally resonant, never generic.
-  2. Value proposition — what is this product and why does it matter to the buyer?
-  3. Key features / Benefits — specific to THIS product, not a generic list.
-  4. Trust element — quality signal, origin story, or social proof hint.
-  5. Call to action — use EXACTLY the CTA provided, word for word.
-
-INTRO VARIETY RULE — choose one opener from this list that best fits the product.
-Do NOT use "Decouvrez notre", "Introducing", or any generic discovery phrase.
-Intro pool (pick the best fit):
-{$introOpenersJson}
-
-TUNISIAN CONTEXT — weave in naturally when relevant:
-- Local delivery confidence
-- Cultural moments (Ramadan, Eid, summer, back-to-school) if the product fits
-- Local materials, origin, or craftsmanship when authentic
-
-OUTPUT RULES:
-- short_description: 1-2 sentences, maximum 160 characters.
-- description: 160-280 words, flowing paragraphs. No bullet points. No dashes. No headers.
-  Must end with EXACTLY this call to action, verbatim: "{$cta}"
-- Respond with ONLY valid JSON. No markdown fences. No text outside the JSON object.
-EOT;
-
-        $userPrompt = <<<EOT
-Generate a high-conversion product listing for ChooseTounsi.
-
-PRODUCT DATA:
-{$context}
-
-REQUIRED JSON (no other fields, no extra text):
-{
-  "short_description": "<hook sentence, max 160 chars>",
-  "description": "<full flowing description, 160-280 words, ends with the exact CTA>"
-}
-EOT;
-
-        $aiRaw    = $this->callGroq($systemPrompt, $userPrompt, 900);
-        $aiResult = null;
-
-        if ($aiRaw) {
-            try {
-                $clean = preg_replace('/```json|```/i', '', $aiRaw);
-                $start = strpos($clean, '{');
-                $end   = strrpos($clean, '}');
-                if ($start !== false && $end !== false) {
-                    $parsed = json_decode(substr($clean, $start, $end - $start + 1), true);
-                    if (!empty($parsed['short_description']) && !empty($parsed['description'])) {
-                        $aiResult = [
-                            'short_description' => (string) $parsed['short_description'],
-                            'description'       => (string) $parsed['description'],
-                        ];
-                    }
-                }
-            } catch (\Throwable $e) {
-                Log::warning('[SellerAI::quickDescription] Parse failed: ' . $e->getMessage());
-            }
-        }
-
-        if (!$aiResult) {
-    $variantNote = $variantStr ? " Available in: {$variantStr}." : '';
-    $attrNote    = $attrStr    ? " Attributes: {$attrStr}." : '';
-
-    if ($language === 'en') {
-        $aiResult = [
-            'short_description' => $shortDesc
-                ?: "{$name} — quality and authenticity, delivered fast across Tunisia.",
-            'description'       =>
-                "Looking for a reliable product in the {$category} category? "
-                . "{$name} delivers exactly what you need.{$attrNote}{$variantNote} "
-                . "Built for customers who refuse to compromise, this product stands out "
-                . "for its quality finish and proven durability. "
-                . $cta,
-        ];
-    } else {
-        $variantNote = $variantStr ? " Disponible en : {$variantStr}." : '';
-        $attrNote    = $attrStr    ? " Caracteristiques : {$attrStr}." : '';
-        $aiResult    = [
-            'short_description' => $shortDesc
-                ?: "{$name} — qualite et authenticite, livre rapidement partout en Tunisie.",
-            'description'       =>
-                "Vous cherchez un produit qui allie qualite et fiabilite dans la categorie {$category} ? "
-                . "{$name} repond exactement a vos attentes.{$attrNote}{$variantNote} "
-                . "Concu pour les consommateurs tunisiens qui refusent de faire des compromis, "
-                . "ce produit se distingue par ses finitions soignees et sa durabilite eprouvee. "
-                . "Que vous l'offriez ou vous le reserviez, vous ne serez pas decu. "
-                . $cta,
-        ];
-    }
-}
-
-        return response()->json([
-            'success' => true,
-            'data'    => [
-                'ai_result'    => $aiResult,
-                'data_context' => compact('name', 'category', 'sellerTone', 'language', 'priceLabel'),
-            ],
-        ]);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // 5. RECOMMENDER — UNCHANGED
+    // 2. RECOMMENDER — UNCHANGED
     // ═══════════════════════════════════════════════════════════════════════
     public function recommender(Request $request)
     {

@@ -8,12 +8,13 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
- * The only class that talks to Groq for the shopping chatbot.
+ * The only class that talks to Groq (chatbot, translations, ad copy, seller AI tools).
  *
  * Free-tier guard rails:
  *   - 429 is never retried; the caller falls back to a template reply.
  *   - A local per-minute / per-day counter stops calling Groq before the
  *     free quota is exhausted (config services.groq.daily_budget / minute_budget).
+ *     A caller can pass `reserve` to stop even earlier and leave calls for others.
  *   - Every call and every 429 is logged with Groq's remaining-quota headers.
  *
  * Returns null on any failure — callers must always have a non-AI fallback.
@@ -25,6 +26,12 @@ class GroqClient
     /** Set after each call so callers can tell a 429 from other failures. */
     public ?string $lastError = null;
 
+    /** Seconds Groq asked us to wait after a 429 (null when unknown). */
+    public ?int $retryAfter = null;
+
+    /** Model that produced the last successful answer. */
+    public ?string $lastModel = null;
+
     public function isConfigured(): bool
     {
         return !empty(config('services.groq.key'));
@@ -33,10 +40,15 @@ class GroqClient
     /**
      * @param array  $messages OpenAI-style [['role' => ..., 'content' => ...]]
      * @param string $purpose  short label for logs ("intent", "reply")
+     * @param array  $options  optional overrides: model, temperature, top_p, timeout,
+     *                         reasoning_effort, reserve (calls to leave in the daily budget),
+     *                         schema + schema_name (JSON schema for strict structured output)
      */
-    public function chat(array $messages, string $purpose, bool $json = false, int $maxTokens = 400): ?string
+    public function chat(array $messages, string $purpose, bool $json = false, int $maxTokens = 400, array $options = []): ?string
     {
-        $this->lastError = null;
+        $this->lastError  = null;
+        $this->retryAfter = null;
+        $this->lastModel  = null;
 
         if (!$this->isConfigured()) {
             $this->lastError = 'not_configured';
@@ -44,30 +56,41 @@ class GroqClient
             return null;
         }
 
-        if (!$this->withinBudget()) {
+        if (!$this->withinBudget((int) ($options['reserve'] ?? 0))) {
             $this->lastError = 'budget';
             Log::warning('[Groq] Local free-tier budget reached, skipping call', ['purpose' => $purpose]);
             return null;
         }
 
-        $model   = config('services.groq.model');
+        $model   = $options['model'] ?? config('services.groq.model');
         $payload = [
             'model'                 => $model,
             'messages'              => $messages,
-            'temperature'           => $json ? 0 : 0.4,
+            'temperature'           => $options['temperature'] ?? ($json ? 0 : 0.4),
             'max_completion_tokens' => $maxTokens,
-            'reasoning_effort'      => 'low',
+            'reasoning_effort'      => $options['reasoning_effort'] ?? 'low',
             'include_reasoning'     => false,
         ];
-        if ($json) {
+        if (isset($options['top_p'])) {
+            $payload['top_p'] = $options['top_p'];
+        }
+        if ($json && isset($options['schema'])) {
+            // Structured outputs: decoding is constrained to the schema (gpt-oss models)
+            $payload['response_format'] = ['type' => 'json_schema', 'json_schema' => [
+                'name'   => $options['schema_name'] ?? 'result',
+                'strict' => true,
+                'schema' => $options['schema'],
+            ]];
+        } elseif ($json) {
             $payload['response_format'] = ['type' => 'json_object'];
         }
+        $timeout = (int) ($options['timeout'] ?? config('services.groq.timeout', 15));
 
         // One retry, only for network errors and 5xx. Never for 429 / 4xx.
         for ($attempt = 1; $attempt <= 2; $attempt++) {
             $started = microtime(true);
             try {
-                $response = Http::timeout((int) config('services.groq.timeout', 15))
+                $response = Http::timeout($timeout)
                     ->withToken(config('services.groq.key'))
                     ->acceptJson()
                     ->post(self::URL, $payload);
@@ -85,10 +108,13 @@ class GroqClient
             ];
 
             if ($response->status() === 429) {
-                $this->lastError = 'rate_limited';
+                $this->lastError  = 'rate_limited';
+                $retry            = $response->header('retry-after');
+                $this->retryAfter = is_numeric($retry) ? (int) ceil((float) $retry) : null;
                 Log::warning('[Groq] 429 rate limited', [
                     'purpose'     => $purpose,
-                    'retry_after' => $response->header('retry-after'),
+                    'model'       => $model,
+                    'retry_after' => $retry,
                     'local_daily' => $dailyUsed,
                 ] + $quota);
                 return null;
@@ -104,6 +130,7 @@ class GroqClient
                 $this->lastError = 'http_' . $response->status();
                 Log::error('[Groq] Request failed', [
                     'purpose' => $purpose,
+                    'model'   => $model,
                     'status'  => $response->status(),
                     'body'    => mb_substr($response->body(), 0, 500),
                 ]);
@@ -126,6 +153,7 @@ class GroqClient
                 return null;
             }
 
+            $this->lastModel = $model;
             return $content;
         }
 
@@ -135,9 +163,9 @@ class GroqClient
     /**
      * chat() in JSON mode, decoded. Strips code fences in case the model adds them.
      */
-    public function chatJson(array $messages, string $purpose, int $maxTokens = 300): ?array
+    public function chatJson(array $messages, string $purpose, int $maxTokens = 300, array $options = []): ?array
     {
-        $raw = $this->chat($messages, $purpose, true, $maxTokens);
+        $raw = $this->chat($messages, $purpose, true, $maxTokens, $options);
         if ($raw === null) {
             return null;
         }
@@ -160,13 +188,13 @@ class GroqClient
 
     // ── Local free-tier counters ─────────────────────────────────────────
 
-    private function withinBudget(): bool
+    private function withinBudget(int $reserve = 0): bool
     {
         $minute = (int) Cache::get($this->minuteKey(), 0);
         $day    = (int) Cache::get($this->dayKey(), 0);
 
         return $minute < (int) config('services.groq.minute_budget', 25)
-            && $day < (int) config('services.groq.daily_budget', 950);
+            && $day < (int) config('services.groq.daily_budget', 950) - max(0, $reserve);
     }
 
     private function countCall(): int
