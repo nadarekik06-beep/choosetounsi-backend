@@ -5,8 +5,8 @@ namespace App\Listeners;
 use App\Events\RefundCompleted;
 use App\Models\Complaint;
 use App\Models\Order;
-use App\Models\OrderItem;
 use App\Models\SellerOrder;
+use App\Services\Orders\OrderStock;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Notifications\RefundCompletedNotification;
@@ -170,10 +170,9 @@ class MarkOrderRefunded
             $task, $complaint, $sellerOrder,
             $returnedItems, $isFullReturn, $orderId
         ) {
-            // ── 1. Restore stock for each returned item ────────────────────
-            foreach ($returnedItems as $item) {
-                $this->restoreStock($item);
-            }
+            // ── 1. Restore stock for each returned item (once per line) ────
+            $restored = app(OrderStock::class)->releaseForOrderItems($returnedItems->pluck('id')->all());
+            Log::info("[RefundCompleted] Restored {$restored} unit(s) to stock for task #{$task->id}.");
 
             // Returned lines give their flash-sale units back (partial returns
             // too; a full return is also covered by the seller-order observer)
@@ -247,47 +246,6 @@ class MarkOrderRefunded
 
                     Log::info("[RefundCompleted] orders.total_amount updated → {$newOrderTotal} for order #{$orderId}.");
         });
-    }
-
-    // ──────────────────────────────────────────────────────────────────────
-    // STOCK RESTORATION
-    // ──────────────────────────────────────────────────────────────────────
-
-    /**
-     * Restore stock for a returned order item.
-     *
-     * Priority:
-     *   1. If item has a variant_id → restore ProductVariant.stock
-     *   2. Otherwise → restore Product.stock
-     *
-     * Uses increment() to avoid race conditions (atomic DB operation).
-     */
-    private function restoreStock(OrderItem $item): void
-    {
-        try {
-            $qty = (int) $item->quantity;
-
-            if ($item->variant_id) {
-                // Restore variant stock
-                DB::table('product_variants')
-                    ->where('id', $item->variant_id)
-                    ->increment('stock', $qty);
-
-                Log::info("[RefundCompleted] Restored {$qty} units to variant #{$item->variant_id} " .
-                    "for order_item #{$item->id} ({$item->product_name}).");
-            } elseif ($item->product_id) {
-                // Restore product stock (simple product, no variants)
-                DB::table('products')
-                    ->where('id', $item->product_id)
-                    ->increment('stock', $qty);
-
-                Log::info("[RefundCompleted] Restored {$qty} units to product #{$item->product_id} " .
-                    "for order_item #{$item->id} ({$item->product_name}).");
-            }
-        } catch (\Throwable $e) {
-            Log::error("[RefundCompleted] Stock restoration failed for order_item #{$item->id}: " .
-                $e->getMessage());
-        }
     }
 
     // ──────────────────────────────────────────────────────────────────────

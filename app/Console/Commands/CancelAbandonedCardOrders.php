@@ -14,8 +14,8 @@ use Stripe\Stripe;
 /**
  * Card orders whose payment never completed: after 30 minutes the order is
  * cancelled so what it held goes back —
- *   stock          the units decremented at checkout
- *   flash quota    via SellerOrderObserver (seller orders → cancelled)
+ *   stock          the units reserved at checkout  } via SellerOrderObserver
+ *   flash quota                                    } (seller orders → cancelled)
  *   coupon use     the redemption is removed
  *
  * The Stripe PaymentIntent is cancelled first; if Stripe refuses (the customer
@@ -60,15 +60,9 @@ class CancelAbandonedCardOrders extends Command
             }
 
             foreach ($locked->sellerOrders as $sellerOrder) {
-                $sellerOrder->update(['status' => 'cancelled']);   // observer releases flash units
+                $sellerOrder->update(['status' => 'cancelled']);   // observer gives back stock + flash units
             }
             $locked->update(['status' => 'cancelled']);
-
-            foreach (DB::table('order_items')->where('order_id', $locked->id)->get() as $item) {
-                $item->variant_id
-                    ? DB::table('product_variants')->where('id', $item->variant_id)->increment('stock', (int) $item->quantity)
-                    : DB::table('products')->where('id', $item->product_id)->increment('stock', (int) $item->quantity);
-            }
 
             $coupons->releaseForOrder($locked);
 

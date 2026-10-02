@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Seller;
 
+use App\Exceptions\InsufficientStock;
 use App\Http\Controllers\Controller;
 use App\Models\SellerOrder;
 use Illuminate\Http\Request;
@@ -314,7 +315,21 @@ public function updateStatus(Request $request, $id)
     $sellerOrder = SellerOrder::where('seller_id', $sellerId)->findOrFail($id);
 
     $status = $request->status;
-    $sellerOrder->update(['status' => $status]);
+
+    // Stock follows the status (SellerOrderObserver): cancelled gives the lines
+    // back once, re-opening a cancelled sub-order reserves them again.
+    try {
+        $sellerOrder = DB::transaction(function () use ($sellerOrder, $status) {
+            $locked = SellerOrder::whereKey($sellerOrder->id)->lockForUpdate()->first();
+            $locked->update(['status' => $status]);
+            return $locked;
+        });
+    } catch (InsufficientStock $e) {
+        return response()->json([
+            'success' => false,
+            'message' => $e->getMessage(),
+        ], 422);
+    }
 
     // ── Create ReviewPrompts when order is delivered ─────────────────────
     if ($status === 'delivered') {

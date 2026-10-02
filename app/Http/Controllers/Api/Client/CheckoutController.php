@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\Client;
 
 use App\Exceptions\FlashSaleSoldOut;
+use App\Exceptions\InsufficientStock;
 use App\Services\Ads\AttributionService;
 use App\Http\Controllers\Controller;
 use App\Models\Cart;
@@ -18,6 +19,7 @@ use App\Services\CommissionService;
 use App\Services\CouponService;
 use App\Services\FinancialSnapshotService;
 use App\Services\Orders\SellerOrderNotifier;
+use App\Services\Orders\OrderStock;
 use App\Services\WalletService;
 use App\Services\StockAlertService;
 use App\Services\PromotionService;
@@ -43,6 +45,7 @@ class CheckoutController extends Controller
         private InteractionTracker       $tracker,
         private CouponService            $couponService,
         private SellerOrderNotifier      $sellerNotifier,
+        private OrderStock               $orderStock,
     ) {}
 
     /**
@@ -279,11 +282,10 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                             'plan_used'             => $commission['plan_used'],
                         ]);
 
+                        $this->orderStock->reserve($variant?->id, $product->id, $qty, $this->stockLabel($product, $variant));
                         if ($variant) {
-                            ProductVariant::where('id', $variant->id)->decrement('stock', $item->quantity);
                             $decrementedVariants[] = ['variant_id' => $variant->id, 'product' => $product];
                         } else {
-                            $product->decrement('stock', $item->quantity);
                             $decrementedProducts[] = $product->id;
                         }
                     }
@@ -432,11 +434,10 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                         }
 
                         // Stock decrement runs for EVERY item regardless of commission row
+                        $this->orderStock->reserve($variant ? $variantId : null, $product->id, $qty, $this->stockLabel($product, $variant));
                         if ($variant) {
-                            ProductVariant::where('id', $variantId)->decrement('stock', $packItem->quantity);
                             $decrementedVariants[] = ['variant_id' => $variantId, 'product' => $product];
                         } else {
-                            $product->decrement('stock', $packItem->quantity);
                             $decrementedProducts[] = $product->id;
                         }
                     }
@@ -478,6 +479,9 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         } catch (FlashSaleSoldOut $e) {
             DB::rollBack();
             return $this->flashSoldOut($e);
+        } catch (InsufficientStock $e) {
+            DB::rollBack();
+            return response()->json(['success' => false, 'message' => __('messages.checkout.stock_only', ['label' => $e->label, 'stock' => $e->available])], 422);
         } catch (\Throwable $e) {
             DB::rollBack();
             Log::error('[Checkout] store failed: ' . $e->getMessage(), ['file' => $e->getFile(), 'line' => $e->getLine()]);
@@ -670,11 +674,10 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 'plan_used'             => $commission['plan_used'],
             ]);
 
+            $this->orderStock->reserve($variant?->id, $product->id, $quantity, $this->stockLabel($product, $variant));
             if ($variant) {
-                ProductVariant::where('id', $variant->id)->decrement('stock', $quantity);
                 $decrementedVariants[] = ['variant_id' => $variant->id, 'product' => $product];
             } else {
-                $product->decrement('stock', $quantity);
                 $decrementedProducts[] = $product->id;
             }
 
@@ -702,6 +705,9 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         } catch (FlashSaleSoldOut $e) {
             DB::rollBack();
             return $this->flashSoldOut($e);
+        } catch (InsufficientStock $e) {
+            DB::rollBack();
+            return response()->json(['success' => false, 'message' => __('messages.checkout.stock_only', ['label' => $e->label, 'stock' => $e->available])], 422);
         } catch (\Throwable $e) {
             DB::rollBack();
             Log::error('[Checkout] buyNow failed: ' . $e->getMessage(), ['file' => $e->getFile(), 'line' => $e->getLine()]);
@@ -781,6 +787,12 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             'message' => __('messages.checkout.price_changed'),
             'data'    => ['total' => $total],
         ], 409);
+    }
+
+    /** "Name" or "Name" (Variant) — same label as the pre-flight stock messages. */
+    private function stockLabel(Product $product, ?ProductVariant $variant): string
+    {
+        return $variant ? "\"{$product->name}\" ({$variant->label})" : "\"{$product->name}\"";
     }
 
     private function flashSoldOut(FlashSaleSoldOut $e): \Illuminate\Http\JsonResponse

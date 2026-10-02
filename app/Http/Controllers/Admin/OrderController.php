@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Helpers\PlatformUser;
+use App\Exceptions\InsufficientStock;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Admin\OrderExportResource;
 use App\Http\Resources\Admin\SellerPickupResource;
@@ -11,6 +12,7 @@ use App\Models\Order;
 use App\Models\OrderExport;
 use App\Models\SellerApplication;
 use App\Services\Orders\DeliveryDocumentService;
+use App\Services\Orders\OrderStock;
 use App\Services\Orders\SellerOrderNotifier;
 use App\Support\SellerPickup;
 use Illuminate\Http\Request;
@@ -298,12 +300,23 @@ class OrderController extends Controller
         }
     }
 
-    /** Cancelled seller orders written with DB::table skip the observer: release here. */
-    private function releaseFlashQuota(int $orderId): void
+    /**
+     * Cancelled seller orders written with DB::table skip the observer: their
+     * stock and flash units go back here (each line only once — OrderStock).
+     */
+    private function releaseCancelled(int $orderId): void
     {
-        app(\App\Services\PromotionService::class)->releaseForSellerOrders(
-            DB::table('seller_orders')->where('order_id', $orderId)->where('status', 'cancelled')->pluck('id')->all()
-        );
+        $cancelledIds = DB::table('seller_orders')->where('order_id', $orderId)->where('status', 'cancelled')->pluck('id')->all();
+        app(OrderStock::class)->releaseForSellerOrders($cancelledIds);
+        app(\App\Services\PromotionService::class)->releaseForSellerOrders($cancelledIds);
+    }
+
+    private function insufficientStock(InsufficientStock $e)
+    {
+        return response()->json([
+            'success' => false,
+            'message' => "Not enough stock to re-open this order: {$e->label} has {$e->available} left.",
+        ], 422);
     }
 
     public function updateStatus(Request $request, $id)
@@ -328,7 +341,16 @@ class OrderController extends Controller
             $order = Order::findOrFail($id);
 
             DB::transaction(function () use ($request, $id, $order, $sellerOrderQuery) {
-                $affectedIds = (clone $sellerOrderQuery)->pluck('id')->all();
+                Order::whereKey($id)->lockForUpdate()->first();
+                $previous    = (clone $sellerOrderQuery)->lockForUpdate()->pluck('status', 'id')->all();
+                $affectedIds = array_keys($previous);
+
+                // Cancelled → anything else: the lines take their stock back first
+                if ($request->status !== 'cancelled') {
+                    app(OrderStock::class)->reclaimForSellerOrders(
+                        array_keys(array_filter($previous, fn ($s) => $s === 'cancelled'))
+                    );
+                }
 
                 $sellerOrderQuery->update([
                     'status'     => $request->status,
@@ -341,7 +363,7 @@ class OrderController extends Controller
 
                 // One e-mail + bell entry per affected seller sub-order (after commit, never twice)
                 if ($request->status === 'cancelled') {
-                    $this->releaseFlashQuota((int) $id);
+                    $this->releaseCancelled((int) $id);
                     app(SellerOrderNotifier::class)->orderCancelled($order, $affectedIds);
                 } elseif ($request->status === 'confirmed') {
                     app(SellerOrderNotifier::class)->orderConfirmed($order, $affectedIds);
@@ -356,6 +378,8 @@ class OrderController extends Controller
                 'data'    => $order,
             ]);
 
+        } catch (InsufficientStock $e) {
+            return $this->insufficientStock($e);
         } catch (\Throwable $e) {
             Log::error('[AdminOrder::updateStatus] ' . $e->getMessage(), [
                 'order_id' => $id,
@@ -405,7 +429,13 @@ public function confirmOrder(Request $request, $id)
             $updateData['confirmed_at'] = now();
         }
 
-        DB::transaction(function () use ($id, $order, $newStatus, $updateData) {
+        $applied = DB::transaction(function () use ($id, $order, $newStatus, $updateData) {
+            // Re-check under lock: a double click / second admin must not cancel twice
+            if (Order::whereKey($id)->lockForUpdate()->value('status') !== 'pending') {
+                return false;
+            }
+            DB::table('seller_orders')->where('order_id', $id)->lockForUpdate()->get(['id']);
+
             DB::table('orders')->where('id', $id)->update($updateData);
 
             // Cascade to all seller sub-orders
@@ -416,12 +446,20 @@ public function confirmOrder(Request $request, $id)
             // Each seller gets one e-mail + bell entry for their sub-order
             // (sent after the commit, never twice).
             if ($newStatus === 'cancelled') {
-                $this->releaseFlashQuota((int) $id);
+                $this->releaseCancelled((int) $id);
                 app(SellerOrderNotifier::class)->orderCancelled($order);
             } else {
                 app(SellerOrderNotifier::class)->orderConfirmed($order);
             }
+            return true;
         });
+
+        if (!$applied) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Only pending orders can be confirmed or cancelled via this endpoint.',
+            ], 422);
+        }
 
         return response()->json([
             'success' => true,
