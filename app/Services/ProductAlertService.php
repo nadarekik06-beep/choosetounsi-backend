@@ -249,7 +249,7 @@ class ProductAlertService
             'key'   => 'description',
             'label' => __('seller.alerts.actions.description'),
             'icon'  => 'file-text',
-            'href'  => '/seller/ai-tools?tab=description&product_id=' . $productId,
+            'href'  => '/seller/products?edit=' . $productId,
             'color' => '#3b82f6',
             'requires_plan' => 'red',
         ];

@@ -266,7 +266,6 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('seller.feature:ai_tools')
             ->group(function () {
                 Route::post('/price-optimizer',       [SellerAIController::class, 'priceOptimizer']);
-                Route::post('/description-generator', [SellerAIController::class, 'descriptionGenerator']);
                 Route::post('/quick-description', [SellerAIController::class, 'quickDescription']);
                 Route::post('/recommender',           [SellerAIController::class, 'recommender']);
             });

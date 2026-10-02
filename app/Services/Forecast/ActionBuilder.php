@@ -24,7 +24,7 @@ class ActionBuilder
             'restock'     => ['kind' => 'restock',     'href' => "/seller/products?restock={$pid}"],
             'discount'    => ['kind' => 'discount',    'href' => "/seller/promotions?create=discount&product={$pid}"],
             'price'       => ['kind' => 'price',       'href' => "/seller/ai-tools?tab=price&product_id={$pid}"],
-            'description' => ['kind' => 'description', 'href' => "/seller/ai-tools?tab=description&product_id={$pid}"],
+            'description' => ['kind' => 'description', 'href' => "/seller/products?edit={$pid}"],
             'packs'       => ['kind' => 'packs',       'href' => '/seller/packs'],
             'promote'     => ['kind' => 'promote',     'href' => "/seller/promote/new?product_id={$pid}"],
         ];
