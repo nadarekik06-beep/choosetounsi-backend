@@ -36,15 +36,22 @@ class ProductCardPresenter
             ])
             ->get();
 
-        // Cards show the shop's name, not the seller account's personal name.
-        $shops = \Illuminate\Support\Facades\DB::table('seller_applications')
-            ->whereIn('user_id', $products->pluck('seller_id')->filter()->unique())
+        // Cards show the shop's name and pepper tier, not the seller account's personal name.
+        $shops = \App\Services\ShopOverview::shopsFor($products->pluck('seller_id')->filter()->unique()->all());
+        $ratings = \Illuminate\Support\Facades\DB::table('reviews')
+            ->whereIn('product_id', $products->pluck('id'))
             ->where('status', 'approved')
-            ->pluck('business_name', 'user_id');
+            ->groupBy('product_id')
+            ->selectRaw('product_id, AVG(rating) as avg, COUNT(*) as n')
+            ->get()->keyBy('product_id');
         foreach ($products as $p) {
             if ($p->seller && isset($shops[$p->seller_id])) {
-                $p->seller->setAttribute('business_name', $shops[$p->seller_id]);
+                $p->seller->setAttribute('business_name', $shops[$p->seller_id]['business_name']);
+                $p->seller->setAttribute('plan', $shops[$p->seller_id]['plan']);
             }
+            $r = $ratings[$p->id] ?? null;
+            $p->avg_rating    = $r ? round((float) $r->avg, 1) : null;
+            $p->reviews_count = $r ? (int) $r->n : 0;
         }
 
         return collect($this->present($products))->keyBy('id')->all();
