@@ -158,11 +158,21 @@ class ShopOverview
                 }
             }
 
-            $shops = self::shopsFor(array_filter(array_map(fn ($p) => $p['seller']['id'] ?? null, $out)));
-            foreach ($out as &$p) {
+            // Same card extras as the catalogue: shop name + tier, rating, active variants (add to cart)
+            $ids      = array_keys($out);
+            $shops    = self::shopsFor(array_filter(array_map(fn ($p) => $p['seller']['id'] ?? null, $out)));
+            $ratings  = DB::table('reviews')->whereIn('product_id', $ids)->where('status', 'approved')
+                ->groupBy('product_id')->selectRaw('product_id, AVG(rating) as avg, COUNT(*) as n')->get()->keyBy('product_id');
+            $variants = DB::table('product_variants')->whereIn('product_id', $ids)->where('is_active', true)
+                ->orderBy('id')->get(['id', 'product_id', 'stock'])->groupBy('product_id');
+            foreach ($out as $id => &$p) {
                 if (isset($p['seller']['id'], $shops[$p['seller']['id']])) {
                     $p['seller'] += $shops[$p['seller']['id']];
                 }
+                $r = $ratings[$id] ?? null;
+                $p['avg_rating']    = $r ? round((float) $r->avg, 1) : null;
+                $p['reviews_count'] = $r ? (int) $r->n : 0;
+                $p['variants']      = ($variants[$id] ?? collect())->map(fn ($v) => ['id' => $v->id, 'stock' => (int) $v->stock])->values()->all();
             }
             unset($p);
             return array_values($out);

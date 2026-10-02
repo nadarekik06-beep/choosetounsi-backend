@@ -141,6 +141,8 @@ class ShopOverviewTest extends TestCase
         $this->assertSame(10, $flash['deal']['flash_stock']);
         $this->assertSame('Deals Shop', $flash['seller']['business_name']);
         $this->assertLessThan(50, $flash['final_price']);
+        $this->assertSame([], $flash['variants']);
+        $this->assertNull($flash['avg_rating']);
     }
 
     public function test_catalog_filters_on_seller_tier_and_sale(): void
