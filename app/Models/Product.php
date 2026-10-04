@@ -15,7 +15,10 @@ use Laravel\Scout\Searchable;
 class Product extends Model
 {
     use HasFactory, SoftDeletes, HasTranslations;
-    use Searchable { queueMakeSearchable as protected scoutQueueMakeSearchable; }
+    use Searchable {
+        queueMakeSearchable as protected scoutQueueMakeSearchable;
+        queueRemoveFromSearch as protected scoutQueueRemoveFromSearch;
+    }
 
     // Served in the storefront language from `translations` (filled by ProductTranslator).
     protected $translatable     = ['name', 'description', 'short_description'];
@@ -143,8 +146,31 @@ class Product extends Model
     public function queueMakeSearchable($models)
     {
         [$live, $gone] = $models->partition(fn (self $p) => $p->shouldBeSearchable());
-        $this->scoutQueueMakeSearchable($live);
+        self::withoutBreakingWrites(fn () => $this->scoutQueueMakeSearchable($live), $live);
         $this->queueRemoveFromSearch($gone);
+    }
+
+    public function queueRemoveFromSearch($models)
+    {
+        self::withoutBreakingWrites(fn () => $this->scoutQueueRemoveFromSearch($models), $models);
+    }
+
+    /**
+     * Without SCOUT_QUEUE (or with QUEUE_CONNECTION=sync) Scout writes to Meilisearch during the
+     * request: an unreachable index must not fail a product save or delete. `php artisan
+     * search:reindex` resyncs once it is back.
+     */
+    private static function withoutBreakingWrites(\Closure $sync, $models): void
+    {
+        if ($models->isEmpty()) {
+            return;
+        }
+        try {
+            $sync();
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('[Search] Product index not synced for products '
+                . $models->pluck('id')->implode(',') . ': ' . $e->getMessage());
+        }
     }
 
     protected function makeAllSearchableUsing(\Illuminate\Database\Eloquent\Builder $query)

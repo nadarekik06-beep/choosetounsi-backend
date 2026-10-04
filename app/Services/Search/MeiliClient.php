@@ -2,8 +2,10 @@
 
 namespace App\Services\Search;
 
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Throwable;
 
@@ -11,9 +13,15 @@ use Throwable;
  * Thin Meilisearch REST client on Laravel's HTTP client (so tests can Http::fake() it).
  * Scout keeps using meilisearch-php for syncing Product documents; searching, settings and
  * the image index go through here. Every failure surfaces as SearchUnavailable.
+ *
+ * When Meilisearch cannot be reached, calls fail fast for DOWN_SECONDS instead of each one
+ * waiting for the connect timeout (keeps requests quick while it is stopped, e.g. in local dev).
  */
 class MeiliClient
 {
+    private const DOWN_KEY = 'search:meilisearch_down';
+    private const DOWN_SECONDS = 30;
+
     private function http(?float $timeout = null): PendingRequest
     {
         return Http::baseUrl(rtrim((string) config('search.meilisearch.host'), '/'))
@@ -145,19 +153,28 @@ class MeiliClient
     public function healthy(): bool
     {
         try {
-            return ($this->send('get', 'health', null, 1)['status'] ?? null) === 'available';
+            return ($this->send('get', 'health', null, 1, probe: true)['status'] ?? null) === 'available';
         } catch (SearchUnavailable) {
             return false;
         }
     }
 
-    private function send(string $method, string $path, ?array $body = null, ?float $timeout = null): array
+    private function send(string $method, string $path, ?array $body = null, ?float $timeout = null, bool $probe = false): array
     {
+        if (!$probe && Cache::get(self::DOWN_KEY)) {
+            throw new SearchUnavailable("Meilisearch unreachable (not retried for " . self::DOWN_SECONDS . "s) for $path");
+        }
         try {
             /** @var Response $res */
             $res = $body === null ? $this->http($timeout)->{$method}($path) : $this->http($timeout)->{$method}($path, $body);
+        } catch (ConnectionException $e) {
+            Cache::put(self::DOWN_KEY, true, self::DOWN_SECONDS);
+            throw new SearchUnavailable('Meilisearch unreachable: ' . $e->getMessage(), 0, $e);
         } catch (Throwable $e) {
             throw new SearchUnavailable('Meilisearch unreachable: ' . $e->getMessage(), 0, $e);
+        }
+        if ($probe) {
+            Cache::forget(self::DOWN_KEY);
         }
         if (!$res->successful()) {
             throw new SearchUnavailable("Meilisearch $method $path → HTTP {$res->status()}: " . mb_substr($res->body(), 0, 300), $res->status());

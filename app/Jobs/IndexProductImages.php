@@ -8,6 +8,8 @@ use Illuminate\Contracts\Queue\ShouldBeUniqueUntilProcessing;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
  * Embeds a product's photos and refreshes them in the image search index. Queued so an upload
@@ -40,6 +42,20 @@ class IndexProductImages implements ShouldQueue, ShouldBeUniqueUntilProcessing
 
     public function handle(ImageIndexer $indexer): void
     {
-        $indexer->syncProduct($this->productId);
+        try {
+            $indexer->syncProduct($this->productId);
+        } catch (Throwable $e) {
+            // On a real queue the job is retried (backoff). Run inline (QUEUE_CONNECTION=sync) it
+            // would fail the seller's request instead: log it, `php artisan search:reindex` catches up.
+            if (!$this->runsInline()) {
+                throw $e;
+            }
+            Log::warning("[Search] Photos of product {$this->productId} not indexed: {$e->getMessage()}");
+        }
+    }
+
+    private function runsInline(): bool
+    {
+        return !$this->job || $this->job->getConnectionName() === 'sync';
     }
 }

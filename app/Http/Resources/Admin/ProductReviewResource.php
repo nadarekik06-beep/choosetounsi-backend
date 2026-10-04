@@ -9,6 +9,7 @@ use App\Models\ProductModerationLog;
 use App\Models\ProductVariant;
 use App\Models\SellerSubscription;
 use App\Services\CommissionService;
+use App\Services\PromotionService;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Storage;

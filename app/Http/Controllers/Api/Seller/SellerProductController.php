@@ -244,6 +244,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
     private function doStore(Request $request)
     {
+        $allFiles = $request->allFiles();
         Log::info('[SellerProduct::store] START', [
             'has_images'       => !empty($allFiles['images']),
             'has_color_images' => !empty($allFiles['color_images']),
@@ -281,60 +282,69 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         $imageCount = $images ? ProductImages::countAfter($images['manifest']) : $this->imageCountAfterSave(null, $request);
         if ($deny = $gate->imagesWithinLimit($seller->id, $imageCount)) return $deny;
 
+        // One transaction for every row (product, attributes, variants, images): a failure part-way
+        // leaves no half-created product behind. Search indexing runs after the commit.
+        DB::beginTransaction();
         try {
-            $product = $seller->products()->create([
-                'name'              => $request->name,
-                'slug'              => $this->uniqueSlug($request->slug ?: $request->name),
-                'sku'               => $request->sku ?: null,
-                'description'       => $request->description ?? null,
-                'short_description' => $request->short_description ?? null,
-                'price'             => $request->price,
-                'stock'             => $request->stock,
-                'category_id'       => $request->category_id,
-                'subcategory_id'    => $request->subcategory_id ?: null,
-                'is_active'         => $isActive,
-                'is_approved'       => false,
-                'featured'          => false,
-                'views'             => 0,
-                'is_pack'           => $merch['is_pack'],
-                'pack_quantity'     => $merch['pack_quantity'],
-                'pack_contents'     => $merch['pack_contents'],
-                'delivery_fee' => $this->parseDeliveryFee($request, null),
-            ]);
-            $product->syncOccasions($merch['occasions']);
-            Log::info('[SellerProduct::store] Product created', ['id' => $product->id]);
-        } catch (\Throwable $e) {
-            Log::error('[SellerProduct::store] PRODUCT CREATE FAILED', ['error' => $e->getMessage()]);
-            throw $e;
-        }
-
-        try {
-            $this->saveAttributes($product, $request);
-            Log::info('[SellerProduct::store] Attributes saved');
-        } catch (\Throwable $e) {
-            Log::error('[SellerProduct::store] ATTRIBUTES FAILED', ['error' => $e->getMessage()]);
-            throw $e;
-        }
-
-        try {
-            $this->saveVariants($product, $request);
-            if (!empty($request->input('variants', []))) {
-                $product->fresh()->syncActiveStatusFromVariants();
+            try {
+                $product = $seller->products()->create([
+                    'name'              => $request->name,
+                    'slug'              => $this->uniqueSlug($request->slug ?: $request->name),
+                    'sku'               => $request->sku ?: null,
+                    'description'       => $request->description ?? null,
+                    'short_description' => $request->short_description ?? null,
+                    'price'             => $request->price,
+                    'stock'             => $request->stock,
+                    'category_id'       => $request->category_id,
+                    'subcategory_id'    => $request->subcategory_id ?: null,
+                    'is_active'         => $isActive,
+                    'is_approved'       => false,
+                    'featured'          => false,
+                    'views'             => 0,
+                    'is_pack'           => $merch['is_pack'],
+                    'pack_quantity'     => $merch['pack_quantity'],
+                    'pack_contents'     => $merch['pack_contents'],
+                    'delivery_fee' => $this->parseDeliveryFee($request, null),
+                ]);
+                $product->syncOccasions($merch['occasions']);
+                Log::info('[SellerProduct::store] Product created', ['id' => $product->id]);
+            } catch (\Throwable $e) {
+                Log::error('[SellerProduct::store] PRODUCT CREATE FAILED', ['error' => $e->getMessage()]);
+                throw $e;
             }
-            Log::info('[SellerProduct::store] Variants saved');
+
+            try {
+                $this->saveAttributes($product, $request);
+                Log::info('[SellerProduct::store] Attributes saved');
+            } catch (\Throwable $e) {
+                Log::error('[SellerProduct::store] ATTRIBUTES FAILED', ['error' => $e->getMessage()]);
+                throw $e;
+            }
+
+            try {
+                $this->saveVariants($product, $request);
+                if (!empty($request->input('variants', []))) {
+                    $product->fresh()->syncActiveStatusFromVariants();
+                }
+                Log::info('[SellerProduct::store] Variants saved');
+            } catch (\Throwable $e) {
+                Log::error('[SellerProduct::store] VARIANTS FAILED', ['error' => $e->getMessage()]);
+                throw $e;
+            }
+
+            if ($images) {
+                $this->applyImageManifest($product, $images);
+                Log::info('[SellerProduct::store] Images saved');
+            } else {
+                $this->saveLegacyImages($product, $request, 'store');
+            }
+
+            ProductModerationLog::record($product, 'submitted', ['to_status' => 'pending']);
+            DB::commit();
         } catch (\Throwable $e) {
-            Log::error('[SellerProduct::store] VARIANTS FAILED', ['error' => $e->getMessage()]);
+            DB::rollBack();
             throw $e;
         }
-
-        if ($images) {
-            $this->applyImageManifest($product, $images);
-            Log::info('[SellerProduct::store] Images saved');
-        } else {
-            $this->saveLegacyImages($product, $request, 'store');
-        }
-
-        ProductModerationLog::record($product, 'submitted', ['to_status' => 'pending']);
         $this->notifyAdmins('created', $product, $seller);
         if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class, 'clearSellerCache')) {
             \App\Http\Controllers\Api\Seller\BlackPepperController::clearSellerCache($seller->id);
@@ -474,21 +484,29 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
  public function destroy(Request $request, $id)
 {
-    $seller  = $request->user();
-    $product = $seller->products()->findOrFail($id);
+    $seller = $request->user();
+    // withTrashed: a product already removed (kept for its order history) answers "removed"
+    // again instead of 404, so a retried delete is harmless.
+    $product = $seller->products()->withTrashed()->findOrFail($id);
     $pid     = $product->id;
     $pname   = $product->name;
+
+    if ($product->trashed()) {
+        return response()->json(['success' => true, 'message' => __('seller.product.removed')]);
+    }
 
     $hasOrders = \App\Models\OrderItem::where('product_id', $pid)->exists();
 
     if ($hasOrders) {
         // Soft delete — preserves order history and images
-        $product->update([
-            'is_active'         => false,
-            'is_approved'       => false,
-            'deleted_by_seller' => true,
-        ]);
-        $product->delete(); // soft delete via SoftDeletes trait
+        DB::transaction(function () use ($product) {
+            $product->update([
+                'is_active'         => false,
+                'is_approved'       => false,
+                'deleted_by_seller' => true,
+            ]);
+            $product->delete(); // soft delete via SoftDeletes trait
+        });
 
         $this->notifyAdmins('deactivated', $product, $seller);
 
@@ -498,14 +516,18 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         ]);
     }
 
-    // No orders — hard delete, clean everything
-    foreach ($product->images as $img) {
-        Storage::disk('public')->delete($img->image_path);
-    }
-    $product->images()->delete();
-    $product->attributeValues()->delete();
-    $product->variants()->delete();
-    $product->forceDelete(); // ← must be forceDelete, not delete()
+    // No orders — hard delete, clean everything. All rows go in one transaction (nothing is
+    // half-deleted if a step fails); photo files are only removed once it has committed.
+    $paths = $product->images()->pluck('image_path')->filter()->all();
+
+    DB::transaction(function () use ($product) {
+        $product->images()->delete();
+        $product->attributeValues()->delete();
+        $product->variants()->delete();
+        $product->forceDelete(); // ← must be forceDelete, not delete()
+    });
+
+    Storage::disk('public')->delete($paths);
 
     $this->notifyAdmins('deleted', (object) ['id' => $pid, 'name' => $pname], $seller);
 
