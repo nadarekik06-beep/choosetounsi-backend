@@ -20,10 +20,9 @@ use Illuminate\Support\Facades\Storage;
 class ShopOverview
 {
     const CACHE_MINUTES = 10;
-    const DEALS_SECONDS = 60;
     const MAX_DEALS     = 12;
 
-    public function __construct(private PromotionService $promotions) {}
+    public function __construct(private DealsCatalog $deals) {}
 
     /** @return array{products: int, sellers: int, categories: int, average_rating: ?float, reviews: int, delivery_fee: float, free_delivery_products: int, complaint_window_hours: int} */
     public function stats(): array
@@ -137,63 +136,27 @@ class ShopOverview
      */
     public function deals(): array
     {
-        $key = 'shop:overview:deals:' . app()->getLocale();
-        return Cache::remember($key, self::DEALS_SECONDS, function () {
-            $promos = $this->promotions->getActivePromotionsFormatted()
-                ->sortBy(fn ($p) => [$p['type'] === 'flash_sale' ? 0 : 1, $p['ends_at']])
-                ->values();
-
-            $out = [];
-            foreach ($promos as $promo) {
-                foreach ($promo['products'] as $product) {
-                    if (isset($out[$product['id']])) continue;
-                    $out[$product['id']] = $product + ['deal' => [
-                        'promotion_id'    => $promo['id'],
-                        'is_flash_sale'   => $promo['type'] === 'flash_sale',
-                        'ends_at'         => $promo['ends_at'],
-                        'flash_stock'     => $promo['flash_stock'],
-                        'flash_remaining' => $promo['flash_stock_remaining'],
-                    ]];
-                    if (count($out) >= self::MAX_DEALS) break 2;
-                }
-            }
-
-            // Same card extras as the catalogue: shop name + tier, rating, active variants (add to cart)
-            $ids      = array_keys($out);
-            $shops    = self::shopsFor(array_filter(array_map(fn ($p) => $p['seller']['id'] ?? null, $out)));
-            $ratings  = DB::table('reviews')->whereIn('product_id', $ids)->where('status', 'approved')
-                ->groupBy('product_id')->selectRaw('product_id, AVG(rating) as avg, COUNT(*) as n')->get()->keyBy('product_id');
-            $variants = DB::table('product_variants')->whereIn('product_id', $ids)->where('is_active', true)
-                ->orderBy('id')->get(['id', 'product_id', 'stock'])->groupBy('product_id');
-            foreach ($out as $id => &$p) {
-                if (isset($p['seller']['id'], $shops[$p['seller']['id']])) {
-                    $p['seller'] += $shops[$p['seller']['id']];
-                }
-                $r = $ratings[$id] ?? null;
-                $p['avg_rating']    = $r ? round((float) $r->avg, 1) : null;
-                $p['reviews_count'] = $r ? (int) $r->n : 0;
-                $p['variants']      = ($variants[$id] ?? collect())->map(fn ($v) => ['id' => $v->id, 'stock' => (int) $v->stock])->values()->all();
-            }
-            unset($p);
-            return array_values($out);
-        });
+        return $this->deals->products(self::MAX_DEALS);
     }
 
     /**
-     * seller_id => [business_name, plan tier key] from the approved applications, one query.
-     * Cards show the shop's name and pepper tier, never the account's personal name.
+     * seller_id => [business_name, plan tier key, avatar] from the approved applications, one query.
+     * Cards show the shop's name, pepper tier and photo, never the account's personal name.
+     * Avatar: the shop's profile picture, else the account photo (User::storefrontBranding()), else null.
      */
     public static function shopsFor(array $sellerIds): array
     {
         if (!$sellerIds) return [];
-        return DB::table('seller_applications')
-            ->whereIn('user_id', array_values(array_unique($sellerIds)))
-            ->where('status', 'approved')
-            ->orderBy('id')
-            ->get(['user_id', 'business_name', 'plan'])
+        return DB::table('seller_applications as a')
+            ->join('users as u', 'u.id', '=', 'a.user_id')
+            ->whereIn('a.user_id', array_values(array_unique($sellerIds)))
+            ->where('a.status', 'approved')
+            ->orderBy('a.id')
+            ->get(['a.user_id', 'a.business_name', 'a.plan', 'a.profile_picture', 'u.avatar'])
             ->mapWithKeys(fn ($a) => [(int) $a->user_id => [
                 'business_name' => $a->business_name,
                 'plan'          => SubscriptionPlan::forSlug($a->plan)->tierKey(),
+                'avatar'        => !empty($a->profile_picture) ? Storage::url($a->profile_picture) : ($a->avatar ?: null),
             ]])
             ->all();
     }

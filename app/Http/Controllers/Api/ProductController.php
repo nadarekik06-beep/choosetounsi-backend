@@ -660,6 +660,7 @@ private function transformProductCollection($products): array
         if ($p->relationLoaded('seller') && $p->seller && isset($shops[$p->seller_id])) {
             $p->seller->setAttribute('business_name', $shops[$p->seller_id]['business_name']);
             $p->seller->setAttribute('plan', $shops[$p->seller_id]['plan']);
+            $p->seller->setAttribute('avatar', $shops[$p->seller_id]['avatar']);
         }
         $attributes = $p->getAttributes();
         if (array_key_exists('avg_rating', $attributes)) {

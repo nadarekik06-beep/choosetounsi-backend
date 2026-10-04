@@ -48,6 +48,7 @@ class ProductCardPresenter
             if ($p->seller && isset($shops[$p->seller_id])) {
                 $p->seller->setAttribute('business_name', $shops[$p->seller_id]['business_name']);
                 $p->seller->setAttribute('plan', $shops[$p->seller_id]['plan']);
+                $p->seller->setAttribute('avatar', $shops[$p->seller_id]['avatar']);
             }
             $r = $ratings[$p->id] ?? null;
             $p->avg_rating    = $r ? round((float) $r->avg, 1) : null;
