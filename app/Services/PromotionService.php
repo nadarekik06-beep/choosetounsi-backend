@@ -419,12 +419,13 @@ class PromotionService
 
         $cardImages = ProductCardImages::forIds($allProducts->pluck('id')->all());
         $variants   = ProductCardImages::variantsFor($allProducts->pluck('id')->all());
+        $shops      = \App\Services\ShopOverview::shopsFor($allProducts->pluck('seller_id')->filter()->unique()->all());
 
-        return $promotions->map(function ($promo) use ($allColorImages, $pricing, $winners, $cardImages, $variants) {
+        return $promotions->map(function ($promo) use ($allColorImages, $pricing, $winners, $cardImages, $variants, $shops) {
             $products = $promo->products
                 ->filter(fn ($product) => $product->stock > 0
                     && ($winners[$product->id]->id ?? null) === $promo->id)
-                ->map(function ($product) use ($allColorImages, $pricing, $cardImages, $variants) {
+                ->map(function ($product) use ($allColorImages, $pricing, $cardImages, $variants, $shops) {
                     $variantImages = [];
                     foreach ($allColorImages->get($product->id, collect()) as $img) {
                         $url = Storage::url($img->image_path);
@@ -441,8 +442,10 @@ class PromotionService
                         'primary_image_url' => $product->primary_image_url,
                         'variant_images'    => $variantImages,
                         'stock'             => $product->stock,
+                        // Cards show the shop's name and pepper tier, not the account's personal name
                         'seller'            => $product->seller
                             ? ['id' => $product->seller->id, 'name' => $product->seller->name]
+                              + array_intersect_key($shops[$product->seller_id] ?? [], array_flip(['business_name', 'plan', 'avatar']))
                             : null,
                     ] + $pricing[$product->id] + ($cardImages[$product->id] ?? ['card_images' => [], 'card_swatches' => []])
                       + ['variants' => $variants[$product->id] ?? []];
