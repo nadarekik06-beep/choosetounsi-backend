@@ -111,6 +111,7 @@ Route::post('/search/image', [\App\Http\Controllers\Api\SearchController::class,
 Route::get('/search/image/status',  [\App\Http\Controllers\Api\SearchController::class, 'imageStatus']);
 Route::post('/search/image/click',  [\App\Http\Controllers\Api\SearchController::class, 'imageClick'])->middleware('throttle:30,1');
 Route::get('/search/suggestions', [\App\Http\Controllers\Api\SearchController::class, 'suggestions']);
+Route::get('/site-features',           [\App\Http\Controllers\Api\SiteFeaturesController::class, 'show']);
 Route::get('/brand-products',          [PublicBrandProductController::class, 'index']);
 Route::get('/brand-products/featured', [PublicBrandProductController::class, 'featured']);
 Route::get('/brand-products/{slug}',   [PublicBrandProductController::class, 'show']);
@@ -525,6 +526,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/products/{id}',        [AdminProductController::class, 'destroy']);
         Route::post('/products/{id}/restore',  [AdminProductController::class, 'restore']);
         Route::delete('/products/{id}/force',  [AdminProductController::class, 'forceDestroy']);
+        Route::get('/site-features',                                  [\App\Http\Controllers\Api\SiteFeaturesController::class, 'show']);
+        Route::put('/site-features',                                  [\App\Http\Controllers\Api\SiteFeaturesController::class, 'update']);
         Route::get('/brand-products/stats',                           [\App\Http\Controllers\Admin\BrandProductController::class, 'stats']);
         Route::get('/brand-products',                                 [\App\Http\Controllers\Admin\BrandProductController::class, 'index']);
         Route::post('/brand-products',                                [\App\Http\Controllers\Admin\BrandProductController::class, 'store']);

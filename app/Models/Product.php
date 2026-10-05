@@ -237,7 +237,12 @@ class Product extends Model
     }
     public function scopePlatform($query)       { return $query->where('is_platform_product', true); }
     public function scopeSeller($query)         { return $query->where('is_platform_product', false); }
-    public function scopeAvailableBrand($query) { return $query->where('is_platform_product', true)->where('is_active', true); }
+    public function scopeAvailableBrand($query)
+    {
+        $query->where('is_platform_product', true)->where('is_active', true);
+        // WearTounsi switched off by the admin: the brand shows nowhere on the storefront
+        return \App\Support\SiteFeatures::enabled('wear_tounsi') ? $query : $query->whereRaw('1 = 0');
+    }
 
     /** Products tagged with any of $occasions; optionally all_season products too. */
     public function scopeWithOccasions($query, array $occasions, bool $includeAllSeason = false)
