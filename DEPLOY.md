@@ -159,7 +159,7 @@ everything else works; new photos are fingerprinted when it is back (job retries
 ```bash
 cd /var/www && git clone <frontend-repo-url> choosetounsi-frontend && cd choosetounsi-frontend
 cat > .env.production <<'EOF'
-NEXT_PUBLIC_API_URL=https://api.choosetounsi.tn/api
+NEXT_PUBLIC_API_URL=https://api.choosetounsi.tn
 NEXT_PUBLIC_SITE_URL=https://choosetounsi.tn
 NEXT_PUBLIC_PUSHER_KEY=
 NEXT_PUBLIC_PUSHER_CLUSTER=
@@ -175,7 +175,8 @@ sudo cp /var/www/choosetounsi-backend/deploy/choosetounsi-frontend.service /var/
 sudo systemctl daemon-reload && sudo systemctl enable --now choosetounsi-frontend choosetounsi-admin
 ```
 
-`NEXT_PUBLIC_*` values are baked in at build time: rebuild after changing them.
+The storefront's `NEXT_PUBLIC_API_URL` has **no** `/api` (its pages add it); the admin panel's
+has it. `NEXT_PUBLIC_*` values are baked in at build time: rebuild after changing them.
 
 ## 6. nginx
 
