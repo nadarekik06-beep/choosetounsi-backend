@@ -11,6 +11,7 @@ use App\Services\Search\FingerprintIndex;
 use App\Services\Search\ImageSearch;
 use App\Services\Search\ProductSearch;
 use App\Services\Search\SearchUnavailable;
+use App\Services\Search\Shops;
 use App\Services\Search\Suggestions;
 use App\Support\Localization;
 use Illuminate\Http\Request;
@@ -34,8 +35,8 @@ class SearchController extends Controller
     const DIRECT_MAX = 24;
     const SECTION_MAX = 8;
 
-    /** GET /api/search/suggestions?q=bask&limit=8 */
-    public function suggestions(Request $request, Suggestions $suggestions)
+    /** GET /api/search/suggestions?q=bask&limit=8 — product names + shops whose name matches ("shops"). */
+    public function suggestions(Request $request, Suggestions $suggestions, Shops $shops)
     {
         $q     = trim((string) $request->input('q', ''));
         $limit = max(1, min(20, (int) $request->input('limit', 8)));
@@ -46,8 +47,9 @@ class SearchController extends Controller
 
         $key = 'search_suggest:' . Localization::locale() . ':' . md5(mb_strtolower($q) . "_$limit");
         $list = Cache::remember($key, 300, fn () => $suggestions->for($q, $limit));
+        $shops = Cache::remember('search_suggest_shops:' . md5(mb_strtolower($q)), 300, fn () => $this->shopCards($shops->match($q)));
 
-        return response()->json(['suggestions' => $list, 'query' => $q]);
+        return response()->json(['suggestions' => $list, 'shops' => $shops, 'query' => $q]);
     }
 
     /**
@@ -56,6 +58,7 @@ class SearchController extends Controller
      * {
      *   "success": true, "source": "keyword", "query": "ensembel",
      *   "did_you_mean": "ensemble" | null, "count": 12,
+     *   "shops": [{ "id": 25, "name": "Dar El Moda", "avatar": "…", "products_count": 20 }],
      *   "sections": { "direct": [...], "same_category": [...], "related": [...] }
      * }
      */
@@ -86,6 +89,7 @@ class SearchController extends Controller
             'source'       => 'keyword',
             'query'        => $query,
             'did_you_mean' => $result['did_you_mean'],
+            'shops'        => $this->shopCards($result['shops']),
             'count'        => array_sum(array_map('count', $sections)),
             'sections'     => $sections,
         ]);
@@ -318,6 +322,13 @@ class SearchController extends Controller
             'search_query' => $query,
             'category_id'  => $categoryId ? (int) $categoryId : null,
         ]);
+    }
+
+    /** Shop cards for the search bar: [{id, name, avatar, products_count}] (link: /sellers/{id}). */
+    private function shopCards(array $shops): array
+    {
+        return array_map(fn ($s) => ['id' => $s['id'], 'name' => $s['name'], 'avatar' => $s['avatar'],
+                                     'products_count' => $s['products']], $shops);
     }
 
     /** The detected category as the storefront shows it (localized), null when there is none. */

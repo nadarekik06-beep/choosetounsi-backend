@@ -33,6 +33,8 @@ class ProductSearch
     const DESCRIPTION = 8;
     const SYNONYM = 0.4;
     const FULL_NAME_BONUS = 40;
+    /** A product of the shop the query names in full ("dar el moda"): a best result, below name matches. */
+    const SHOP = 40;
     /** Every concept must score at least this for a "direct" (best) result: attributes or better. */
     const MIN_DIRECT = 20;
     const MAX_TOKENS = 8;
@@ -44,24 +46,39 @@ class ProductSearch
         private DidYouMean $didYouMean,
         private BusinessSignals $signals,
         private MissedQueries $missed,
+        private Shops $shops,
     ) {}
 
     /**
      * @return array{
      *   direct: array<int, float>, weak: array<int, float>,   product id => score, best first
-     *   did_you_mean: ?string, normalized: string
+     *   did_you_mean: ?string, normalized: string,
+     *   shops: array  shops the query names (Shops::match), best first
      * }
      */
     public function search(string $query, ?int $categoryId = null, bool $log = true, bool $correct = true): array
     {
         $words = array_slice($this->text->words($query), 0, self::MAX_TOKENS);
         $tokens = array_map([$this->text, 'stem'], $words);
-        $result = ['direct' => [], 'weak' => [], 'did_you_mean' => null, 'normalized' => implode(' ', $tokens)];
+        $result = ['direct' => [], 'weak' => [], 'did_you_mean' => null, 'normalized' => implode(' ', $tokens), 'shops' => []];
         if (!$tokens) {
             return $result;
         }
 
         [$direct, $weak] = $this->keyword($tokens, $categoryId);
+
+        // A shop name typed in full (or in part, when no product matched those words): its
+        // products are best results too.
+        $result['shops'] = $this->shops->match($query);
+        $noProductMatch = !$direct;
+        foreach ($result['shops'] as $i => $shop) {
+            if ($shop['full'] || ($i === 0 && $shop['whole'] && $noProductMatch)) {
+                foreach ($this->shops->productIds($shop['id'], $categoryId) as $id) {
+                    $direct[$id] = max($direct[$id] ?? 0, self::SHOP);
+                    unset($weak[$id]);
+                }
+            }
+        }
 
         // Few real matches: maybe a typo ("ensembel", "chaussur").
         if ($correct && count($direct) < (int) config('search.low_results', 3)) {

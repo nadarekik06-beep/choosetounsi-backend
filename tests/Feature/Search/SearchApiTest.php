@@ -121,6 +121,29 @@ class SearchApiTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_a_shop_name_finds_the_shop_and_its_products(): void
+    {
+        $seller = $this->makeUser('seller', ['name' => 'Qzdar Elmoda Shop']);
+        $cat = $this->makeCategory();
+        $a = $this->makeProduct($seller, $cat, ['name' => 'Robe longue']);
+        $b = $this->makeProduct($seller, $cat, ['name' => 'Sac cabas']);
+        $this->makeProduct($this->makeUser('seller'), $cat, ['name' => 'Autre chose']);
+        app(\App\Services\Search\Shops::class)->forget();
+
+        $res = $this->postJson('/api/search/text', ['query' => 'qzdar elmoda shop'])->assertOk();
+        $this->assertSame($seller->id, $res['shops'][0]['id']);
+        $this->assertEqualsCanonicalizing([$a->id, $b->id], array_column($res['sections']['direct'], 'id'));
+
+        // Part of the name, no product named like it: still the shop's products
+        $this->assertCount(2, $this->postJson('/api/search/text', ['query' => 'qzdar'])->json('sections.direct'));
+
+        // Unfinished word: the shop is suggested, its products are not dumped as results
+        $this->getJson('/api/search/suggestions?q=qzda')->assertOk()->assertJsonPath('shops.0.id', $seller->id);
+        $res = $this->postJson('/api/search/text', ['query' => 'qzda'])->assertOk();
+        $this->assertSame($seller->id, $res['shops'][0]['id']);
+        $this->assertSame([], $res['sections']['direct']);
+    }
+
     public function test_search_still_answers_when_the_ai_services_are_down(): void
     {
         $p = $this->makeProduct($this->makeUser('seller'), $this->makeCategory(), ['name' => 'Qzhoney jar']);
