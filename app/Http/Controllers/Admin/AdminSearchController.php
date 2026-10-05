@@ -3,13 +3,10 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Services\Search\FingerprintClient;
 use App\Services\Search\FingerprintIndex;
-use App\Services\Search\MeiliClient;
 use App\Services\Search\MissedQueries;
-use App\Services\Search\SearchUnavailable;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Http;
-use Throwable;
 
 class AdminSearchController extends Controller
 {
@@ -47,28 +44,19 @@ class AdminSearchController extends Controller
         ]);
     }
 
-    /** GET /api/admin/search/health — is each piece of search up, and how much is indexed. */
-    public function health(MeiliClient $meili, FingerprintIndex $photos)
+    /** GET /api/admin/search/health — is photo search up, and how much is indexed. */
+    public function health(FingerprintClient $client, FingerprintIndex $photos)
     {
-        try {
-            $productsIndexed = $meili->stats('products')['numberOfDocuments'] ?? null;
-        } catch (SearchUnavailable) {
-            $productsIndexed = null;
-        }
-
-        try {
-            $embedder = Http::ai()->timeout(2)->get(rtrim(config('services.ai.url'), '/') . '/health')->json();
-        } catch (Throwable) {
-            $embedder = null;
-        }
-
+        $service = $client->health();
+        $index = $photos->get();
         return response()->json([
-            'success'          => true,
-            'meilisearch'      => $meili->healthy(),
-            'products_indexed' => $productsIndexed,
-            'photos_indexed'   => $photos->get()['count'],
-            'embedder'         => $embedder ? ['image_model' => $embedder['image_model'] ?? null, 'text_model' => $embedder['text_model'] ?? null] : null,
-            'semantic_search'  => (bool) config('search.semantic.enabled'),
+            'success'        => true,
+            'ai_service'     => $service !== null,
+            'photos_indexed' => $index['count'],
+            'categories'     => count($index['centroids']),
+            'image_model'    => $service['image_model'] ?? null,   // what the AI service runs now
+            'index_model'    => $index['model'],                   // what the fingerprints were made with
+            'embedder'       => $service ? ['image_model' => $service['image_model'] ?? null] : null,
         ]);
     }
 }

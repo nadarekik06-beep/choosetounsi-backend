@@ -42,7 +42,7 @@ class BoilerplateFilter
         return implode(' ', array_values(array_filter($words, fn ($w, $i) => !$template[$i], ARRAY_FILTER_USE_BOTH)));
     }
 
-    /** @return array<string, true> frequent shingles, learned once and cached (rebuilt by search:reindex) */
+    /** @return array<string, true> frequent shingles, learned once and cached (rebuilt by search:build-index) */
     public function shingles(): array
     {
         return Cache::rememberForever(self::CACHE_KEY, fn () => $this->learn());

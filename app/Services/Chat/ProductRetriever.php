@@ -228,7 +228,7 @@ class ProductRetriever
         return $this->semanticMemo[$query] ??= $this->fetchSemantic($query);
     }
 
-    /** Relevance from the storefront search engine (Meilisearch, typo tolerant, multilingual). */
+    /** Relevance from the storefront search bar (MySQL keyword search, synonyms, typo correction). */
     private function fetchSemantic(string $query): array
     {
         $minScore = (float) config('services.ai.chat_min_score', 0.35);

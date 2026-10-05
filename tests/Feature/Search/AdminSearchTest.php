@@ -47,6 +47,6 @@ class AdminSearchTest extends TestCase
     {
         Sanctum::actingAs($this->makeUser('admin'));
         $this->getJson('/api/admin/search/health')->assertOk()
-            ->assertJsonPath('meilisearch', false)->assertJsonPath('embedder', null);
+            ->assertJsonPath('ai_service', false)->assertJsonPath('embedder', null);
     }
 }

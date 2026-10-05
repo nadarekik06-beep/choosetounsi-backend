@@ -38,14 +38,14 @@ class AppServiceProvider extends ServiceProvider
         // Sales forecasts recompute when counted sales change (confirmed, cancelled, returned)
         \App\Observers\ForecastTriggers::register();
 
-        // Search index sync (text index, photo fingerprints, Meilisearch); Scout itself syncs the Product documents.
+        // Search index sync: MySQL text index (search bar) and photo fingerprints (search by photo).
         foreach ([Product::class, \App\Models\ProductImage::class, \App\Models\ProductAttributeValue::class,
                   \App\Models\Category::class, \App\Models\Subcategory::class, \App\Models\User::class] as $model) {
             $model::observe(\App\Observers\SearchIndexObserver::class);
         }
 
-        // Requests to the embedding service (choosetounsi-ai-service) carry its shared secret:
-        // Http::ai()->post(config('services.ai.url') . '/embed/text', ...)
+        // Requests to the AI service (choosetounsi-ai-service) carry its shared secret:
+        // Http::ai()->post(config('services.ai.url') . '/embed/query', ...)
         Http::macro('ai', fn () => Http::withHeaders(array_filter([
             'X-AI-Token' => config('services.ai.token'),
         ])));

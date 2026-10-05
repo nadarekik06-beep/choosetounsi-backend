@@ -2,8 +2,6 @@
 
 namespace App\Console\Commands;
 
-use App\Services\Search\MeiliClient;
-use App\Services\Search\SearchUnavailable;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -177,16 +175,9 @@ class DemoPurge extends Command
 
     private function forgetSearchDocuments(array $productIds): void
     {
-        if (!$productIds || !config('search.indexing')) {
-            return;
-        }
-        try {
-            $meili = app(MeiliClient::class);
-            $meili->deleteDocuments('products', $productIds);
-            // Photo fingerprints are deleted with their products (foreign keys); drop the cached index.
+        // Photo fingerprints go with their products (foreign keys); drop the cached photo index.
+        if ($productIds) {
             app(\App\Services\Search\FingerprintIndex::class)->bump();
-        } catch (SearchUnavailable $e) {
-            $this->warn('Search index not updated (' . $e->getMessage() . '): run php artisan search:reindex later.');
         }
     }
 }

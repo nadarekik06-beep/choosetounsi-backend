@@ -9,7 +9,8 @@ use App\Services\Search\Fingerprint;
 use App\Services\Search\FingerprintClient;
 use App\Services\Search\FingerprintIndex;
 use App\Services\Search\ImageIndexer;
-use App\Services\Search\ProductDocument;
+use App\Services\Search\SearchIndexer;
+use App\Services\Search\SearchText;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Bus;
@@ -30,10 +31,10 @@ class IndexingTest extends TestCase
         parent::setUp();
         Cache::flush();
         $this->fakeTranslator();
-        config(['search.semantic.enabled' => true, 'services.ai.url' => 'http://ai.test', 'search.meilisearch.host' => 'http://meili.test']);
+        config(['services.ai.url' => 'http://ai.test']);
     }
 
-    public function test_document_has_normalized_names_translations_and_category(): void
+    public function test_text_index_row_has_names_in_every_language_and_the_category(): void
     {
         $seller = $this->makeUser('seller');
         $cat = $this->makeCategory();
@@ -43,15 +44,14 @@ class IndexingTest extends TestCase
             'fr' => ['name' => 'Baskets Événement'], 'ar' => ['name' => 'حذاء رياضي'], 'en' => ['name' => 'Event Sneakers'],
         ], JSON_UNESCAPED_UNICODE)]);
 
-        $doc = app(ProductDocument::class)->build($p->fresh());
+        $row = app(SearchIndexer::class)->row($p->fresh());
+        $tokens = fn (string $s) => implode(' ', app(SearchText::class)->tokens($s));
 
-        $this->assertSame('evenement sneakers', $doc['name']);
-        $this->assertSame('baskets evenement', $doc['name_fr']);
-        $this->assertSame('حذاء رياضي', $doc['name_ar']);
-        $this->assertSame('event sneakers', $doc['name_en']);
-        $this->assertStringContainsString('chaussures', $doc['category']);
-        $this->assertStringContainsString('احذيه', $doc['category']);
-        $this->assertSame('Évènement Sneakers', $doc['label']);
+        foreach (['Évènement Sneakers', 'Baskets Événement', 'حذاء رياضي', 'Event Sneakers'] as $name) {
+            $this->assertStringContainsString("| {$tokens($name)} |", $row['names']);
+        }
+        $this->assertStringContainsString(" {$tokens('Chaussures')} ", $row['category']);
+        $this->assertStringContainsString(" {$tokens('أحذية')} ", $row['category']);
     }
 
     public function test_template_sentences_shared_by_many_products_are_dropped(): void
@@ -65,29 +65,12 @@ class IndexingTest extends TestCase
         $p = $this->makeProduct($seller, $cat, ['description' => sprintf($template, 'Robe rouge') . ' Tissu en lin, coupe longue.']);
 
         app(BoilerplateFilter::class)->forget();
-        $doc = app(ProductDocument::class)->build($p);
+        $description = app(SearchIndexer::class)->row($p)['description'];
+        $tokens = fn (string $s) => implode(' ', app(SearchText::class)->tokens($s));
 
-        $this->assertStringNotContainsString('fiabilite', $doc['description']);
-        $this->assertStringContainsString('robe rouge', $doc['description']);
-        $this->assertStringContainsString('tissu en lin', $doc['description']);
-    }
-
-    public function test_text_vectors_are_attached(): void
-    {
-        $p = $this->makeProduct($this->makeUser('seller'), $this->makeCategory());
-        Http::fake(['ai.test/embed/text' => Http::response(['vectors' => [array_fill(0, 384, 0.05)]])]);
-
-        $this->assertCount(384, app(ProductDocument::class)->buildMany([$p])[0]['_vectors']['text']);
-    }
-
-    public function test_products_are_indexed_keyword_only_when_the_embedder_is_down(): void
-    {
-        $p = $this->makeProduct($this->makeUser('seller'), $this->makeCategory());
-        Http::fake(['ai.test/*' => Http::response('down', 503)]);
-
-        $doc = app(ProductDocument::class)->buildMany([$p])[0];
-        $this->assertNull($doc['_vectors']['text']);
-        $this->assertNotEmpty($doc['name']);
+        $this->assertStringNotContainsString($tokens('fiabilité'), $description);
+        $this->assertStringContainsString($tokens('Robe rouge'), $description);
+        $this->assertStringContainsString($tokens('Tissu en lin'), $description);
     }
 
     public function test_every_photo_is_fingerprinted_once_as_a_normalized_float32_blob(): void
@@ -166,18 +149,5 @@ class IndexingTest extends TestCase
         Bus::fake([IndexProductImages::class]);
         ProductImage::create(['product_id' => $p->id, 'image_path' => 'products/x.jpg']);
         Bus::assertDispatched(IndexProductImages::class, fn ($job) => $job->productId === $p->id);
-    }
-
-    public function test_product_index_only_updates_on_searchable_changes(): void
-    {
-        $seller = $this->makeUser('seller');
-        $p = $this->makeProduct($seller, $this->makeCategory());
-
-        $p->update(['views' => 5]);
-        $this->assertFalse($p->searchIndexShouldBeUpdated());
-        $p->update(['name' => 'Renamed']);
-        $this->assertTrue($p->searchIndexShouldBeUpdated());
-        $p->update(['is_active' => false]);
-        $this->assertFalse($p->shouldBeSearchable());
     }
 }

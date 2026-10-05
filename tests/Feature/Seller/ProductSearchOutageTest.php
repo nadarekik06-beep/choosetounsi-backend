@@ -17,8 +17,8 @@ use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
 /**
- * Meilisearch stopped (local dev) with indexing on and QUEUE_CONNECTION=sync: the image index
- * job runs inside the request, and must not turn a product create or delete into a 500.
+ * AI service stopped (local dev) with indexing on and QUEUE_CONNECTION=sync: the photo
+ * fingerprint job runs inside the request, and must not turn a product create or delete into a 500.
  *
  * Run only this file:  php vendor/bin/phpunit tests/Feature/Seller/ProductSearchOutageTest.php
  */
@@ -35,7 +35,7 @@ class ProductSearchOutageTest extends TestCase
         Storage::fake('public');
         ProductImages::flush();
         $this->app->instance(\App\Services\ProductTranslator::class, \Mockery::mock(\App\Services\ProductTranslator::class)->shouldIgnoreMissing());
-        // phpunit.xml points Meilisearch at a closed port; turn the index observers on.
+        // phpunit.xml points the AI service at a closed port; turn the index observers on.
         config(['search.indexing' => true, 'queue.default' => 'sync']);
 
         $this->seller = User::create(['name' => 'Outage Seller', 'email' => 'outage_' . Str::random(8) . '@test.local', 'password' => bcrypt('x-secret-x'), 'role' => 'seller', 'is_active' => true]);
@@ -53,7 +53,7 @@ class ProductSearchOutageTest extends TestCase
         return UploadedFile::fake()->createWithContent('p.png', $png . Str::random(8));
     }
 
-    public function test_product_is_created_when_meilisearch_is_down(): void
+    public function test_product_is_created_when_the_ai_service_is_down(): void
     {
         Sanctum::actingAs($this->seller);
         $res = $this->post('/api/seller/products', [
@@ -70,7 +70,7 @@ class ProductSearchOutageTest extends TestCase
         $this->assertSame(1, ProductImage::where('product_id', $id)->count());
     }
 
-    public function test_product_is_deleted_when_meilisearch_is_down(): void
+    public function test_product_is_deleted_when_the_ai_service_is_down(): void
     {
         $product = Product::create([
             'seller_id' => $this->seller->id, 'category_id' => $this->category->id, 'name' => 'To delete',

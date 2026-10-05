@@ -32,19 +32,6 @@ class Synonyms
         return array_column($this->parse(), 'terms');
     }
 
-    /** @return array<string, string[]> Meilisearch "synonyms" setting */
-    public function forMeilisearch(): array
-    {
-        $map = [];
-        foreach ($this->groups() as $terms) {
-            foreach ($terms as $term) {
-                $map[$term] = array_values(array_unique(array_merge($map[$term] ?? [], array_diff($terms, [$term]))));
-            }
-        }
-        ksort($map);
-        return $map;
-    }
-
     /** @return string[] every single-word synonym term, normalized, not stemmed (feeds "did you mean") */
     public function words(): array
     {

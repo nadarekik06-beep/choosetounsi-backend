@@ -26,11 +26,6 @@ use Illuminate\Database\Eloquent\Model;
  *  - product moved to another category                  → cached photo index rebuilt (centroids)
  *  - seller activated / deactivated                     → cached photo index rebuilt
  *
- * Meilisearch (semantic fallback), when search.indexing is on; the product document itself is
- * synced by Scout's own observer on Product, queued:
- *  - attribute values change                            → product document refreshed
- *  - category / subcategory renamed                     → documents of its products refreshed
- *
  * Variants are handled in ProductVariantObserver, translations in ProductTranslator.
  */
 class SearchIndexObserver
@@ -48,8 +43,6 @@ class SearchIndexObserver
         match (true) {
             $model instanceof Product => $this->productSaved($model),
             $model instanceof ProductImage => $this->imagesChanged($model->product_id),
-            $model instanceof ProductAttributeValue => $this->refreshProduct($model->product_id),
-            $model instanceof Category, $model instanceof Subcategory => $this->categoryRenamed($model),
             $model instanceof User => $model->role === 'seller' && $model->wasChanged('is_active')
                 ? app(FingerprintIndex::class)->bump() : null,
             default => null,
@@ -65,7 +58,6 @@ class SearchIndexObserver
         match (true) {
             $model instanceof Product => IndexProductImages::dispatch($model->id),
             $model instanceof ProductImage => $this->imagesChanged($model->product_id),
-            $model instanceof ProductAttributeValue => $this->refreshProduct($model->product_id),
             default => null,
         };
     }
@@ -111,20 +103,5 @@ class SearchIndexObserver
         if ($productId) {
             IndexProductImages::dispatch($productId);
         }
-    }
-
-    private function refreshProduct(?int $productId): void
-    {
-        Product::find($productId)?->searchable();
-    }
-
-    private function categoryRenamed(Model $category): void
-    {
-        if ($category->wasRecentlyCreated || !$category->wasChanged(['name', 'name_fr', 'name_ar'])) {
-            return;
-        }
-        $column = $category instanceof Category ? 'category_id' : 'subcategory_id';
-        Product::where($column, $category->id)->where('is_approved', true)->where('is_active', true)
-            ->orderBy('id')->searchable(200);
     }
 }

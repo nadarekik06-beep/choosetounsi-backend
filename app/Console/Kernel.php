@@ -70,11 +70,6 @@ class Kernel extends ConsoleKernel
         $schedule->command('search:build-index')
             ->dailyAt('02:15')->timezone(config('ads.timezone'))
             ->withoutOverlapping()->runInBackground();
-        // Meilisearch (semantic fallback). Scout keeps it current; this nightly pass is the safety
-        // net (and adds text vectors missed while the embedding service was down).
-        $schedule->command('search:reindex')
-            ->dailyAt('02:30')->timezone(config('ads.timezone'))
-            ->withoutOverlapping()->runInBackground();
         // Photo search fingerprints (MySQL): the IndexProductImages job keeps them current; this
         // catches photos missed while the AI service was down and refreshes the cached index.
         $schedule->command('image-search:rebuild')

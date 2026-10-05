@@ -39,13 +39,10 @@ class QueryNormalizerTest extends TestCase
         file_put_contents($file, "# comment\nshoes, Sabbat, صبّاط\n\nhoney, Miel\nalone\n");
         config(['search.synonyms_path' => $file]);
 
-        $map = app(Synonyms::class)->forMeilisearch();
+        $groups = app(Synonyms::class)->groups();
         unlink($file);
 
-        $this->assertSame(['sabbat', 'صباط'], $map['shoes']);
-        $this->assertSame(['shoes', 'صباط'], $map['sabbat']);
-        $this->assertSame(['honey'], $map['miel']);
-        $this->assertArrayNotHasKey('alone', $map);
+        $this->assertSame([['shoes', 'sabbat', 'صباط'], ['honey', 'miel']], $groups, 'normalized, 1-word lines dropped');
     }
 
     public function test_shipped_synonym_file_parses(): void

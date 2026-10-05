@@ -2,10 +2,7 @@
 
 namespace App\Services\Search;
 
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
-use Throwable;
 
 /**
  * The search bar: deterministic keyword search on MySQL (product_search_index).
@@ -22,9 +19,7 @@ use Throwable;
  *     anything weaker (description only, some words only) is "weak" and never a best result.
  *  4. Fewer than 3 direct results → each unknown word is corrected against the catalog
  *     vocabulary (DidYouMean) and the corrected query is kept when it finds more.
- *  5. Nothing at all → semantic search (embedding service + Meilisearch vectors) as a last
- *     resort, with short timeouts; its results are only shown as "closest products".
- *  6. Ties (a few points at most): in stock, rating, recent sales, real photo.
+ *  5. Ties (a few points at most): in stock, rating, recent sales, real photo.
  *
  * Zero/low-result queries are logged for the admin "Missed searches" page.
  */
@@ -42,31 +37,26 @@ class ProductSearch
     const MIN_DIRECT = 20;
     const MAX_TOKENS = 8;
     const MAX_CANDIDATES = 2000;
-    const SEMANTIC_CANDIDATES = 12;
-    const SEMANTIC_DOWN = 'search:semantic_down';
 
     public function __construct(
         private SearchText $text,
         private Synonyms $synonyms,
         private DidYouMean $didYouMean,
         private BusinessSignals $signals,
-        private EmbeddingClient $embeddings,
-        private MeiliClient $meili,
         private MissedQueries $missed,
     ) {}
 
     /**
      * @return array{
-     *   direct: array<int, float>, weak: array<int, float>, semantic: array<int, float>,   product id => score, best first
-     *   did_you_mean: ?string, alternatives: bool, source: string, normalized: string
+     *   direct: array<int, float>, weak: array<int, float>,   product id => score, best first
+     *   did_you_mean: ?string, normalized: string
      * }
      */
     public function search(string $query, ?int $categoryId = null, bool $log = true, bool $correct = true): array
     {
         $words = array_slice($this->text->words($query), 0, self::MAX_TOKENS);
         $tokens = array_map([$this->text, 'stem'], $words);
-        $result = ['direct' => [], 'weak' => [], 'semantic' => [], 'did_you_mean' => null,
-                   'alternatives' => false, 'source' => 'keyword', 'normalized' => implode(' ', $tokens)];
+        $result = ['direct' => [], 'weak' => [], 'did_you_mean' => null, 'normalized' => implode(' ', $tokens)];
         if (!$tokens) {
             return $result;
         }
@@ -85,12 +75,6 @@ class ProductSearch
             }
         }
 
-        if (!$direct && !$weak) {
-            $result['semantic'] = $this->semantic($result['normalized'], $categoryId);
-            $result['alternatives'] = (bool) $result['semantic'];
-            $result['source'] = $result['semantic'] ? 'semantic' : 'keyword';
-        }
-
         [$result['direct'], $result['weak']] = $this->rerank($direct, $weak);
 
         if ($log) {
@@ -101,7 +85,7 @@ class ProductSearch
 
     /**
      * Relevance of the real matches only (no typo correction, nothing logged): ad targeting,
-     * promo flyers and the chatbot. Weak and semantic matches never count here.
+     * promo flyers and the chatbot. Weak matches never count here.
      *
      * @return array<int, float> product_id => 0.5..1, best first
      */
@@ -262,41 +246,5 @@ class ProductSearch
             return $hits;
         };
         return [$sort($direct), $sort($weak)];
-    }
-
-    /**
-     * Last resort when no word matched anything: nearest products by meaning (multilingual
-     * vectors). Off, slow or down → nothing; keyword search never waits on it otherwise.
-     *
-     * @return array<int, float>
-     */
-    private function semantic(string $normalized, ?int $categoryId): array
-    {
-        if (Cache::has(self::SEMANTIC_DOWN)) {
-            return [];
-        }
-        try {
-            $vector = $this->embeddings->queryVector($normalized);
-            if (!$vector) {
-                return [];   // semantic off, or the embedding service is down (it remembers that itself)
-            }
-            $results = $this->meili->multiSearch([['products', [
-                'q' => '', 'vector' => $vector, 'hybrid' => ['embedder' => 'text', 'semanticRatio' => 1.0],
-                'limit' => self::SEMANTIC_CANDIDATES, 'attributesToRetrieve' => ['id'], 'showRankingScore' => true,
-            ] + ($categoryId ? ['filter' => 'category_id = ' . (int) $categoryId] : [])]], 1.5);
-        } catch (Throwable $e) {
-            Cache::put(self::SEMANTIC_DOWN, true, now()->addMinutes(5));   // don't wait on it at every search
-            Log::info('[Search] Semantic fallback unavailable for 5 minutes: ' . $e->getMessage());
-            return [];
-        }
-
-        $min = (float) config('search.semantic.min_score');
-        $out = [];
-        foreach ($results[0]['hits'] ?? [] as $hit) {
-            if (($hit['_rankingScore'] ?? 0) >= $min) {
-                $out[(int) $hit['id']] = (float) $hit['_rankingScore'];
-            }
-        }
-        return $out;
     }
 }

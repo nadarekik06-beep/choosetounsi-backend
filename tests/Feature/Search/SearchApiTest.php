@@ -4,7 +4,6 @@ namespace Tests\Feature\Search;
 
 use App\Models\Category;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
-use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -12,8 +11,7 @@ use Tests\Feature\Recommendation\MakesCatalog;
 use Tests\TestCase;
 
 /**
- * Search API: MySQL keyword search; faked Meilisearch / embedding service for the semantic fallback.
- * Photo search: ImageSearchTest.
+ * Search API: MySQL keyword search (photo search: ImageSearchTest).
  * php vendor/bin/phpunit tests/Feature/Search/SearchApiTest.php
  */
 class SearchApiTest extends TestCase
@@ -25,42 +23,7 @@ class SearchApiTest extends TestCase
         parent::setUp();
         Cache::flush();
         $this->fakeTranslator();
-        config([
-            'services.ai.url' => 'http://ai.test', 'search.meilisearch.host' => 'http://meili.test',
-            'search.semantic.enabled' => true, 'search.semantic.min_score' => 0.6,
-        ]);
-    }
-
-    /** Meilisearch answers per query text; the embedding service returns a fixed vector. */
-    private function fakeEngines(array $hitsByQuery, bool $embedder = true): void
-    {
-        Http::fake(function (Request $r) use ($hitsByQuery, $embedder) {
-            if (str_starts_with($r->url(), 'http://ai.test')) {
-                return $embedder ? Http::response(['vectors' => [array_fill(0, 384, 0.1)]]) : Http::response('down', 503);
-            }
-            if (str_ends_with($r->url(), '/multi-search')) {
-                // [keyword query, vector query?]: keyword hits by query text, vector hits for the vector query.
-                $keywordQuery = $r['queries'][0]['q'];
-                $all = $hitsByQuery[$keywordQuery] ?? [];
-                $isVector = fn ($h) => isset($h['_rankingScoreDetails']['vectorSort']);
-                return Http::response(['results' => array_map(fn ($q) => ['hits' => array_values(array_filter($all,
-                    fn ($h) => isset($q['vector']) ? $isVector($h) : !$isVector($h)))], $r['queries'])]);
-            }
-            return Http::response([], 404);
-        });
-    }
-
-    private function hit(int $id, float $score, array $fields = ['name']): array
-    {
-        return ['id' => $id, '_rankingScore' => $score, '_rankingScoreDetails' => ['words' => ['score' => 1.0]],
-                '_matchesPosition' => array_fill_keys($fields, [['start' => 0, 'length' => 3]])];
-    }
-
-    /** A hit found only through vectors (it may still contain a query word). */
-    private function vectorHit(int $id, float $score): array
-    {
-        return ['id' => $id, '_rankingScore' => $score, '_rankingScoreDetails' => ['vectorSort' => ['similarity' => 2 * $score - 1]],
-                '_matchesPosition' => ['name' => [['start' => 0, 'length' => 3]]]];
+        config(['services.ai.url' => 'http://ai.test']);
     }
 
     /** Synonym file for one test. */
@@ -144,35 +107,18 @@ class SearchApiTest extends TestCase
         $this->assertSame([$inStock->id, $soldOut->id], array_column($res['sections']['direct'], 'id'));
     }
 
-    public function test_nothing_matched_is_empty_and_logged_without_calling_the_ai_when_off(): void
+    public function test_nothing_matched_is_empty_and_logged_without_calling_the_ai_service(): void
     {
-        config(['search.semantic.enabled' => false]);
         Http::fake();
 
         $res = $this->postJson('/api/search/text', ['query' => 'Xyzzy plop'])->assertOk();
 
         $this->assertSame(0, $res['count']);
-        $this->assertFalse($res['alternatives']);
+        $this->assertSame('keyword', $res['source']);
         $this->assertDatabaseHas('search_missed_queries', ['query' => 'xyzzy plop', 'results' => 0, 'day' => now()->toDateString()]);
         $this->postJson('/api/search/text', ['query' => 'xyzzy  PLOP'])->assertOk();
         $this->assertSame(2, (int) DB::table('search_missed_queries')->where('query', 'xyzzy plop')->value('searches'));
         Http::assertNothingSent();
-    }
-
-    public function test_semantic_search_is_only_a_fallback_shown_as_closest_products(): void
-    {
-        $p = $this->makeProduct($this->makeUser('seller'), $this->makeCategory(), ['name' => 'Qzolive Oil']);
-        $this->fakeEngines(['' => [$this->vectorHit($p->id, 0.8)]]);
-
-        // A keyword match never waits on the AI service
-        $this->postJson('/api/search/text', ['query' => 'qzolive'])->assertOk()->assertJsonPath('count', 1);
-        Http::assertNothingSent();
-
-        $res = $this->postJson('/api/search/text', ['query' => 'zitoun bled'])->assertOk();
-        $this->assertTrue($res['alternatives']);
-        $this->assertSame('semantic', $res['source']);
-        $this->assertSame([], $res['sections']['direct']);
-        $this->assertSame([$p->id], array_column($res['sections']['related'], 'id'));
     }
 
     public function test_search_still_answers_when_the_ai_services_are_down(): void

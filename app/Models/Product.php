@@ -9,16 +9,10 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use App\Models\Concerns\HasTranslations;
-use App\Services\Search\ProductDocument;
-use Laravel\Scout\Searchable;
 
 class Product extends Model
 {
     use HasFactory, SoftDeletes, HasTranslations;
-    use Searchable {
-        queueMakeSearchable as protected scoutQueueMakeSearchable;
-        queueRemoveFromSearch as protected scoutQueueRemoveFromSearch;
-    }
 
     // Served in the storefront language from `translations` (filled by ProductTranslator).
     protected $translatable     = ['name', 'description', 'short_description'];
@@ -112,70 +106,6 @@ class Product extends Model
                 dispatch(fn () => app(\App\Services\ProductTranslator::class)->translateById($id))->afterResponse();
             }
         });
-    }
-
-    // ── Search index (Laravel Scout → Meilisearch "products") ────────────────
-    // Only live products are indexed. Saves that don't touch searchable text or status
-    // (views, stock, price…) skip the index: those signals are read live at search time.
-
-    const SEARCH_FIELDS = ['name', 'description', 'translations', 'category_id', 'subcategory_id',
-                           'is_approved', 'is_active', 'deleted_at'];
-
-    public function searchableAs(): string
-    {
-        return config('search.indexes.products', 'products');
-    }
-
-    public function shouldBeSearchable(): bool
-    {
-        return $this->is_approved && $this->is_active && !$this->trashed();
-    }
-
-    public function searchIndexShouldBeUpdated(): bool
-    {
-        // getChanges() is only filled by updates; empty + wasRecentlyCreated = this save inserted it.
-        return $this->getChanges() ? $this->wasChanged(self::SEARCH_FIELDS) : $this->wasRecentlyCreated;
-    }
-
-    public function toSearchableArray(): array
-    {
-        return app(ProductDocument::class)->buildMany([$this])[0];
-    }
-
-    /** `->searchable()` on a product that is no longer live removes it instead of re-indexing it. */
-    public function queueMakeSearchable($models)
-    {
-        [$live, $gone] = $models->partition(fn (self $p) => $p->shouldBeSearchable());
-        self::withoutBreakingWrites(fn () => $this->scoutQueueMakeSearchable($live), $live);
-        $this->queueRemoveFromSearch($gone);
-    }
-
-    public function queueRemoveFromSearch($models)
-    {
-        self::withoutBreakingWrites(fn () => $this->scoutQueueRemoveFromSearch($models), $models);
-    }
-
-    /**
-     * Without SCOUT_QUEUE (or with QUEUE_CONNECTION=sync) Scout writes to Meilisearch during the
-     * request: an unreachable index must not fail a product save or delete. `php artisan
-     * search:reindex` resyncs once it is back.
-     */
-    private static function withoutBreakingWrites(\Closure $sync, $models): void
-    {
-        if ($models->isEmpty()) {
-            return;
-        }
-        try {
-            $sync();
-        } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning('[Search] Product index not synced for products '
-                . $models->pluck('id')->implode(',') . ': ' . $e->getMessage());
-        }
-    }
-
-    protected function makeAllSearchableUsing(\Illuminate\Database\Eloquent\Builder $query)
-    {
-        return $query->where('is_approved', true)->where('is_active', true)->with(ProductDocument::RELATIONS);
     }
 
     /** Product texts are only translated on the storefront (seller/admin screens edit them). */

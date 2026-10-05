@@ -25,10 +25,9 @@ use Illuminate\Support\Facades\Log;
  *   sections.direct        — real matches only (query found in the name, category or brand/attributes)
  *   sections.same_category — weaker matches in the categories of the direct hits, then other
  *                            products of the top hit's subcategory
- *   sections.related       — the remaining weak matches (description only, some words only), or,
- *                            with alternatives=true, the closest products by meaning when no word matched
+ *   sections.related       — the remaining weak matches (description only, some words only)
  * plus did_you_mean (the corrected query that was searched instead; send exact=true to search
- * the original as typed) and source ("keyword" | "semantic").
+ * the original as typed).
  */
 class SearchController extends Controller
 {
@@ -55,8 +54,8 @@ class SearchController extends Controller
      * POST /api/search/text
      *
      * {
-     *   "success": true, "source": "keyword" | "semantic", "query": "ensembel",
-     *   "did_you_mean": "ensemble" | null, "alternatives": false, "count": 12,
+     *   "success": true, "source": "keyword", "query": "ensembel",
+     *   "did_you_mean": "ensemble" | null, "count": 12,
      *   "sections": { "direct": [...], "same_category": [...], "related": [...] }
      * }
      */
@@ -84,10 +83,9 @@ class SearchController extends Controller
         $this->trackSearch($request, $query, $sections);
         return response()->json([
             'success'      => true,
-            'source'       => $result['source'],
+            'source'       => 'keyword',
             'query'        => $query,
             'did_you_mean' => $result['did_you_mean'],
-            'alternatives' => $result['alternatives'],
             'count'        => array_sum(array_map('count', $sections)),
             'sections'     => $sections,
         ]);
@@ -216,7 +214,7 @@ class SearchController extends Controller
                     ->orderByDesc('views')->limit(self::SECTION_MAX - count($sameIds))->pluck('id')->all());
             }
         } else {
-            $relatedIds = array_merge($weak, array_keys($result['semantic']));
+            $relatedIds = $weak;
         }
         $sameIds    = array_slice($sameIds, 0, self::SECTION_MAX);
         $relatedIds = array_slice($relatedIds, 0, self::SECTION_MAX);
