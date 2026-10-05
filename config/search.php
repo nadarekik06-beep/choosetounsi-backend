@@ -31,19 +31,24 @@ return [
 
     // ── Search by image (MySQL image_fingerprints + choosetounsi-ai-service) ────
     // Similarities are CLIP cosines between the customer's photo (averaged over 3 views) and a
-    // catalog photo. Tuned on the live catalog with phone-style photos (see docs/SEARCH.md).
+    // catalog photo. Calibrated 2026-10-05 on the 40 real catalog photos (best photo pair per
+    // product pair: other category ≤ 0.71, same subcategory median 0.86, max 0.87) and on 20
+    // test queries (phone-style shots of catalog items + real photos of other items); see
+    // docs/SEARCH.md. Re-tune with image_search_logs once real searches come in.
     'image' => [
         // Rank score (similarity + boosts) a product needs to be shown at all.
-        'min_score'        => (float) env('IMAGE_SEARCH_MIN_SCORE', 0.74),
-        // Raw similarity of a "Correspondances exactes" result (the same item, another photo).
-        'exact_similarity' => (float) env('IMAGE_SEARCH_EXACT', 0.86),
+        'min_score'        => (float) env('IMAGE_SEARCH_MIN_SCORE', 0.78),
+        // Raw similarity of a "Correspondances exactes" result (the same item, another photo):
+        // above the closest different products of one subcategory (≤ 0.87).
+        'exact_similarity' => (float) env('IMAGE_SEARCH_EXACT', 0.87),
         // Also drop "similar" results this far below the best one.
         'max_gap'          => (float) env('IMAGE_SEARCH_MAX_GAP', 0.15),
 
         // Category detection: query vs each category's centroid (mean photo vector).
         // Confident = best centroid at least centroid_min and either ahead of the second by
         // margin_min or confirmed by the nearest photos' majority. Not confident: no category boost.
-        'centroid_min'     => (float) env('IMAGE_SEARCH_CENTROID_MIN', 0.60),
+        // (right predictions in the tests: 0.76-0.91; wrong ones: 0.66-0.75)
+        'centroid_min'     => (float) env('IMAGE_SEARCH_CENTROID_MIN', 0.75),
         'margin_min'       => (float) env('IMAGE_SEARCH_MARGIN_MIN', 0.02),
         // The second category is kept when it is this close to the first.
         'second_gap'       => (float) env('IMAGE_SEARCH_SECOND_GAP', 0.015),

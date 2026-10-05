@@ -80,6 +80,30 @@ Results are cached 10 min per photo (sha1); 10 searches/min per user or IP. AI s
 or slow → HTTP 503 `code: unavailable`, the camera button greys out
 (`GET /api/search/image/status`), text search is untouched.
 
+### Calibration (2026-10-05)
+
+Catalog: 40 real photos (the demo catalog's placeholder cards are not fingerprinted). Best
+photo pair per product pair: other category ≤ 0.71 (p99 0.70), same category other
+subcategory median 0.68, same subcategory median 0.86 (max 0.87): hence exact ≥ 0.87.
+
+20 test queries (`php artisan image-search:try`): 8 phone-style shots of catalog items
+(skewed, uneven light, blur, JPEG, on a bed / floor / wall / cluttered scene) and 6 real
+photos of other items (Wikimedia Commons), each with the default box and cropped by hand.
+
+| Query | Predicted | Result |
+|---|---|---|
+| catalog items, phone-style (6) | right category, all confident | right product first; exact for the dress, set, headphones |
+| catalog items on a cluttered scene, uncropped (2) | right category, not confident | fallback, right product first (0.61-0.63); cropped: 0.80-0.86 |
+| real headphones (Sony) | Headphones | Casque audio 0.86 (similar) |
+| real canvas sneakers on a table | Sneakers | AirForce 0.75, Nike 0.73 (similar) |
+| real leather bag (no bag photo in the catalog) | Scarf, not confident | fallback: closest fashion items |
+| dress / tracksuit / sneakers **worn** by a person | Jeans / SweatPants | fallback or jeans (miss) |
+
+Cropping is what matters most; averaging 3 views raised the similarity of the right product by
++0.035 on average (single view vs photo + center + mirror). Known weak spot: clothes worn by a
+person against flat product photos; more catalog photos per category (and seller photos of
+worn items) improve the centroids. Re-tune with `image_search_logs` (clicked rank, fallback rate).
+
 ## Keeping the indexes current
 
 | Change | What happens |
