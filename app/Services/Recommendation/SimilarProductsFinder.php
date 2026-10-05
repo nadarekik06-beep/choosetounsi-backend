@@ -2,6 +2,8 @@
 
 namespace App\Services\Recommendation;
 
+use App\Services\Search\Fingerprint;
+use App\Services\Search\FingerprintIndex;
 use App\Services\Search\MeiliClient;
 use App\Services\Search\SearchUnavailable;
 use Illuminate\Support\Facades\Cache;
@@ -11,8 +13,8 @@ use Illuminate\Support\Facades\Log;
 /**
  * "You might also like": products similar to a weighted set of seed products.
  *
- * Hybrid score = AI_WEIGHT × vector similarity (multilingual text + CLIP photo vectors
- * stored in the Meilisearch indexes, normalized to 0..1)
+ * Hybrid score = AI_WEIGHT × vector similarity (multilingual text vectors in Meilisearch +
+ * CLIP photo fingerprints from photo search, normalized to 0..1)
  *              + (1 − AI_WEIGHT) × content similarity (same subcategory/category,
  * brand, price). The content part keeps results grounded when embeddings are noisy
  * and covers products whose vectors aren't indexed yet. If Meilisearch is slow or down,
@@ -99,7 +101,7 @@ class SimilarProductsFinder
             $out = ['scores' => [], 'seeds_of' => []];
             foreach ($seeds as $seedId => $weight) {
                 $text = $this->similarByVector('products', 'text', $seedId, 'id', $limit);
-                $image = isset($photos[$seedId]) ? $this->similarByVector('images', 'clip', $photos[$seedId], 'product_id', $limit) : [];
+                $image = isset($photos[$seedId]) ? $this->similarPhotos($photos[$seedId], $limit) : [];
 
                 foreach (array_keys($text + $image) as $id) {
                     if (isset($seeds[$id])) {
@@ -128,6 +130,29 @@ class SimilarProductsFinder
             Log::info('[SimilarProductsFinder] Search index unavailable, using content similarity: ' . $e->getMessage());
             return null;
         }
+    }
+
+    /**
+     * Products whose best photo is closest to one photo (photo search fingerprints, MySQL +
+     * cache). A photo not fingerprinted yet gives [].
+     *
+     * @return array<int, float> product_id => cosine, best first
+     */
+    private function similarPhotos(int $imageId, int $limit): array
+    {
+        $index = app(FingerprintIndex::class)->get();
+        $row = array_search($imageId, $index['image_ids'], true);
+        if ($row === false) {
+            return [];
+        }
+        $seed = $index['vectors'][$row];
+        $out = [];
+        foreach ($index['vectors'] as $i => $v) {
+            $pid = $index['product_ids'][$i];
+            $out[$pid] = max($out[$pid] ?? -1, Fingerprint::dot($seed, $v));
+        }
+        arsort($out);
+        return array_slice($out, 0, min($limit, 200), true);
     }
 
     /**

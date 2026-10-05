@@ -8,102 +8,110 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 /**
- * Keeps the product_images index in step with one product: every photo (product and
- * variant photos alike) gets a CLIP vector; photos of products that are not live are removed.
+ * Keeps image_fingerprints in step with one product: every photo (main and color photos)
+ * gets a fingerprint; a product that is not live (or whose seller is inactive) has none.
  *
- * Vectors are stored in search_image_embeddings keyed by file content, so they are computed
- * once per file, reused when Meilisearch is rebuilt, and shared by identical files.
+ * A photo is only sent to the AI service when its file changed (sha1) or was made by another
+ * model; identical files elsewhere in the catalog lend their vector.
  */
 class ImageIndexer
 {
-    public function __construct(private MeiliClient $meili, private EmbeddingClient $embeddings) {}
+    public function __construct(private FingerprintClient $client, private FingerprintIndex $index) {}
 
     /**
-     * @return array{indexed: int, removed: bool, failed: int}
-     * @throws SearchUnavailable when Meilisearch or the embedding service is unreachable (job retries)
+     * @param  bool $force re-embed even unchanged photos
+     * @return array{indexed: int, embedded: int, removed: bool, failed: int, changed: bool}
+     * @throws SearchUnavailable when the AI service is unreachable (the job retries)
      */
-    public function syncProduct(int $productId): array
+    public function syncProduct(int $productId, bool $force = false, bool $bump = true): array
     {
         $product = Product::withTrashed()->find($productId);
         if (!$product || !self::isLive($product)) {
-            $this->meili->deleteByFilter('images', "product_id = $productId");
-            return ['indexed' => 0, 'removed' => true, 'failed' => 0];
-        }
-
-        $rows = DB::table('product_images')->where('product_id', $productId)->get(['id', 'variant_id', 'image_path']);
-        $vectors = $this->vectorsFor($rows->all());
-
-        $docs = [];
-        foreach ($rows as $row) {
-            if (isset($vectors[$row->id])) {
-                $docs[] = [
-                    'id'         => $row->id,
-                    'product_id' => $productId,
-                    'variant_id' => $row->variant_id,
-                    '_vectors'   => ['clip' => $vectors[$row->id]],
-                ];
+            // Force-deleted: its rows went with it (foreign keys), but the cached index still has them.
+            $removed = DB::table('image_fingerprints')->where('product_id', $productId)->delete() + ($product ? 0 : 1);
+            if ($removed && $bump) {
+                $this->index->bump();
             }
+            return ['indexed' => 0, 'embedded' => 0, 'removed' => true, 'failed' => 0, 'changed' => $removed > 0];
         }
 
-        // Replace the product's photos: removed images disappear, changed ones are re-embedded.
-        $this->meili->deleteByFilter('images', "product_id = $productId");
-        if ($docs) {
-            $this->meili->addDocuments('images', $docs);
+        $images = DB::table('product_images')->where('product_id', $productId)->get(['id', 'image_path']);
+        $existing = DB::table('image_fingerprints')->where('product_id', $productId)
+            ->get(['id', 'product_image_id', 'content_hash', 'model'])->keyBy('product_image_id');
+        $model = $this->client->model();
+        if ($model === null) {
+            throw new SearchUnavailable('Photo service is down');
         }
 
-        return ['indexed' => count($docs), 'removed' => false, 'failed' => $rows->count() - count($docs)];
-    }
-
-    public static function isLive(Product $product): bool
-    {
-        return $product->is_approved && $product->is_active && !$product->trashed();
-    }
-
-    /**
-     * @param  object[] $rows product_images rows
-     * @return array<int, array> product_images.id => vector (unreadable/missing files left out)
-     */
-    public function vectorsFor(array $rows): array
-    {
-        $model = $this->embeddings->imageModel();
         $disk = Storage::disk('public');
-
-        $hashes = $bytes = [];
-        foreach ($rows as $row) {
-            if (!$disk->exists($row->image_path)) {
-                Log::info("[Search] Image file missing, not indexed: {$row->image_path}");
+        $hashes = $todo = [];
+        $failed = 0;
+        foreach ($images as $img) {
+            if (!$disk->exists($img->image_path)) {
+                Log::info("[ImageSearch] Photo file missing, not indexed: {$img->image_path}");
+                $failed++;
                 continue;
             }
-            $data = $disk->get($row->image_path);
-            $hashes[$row->id] = sha1($data);
-            $bytes[$hashes[$row->id]] = $data;
-        }
-
-        $known = DB::table('search_image_embeddings')->where('model', $model)
-            ->whereIn('content_hash', array_unique($hashes))->pluck('vector', 'content_hash')
-            ->map(fn ($v) => json_decode($v, true))->all();
-
-        $todo = array_diff_key($bytes, $known);
-        if ($todo) {
-            foreach ($this->embeddings->imageVectors($todo) as $hash => $vector) {
-                if ($vector === null) {
-                    Log::warning("[Search] Unreadable image, not indexed (sha1 $hash)");
-                    continue;
-                }
-                DB::table('search_image_embeddings')->insertOrIgnore([
-                    'content_hash' => $hash, 'model' => $model,
-                    'vector' => json_encode($vector), 'created_at' => now(),
-                ]);
-                $known[$hash] = $vector;
+            $bytes = $disk->get($img->image_path);
+            $hashes[$img->id] = $hash = sha1($bytes);
+            $row = $existing[$img->id] ?? null;
+            if ($force || !$row || $row->content_hash !== $hash || $row->model !== $model) {
+                $todo[$img->id] = $bytes;
             }
         }
 
-        $out = [];
-        foreach ($hashes as $imageId => $hash) {
-            if (isset($known[$hash])) {
-                $out[$imageId] = $known[$hash];
+        // Same file already embedded with this model (another color, a duplicate upload): reuse it.
+        $known = $force || !$todo ? collect() : DB::table('image_fingerprints')->where('model', $model)
+            ->whereIn('content_hash', array_unique(array_intersect_key($hashes, $todo)))
+            ->get(['content_hash', 'vector', 'color'])->keyBy('content_hash');
+
+        // One request per distinct file (the same photo on two colors is sent once).
+        $describe = [];
+        foreach ($todo as $imageId => $bytes) {
+            if (!isset($known[$hashes[$imageId]])) {
+                $describe[$hashes[$imageId]] = $bytes;
             }
         }
-        return $out;
+        $fresh = $describe ? $this->client->describe($describe) : ['model' => $model, 'items' => []];
+
+        $changed = false;
+        $now = now();
+        foreach ($todo as $imageId => $_) {
+            if ($reuse = $known[$hashes[$imageId]] ?? null) {
+                [$vector, $color, $rowModel] = [$reuse->vector, $reuse->color, $model];
+            } elseif ($item = $fresh['items'][$hashes[$imageId]] ?? null) {
+                [$vector, $color, $rowModel] = [Fingerprint::pack($item['vector']), $item['color'], $fresh['model'] ?? $model];
+            } else {
+                Log::warning("[ImageSearch] Unreadable photo, not indexed (product_images.id $imageId)");
+                $failed++;
+                continue;
+            }
+            DB::table('image_fingerprints')->updateOrInsert(
+                ['product_image_id' => $imageId],
+                ['product_id' => $productId, 'content_hash' => $hashes[$imageId], 'model' => $rowModel,
+                 'vector' => $vector, 'color' => $color, 'created_at' => $now, 'updated_at' => $now],
+            );
+            $changed = true;
+        }
+
+        // Photos removed from the product (normally gone already through the foreign key).
+        $stale = $existing->keys()->diff($images->pluck('id'))->all();
+        if ($stale) {
+            DB::table('image_fingerprints')->whereIn('product_image_id', $stale)->delete();
+            $changed = true;
+        }
+
+        if ($changed && $bump) {
+            $this->index->bump();
+        }
+        return ['indexed' => DB::table('image_fingerprints')->where('product_id', $productId)->count(),
+                'embedded' => count(array_filter($fresh['items'])), 'removed' => false, 'failed' => $failed, 'changed' => $changed];
+    }
+
+    /** Searchable: approved, active, not deleted, and sold by an active seller. */
+    public static function isLive(Product $product): bool
+    {
+        return $product->is_approved && $product->is_active && !$product->trashed()
+            && (bool) DB::table('users')->where('id', $product->seller_id)->value('is_active');
     }
 }

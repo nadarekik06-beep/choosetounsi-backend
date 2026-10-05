@@ -38,9 +38,9 @@ class AppServiceProvider extends ServiceProvider
         // Sales forecasts recompute when counted sales change (confirmed, cancelled, returned)
         \App\Observers\ForecastTriggers::register();
 
-        // Search index sync (Meilisearch); Scout itself syncs the Product documents.
+        // Search index sync (text index, photo fingerprints, Meilisearch); Scout itself syncs the Product documents.
         foreach ([Product::class, \App\Models\ProductImage::class, \App\Models\ProductAttributeValue::class,
-                  \App\Models\Category::class, \App\Models\Subcategory::class] as $model) {
+                  \App\Models\Category::class, \App\Models\Subcategory::class, \App\Models\User::class] as $model) {
             $model::observe(\App\Observers\SearchIndexObserver::class);
         }
 

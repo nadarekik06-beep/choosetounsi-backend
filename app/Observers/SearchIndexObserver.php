@@ -8,6 +8,8 @@ use App\Models\Product;
 use App\Models\ProductAttributeValue;
 use App\Models\ProductImage;
 use App\Models\Subcategory;
+use App\Models\User;
+use App\Services\Search\FingerprintIndex;
 use App\Services\Search\SearchIndexer;
 use Illuminate\Database\Eloquent\Model;
 
@@ -18,11 +20,14 @@ use Illuminate\Database\Eloquent\Model;
  *  - product text / category / status, attribute values changed → its row is rebuilt
  *  - category / subcategory renamed                             → rows of its products rebuilt
  *
- * Meilisearch (search by image, semantic fallback), when search.indexing is on; the product
- * document itself is synced by Scout's own observer on Product, queued:
+ * Photo search (image_fingerprints, IndexProductImages job), when search.indexing is on:
+ *  - product goes live / offline / deleted / restored  → its photos are fingerprinted or removed
+ *  - product photo added, replaced or deleted           → photos re-fingerprinted (queued)
+ *  - product moved to another category                  → cached photo index rebuilt (centroids)
+ *  - seller activated / deactivated                     → cached photo index rebuilt
  *
- *  - product goes live / offline / deleted / restored  → its photos are (re)indexed or removed
- *  - product photo added, replaced or deleted           → photos re-embedded (queued)
+ * Meilisearch (semantic fallback), when search.indexing is on; the product document itself is
+ * synced by Scout's own observer on Product, queued:
  *  - attribute values change                            → product document refreshed
  *  - category / subcategory renamed                     → documents of its products refreshed
  *
@@ -45,6 +50,8 @@ class SearchIndexObserver
             $model instanceof ProductImage => $this->imagesChanged($model->product_id),
             $model instanceof ProductAttributeValue => $this->refreshProduct($model->product_id),
             $model instanceof Category, $model instanceof Subcategory => $this->categoryRenamed($model),
+            $model instanceof User => $model->role === 'seller' && $model->wasChanged('is_active')
+                ? app(FingerprintIndex::class)->bump() : null,
             default => null,
         };
     }
@@ -94,6 +101,8 @@ class SearchIndexObserver
         $inserted = $product->wasRecentlyCreated && !$product->getChanges();
         if ($inserted || $product->wasChanged(['is_approved', 'is_active', 'deleted_at'])) {
             IndexProductImages::dispatch($product->id);
+        } elseif ($product->wasChanged(['category_id', 'subcategory_id'])) {
+            app(FingerprintIndex::class)->bump();
         }
     }
 

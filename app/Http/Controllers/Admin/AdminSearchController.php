@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Services\Search\FingerprintIndex;
 use App\Services\Search\MeiliClient;
 use App\Services\Search\MissedQueries;
 use App\Services\Search\SearchUnavailable;
@@ -47,15 +48,12 @@ class AdminSearchController extends Controller
     }
 
     /** GET /api/admin/search/health — is each piece of search up, and how much is indexed. */
-    public function health(MeiliClient $meili)
+    public function health(MeiliClient $meili, FingerprintIndex $photos)
     {
-        $stats = [];
-        foreach (['products', 'images'] as $index) {
-            try {
-                $stats[$index] = $meili->stats($index)['numberOfDocuments'] ?? null;
-            } catch (SearchUnavailable) {
-                $stats[$index] = null;
-            }
+        try {
+            $productsIndexed = $meili->stats('products')['numberOfDocuments'] ?? null;
+        } catch (SearchUnavailable) {
+            $productsIndexed = null;
         }
 
         try {
@@ -67,8 +65,8 @@ class AdminSearchController extends Controller
         return response()->json([
             'success'          => true,
             'meilisearch'      => $meili->healthy(),
-            'products_indexed' => $stats['products'],
-            'photos_indexed'   => $stats['images'],
+            'products_indexed' => $productsIndexed,
+            'photos_indexed'   => $photos->get()['count'],
             'embedder'         => $embedder ? ['image_model' => $embedder['image_model'] ?? null, 'text_model' => $embedder['text_model'] ?? null] : null,
             'semantic_search'  => (bool) config('search.semantic.enabled'),
         ]);

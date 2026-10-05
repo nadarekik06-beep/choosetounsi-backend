@@ -54,5 +54,15 @@ class RouteServiceProvider extends ServiceProvider
         RateLimiter::for('api', function (Request $request) {
             return Limit::perMinute(60)->by(optional($request->user())->id ?: $request->ip());
         });
+
+        // Search by photo: each search runs the image model (config search.image.per_minute).
+        RateLimiter::for('image-search', function (Request $request) {
+            $user = $request->user('sanctum');
+            return Limit::perMinute((int) config('search.image.per_minute', 10))
+                ->by($user ? 'u' . $user->id : 'ip' . $request->ip())
+                ->response(fn () => response()->json([
+                    'success' => false, 'code' => 'rate_limited', 'message' => __('messages.search.image_too_many'),
+                ], 429));
+        });
     }
 }

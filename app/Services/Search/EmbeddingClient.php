@@ -8,11 +8,12 @@ use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
- * Calls choosetounsi-ai-service (POST /embed/text, /embed/image) through Http::ai().
+ * Text vectors for the semantic fallback: choosetounsi-ai-service POST /embed/text through Http::ai().
+ * (Photos: FingerprintClient.)
  *
  * Query-time calls are short and skip the service for a minute after a failure, so a
- * stopped service costs one slow request, not one per search. Indexing calls (queued jobs)
- * get longer timeouts and throw, so the job is retried later.
+ * stopped service costs one slow request, not one per search. Indexing calls get longer
+ * timeouts and throw.
  */
 class EmbeddingClient
 {
@@ -74,63 +75,6 @@ class EmbeddingClient
         return $out;
     }
 
-    /** Vector for an uploaded photo (search by image), or null when the service can't answer. */
-    public function queryImageVector(string $bytes): ?array
-    {
-        try {
-            $res = Http::ai()->timeout((float) config('search.image.timeout', 10))
-                ->withOptions(['connect_timeout' => 2])
-                ->attach('files', $bytes, 'query.jpg')
-                ->post($this->url('/embed/image'));
-        } catch (Throwable $e) {
-            Log::warning('[Search] Image embedding unavailable: ' . $e->getMessage());
-            return null;
-        }
-        if (!$res->successful()) {
-            Log::warning('[Search] Image embedding failed: HTTP ' . $res->status());
-            return null;
-        }
-        return $res->json('vectors.0');
-    }
-
-    /**
-     * @param  array<int|string, string> $images key => raw bytes
-     * @return array<int|string, array|null> null for an image the service couldn't read
-     * @throws SearchUnavailable when the service is unreachable
-     */
-    public function imageVectors(array $images): array
-    {
-        $out = [];
-        foreach (array_chunk($images, 8, true) as $chunk) {
-            $req = Http::ai()->timeout(60)->withOptions(['connect_timeout' => 2]);
-            foreach ($chunk as $k => $bytes) {
-                $req = $req->attach('files', $bytes, "image-$k.jpg");
-            }
-            try {
-                $res = $req->post($this->url('/embed/image'));
-            } catch (Throwable $e) {
-                throw new SearchUnavailable('Embedding service unreachable: ' . $e->getMessage(), 0, $e);
-            }
-            if ($res->status() === 422) {          // every image in the chunk unreadable
-                foreach (array_keys($chunk) as $k) {
-                    $out[$k] = null;
-                }
-                continue;
-            }
-            if (!$res->successful()) {
-                throw new SearchUnavailable('Embedding service: HTTP ' . $res->status(), $res->status());
-            }
-            foreach (array_keys($chunk) as $i => $k) {
-                $out[$k] = $res->json("vectors.$i");
-            }
-        }
-        return $out;
-    }
-
-    public function imageModel(): string
-    {
-        return (string) config('services.ai.image_model', 'clip-vision-int8');
-    }
 
     /** @throws SearchUnavailable */
     private function texts(array $texts, float $timeout): array

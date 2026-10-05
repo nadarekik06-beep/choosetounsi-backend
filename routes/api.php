@@ -107,7 +107,9 @@ Route::get('/seller-landing',        [\App\Http\Controllers\Api\PlatformInfoCont
 Route::get('/checkout/payment-info', [\App\Http\Controllers\Api\PlatformInfoController::class, 'paymentInfo']);
 
 Route::post('/search/text',  [\App\Http\Controllers\Api\SearchController::class, 'searchText']);
-Route::post('/search/image', [\App\Http\Controllers\Api\SearchController::class, 'searchImage']);
+Route::post('/search/image', [\App\Http\Controllers\Api\SearchController::class, 'searchImage'])->middleware('throttle:image-search');
+Route::get('/search/image/status',  [\App\Http\Controllers\Api\SearchController::class, 'imageStatus']);
+Route::post('/search/image/click',  [\App\Http\Controllers\Api\SearchController::class, 'imageClick'])->middleware('throttle:30,1');
 Route::get('/search/suggestions', [\App\Http\Controllers\Api\SearchController::class, 'suggestions']);
 Route::get('/brand-products',          [PublicBrandProductController::class, 'index']);
 Route::get('/brand-products/featured', [PublicBrandProductController::class, 'featured']);

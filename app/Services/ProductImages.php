@@ -305,6 +305,11 @@ class ProductImages
             $orphans[] = $path;
         }
 
+        // Bulk deletes skip model events: tell photo search (creates/updates already did).
+        if ($orphans && config('search.indexing')) {
+            \App\Jobs\IndexProductImages::dispatch($product->id);
+        }
+
         unset(self::$memo[$product->id]);
         ProductCardImages::flush();
         return $orphans;

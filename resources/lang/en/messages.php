@@ -152,6 +152,7 @@ return [
     'search' => [
         'no_similar' => 'No similar products found for this image.',
         'image_unavailable' => 'Image search is temporarily unavailable.',
+        'image_too_many' => 'Too many photo searches. Please wait a minute and try again.',
     ],
     'not_found' => [
         'pack' => 'Pack not found.',

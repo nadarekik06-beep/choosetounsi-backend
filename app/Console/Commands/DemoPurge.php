@@ -183,9 +183,8 @@ class DemoPurge extends Command
         try {
             $meili = app(MeiliClient::class);
             $meili->deleteDocuments('products', $productIds);
-            foreach (array_chunk($productIds, 100) as $chunk) {
-                $meili->deleteByFilter('images', 'product_id IN [' . implode(',', $chunk) . ']');
-            }
+            // Photo fingerprints are deleted with their products (foreign keys); drop the cached index.
+            app(\App\Services\Search\FingerprintIndex::class)->bump();
         } catch (SearchUnavailable $e) {
             $this->warn('Search index not updated (' . $e->getMessage() . '): run php artisan search:reindex later.');
         }

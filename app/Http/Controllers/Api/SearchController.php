@@ -6,6 +6,8 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Services\PromotionService;
 use App\Services\Recommendation\InteractionTracker;
+use App\Services\Search\FingerprintClient;
+use App\Services\Search\FingerprintIndex;
 use App\Services\Search\ImageSearch;
 use App\Services\Search\ProductSearch;
 use App\Services\Search\SearchUnavailable;
@@ -91,30 +93,98 @@ class SearchController extends Controller
         ]);
     }
 
-    /** POST /api/search/image (multipart "image") */
+    /**
+     * POST /api/search/image (multipart "image": the cropped photo, ~512 px; throttled)
+     *
+     * {
+     *   "success": true, "source": "ai", "search_id": 42, "count": 9, "fallback": false,
+     *   "predicted_category": {"id": 2, "type": "subcategory", "name": "Robe", "slug": "dress", "category": {...}, "confident": true} | null,
+     *   "sections": { "exact": [cards], "similar": [cards] }
+     * }
+     * Each card also has match ("exact" | "similar"), similarity, and, when the best photo is a
+     * color photo, matched_color_id + image_url (that photo). fallback=true: nothing passed the
+     * threshold, "similar" holds the closest products of the predicted category.
+     * 503 {"success": false, "code": "unavailable"} when the AI service is down or slow.
+     */
     public function searchImage(Request $request, ImageSearch $search)
     {
         $request->validate([
             'image' => 'required|file|mimes:jpeg,jpg,png,webp|max:10240',
-            'limit' => 'sometimes|integer|min:1|max:30',
         ]);
 
+        $start = microtime(true);
+        $bytes = file_get_contents($request->file('image')->getRealPath());
         try {
-            $scores = $search->search(file_get_contents($request->file('image')->getRealPath()), (int) $request->input('limit', 20));
+            $result = $search->search($bytes);
         } catch (SearchUnavailable $e) {
-            Log::warning('[Search] Image search unavailable: ' . $e->getMessage());
-            return response()->json(['success' => false, 'message' => __('messages.search.image_unavailable')], 503);
+            Log::warning('[ImageSearch] Unavailable: ' . $e->getMessage());
+            $rejected = in_array($e->status, [413, 422], true);
+            return response()->json([
+                'success' => false,
+                'code'    => $rejected ? 'unreadable' : 'unavailable',
+                'message' => __($rejected ? 'messages.search.no_similar' : 'messages.search.image_unavailable'),
+            ], $rejected ? 422 : 503);
         }
 
-        $products = $this->fetchProductsByIds(array_keys($scores), [], count($scores) ?: 1);
+        $hits   = $result['exact'] + $result['similar'];
+        $cards  = collect($this->fetchProductsByIds(array_keys($hits), [], count($hits) ?: 1))->keyBy('id');
+        $photos = DB::table('product_images')->whereIn('id', array_column($hits, 'image_id'))->pluck('image_path', 'id');
+
+        $section = function (array $ids, string $match) use ($cards, $hits, $photos) {
+            $out = [];
+            foreach ($ids as $id) {
+                if (!$card = $cards->get($id)) {
+                    continue;
+                }
+                $hit = $hits[$id];
+                $card['match'] = $match;
+                $card['similarity'] = $hit['similarity'];
+                // Best photo is a color photo: show that color and preselect it on the product page.
+                if ($hit['color_option_id'] && isset($photos[$hit['image_id']])) {
+                    $card['matched_color_id'] = $hit['color_option_id'];
+                    $card['image_url'] = config('app.url') . '/storage/' . $photos[$hit['image_id']];
+                }
+                $out[] = $card;
+            }
+            return $out;
+        };
+        $sections = [
+            'exact'   => $section(array_keys($result['exact']), 'exact'),
+            'similar' => $section(array_keys($result['similar']), 'similar'),
+        ];
+
+        $searchId = $this->logImageSearch($request, $bytes, $result, $sections, $start);
         return response()->json(array_filter([
-            'success'  => true,
-            'source'   => 'ai',
-            'query'    => '[image search]',
-            'count'    => count($products),
-            'products' => $products,
-            'message'  => $products ? null : __('messages.search.no_similar'),
+            'success'            => true,
+            'source'             => 'ai',
+            'search_id'          => $searchId,
+            'count'              => count($sections['exact']) + count($sections['similar']),
+            'fallback'           => $result['fallback'],
+            'predicted_category' => $this->predictedCategory($result['prediction']),
+            'sections'           => $sections,
+            'message'            => $sections['exact'] || $sections['similar'] ? null : __('messages.search.no_similar'),
         ], fn ($v) => $v !== null));
+    }
+
+    /** GET /api/search/image/status — camera button: is photo search usable right now? */
+    public function imageStatus(FingerprintClient $client)
+    {
+        $available = $client->health() !== null && FingerprintIndex::hasPhotos();
+        return response()->json(['available' => $available]);
+    }
+
+    /** POST /api/search/image/click {search_id, product_id, rank} — which result was opened (first click only). */
+    public function imageClick(Request $request)
+    {
+        $data = $request->validate([
+            'search_id'  => 'required|integer|min:1',
+            'product_id' => 'required|integer|min:1',
+            'rank'       => 'sometimes|integer|min:1|max:100',
+        ]);
+        DB::table('image_search_logs')->where('id', $data['search_id'])->whereNull('clicked_at')
+            ->where('created_at', '>=', now()->subDay())
+            ->update(['clicked_product_id' => $data['product_id'], 'clicked_rank' => $data['rank'] ?? null, 'clicked_at' => now()]);
+        return response()->json(['success' => true]);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -250,5 +320,56 @@ class SearchController extends Controller
             'search_query' => $query,
             'category_id'  => $categoryId ? (int) $categoryId : null,
         ]);
+    }
+
+    /** The detected category as the storefront shows it (localized), null when there is none. */
+    private function predictedCategory(?array $prediction): ?array
+    {
+        if (!$prediction || !$prediction['category_id']) {
+            return null;
+        }
+        $category = DB::table('categories')->where('id', $prediction['category_id'])->first(['id', 'name', 'name_fr', 'name_ar', 'slug']);
+        if (!$category) {
+            return null;
+        }
+        $sub = $prediction['subcategory_id']
+            ? DB::table('subcategories')->where('id', $prediction['subcategory_id'])->first(['id', 'name', 'name_fr', 'name_ar', 'slug'])
+            : null;
+        $main = $sub ?? $category;
+        return [
+            'id'        => (int) $main->id,
+            'type'      => $sub ? 'subcategory' : 'category',
+            'name'      => Localization::column($main, 'name'),
+            'slug'      => $main->slug,
+            'category'  => ['id' => (int) $category->id, 'name' => Localization::column($category, 'name'), 'slug' => $category->slug],
+            'confident' => (bool) $prediction['confident'],
+        ];
+    }
+
+    /** One row per photo search (image_search_logs), to tune the thresholds later. */
+    private function logImageSearch(Request $request, string $bytes, array $result, array $sections, float $start): ?int
+    {
+        try {
+            $p = $result['prediction'];
+            return DB::table('image_search_logs')->insertGetId([
+                'user_id'                  => optional($request->user('sanctum'))->id,
+                'image_hash'               => sha1($bytes),
+                'predicted_category_id'    => $p['category_id'] ?? null,
+                'predicted_subcategory_id' => $p['subcategory_id'] ?? null,
+                'category_confidence'      => $p['margin'] ?? null,
+                'category_confident'       => (bool) ($p['confident'] ?? false),
+                'query_color'              => $result['color'],
+                'top_scores'               => json_encode($result['top']),
+                'exact_count'              => count($sections['exact']),
+                'similar_count'            => count($sections['similar']),
+                'fallback'                 => $result['fallback'],
+                'cached'                   => $result['cached'],
+                'duration_ms'              => (int) round((microtime(true) - $start) * 1000),
+                'created_at'               => now(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('[ImageSearch] Not logged: ' . $e->getMessage());
+            return null;
+        }
     }
 }

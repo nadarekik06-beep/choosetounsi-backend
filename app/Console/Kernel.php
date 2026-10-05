@@ -70,12 +70,20 @@ class Kernel extends ConsoleKernel
         $schedule->command('search:build-index')
             ->dailyAt('02:15')->timezone(config('ads.timezone'))
             ->withoutOverlapping()->runInBackground();
-        // Meilisearch (search by image, semantic fallback).
-        // Observers + queued jobs keep them current; this nightly pass is the safety net
-        // (and adds text vectors missed while the embedding service was down).
+        // Meilisearch (semantic fallback). Scout keeps it current; this nightly pass is the safety
+        // net (and adds text vectors missed while the embedding service was down).
         $schedule->command('search:reindex')
             ->dailyAt('02:30')->timezone(config('ads.timezone'))
             ->withoutOverlapping()->runInBackground();
+        // Photo search fingerprints (MySQL): the IndexProductImages job keeps them current; this
+        // catches photos missed while the AI service was down and refreshes the cached index.
+        $schedule->command('image-search:rebuild')
+            ->dailyAt('02:45')->timezone(config('ads.timezone'))
+            ->withoutOverlapping()->runInBackground();
+        // Photo search logs are only for tuning: keep search.image.log_days of them.
+        $schedule->call(fn () => \Illuminate\Support\Facades\DB::table('image_search_logs')
+                ->where('created_at', '<', now()->subDays((int) config('search.image.log_days', 180)))->delete())
+            ->name('image-search:prune-logs')->weeklyOn(1, '04:15')->withoutOverlapping();
 
         // ── Homepage personalization ───────────────────────────────────────
         // Profiles also rebuild lazily on demand; these just warm them and keep tables bounded.

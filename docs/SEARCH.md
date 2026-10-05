@@ -17,8 +17,7 @@ Only Laravel talks to Meilisearch and the embedding service; the storefront call
   order of weight: name, FR/EN/AR translated names, category + subcategory names (3 languages),
   attribute values and variant options, description with the catalog's shared template text
   removed (`BoilerplateFilter`). Optional 384-dim text vector (`embedder: text`).
-- **product_images**: one document per product or variant photo with its 512-dim CLIP vector
-  (`embedder: clip`); `distinctAttribute: product_id`, so a product shows up once.
+- Photos are not in Meilisearch: see "Search by photo" (MySQL `image_fingerprints`).
 
 Stock, price, ratings and sales are **not** in the index: they are read live from MySQL when
 ranking, so they are never stale.
@@ -28,19 +27,18 @@ ranking, so they are never stale.
 | Change | What happens |
 |---|---|
 | product created / text, category or status changed / deleted / restored | Scout queues the document update (or removal) |
-| photo added, replaced, deleted; product goes live/offline | `IndexProductImages` job (queued, one per product, 5 s delay) |
+| photo added, replaced, deleted; product goes live/offline | `IndexProductImages` job → `image_fingerprints` (queued, one per product, 5 s delay) |
 | variant added/removed/(de)activated | product document + photos refreshed |
 | attribute values, category renamed, translations arrive | product document(s) refreshed |
 | stock, price, views | nothing (read live) |
 
-Photo vectors are stored in `search_image_embeddings` by file content, so each file is embedded
-once and a rebuild doesn't re-embed anything. Text vectors are cached by content too.
+Text vectors are cached by content, so a rebuild doesn't re-embed unchanged products.
 
 Commands:
 
 ```powershell
-php artisan search:reindex              # full rebuild from MySQL (also runs nightly at 02:30)
-php artisan search:reindex --no-images  # products only
+php artisan search:reindex              # Meilisearch products, full rebuild (nightly 02:30)
+php artisan image-search:rebuild        # photo fingerprints (nightly 02:45)
 php artisan search:sync-settings        # push resources/search/synonyms.txt + settings
 ```
 
@@ -73,12 +71,48 @@ Include the English word when products are named in English. After editing:
 `php artisan search:sync-settings`. The admin panel's **Missed searches** page lists what
 customers searched without results: the best source of new lines.
 
-## Search by image (`ImageSearch`)
+## Search by photo (`ImageSearch`)
 
-Photo → CLIP vector → nearest photos (one hit per product) → keep similarity ≥
-`IMAGE_SEARCH_MIN_SIMILARITY` (0.72) and within `IMAGE_SEARCH_MAX_GAP` (0.18) of the best →
-+0.02 for products in the category that dominates the 5 nearest photos (soft, no filtering).
-Embedding service down → HTTP 503 with "temporarily unavailable".
+Fingerprints live in MySQL (`image_fingerprints`): one 512-dim CLIP vector per product or
+color photo, float32 BLOB (2 KB), L2-normalized at insert, with the model that made it
+(`clip-vision-int8.onnx@<hash>`). Only photos of live products of active sellers are
+searchable. `FingerprintIndex` keeps them in the Laravel cache (one blob per catalog
+version); any change bumps the version, which also drops cached results.
+
+Kept current by the `IndexProductImages` job (photo added/replaced/deleted, product goes
+live/offline) and `php artisan image-search:rebuild` (nightly 02:45; `--fresh` re-embeds
+everything, needed after a model change).
+
+A search:
+
+1. The storefront crops the photo to the item and resizes it to ≤ 512 px (JPEG).
+2. AI service `/embed/query` (≈3 s timeout): mean vector of the photo, a tighter center crop
+   and its mirror image, + the item's dominant color.
+3. Similarity to every catalog photo (dot product); best photo per product.
+4. Category detection: similarity to each category's centroid (mean of its photos; the
+   finest category: subcategory, else category). Confident = best ≥ `IMAGE_SEARCH_CENTROID_MIN`
+   and ahead of the second by `IMAGE_SEARCH_MARGIN_MIN`, or confirmed by the categories of
+   the 5 nearest products. Confident → +`IMAGE_SEARCH_CATEGORY_BOOST` for the top 1–2
+   categories, and other categories need similarity ≥ `IMAGE_SEARCH_OUTSIDE_MIN`.
+5. +`IMAGE_SEARCH_VOTE_BOOST` for the category of most of the 5 nearest products,
+   +up to `IMAGE_SEARCH_COLOR_BOOST` for the same dominant color (CIELAB distance).
+6. Sections: **exact** = similarity ≥ `IMAGE_SEARCH_EXACT`; **similar** = score ≥
+   `IMAGE_SEARCH_MIN_SCORE` and within `IMAGE_SEARCH_MAX_GAP` of the best similar one.
+   Nothing → the closest products of the predicted category (`fallback: true`).
+7. A color photo as best match → the card shows it and links with `?color=` (preselected).
+
+Every search is logged in `image_search_logs` (predicted category, margin, top 5 scores,
+counts, first clicked result) to tune the thresholds:
+
+```sql
+SELECT DATE(created_at) day, COUNT(*) searches, AVG(exact_count > 0) with_exact,
+       AVG(fallback) fallback, AVG(clicked_product_id IS NOT NULL) clicked, AVG(clicked_rank) rank
+FROM image_search_logs GROUP BY day ORDER BY day DESC;
+```
+
+Results are cached 10 min per photo (sha1); 10 searches/min per user or IP. AI service down
+or slow → HTTP 503 `code: unavailable`, the camera button greys out
+(`GET /api/search/image/status`), text search is untouched.
 
 ## Turning semantic search off
 

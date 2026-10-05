@@ -5,6 +5,9 @@ namespace Tests\Feature\Search;
 use App\Jobs\IndexProductImages;
 use App\Models\ProductImage;
 use App\Services\Search\BoilerplateFilter;
+use App\Services\Search\Fingerprint;
+use App\Services\Search\FingerprintClient;
+use App\Services\Search\FingerprintIndex;
 use App\Services\Search\ImageIndexer;
 use App\Services\Search\ProductDocument;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
@@ -87,51 +90,58 @@ class IndexingTest extends TestCase
         $this->assertNotEmpty($doc['name']);
     }
 
-    public function test_every_photo_is_embedded_once_and_replaced_in_the_image_index(): void
+    public function test_every_photo_is_fingerprinted_once_as_a_normalized_float32_blob(): void
     {
         Storage::fake('public');
         Storage::disk('public')->put('products/a.jpg', 'A-bytes');
         Storage::disk('public')->put('products/b.jpg', 'B-bytes');
         $seller = $this->makeUser('seller');
         $p = $this->makeProduct($seller, $this->makeCategory());
-        $main = ProductImage::create(['product_id' => $p->id, 'image_path' => 'products/a.jpg', 'is_primary' => true]);
-        $variantPhoto = ProductImage::create(['product_id' => $p->id, 'image_path' => 'products/b.jpg']);
-        $dupe = ProductImage::create(['product_id' => $p->id, 'image_path' => 'products/a.jpg']);
+        ProductImage::create(['product_id' => $p->id, 'image_path' => 'products/a.jpg', 'is_primary' => true]);
+        ProductImage::create(['product_id' => $p->id, 'image_path' => 'products/b.jpg']);
+        ProductImage::create(['product_id' => $p->id, 'image_path' => 'products/a.jpg']);   // same file, another color
 
         Http::fake([
-            'ai.test/embed/image' => Http::response(['vectors' => [array_fill(0, 512, 0.1), array_fill(0, 512, 0.2)], 'errors' => []]),
-            'meili.test/*' => Http::response(['taskUid' => 1], 202),
+            'ai.test/health' => Http::response(['status' => 'ok', 'image_model' => 'clip-test@1']),
+            'ai.test/embed/image' => Http::response(['model' => 'clip-test@1', 'vectors' => [array_fill(0, 512, 3.0), array_fill(0, 512, -2.0)],
+                                                     'colors' => ['#112233', '#ffffff'], 'errors' => []]),
         ]);
+        $v1 = app(FingerprintIndex::class)->version();
 
         $r = app(ImageIndexer::class)->syncProduct($p->id);
+
         $this->assertSame(3, $r['indexed']);
+        Http::assertSent(fn (Request $req) => str_ends_with($req->url(), '/embed/image') && count($req->data()) === 2);
+        $rows = DB::table('image_fingerprints')->where('product_id', $p->id)->get();
+        $this->assertCount(3, $rows);
+        foreach ($rows as $row) {
+            $this->assertSame(2048, strlen($row->vector));
+            $v = Fingerprint::unpack($row->vector);
+            $this->assertEqualsWithDelta(1.0, Fingerprint::dot($v, $v), 1e-5, 'L2-normalized at insert');
+            $this->assertSame('clip-test@1', $row->model);
+        }
+        $this->assertGreaterThan($v1, app(FingerprintIndex::class)->version(), 'cached index invalidated');
 
-        Http::assertSent(fn (Request $req) => str_ends_with($req->url(), '/documents/delete')
-            && $req['filter'] === "product_id = {$p->id}");
-        Http::assertSent(function (Request $req) use ($main, $variantPhoto, $dupe) {
-            if (!str_contains($req->url(), 'product_images/documents?primaryKey=id')) {
-                return false;
-            }
-            $ids = array_column($req->data(), 'id');
-            sort($ids);
-            return $ids === [$main->id, $variantPhoto->id, $dupe->id];
-        });
-        $this->assertSame(2, DB::table('search_image_embeddings')->whereIn('content_hash', [sha1('A-bytes'), sha1('B-bytes')])->count(),
-            'identical files share one vector');
-
-        // Second run: nothing to embed.
-        Http::fake(['ai.test/*' => Http::response('should not be called', 500), 'meili.test/*' => Http::response(['taskUid' => 2], 202)]);
-        $this->assertSame(3, app(ImageIndexer::class)->syncProduct($p->id)['indexed']);
+        // Second run: nothing changed, nothing sent to the AI service.
+        Http::fake([
+            'ai.test/health' => Http::response(['status' => 'ok', 'image_model' => 'clip-test@1']),
+            'ai.test/embed/image' => Http::response('should not be called', 500),
+        ]);
+        Cache::forget(FingerprintClient::HEALTH_KEY);
+        $this->assertSame(['indexed' => 3, 'embedded' => 0], array_intersect_key(app(ImageIndexer::class)->syncProduct($p->id), ['indexed' => 1, 'embedded' => 1]));
     }
 
     public function test_photos_of_a_product_that_is_not_live_are_removed(): void
     {
         $seller = $this->makeUser('seller');
-        $p = $this->makeProduct($seller, $this->makeCategory(), ['is_active' => false]);
-        Http::fake(['meili.test/*' => Http::response(['taskUid' => 1], 202)]);
+        $p = $this->makeProduct($seller, $this->makeCategory());
+        $img = ProductImage::create(['product_id' => $p->id, 'image_path' => 'products/x.jpg']);
+        DB::table('image_fingerprints')->insert(['product_image_id' => $img->id, 'product_id' => $p->id, 'content_hash' => sha1('x'),
+            'model' => 'm', 'vector' => Fingerprint::pack(array_fill(0, 512, 1.0))]);
+        DB::table('products')->where('id', $p->id)->update(['is_active' => false]);
 
         $this->assertTrue(app(ImageIndexer::class)->syncProduct($p->id)['removed']);
-        Http::assertSentCount(1);
+        $this->assertSame(0, DB::table('image_fingerprints')->where('product_id', $p->id)->count());
     }
 
     public function test_photo_changes_and_status_changes_queue_image_indexing(): void

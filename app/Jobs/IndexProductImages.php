@@ -12,9 +12,10 @@ use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
- * Embeds a product's photos and refreshes them in the image search index. Queued so an upload
- * request never waits for the model; one pending job per product (an upload of 6 photos
- * dispatches 6 times but runs once, after they are all saved).
+ * Fingerprints a product's photos (image_fingerprints) or removes them when the product is no
+ * longer searchable, then invalidates the cached photo index. Queued so an upload request never
+ * waits for the model; one pending job per product (an upload of 6 photos dispatches 6 times
+ * but runs once, after they are all saved).
  */
 class IndexProductImages implements ShouldQueue, ShouldBeUniqueUntilProcessing
 {
@@ -34,7 +35,7 @@ class IndexProductImages implements ShouldQueue, ShouldBeUniqueUntilProcessing
         return (string) $this->productId;
     }
 
-    /** Embedding service restarting or Meilisearch busy: wait and retry. */
+    /** AI service restarting or down: wait and retry. */
     public function backoff(): array
     {
         return [30, 120, 600, 1800];
@@ -46,11 +47,11 @@ class IndexProductImages implements ShouldQueue, ShouldBeUniqueUntilProcessing
             $indexer->syncProduct($this->productId);
         } catch (Throwable $e) {
             // On a real queue the job is retried (backoff). Run inline (QUEUE_CONNECTION=sync) it
-            // would fail the seller's request instead: log it, `php artisan search:reindex` catches up.
+            // would fail the seller's request instead: log it, `php artisan image-search:rebuild` catches up.
             if (!$this->runsInline()) {
                 throw $e;
             }
-            Log::warning("[Search] Photos of product {$this->productId} not indexed: {$e->getMessage()}");
+            Log::warning("[ImageSearch] Photos of product {$this->productId} not indexed: {$e->getMessage()}");
         }
     }
 

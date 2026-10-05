@@ -5,7 +5,6 @@ namespace Tests\Feature\Search;
 use App\Models\Category;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Http\Client\Request;
-use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -13,7 +12,8 @@ use Tests\Feature\Recommendation\MakesCatalog;
 use Tests\TestCase;
 
 /**
- * Search API: MySQL keyword search; faked Meilisearch / embedding service for the semantic fallback and image search.
+ * Search API: MySQL keyword search; faked Meilisearch / embedding service for the semantic fallback.
+ * Photo search: ImageSearchTest.
  * php vendor/bin/phpunit tests/Feature/Search/SearchApiTest.php
  */
 class SearchApiTest extends TestCase
@@ -29,12 +29,6 @@ class SearchApiTest extends TestCase
             'services.ai.url' => 'http://ai.test', 'search.meilisearch.host' => 'http://meili.test',
             'search.semantic.enabled' => true, 'search.semantic.min_score' => 0.6,
         ]);
-    }
-
-    /** A real 8×8 JPEG (no GD needed). */
-    private function photo(): UploadedFile
-    {
-        return UploadedFile::fake()->createWithContent('q.jpg', base64_decode('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABALDA4MChAODQ4SERATGCgaGBYWGDEjJR0oOjM9PDkzODdASFxOQERXRTc4UG1RV19iZ2hnPk1xeXBkeFxlZ2P/2wBDARESEhgVGC8aGi9jQjhCY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2P/wAARCAAIAAgDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDHooorhPqD/9k='));
     }
 
     /** Meilisearch answers per query text; the embedding service returns a fixed vector. */
@@ -198,53 +192,5 @@ class SearchApiTest extends TestCase
 
         $this->getJson('/api/search/suggestions?q=' . urlencode('miel qz'), ['Accept-Language' => 'fr'])
             ->assertOk()->assertJsonPath('suggestions', ['Miel de qzthym']);
-    }
-
-    public function test_image_search_dedupes_thresholds_and_boosts_the_majority_category(): void
-    {
-        $seller = $this->makeUser('seller');
-        $shoes = $this->makeCategory();
-        $other = $this->makeCategory();
-        $same = $this->makeProduct($seller, $shoes);
-        $similarShoe = $this->makeProduct($seller, $shoes);
-        $otherCat = $this->makeProduct($seller, $other);
-        $farAway = $this->makeProduct($seller, $other);
-        config(['search.image.min_similarity' => 0.7, 'search.image.max_gap' => 0.2, 'search.image.category_boost' => 0.05]);
-
-        $score = fn (float $cos) => (1 + $cos) / 2;
-        Http::fake([
-            'ai.test/embed/image' => Http::response(['vectors' => [array_fill(0, 512, 0.04)]]),
-            'meili.test/*' => Http::response(['hits' => [
-                ['product_id' => $same->id, '_rankingScore' => $score(0.92)],
-                ['product_id' => $otherCat->id, '_rankingScore' => $score(0.80)],
-                ['product_id' => $similarShoe->id, '_rankingScore' => $score(0.78)],
-                ['product_id' => $farAway->id, '_rankingScore' => $score(0.60)],
-            ]]),
-        ]);
-
-        $res = $this->post('/api/search/image', ['image' => $this->photo()], ['Accept' => 'application/json'])->assertOk();
-
-        $this->assertSame([$same->id, $similarShoe->id, $otherCat->id], array_column($res['products'], 'id'),
-            'below-threshold photo dropped; same-category shoe overtakes the other category');
-        Http::assertSent(fn (Request $r) => str_contains($r->url(), '/product_images/search') && $r['hybrid']['embedder'] === 'clip');
-    }
-
-    public function test_image_search_reports_unavailable_cleanly(): void
-    {
-        Http::fake(['ai.test/*' => Http::response('down', 503)]);
-        $this->post('/api/search/image', ['image' => $this->photo()], ['Accept' => 'application/json'])
-            ->assertStatus(503)->assertJsonPath('success', false)
-            ->assertJsonPath('message', __('messages.search.image_unavailable'));
-    }
-
-    public function test_image_with_nothing_similar_enough_returns_no_products(): void
-    {
-        $p = $this->makeProduct($this->makeUser('seller'), $this->makeCategory());
-        Http::fake([
-            'ai.test/embed/image' => Http::response(['vectors' => [array_fill(0, 512, 0.04)]]),
-            'meili.test/*' => Http::response(['hits' => [['product_id' => $p->id, '_rankingScore' => (1 + 0.55) / 2]]]),
-        ]);
-        $this->post('/api/search/image', ['image' => $this->photo()], ['Accept' => 'application/json'])
-            ->assertOk()->assertJsonPath('count', 0)->assertJsonPath('message', __('messages.search.no_similar'));
     }
 }
