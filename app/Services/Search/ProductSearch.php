@@ -2,194 +2,301 @@
 
 namespace App\Services\Search;
 
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
- * The search bar.
+ * The search bar: deterministic keyword search on MySQL (product_search_index).
  *
- *  1. Normalize the query (QueryNormalizer).
- *  2. Meilisearch keyword search (typo tolerance + the synonym file) and, when semantic
- *     search is on and the embedding service answers, a multilingual vector search, in one
- *     multi-search call. Keyword matches come first; up to 6 vector-only matches that clear
- *     a similarity bar are added after them (or stand alone when no keyword matched).
- *  3. Fewer than 3 keyword matches → "did you mean" (catalog vocabulary), searched again;
- *     kept when it matches more. Keyword matches rank before vector-only ones.
- *  4. Still nothing → close alternatives (best vector matches) instead of an empty page.
- *  5. Business signals (stock, rating, recent sales, featured) reorder close matches.
- *  6. Meilisearch down → basic MySQL search (source "fallback").
+ *  1. The query is cut into search tokens (SearchText: accents, plurals, stop words, Arabic)
+ *     and grouped into concepts; each concept also carries its synonyms (synonyms.txt), which
+ *     only count inside the categories the synonym line is limited to.
+ *  2. Each product is scored per concept, on where the word is found:
+ *         name, exact word 60 · category 50 · name, word start 35 · brand/attributes 20 · description 8
+ *     a synonym counts 40% (best of word/synonyms per field, fields added up: an "ensemble"
+ *     named product in the ENSEMBLES category scores 110, a "Dress" in the Robe category 74),
+ *     the whole query being a product's full name adds 40.
+ *  3. "direct" = every concept found in the name, category or attributes (≥ 20 each);
+ *     anything weaker (description only, some words only) is "weak" and never a best result.
+ *  4. Fewer than 3 direct results → each unknown word is corrected against the catalog
+ *     vocabulary (DidYouMean) and the corrected query is kept when it finds more.
+ *  5. Nothing at all → semantic search (embedding service + Meilisearch vectors) as a last
+ *     resort, with short timeouts; its results are only shown as "closest products".
+ *  6. Ties (a few points at most): in stock, rating, recent sales, real photo.
  *
  * Zero/low-result queries are logged for the admin "Missed searches" page.
  */
 class ProductSearch
 {
-    const CANDIDATES = 100;
-    const VECTOR_CANDIDATES = 20;
-    const VECTOR_EXTRAS = 6;
-    const NAME_FIELDS = ['name', 'name_en', 'name_fr', 'name_ar'];
+    const NAME = 60;
+    const NAME_PREFIX = 35;
+    const CATEGORY = 50;
+    const CATEGORY_PREFIX = 30;
+    const EXTRA = 20;
+    const DESCRIPTION = 8;
+    const SYNONYM = 0.4;
+    const FULL_NAME_BONUS = 40;
+    /** Every concept must score at least this for a "direct" (best) result: attributes or better. */
+    const MIN_DIRECT = 20;
+    const MAX_TOKENS = 8;
+    const MAX_CANDIDATES = 2000;
+    const SEMANTIC_CANDIDATES = 12;
+    const SEMANTIC_DOWN = 'search:semantic_down';
 
     public function __construct(
-        private MeiliClient $meili,
-        private EmbeddingClient $embeddings,
-        private QueryNormalizer $normalizer,
+        private SearchText $text,
+        private Synonyms $synonyms,
         private DidYouMean $didYouMean,
         private BusinessSignals $signals,
-        private MysqlFallbackSearch $fallback,
+        private EmbeddingClient $embeddings,
+        private MeiliClient $meili,
         private MissedQueries $missed,
     ) {}
 
     /**
      * @return array{
-     *   hits: array<int, array{score: float, keyword: bool, name_match: bool}>,  ordered best first
-     *   did_you_mean: ?string, alternatives: bool, source: string, semantic: bool, normalized: string
+     *   direct: array<int, float>, weak: array<int, float>, semantic: array<int, float>,   product id => score, best first
+     *   did_you_mean: ?string, alternatives: bool, source: string, normalized: string
      * }
      */
-    public function search(string $query, ?int $categoryId = null, bool $log = true): array
+    public function search(string $query, ?int $categoryId = null, bool $log = true, bool $correct = true): array
     {
-        $normalized = $this->normalizer->normalize($query);
-        $result = ['hits' => [], 'did_you_mean' => null, 'alternatives' => false, 'source' => 'ai',
-                   'semantic' => false, 'normalized' => $normalized];
-        if ($normalized === '') {
+        $words = array_slice($this->text->words($query), 0, self::MAX_TOKENS);
+        $tokens = array_map([$this->text, 'stem'], $words);
+        $result = ['direct' => [], 'weak' => [], 'semantic' => [], 'did_you_mean' => null,
+                   'alternatives' => false, 'source' => 'keyword', 'normalized' => implode(' ', $tokens)];
+        if (!$tokens) {
             return $result;
         }
 
-        try {
-            [$hits, $result['semantic']] = $this->engine($normalized, $categoryId);
+        [$direct, $weak] = $this->keyword($tokens, $categoryId);
 
-            // Few keyword matches (a typo too far for the engine, or a typo that loses the synonyms):
-            // try the corrected query and keep it if it matches more products.
-            if ($this->keywordCount($hits) < (int) config('search.low_results', 3)) {
-                $corrected = $this->didYouMean->suggest($normalized);
-                if ($corrected !== null) {
-                    [$retry, $semantic] = $this->engine($corrected, $categoryId);
-                    if ($this->keywordCount($retry) > $this->keywordCount($hits)) {
-                        [$hits, $result['semantic'], $result['did_you_mean']] = [$retry, $semantic, $corrected];
-                    }
+        // Few real matches: maybe a typo ("ensembel", "chaussur").
+        if ($correct && count($direct) < (int) config('search.low_results', 3)) {
+            $fixes = $this->didYouMean->corrections($tokens);
+            if ($fixes) {
+                [$fixedDirect, $fixedWeak] = $this->keyword(array_replace($tokens, $fixes), $categoryId);
+                if (count($fixedDirect) > count($direct) || (!$direct && count($fixedWeak) > count($weak))) {
+                    [$direct, $weak] = [$fixedDirect, $fixedWeak];
+                    $result['did_you_mean'] = implode(' ', array_replace($words, $fixes));
                 }
-            }
-
-            $relevant = $this->relevant($hits);
-            if (!$relevant && $hits) {
-                // Nothing good enough: show the closest products, flagged as alternatives.
-                $relevant = array_slice($hits, 0, 8, true);
-                $result['alternatives'] = true;
-            }
-            $result['hits'] = $this->rerank($relevant);
-        } catch (SearchUnavailable $e) {
-            Log::warning('[Search] Meilisearch unavailable, MySQL fallback: ' . $e->getMessage());
-            $result['source'] = 'fallback';
-            foreach ($this->fallback->search($query, $categoryId) as $id => $score) {
-                $result['hits'][$id] = ['score' => $score, 'keyword' => true, 'name_match' => true];
             }
         }
 
+        if (!$direct && !$weak) {
+            $result['semantic'] = $this->semantic($result['normalized'], $categoryId);
+            $result['alternatives'] = (bool) $result['semantic'];
+            $result['source'] = $result['semantic'] ? 'semantic' : 'keyword';
+        }
+
+        [$result['direct'], $result['weak']] = $this->rerank($direct, $weak);
+
         if ($log) {
-            $this->missed->record($normalized, $query, $result['alternatives'] ? 0 : count($result['hits']));
+            $this->missed->record($result['normalized'], $query, count($result['direct']));
         }
         return $result;
     }
 
     /**
-     * Relevance only (no business boosts, nothing logged): for ad targeting and the chatbot.
-     * @return array<int, float> product_id => 0..1
+     * Relevance of the real matches only (no typo correction, nothing logged): ad targeting,
+     * promo flyers and the chatbot. Weak and semantic matches never count here.
+     *
+     * @return array<int, float> product_id => 0.5..1, best first
      */
-    public function scores(string $query, int $limit = self::CANDIDATES): array
+    public function scores(string $query, int $limit = 100): array
     {
-        $result = $this->search($query, null, false);
-        if ($result['alternatives']) {
-            return [];   // "closest products" are a courtesy for shoppers, not a match
-        }
+        $result = $this->search($query, null, false, false);
         $out = [];
-        foreach (array_slice($result['hits'], 0, $limit, true) as $id => $hit) {
-            $out[$id] = $hit['relevance'] ?? $hit['score'];
+        foreach (array_slice($result['direct'], 0, $limit, true) as $id => $score) {
+            $out[$id] = round(0.5 + 0.5 * min(1, $score / 120), 4);
         }
         return $out;
     }
 
+    // ─────────────────────────────────────────────────────────────────────
+
     /**
-     * Keyword search and (when available) vector search in one multi-search call, merged here:
-     * keyword hits first, vector-only hits after. Meilisearch's own hybrid mode blends both into
-     * one list cut at `limit`, where vector hits can crowd out every keyword match.
+     * @param string[] $tokens
+     * @return array{0: array<int, float>, 1: array<int, float>} direct and weak matches, unsorted
+     */
+    private function keyword(array $tokens, ?int $categoryId): array
+    {
+        $concepts = $this->concepts($tokens);
+        $query = implode(' ', $tokens);
+
+        // Candidates: any word of any concept (or of its synonyms) starting a word anywhere.
+        $starts = [];
+        foreach ($concepts as $c) {
+            foreach ($c['phrases'] as $p) {
+                $starts[explode(' ', $p['phrase'])[0]] = true;
+            }
+        }
+        $rows = DB::table('product_search_index as s')
+            ->join('products as p', 'p.id', '=', 's.product_id')
+            ->where('p.is_approved', 1)->where('p.is_active', 1)->whereNull('p.deleted_at')
+            ->when($categoryId, fn ($q) => $q->where('s.category_id', $categoryId))
+            ->where(function ($q) use ($starts) {
+                foreach (array_keys($starts) as $w) {
+                    $q->orWhere('s.all_text', 'LIKE', '% ' . addcslashes($w, '%_\\') . '%');
+                }
+            })
+            ->limit(self::MAX_CANDIDATES)
+            ->get(['s.product_id', 's.category_id', 's.names', 's.category', 's.extra', 's.description']);
+
+        $direct = $weak = [];
+        foreach ($rows as $row) {
+            $total = 0.0;
+            $strong = true;
+            foreach ($concepts as $c) {
+                $score = $this->conceptScore($row, $c);
+                $total += $score;
+                $strong = $strong && $score >= self::MIN_DIRECT;
+            }
+            if ($total <= 0) {
+                continue;
+            }
+            $score = $total / count($concepts);
+            if (str_contains($row->names, "| $query |")) {
+                $score += self::FULL_NAME_BONUS;
+            }
+            if ($strong) {
+                $direct[(int) $row->product_id] = $score;
+            } else {
+                $weak[(int) $row->product_id] = $score;
+            }
+        }
+        return [$direct, $weak];
+    }
+
+    /**
+     * The query as concepts: a word, or a phrase the synonym file knows ("sac main", "robe soiree"),
+     * each with its alternatives.
      *
-     * @return array{0: array<int, array>, 1: bool} hits by id (keyword first) + whether vectors were used
-     * @throws SearchUnavailable
+     * @return array<int, array{phrases: array<int, array{phrase: string, weight: float, categories: ?int[], prefix: bool}>}>
      */
-    private function engine(string $normalized, ?int $categoryId): array
+    private function concepts(array $tokens): array
     {
-        $filter = $categoryId ? ['filter' => 'category_id = ' . (int) $categoryId] : [];
-        $queries = [['products', [
-            'q'                    => $normalized,
-            'limit'                => self::CANDIDATES,
-            'attributesToRetrieve' => ['id'],
-            'showRankingScore'     => true,
-            'showMatchesPosition'  => true,
-            // Long queries: drop words from the end until something matches (people type the
-            // product first: "jean femme taille haute", "robe soiree rouge").
-            'matchingStrategy'     => 'last',
-        ] + $filter]];
-
-        $vector = $this->embeddings->queryVector($normalized);
-        if ($vector) {
-            $queries[] = ['products', [
-                'q'                    => '',
-                'vector'               => $vector,
-                'hybrid'               => ['embedder' => 'text', 'semanticRatio' => 1.0],
-                'limit'                => self::VECTOR_CANDIDATES,
-                'attributesToRetrieve' => ['id'],
-                'showRankingScore'     => true,
-            ] + $filter];
+        $lookup = $this->synonyms->lookup();
+        $concepts = [];
+        for ($i = 0; $i < count($tokens);) {
+            for ($n = min(3, count($tokens) - $i); $n >= 1; $n--) {
+                $phrase = implode(' ', array_slice($tokens, $i, $n));
+                if ($n === 1 || isset($lookup[$phrase])) {
+                    break;
+                }
+            }
+            $phrases = [['phrase' => $phrase, 'weight' => 1.0, 'categories' => null, 'prefix' => true]];
+            foreach ($lookup[$phrase] ?? [] as $alt) {
+                $phrases[] = ['phrase' => $alt['phrase'], 'weight' => self::SYNONYM, 'categories' => $alt['categories'], 'prefix' => false];
+            }
+            $concepts[] = ['phrases' => $phrases];
+            $i += $n;
         }
-
-        $results = $this->meili->multiSearch($queries);
-
-        $hits = [];
-        foreach ($results[0]['hits'] ?? [] as $hit) {
-            $matched = array_keys($hit['_matchesPosition'] ?? []);
-            $hits[(int) $hit['id']] = [
-                'score'      => (float) ($hit['_rankingScore'] ?? 0),
-                'keyword'    => true,
-                'name_match' => (bool) array_intersect($matched, self::NAME_FIELDS),
-            ];
-        }
-        foreach ($results[1]['hits'] ?? [] as $hit) {
-            // Score = (1 + cosine) / 2.
-            $hits[(int) $hit['id']] ??= ['score' => (float) ($hit['_rankingScore'] ?? 0), 'keyword' => false, 'name_match' => false];
-        }
-        return [$hits, (bool) $vector];
-    }
-
-    private function keywordCount(array $hits): int
-    {
-        return count(array_filter($hits, fn ($h) => $h['keyword']));
+        return $concepts;
     }
 
     /**
-     * Keyword matches always count. Vector-only matches must be similar enough, and next to
-     * keyword matches only a few of them are added (they widen the results, not replace them).
+     * The concept's score in this product: per field, the best of the word itself and its
+     * synonyms; then the fields added up ("Dress" named + "Robe" category beats "robe" alone).
      */
-    private function relevant(array $hits): array
+    private function conceptScore(object $row, array $concept): float
     {
-        $min = (float) config('search.semantic.min_score');
-        $keyword = array_filter($hits, fn ($h) => $h['keyword']);
-        $vector = array_filter($hits, fn ($h) => !$h['keyword'] && $h['score'] >= $min);
-        return $keyword + ($keyword ? array_slice($vector, 0, self::VECTOR_EXTRAS, true) : $vector);
+        $fields = [
+            [$row->names, self::NAME, self::NAME_PREFIX],
+            [$row->category, self::CATEGORY, self::CATEGORY_PREFIX],
+            [$row->extra, self::EXTRA, 0],
+            [$row->description, self::DESCRIPTION, 0],
+        ];
+        $best = array_fill(0, count($fields), 0.0);
+        foreach ($concept['phrases'] as $p) {
+            if ($p['categories'] !== null && !in_array((int) $row->category_id, $p['categories'], true)) {
+                continue;   // synonym limited to other categories ("set" outside clothing)
+            }
+            foreach ($fields as $i => [$text, $exact, $prefix]) {
+                $best[$i] = max($best[$i], $this->fieldScore($text, $p, $exact, $prefix) * $p['weight']);
+            }
+        }
+        return array_sum($best);
     }
 
-    private function rerank(array $hits): array
+    /**
+     * Whole word(s) → $exact. The start of a word (people stop typing early: "chaussur",
+     * "ensembl") → $prefix, at most 2 letters short so "casque" doesn't match "casquette".
+     */
+    private function fieldScore(string $field, array $p, float $exact, float $prefix): float
     {
-        if (!$hits) {
+        if ($field === '') {
+            return 0.0;
+        }
+        if (str_contains($field, ' ' . $p['phrase'] . ' ')) {
+            return $exact;
+        }
+        if ($prefix > 0 && $p['prefix'] && mb_strlen($p['phrase']) >= 4
+            && preg_match('/ ' . preg_quote($p['phrase'], '/') . '[^\s|]{1,2} /u', $field)) {
+            return $prefix;
+        }
+        return 0.0;
+    }
+
+    /** Relevance first; in stock, rating, sales and a real photo only reorder close scores. */
+    private function rerank(array $direct, array $weak): array
+    {
+        $ids = array_keys($direct + $weak);
+        if (!$ids) {
+            return [[], []];
+        }
+        $signals = $this->signals->for($ids);
+        $maxSold = max(array_map(fn ($s) => $s['sold'], $signals) ?: [0]);
+        $photos = DB::table('product_images')->whereIn('product_id', $ids)
+            ->where('image_path', 'NOT LIKE', 'products/demo/%')->distinct()->pluck('product_id')->flip();
+
+        $sort = function (array $hits) use ($signals, $maxSold, $photos) {
+            foreach ($hits as $id => &$score) {
+                $boost = isset($signals[$id]) ? $this->signals->boost($signals[$id], $maxSold) * 20 : 0;
+                $score = round($score + $boost + (isset($photos[$id]) ? 1 : 0), 3);
+            }
+            unset($score);
+            arsort($hits);
+            return $hits;
+        };
+        return [$sort($direct), $sort($weak)];
+    }
+
+    /**
+     * Last resort when no word matched anything: nearest products by meaning (multilingual
+     * vectors). Off, slow or down → nothing; keyword search never waits on it otherwise.
+     *
+     * @return array<int, float>
+     */
+    private function semantic(string $normalized, ?int $categoryId): array
+    {
+        if (Cache::has(self::SEMANTIC_DOWN)) {
             return [];
         }
-        $signals = $this->signals->for(array_keys($hits));
-        $maxSold = max(array_map(fn ($s) => $s['sold'], $signals) ?: [0]);
-
-        foreach ($hits as $id => &$hit) {
-            $hit['relevance'] = $hit['score'];
-            $hit['score'] = round($hit['score'] + (isset($signals[$id]) ? $this->signals->boost($signals[$id], $maxSold) : 0), 4);
+        try {
+            $vector = $this->embeddings->queryVector($normalized);
+            if (!$vector) {
+                return [];   // semantic off, or the embedding service is down (it remembers that itself)
+            }
+            $results = $this->meili->multiSearch([['products', [
+                'q' => '', 'vector' => $vector, 'hybrid' => ['embedder' => 'text', 'semanticRatio' => 1.0],
+                'limit' => self::SEMANTIC_CANDIDATES, 'attributesToRetrieve' => ['id'], 'showRankingScore' => true,
+            ] + ($categoryId ? ['filter' => 'category_id = ' . (int) $categoryId] : [])]], 1.5);
+        } catch (Throwable $e) {
+            Cache::put(self::SEMANTIC_DOWN, true, now()->addMinutes(5));   // don't wait on it at every search
+            Log::info('[Search] Semantic fallback unavailable for 5 minutes: ' . $e->getMessage());
+            return [];
         }
-        unset($hit);
-        // Keyword matches first (their scores and vector scores aren't on the same scale),
-        // then by relevance + business signals.
-        uasort($hits, fn ($a, $b) => [$b['keyword'], $b['score']] <=> [$a['keyword'], $a['score']]);
-        return $hits;
+
+        $min = (float) config('search.semantic.min_score');
+        $out = [];
+        foreach ($results[0]['hits'] ?? [] as $hit) {
+            if (($hit['_rankingScore'] ?? 0) >= $min) {
+                $out[(int) $hit['id']] = (float) $hit['_rankingScore'];
+            }
+        }
+        return $out;
     }
 }

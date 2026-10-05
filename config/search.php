@@ -1,9 +1,10 @@
 <?php
 
 /*
-| Product search: Meilisearch (keyword + typo tolerance + synonyms, optional semantic
-| vectors) for the search bar, CLIP vectors for "search by image". Vectors come from the
-| embedding service configured in services.ai (choosetounsi-ai-service).
+| Product search. The search bar is plain MySQL (product_search_index, see
+| App\Services\Search\ProductSearch): keyword-first, synonyms.txt, spelling correction.
+| Meilisearch + the embedding service (services.ai, choosetounsi-ai-service) serve "search by
+| image" and, when no word matched at all, an optional semantic fallback.
 */
 
 return [
@@ -27,7 +28,7 @@ return [
 
     // ── Search bar ────────────────────────────────────────────────────────
     'semantic' => [
-        // Multilingual text vectors (FR/AR/EN meet in one space). Off = keyword search only.
+        // Fallback only, when no keyword matched: multilingual text vectors. Off = keyword search only.
         'enabled'  => (bool) env('SEARCH_SEMANTIC', true),
         // A result found ONLY by vectors (no keyword matched) must reach this ranking score
         // ((1 + cosine) / 2 in Meilisearch). Calibrated on the live catalog: 99% of
@@ -46,7 +47,8 @@ return [
         'featured' => 0.01,
     ],
 
-    // Fewer results than this is logged as a "low result" query (admin: missed searches).
+    // Fewer best results than this: spelling correction is tried, and the query is logged as
+    // a "low result" query (admin: missed searches).
     'low_results' => (int) env('SEARCH_LOW_RESULTS', 3),
 
     // ── Search by image ─────────────────────────────────────────────────

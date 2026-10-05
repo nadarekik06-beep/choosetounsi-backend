@@ -111,7 +111,7 @@ class ProductDocument
     }
 
     /** @return string[] category + subcategory names in every language */
-    private function categoryNames(Product $product): array
+    public function categoryNames(Product $product): array
     {
         $names = [];
         foreach ([$product->category, $product->subcategory] as $c) {
@@ -125,7 +125,7 @@ class ProductDocument
     }
 
     /** @return string[] attribute values (brand, material, gender…) and active variant options (colors, sizes) */
-    private function attributeValues(Product $product): array
+    public function attributeValues(Product $product): array
     {
         $values = [];
         foreach ($product->attributeValues as $pav) {
@@ -137,7 +137,7 @@ class ProductDocument
         }
         foreach ($product->activeVariants as $variant) {
             foreach ($variant->attributeOptions as $opt) {
-                $values[] = (string) $opt->value;
+                array_push($values, (string) $opt->value, (string) $opt->value_fr, (string) $opt->value_ar);
             }
         }
         return array_values(array_unique(array_filter($values)));

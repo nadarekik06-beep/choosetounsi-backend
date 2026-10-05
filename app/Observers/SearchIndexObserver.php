@@ -8,11 +8,18 @@ use App\Models\Product;
 use App\Models\ProductAttributeValue;
 use App\Models\ProductImage;
 use App\Models\Subcategory;
+use App\Services\Search\SearchIndexer;
 use Illuminate\Database\Eloquent\Model;
 
 /**
- * Keeps Meilisearch in step with the catalog (the product document itself is synced by
- * Scout's own observer on Product, queued):
+ * Keeps the search indexes in step with the catalog.
+ *
+ * MySQL text index (product_search_index, the search bar), always, synchronously:
+ *  - product text / category / status, attribute values changed → its row is rebuilt
+ *  - category / subcategory renamed                             → rows of its products rebuilt
+ *
+ * Meilisearch (search by image, semantic fallback), when search.indexing is on; the product
+ * document itself is synced by Scout's own observer on Product, queued:
  *
  *  - product goes live / offline / deleted / restored  → its photos are (re)indexed or removed
  *  - product photo added, replaced or deleted           → photos re-embedded (queued)
@@ -23,8 +30,13 @@ use Illuminate\Database\Eloquent\Model;
  */
 class SearchIndexObserver
 {
+    /** Product columns that change what the search bar finds. */
+    const TEXT_COLUMNS = ['name', 'description', 'short_description', 'translations', 'category_id',
+                          'subcategory_id', 'is_approved', 'is_active', 'deleted_at'];
+
     public function saved(Model $model): void
     {
+        $this->refreshText($model);
         if (!config('search.indexing')) {
             return;
         }
@@ -39,6 +51,7 @@ class SearchIndexObserver
 
     public function deleted(Model $model): void
     {
+        $this->refreshText($model, true);
         if (!config('search.indexing')) {
             return;
         }
@@ -52,6 +65,7 @@ class SearchIndexObserver
 
     public function restored(Model $model): void
     {
+        $this->refreshText($model, true);
         if (config('search.indexing') && $model instanceof Product) {
             IndexProductImages::dispatch($model->id);
         }
@@ -60,6 +74,19 @@ class SearchIndexObserver
     public function forceDeleted(Model $model): void
     {
         $this->deleted($model);
+    }
+
+    private function refreshText(Model $model, bool $always = false): void
+    {
+        $indexer = app(SearchIndexer::class);
+        match (true) {
+            $model instanceof Product => ($always || $model->wasRecentlyCreated || $model->wasChanged(self::TEXT_COLUMNS))
+                ? $indexer->refresh($model->id) : null,
+            $model instanceof ProductAttributeValue => $indexer->refresh((int) $model->product_id),
+            $model instanceof Category => $model->wasChanged(['name', 'name_fr', 'name_ar']) ? $indexer->refreshCategory('category_id', $model->id) : null,
+            $model instanceof Subcategory => $model->wasChanged(['name', 'name_fr', 'name_ar']) ? $indexer->refreshCategory('subcategory_id', $model->id) : null,
+            default => null,
+        };
     }
 
     private function productSaved(Product $product): void

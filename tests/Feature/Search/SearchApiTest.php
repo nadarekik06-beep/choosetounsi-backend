@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\Search;
 
+use App\Models\Category;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\UploadedFile;
@@ -12,7 +13,7 @@ use Tests\Feature\Recommendation\MakesCatalog;
 use Tests\TestCase;
 
 /**
- * Search API against faked Meilisearch / embedding service responses.
+ * Search API: MySQL keyword search; faked Meilisearch / embedding service for the semantic fallback and image search.
  * php vendor/bin/phpunit tests/Feature/Search/SearchApiTest.php
  */
 class SearchApiTest extends TestCase
@@ -68,125 +69,135 @@ class SearchApiTest extends TestCase
                 '_matchesPosition' => ['name' => [['start' => 0, 'length' => 3]]]];
     }
 
-    public function test_name_matches_come_first_and_semantic_only_noise_is_dropped(): void
+    /** Synonym file for one test. */
+    private function synonymsFile(string $content): void
     {
-        $seller = $this->makeUser('seller');
-        $shoes = $this->makeCategory();
-        $named = $this->makeProduct($seller, $shoes, ['name' => 'Urban Sneakers']);
-        $sameCat = $this->makeProduct($seller, $shoes, ['name' => 'Trail Runner']);
-        $noise = $this->makeProduct($seller, $this->makeCategory(), ['name' => 'Harissa']);
-
-        $this->fakeEngines(['sabbat' => [
-            $this->hit($named->id, 0.95),
-            $this->hit($sameCat->id, 0.80, ['category']),
-            $this->vectorHit($noise->id, 0.41),   // vector-only, weak
-        ]]);
-
-        $res = $this->postJson('/api/search/text', ['query' => 'Sabbat'])->assertOk();
-
-        $this->assertSame('ai', $res['source']);
-        $this->assertSame([$named->id], array_column($res['sections']['direct'], 'id'));
-        $this->assertSame([$sameCat->id], array_column($res['sections']['same_category'], 'id'));
-        $this->assertSame([], $res['sections']['related']);
-        $this->assertFalse($res['alternatives']);
-        Http::assertSent(fn (Request $r) => str_ends_with($r->url(), '/multi-search')
-            && $r['queries'][1]['hybrid']['embedder'] === 'text' && count($r['queries'][1]['vector']) === 384);
+        $file = tempnam(sys_get_temp_dir(), 'syn');
+        file_put_contents($file, $content);
+        config(['search.synonyms_path' => $file]);
+        $this->beforeApplicationDestroyed(fn () => @unlink($file));
     }
 
-    public function test_keyword_matches_rank_before_stronger_vector_only_matches(): void
+    /** @return array{0: Category, 1: Category} clothing (named "Ensembles" in French) and home; "set" = "ensemble" for clothing only */
+    private function clothingAndHome(): array
     {
-        $seller = $this->makeUser('seller');
-        $cat = $this->makeCategory();
-        $parfum = $this->makeProduct($seller, $cat, ['name' => 'Jasmine Eau de Parfum']);
-        $polo = $this->makeProduct($seller, $cat, ['name' => 'Set polo pour femme']);
-        $this->fakeEngines(['parfum femme' => [$this->vectorHit($polo->id, 0.75), $this->hit($parfum->id, 0.49)]]);
-        config(['search.semantic.min_score' => 0.73]);
-
-        $res = $this->postJson('/api/search/text', ['query' => 'parfum femme'])->assertOk();
-
-        $this->assertSame([$parfum->id], array_column($res['sections']['direct'], 'id'));
-        $this->assertNotContains($polo->id, array_column($res['sections']['direct'], 'id'), 'one shared word does not make a direct hit');
+        $clothing = $this->makeCategory();
+        $clothing->update(['name' => 'Sets', 'name_fr' => 'Ensembles', 'name_ar' => 'طقم']);
+        $home = $this->makeCategory();
+        $this->synonymsFile("ensemble, set, tenue  @ {$clothing->slug}\n");
+        return [$clothing, $home];
     }
 
-    public function test_query_is_keyword_only_when_the_embedder_is_down(): void
+    public function test_name_and_category_matches_rank_first_and_out_of_context_synonyms_are_ignored(): void
     {
-        $p = $this->makeProduct($this->makeUser('seller'), $this->makeCategory(), ['name' => 'Casque audio']);
-        $this->fakeEngines(['casque' => [$this->hit($p->id, 0.9)]], embedder: false);
+        [$clothing, $home] = $this->clothingAndHome();
+        $seller  = $this->makeUser('seller');
+        $named   = $this->makeProduct($seller, $clothing, ['name' => 'Ensemble lin beige']);
+        $polo    = $this->makeProduct($seller, $clothing, ['name' => 'Polo set']);
+        $plates  = $this->makeProduct($seller, $home, ['name' => 'Ceramic Plate Set']);
+        $headset = $this->makeProduct($seller, $home, ['name' => 'Audio Headset']);
+        $vase    = $this->makeProduct($seller, $home, ['name' => 'Glass Vase', 'description' => 'Un joli ensemble de vases en verre']);
+        $mine    = [$named->id, $polo->id, $plates->id, $headset->id, $vase->id];
 
-        $this->postJson('/api/search/text', ['query' => 'casque'])->assertOk()->assertJsonPath('count', 1);
-        Http::assertSent(fn (Request $r) => str_ends_with($r->url(), '/multi-search') && count($r['queries']) === 1);
+        $res = $this->postJson('/api/search/text', ['query' => 'Ensembles'])->assertOk();
+
+        $direct = array_column($res['sections']['direct'], 'id');
+        $this->assertSame([$named->id, $polo->id], array_values(array_intersect($direct, $mine)));
+        $all = array_merge($direct, array_column($res['sections']['same_category'], 'id'), array_column($res['sections']['related'], 'id'));
+        $this->assertNotContains($plates->id, $all, '"set" only means "ensemble" for clothing');
+        $this->assertNotContains($headset->id, $all, 'no substring matches ("headset")');
+        $this->assertContains($vase->id, array_column($res['sections']['related'], 'id'), 'a description-only match is a weak, related result');
+        $this->assertSame('keyword', $res['source']);
     }
 
-    public function test_in_stock_and_better_rated_products_win_ties(): void
+    public function test_misspelled_words_are_corrected_against_the_catalog_unless_exact(): void
+    {
+        [$clothing] = $this->clothingAndHome();
+        $p = $this->makeProduct($this->makeUser('seller'), $clothing, ['name' => 'Ensemble jogging gris']);
+
+        $res = $this->postJson('/api/search/text', ['query' => 'ensembel'])->assertOk();
+        $this->assertSame('ensemble', $res['did_you_mean']);
+        $this->assertContains($p->id, array_column($res['sections']['direct'], 'id'));
+
+        $exact = $this->postJson('/api/search/text', ['query' => 'ensembel', 'exact' => true])->assertOk();
+        $this->assertNull($exact['did_you_mean']);
+        $this->assertSame([], $exact['sections']['direct']);
+    }
+
+    public function test_accents_plurals_stop_words_and_tshirt_spellings_match(): void
     {
         $seller = $this->makeUser('seller');
-        $cat = $this->makeCategory();
-        $soldOut = $this->makeProduct($seller, $cat, ['name' => 'Robe A', 'stock' => 0]);
-        $inStock = $this->makeProduct($seller, $cat, ['name' => 'Robe B', 'stock' => 4]);
-        $this->fakeEngines(['robe' => [$this->hit($soldOut->id, 0.9), $this->hit($inStock->id, 0.9)]]);
+        $cat  = $this->makeCategory();
+        $robe = $this->makeProduct($seller, $cat, ['name' => 'Robe soirée Qzvelour']);
+        $tee  = $this->makeProduct($seller, $cat, ['name' => 'T-Shirt Qzcoton']);
 
-        $res = $this->postJson('/api/search/text', ['query' => 'robe'])->assertOk();
+        foreach (['robes de soiree qzvelour', 'ROBE SOIRÉE Qzvelour'] as $q) {
+            $this->assertContains($robe->id, array_column($this->postJson('/api/search/text', ['query' => $q])['sections']['direct'], 'id'), $q);
+        }
+        foreach (['tshirt qzcoton', 't shirt qzcoton', 'tee-shirt qzcoton'] as $q) {
+            $this->assertContains($tee->id, array_column($this->postJson('/api/search/text', ['query' => $q])['sections']['direct'], 'id'), $q);
+        }
+    }
+
+    public function test_in_stock_products_win_ties(): void
+    {
+        $seller  = $this->makeUser('seller');
+        $cat     = $this->makeCategory();
+        $soldOut = $this->makeProduct($seller, $cat, ['name' => 'Qzrobe A', 'stock' => 0]);
+        $inStock = $this->makeProduct($seller, $cat, ['name' => 'Qzrobe B', 'stock' => 4]);
+
+        $res = $this->postJson('/api/search/text', ['query' => 'qzrobe'])->assertOk();
         $this->assertSame([$inStock->id, $soldOut->id], array_column($res['sections']['direct'], 'id'));
     }
 
-    public function test_did_you_mean_searches_the_corrected_query(): void
+    public function test_nothing_matched_is_empty_and_logged_without_calling_the_ai_when_off(): void
     {
-        $p = $this->makeProduct($this->makeUser('seller'), $this->makeCategory(), ['name' => 'Headphones Pro']);
-        Cache::forget('search:vocabulary');
-        $this->fakeEngines(['headphones' => [$this->hit($p->id, 0.9)]]);
-
-        $res = $this->postJson('/api/search/text', ['query' => 'heaphonnes'])->assertOk();
-
-        $this->assertSame('headphones', $res['did_you_mean']);
-        $this->assertSame([$p->id], array_column($res['sections']['direct'], 'id'));
-    }
-
-    public function test_no_match_returns_close_alternatives_and_logs_the_query(): void
-    {
-        $p = $this->makeProduct($this->makeUser('seller'), $this->makeCategory(), ['name' => 'Olive Oil']);
-        $this->fakeEngines(['xyzzy plop' => [$this->vectorHit($p->id, 0.3)]]);
+        config(['search.semantic.enabled' => false]);
+        Http::fake();
 
         $res = $this->postJson('/api/search/text', ['query' => 'Xyzzy plop'])->assertOk();
 
-        $this->assertTrue($res['alternatives']);
-        $this->assertSame([$p->id], array_column($res['sections']['related'], 'id'));
+        $this->assertSame(0, $res['count']);
+        $this->assertFalse($res['alternatives']);
         $this->assertDatabaseHas('search_missed_queries', ['query' => 'xyzzy plop', 'results' => 0, 'day' => now()->toDateString()]);
-
         $this->postJson('/api/search/text', ['query' => 'xyzzy  PLOP'])->assertOk();
         $this->assertSame(2, (int) DB::table('search_missed_queries')->where('query', 'xyzzy plop')->value('searches'));
+        Http::assertNothingSent();
     }
 
-    public function test_falls_back_to_mysql_with_synonyms_when_meilisearch_is_down(): void
+    public function test_semantic_search_is_only_a_fallback_shown_as_closest_products(): void
     {
-        $file = tempnam(sys_get_temp_dir(), 'syn');
-        file_put_contents($file, "honey, miel, 3sal\n");
-        config(['search.synonyms_path' => $file]);
-        $tag = 'Zq' . mt_rand(1000, 9999);
-        $p = $this->makeProduct($this->makeUser('seller'), $this->makeCategory(), ['name' => "Thyme Honey $tag"]);
+        $p = $this->makeProduct($this->makeUser('seller'), $this->makeCategory(), ['name' => 'Qzolive Oil']);
+        $this->fakeEngines(['' => [$this->vectorHit($p->id, 0.8)]]);
+
+        // A keyword match never waits on the AI service
+        $this->postJson('/api/search/text', ['query' => 'qzolive'])->assertOk()->assertJsonPath('count', 1);
+        Http::assertNothingSent();
+
+        $res = $this->postJson('/api/search/text', ['query' => 'zitoun bled'])->assertOk();
+        $this->assertTrue($res['alternatives']);
+        $this->assertSame('semantic', $res['source']);
+        $this->assertSame([], $res['sections']['direct']);
+        $this->assertSame([$p->id], array_column($res['sections']['related'], 'id'));
+    }
+
+    public function test_search_still_answers_when_the_ai_services_are_down(): void
+    {
+        $p = $this->makeProduct($this->makeUser('seller'), $this->makeCategory(), ['name' => 'Qzhoney jar']);
         Http::fake(['*' => Http::response('down', 500)]);
 
-        $res = $this->postJson('/api/search/text', ['query' => "3sal $tag"])->assertOk();
-        unlink($file);
-
-        $this->assertSame('fallback', $res['source']);
-        $this->assertContains($p->id, array_column($res['sections']['direct'], 'id'));
+        $this->postJson('/api/search/text', ['query' => 'qzhoney'])->assertOk()->assertJsonPath('sections.direct.0.id', $p->id);
+        $this->postJson('/api/search/text', ['query' => 'nothing like it'])->assertOk()->assertJsonPath('count', 0);
     }
 
     public function test_suggestions_use_the_storefront_language(): void
     {
-        Http::fake(['meili.test/*' => Http::response(['hits' => [
-            ['label' => 'Thyme Honey', 'label_fr' => 'Miel de thym', 'label_ar' => 'عسل الزعتر'],
-        ]])]);
-        $this->getJson('/api/search/suggestions?q=mie', ['Accept-Language' => 'fr'])
-            ->assertOk()->assertJsonPath('suggestions', ['Miel de thym']);
-    }
+        $p = $this->makeProduct($this->makeUser('seller'), $this->makeCategory(), ['name' => 'Qzthyme Honey']);
+        DB::table('products')->where('id', $p->id)->update(['translations' => json_encode(['fr' => ['name' => 'Miel de qzthym']])]);
+        app(\App\Services\Search\SearchIndexer::class)->refresh($p->id);
 
-    public function test_suggestions_fall_back_to_mysql(): void
-    {
-        $name = 'Qwzt Lamp ' . mt_rand(1000, 9999);
-        $this->makeProduct($this->makeUser('seller'), $this->makeCategory(), ['name' => $name]);
-        Http::fake(['*' => Http::response('down', 500)]);
-        $this->getJson('/api/search/suggestions?q=qwzt')->assertOk()->assertJsonPath('suggestions', [$name]);
+        $this->getJson('/api/search/suggestions?q=' . urlencode('miel qz'), ['Accept-Language' => 'fr'])
+            ->assertOk()->assertJsonPath('suggestions', ['Miel de qzthym']);
     }
 
     public function test_image_search_dedupes_thresholds_and_boosts_the_majority_category(): void

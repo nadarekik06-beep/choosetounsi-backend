@@ -11,8 +11,8 @@ use Illuminate\Support\Facades\DB;
  * product (single-product offer), the seller's store (several products) or /deals.
  *
  * Built on PromotionService::getActivePromotionsFormatted(), so a flyer never
- * shows a price the cart won't charge. Ranked by relevance to the page (same
- * category, query words in the product names), then flash sales, then discount size.
+ * shows a price the cart won't charge. On a search page only offers on products the
+ * search found are shown; then ranked by same category, flash sales, discount size.
  */
 class PromoFlyers
 {
@@ -26,20 +26,24 @@ class PromoFlyers
      */
     public function forPage(?int $categoryId, ?string $query, array $excludeProductIds = [], int $limit = 3): array
     {
-        $all = Cache::remember('promo-flyers:v1:' . app()->getLocale(), self::CACHE_SECONDS, fn () => $this->build());
+        $all = Cache::remember('promo-flyers:v2:' . app()->getLocale(), self::CACHE_SECONDS, fn () => $this->build());
         if (!$all) return [];
 
         $exclude = array_flip(array_map('intval', $excludeProductIds));
-        $terms   = collect(preg_split('/\s+/u', mb_strtolower(trim((string) $query))))
-            ->filter(fn ($t) => mb_strlen($t) >= 3)->values()->all();
+        // On a search, only offers on products the search really found (no headphones for "ensemble")
+        $query   = trim((string) $query);
+        $matches = $query !== '' ? app(\App\Services\Search\ProductSearch::class)->scores($query, 200) : null;
 
         $scored = [];
         foreach ($all as $f) {
             $score = 0;
-            if ($categoryId && in_array($categoryId, $f['_category_ids'], true)) $score += 4;
-            foreach ($terms as $t) {
-                if (str_contains($f['_haystack'], $t)) { $score += 3; break; }
+            if ($matches !== null) {
+                $hits = array_filter($f['_products'], fn ($p) => isset($matches[$p['id']]));
+                if (!$hits) continue;
+                $score += 3;
+                $f['_products'] = array_values($hits);   // the picture is a matching product
             }
+            if ($categoryId && in_array($categoryId, $f['_category_ids'], true)) $score += 4;
             if ($f['type'] === 'flash_sale') $score += 1;
             $score += min((float) $f['_percent'], 70) / 100;
 
@@ -98,7 +102,6 @@ class PromoFlyers
                     'original_price' => (float) ($p['original_price'] ?? $p['price']),
                 ], $products),
                 '_category_ids'  => collect($products)->map(fn ($p) => (int) ($categories[$p['id']] ?? 0))->filter()->unique()->values()->all(),
-                '_haystack'      => mb_strtolower($promo['name'] . ' ' . implode(' ', array_column($products, 'name'))),
                 '_percent'       => (float) ($products[0]['discount_percent'] ?? 0),
             ];
         }
@@ -113,7 +116,7 @@ class PromoFlyers
 
         $images = array_values(array_unique(array_merge([$hero['image']], $f['images'])));
 
-        return array_merge(array_diff_key($f, array_flip(['_products', '_category_ids', '_haystack', '_percent'])), [
+        return array_merge(array_diff_key($f, array_flip(['_products', '_category_ids', '_percent'])), [
             'product' => $hero,
             'link'    => $link,
             'images'  => array_slice($images, 0, 3),

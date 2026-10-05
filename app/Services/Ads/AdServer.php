@@ -412,35 +412,23 @@ class AdServer
         return $out;
     }
 
-    /** Search relevance of each candidate for the query (storefront search engine), plus a plain name match. */
+    /**
+     * Search relevance of each candidate for the query: the storefront search's real matches
+     * only (name, category, brand/attributes, synonyms in the right categories), so a
+     * sponsored card is always about what was searched.
+     */
     private function searchScores(string $query, array $productIds): array
     {
         $query = mb_substr(trim($query), 0, 100);
-        $ai = Cache::remember('ads:search:' . md5(mb_strtolower($query)), 300, function () use ($query) {
+        $scores = Cache::remember('ads:search:' . md5(mb_strtolower($query)), 300, function () use ($query) {
             $scores = app(\App\Services\Search\ProductSearch::class)->scores($query, 200);
             $max = $scores ? max($scores) : 0;
             return $max > 0 ? array_map(fn ($s) => round(max(0, $s) / $max, 4), $scores) : [];
         });
 
         $out = [];
-        if (is_array($ai)) {
-            foreach ($productIds as $id) {
-                $out[$id] = (float) ($ai[$id] ?? 0);
-            }
-        }
-
-        // Plain name/description match counts too (and covers products added after the last index rebuild).
-        $terms = array_filter(preg_split('/\s+/u', mb_strtolower($query)), fn ($t) => mb_strlen($t) >= 3);
-        if ($terms) {
-            $matches = DB::table('products')->whereIn('id', $productIds)
-                ->where(function ($q) use ($terms) {
-                    foreach ($terms as $t) {
-                        $q->orWhere('name', 'like', '%' . addcslashes($t, '%_') . '%');
-                    }
-                })->pluck('id');
-            foreach ($matches as $id) {
-                $out[(int) $id] = max($out[(int) $id] ?? 0, 0.7);
-            }
+        foreach ($productIds as $id) {
+            $out[$id] = (float) ($scores[$id] ?? 0);
         }
         return $out;
     }

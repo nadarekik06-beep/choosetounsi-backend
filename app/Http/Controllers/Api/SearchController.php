@@ -20,14 +20,19 @@ use Illuminate\Support\Facades\Log;
  * Storefront search API (the search logic lives in App\Services\Search).
  *
  * Text search returns three sections:
- *   sections.direct        — products whose name matches the query
- *   sections.same_category — other matches in the categories of the direct hits
- *   sections.related       — the remaining matches (or, with alternatives=true, the closest
- *                            products when nothing really matched)
- * plus did_you_mean (corrected query actually searched) and source ("ai" | "fallback").
+ *   sections.direct        — real matches only (query found in the name, category or brand/attributes)
+ *   sections.same_category — weaker matches in the categories of the direct hits, then other
+ *                            products of the top hit's subcategory
+ *   sections.related       — the remaining weak matches (description only, some words only), or,
+ *                            with alternatives=true, the closest products by meaning when no word matched
+ * plus did_you_mean (the corrected query that was searched instead; send exact=true to search
+ * the original as typed) and source ("keyword" | "semantic").
  */
 class SearchController extends Controller
 {
+    const DIRECT_MAX = 24;
+    const SECTION_MAX = 8;
+
     /** GET /api/search/suggestions?q=bask&limit=8 */
     public function suggestions(Request $request, Suggestions $suggestions)
     {
@@ -48,8 +53,8 @@ class SearchController extends Controller
      * POST /api/search/text
      *
      * {
-     *   "success": true, "source": "ai" | "fallback", "query": "sabbat",
-     *   "did_you_mean": "sneakers" | null, "alternatives": false, "count": 12,
+     *   "success": true, "source": "keyword" | "semantic", "query": "ensembel",
+     *   "did_you_mean": "ensemble" | null, "alternatives": false, "count": 12,
      *   "sections": { "direct": [...], "same_category": [...], "related": [...] }
      * }
      */
@@ -61,6 +66,7 @@ class SearchController extends Controller
             'category_id' => 'sometimes|integer|exists:categories,id',
             'min_price'   => 'sometimes|numeric|min:0',
             'max_price'   => 'sometimes|numeric|min:0',
+            'exact'       => 'sometimes|boolean',
         ]);
 
         $query   = trim($validated['query']);
@@ -70,9 +76,8 @@ class SearchController extends Controller
             'max_price' => $validated['max_price'] ?? null,
         ]);
 
-        $result   = $search->search($query, $validated['category_id'] ?? null);
-        $products = $this->fetchProductsByIds(array_keys($result['hits']), $filters, $limit);
-        $sections = $this->splitIntoSections($products, $result['hits'], $result['alternatives']);
+        $result   = $search->search($query, $validated['category_id'] ?? null, true, !($validated['exact'] ?? false));
+        $sections = $this->sections($result, $filters, $limit);
 
         $this->trackSearch($request, $query, $sections);
         return response()->json([
@@ -114,40 +119,45 @@ class SearchController extends Controller
 
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * @param array $products formatted products, in search order
-     * @param array<int, array{name_match: bool}> $hits
-     */
-    private function splitIntoSections(array $products, array $hits, bool $alternatives): array
+    /** Search result → the three sections, as product cards (one query for all of them). */
+    private function sections(array $result, array $filters, int $limit): array
     {
-        if (!$products || $alternatives) {
-            return ['direct' => [], 'same_category' => [], 'related' => array_slice($products, 0, 8)];
-        }
+        $direct = array_slice(array_keys($result['direct']), 0, min(self::DIRECT_MAX, $limit));
+        $weak   = array_keys($result['weak']);
 
-        $direct = array_values(array_filter($products, fn ($p) => $hits[$p['id']]['name_match'] ?? false));
-        if (!$direct) {
-            $direct = array_slice($products, 0, 3);
+        // Weak matches in the categories of the best results stay next to them; the rest is "related".
+        $sameIds = $relatedIds = [];
+        if ($direct) {
+            $rows = DB::table('products')->whereIn('id', array_merge($direct, $weak))->get(['id', 'category_id', 'subcategory_id'])->keyBy('id');
+            $categories = $rows->only($direct)->pluck('category_id')->filter()->unique()->all();
+            foreach ($weak as $id) {
+                if (in_array($rows[$id]->category_id ?? null, $categories, true)) {
+                    $sameIds[] = $id;
+                } else {
+                    $relatedIds[] = $id;
+                }
+            }
+            // Few of them: more products from the top hit's subcategory.
+            $sub = $rows[$direct[0]]->subcategory_id ?? null;
+            if ($sub && count($sameIds) < self::SECTION_MAX) {
+                $sameIds = array_merge($sameIds, DB::table('products')
+                    ->where('subcategory_id', $sub)->whereNotIn('id', array_merge($direct, $sameIds))
+                    ->where('is_approved', 1)->where('is_active', 1)->whereNull('deleted_at')
+                    ->orderByDesc('views')->limit(self::SECTION_MAX - count($sameIds))->pluck('id')->all());
+            }
+        } else {
+            $relatedIds = array_merge($weak, array_keys($result['semantic']));
         }
-        $direct = array_slice($direct, 0, 6);
+        $sameIds    = array_slice($sameIds, 0, self::SECTION_MAX);
+        $relatedIds = array_slice($relatedIds, 0, self::SECTION_MAX);
 
-        $directIds  = array_column($direct, 'id');
-        $categories = array_flip(array_filter(array_column($direct, 'category_slug')));
-        $sameCategory = $related = [];
-        foreach ($products as $p) {
-            if (in_array($p['id'], $directIds, true)) {
-                continue;
-            }
-            if (isset($categories[$p['category_slug'] ?? ''])) {
-                $sameCategory[] = $p;
-            } else {
-                $related[] = $p;
-            }
-        }
+        $cards = collect($this->fetchProductsByIds(array_merge($direct, $sameIds, $relatedIds), $filters, 100))->keyBy('id');
+        $pick  = fn (array $ids) => array_values(array_filter(array_map(fn ($id) => $cards->get($id), $ids)));
 
         return [
-            'direct'        => $direct,
-            'same_category' => array_slice($sameCategory, 0, 8),
-            'related'       => array_slice($related, 0, 8),
+            'direct'        => $pick($direct),
+            'same_category' => $pick($sameIds),
+            'related'       => $pick($relatedIds),
         ];
     }
 

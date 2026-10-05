@@ -149,8 +149,8 @@ class EmbeddingClient
 
     private function markDown(Throwable $e): void
     {
-        Cache::put(self::DOWN_FLAG, true, now()->addMinute());
-        Log::info('[Search] Embedding service unavailable, keyword search only for a minute: ' . $e->getMessage());
+        Cache::put(self::DOWN_FLAG, true, now()->addMinutes(5));
+        Log::info('[Search] Embedding service unavailable, keyword search only for 5 minutes: ' . $e->getMessage());
     }
 
     private function url(string $path): string

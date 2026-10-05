@@ -65,7 +65,12 @@ class Kernel extends ConsoleKernel
             ->monthlyOn(1, '00:10')->timezone(config('ads.timezone'))
             ->withoutOverlapping();
 
-        // ── Search indexes (Meilisearch) ────────────────────────────────────
+        // ── Search indexes ──────────────────────────────────────────────────
+        // MySQL text index of the search bar: observers keep it current, this rebuilds it nightly.
+        $schedule->command('search:build-index')
+            ->dailyAt('02:15')->timezone(config('ads.timezone'))
+            ->withoutOverlapping()->runInBackground();
+        // Meilisearch (search by image, semantic fallback).
         // Observers + queued jobs keep them current; this nightly pass is the safety net
         // (and adds text vectors missed while the embedding service was down).
         $schedule->command('search:reindex')

@@ -81,7 +81,8 @@ class ProductTranslator
             'translated_at'     => now(),
         ]);
 
-        // The raw update above fires no model events: refresh the search document (FR/AR names).
+        // The raw update above fires no model events: refresh the search index (FR/AR names).
+        app(\App\Services\Search\SearchIndexer::class)->refresh($product->id);
         if (config('search.indexing')) {
             $product->refresh()->searchable();
         }

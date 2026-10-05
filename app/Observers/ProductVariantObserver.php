@@ -58,6 +58,7 @@ class ProductVariantObserver
      */
     private function refreshSearch(ProductVariant $variant): void
     {
+        app(\App\Services\Search\SearchIndexer::class)->refresh((int) $variant->product_id);
         if (!config('search.indexing')
             || (!$variant->wasRecentlyCreated && !$variant->wasChanged('is_active') && $variant->exists)) {
             return;

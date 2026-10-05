@@ -10,29 +10,34 @@
 # (French "or" = gold but also "or", French "the" = tea), and words that also name
 # another product ("basket" = sneakers in Tunisia, but also "Woven Storage Basket").
 #
-# After editing:  php artisan search:sync-settings   (the nightly reindex also picks it up)
+# A group can be limited to some categories (slugs) with "@" at the end of the line:
+#   set, ensemble, tenue  @ fashion-clothing, sports-outdoors
+# Then "ensemble" finds clothing sets, never a "Ceramic Plate Set" or a "Headset".
+# Exact words always rank above synonyms; a synonym only widens the results.
+#
+# Changes apply on the next search (the file is re-read when it changes).
 # Queries that find nothing are listed in the admin panel (Search > Missed queries):
 # that's the best source of new lines for this file.
 
 # ── Fashion ────────────────────────────────────────────────────────────────
-shoes, shoe, sneakers, sneaker, baskets, chaussures, chaussure, running, sabbat, sabbet, sbabet, sbabit, sobbat, صباط, سباط, حذاء, احذيه, سبادري, espadrille
+shoes, shoe, sneakers, sneaker, baskets, chaussures, chaussure, running, sabbat, sabbet, sbabet, sbabit, sobbat, صباط, سباط, حذاء, احذيه, سبادري, espadrille  @ fashion-clothing, sports-outdoors, kids-baby
 sandals, sandal, sandales, sandale, nu pieds, claquettes, chlaka, chleka, شلاكه, صندل
 boots, bottes, bottines, botte, جزمه
-dress, robe, robes, roba, روبه, فستان, فساتين
+dress, robe, robes, roba, روبه, فستان, فساتين  @ fashion-clothing, sports-outdoors, kids-baby
 evening dress, robe de soiree, robe soiree, roba sahra, فستان سهره
 jeans, jean, denim, jinz, djinz, جينز, جين
 trousers, pants, pantalon, sirwel, serwel, sarwel, سروال, بنطلون
 shorts, short, bermuda, شورت
-t shirt, tshirt, tee, tee shirt, tricot, maryoul, mriyoul, mrioul, مريول, تيشرت, تيشيرت
+t shirt, tshirt, tee, tee shirt, tricot, maryoul, mriyoul, mrioul, مريول, تيشرت, تيشيرت  @ fashion-clothing, sports-outdoors, kids-baby
 shirt, chemise, سوريه, souriya, قميص
 hoodie, sweat, sweatshirt, sweat a capuche, capuche, هودي
 jacket, veste, blouson, kabbout, kabout, جاكيت, كبوط, manteau, coat
-tracksuit, survetement, survet, jogging, سوفيتمان
-set, ensemble, tenue, طقم
+ensemble, set, tenue, tracksuit, survetement, survet, jogging, سوفيتمان, طقم  @ fashion-clothing, sports-outdoors
 scarf, foulard, echarpe, chal, شال, منديل, mendil
-bag, sac, sac a main, handbag, chanta, shanta, شنطه, حقيبه
+skirt, jupe, jupes, تنوره  @ fashion-clothing, sports-outdoors, kids-baby
+bag, sac, sac a main, handbag, chanta, shanta, شنطه, حقيبه  @ fashion-clothing, sports-outdoors, kids-baby
 backpack, sac a dos, cartable, محفظه
-watch, montre, mongela, manguela, mongala, منقاله, ساعه
+watch, montre, mongela, manguela, mongala, منقاله, ساعه  @ fashion-clothing, electronics-tech
 jewelry, jewellery, bijoux, bijou, مجوهرات, صياغه
 earrings, boucles d oreilles, boucle d oreille, حلق, اقراط
 necklace, pendant, collier, pendentif, عقد, سلسله, selsla
@@ -52,7 +57,7 @@ baby, bebe, رضيع, نونو
 # ── Electronics ───────────────────────────────────────────────────────────
 phone, smartphone, mobile, telephone, portable, gsm, hatef, هاتف, جوال, تلفون, تليفون
 phone case, coque, pochette, etui, غلاف
-headphones, headphone, headset, casque, casque audio, ecouteurs, ecouteur, earphones, earbuds, سماعه, سماعات
+headphones, headphone, headset, casque, casque audio, ecouteurs, ecouteur, earphones, earbuds, سماعه, سماعات  @ electronics-tech
 speaker, enceinte, haut parleur, baffle, مكبر صوت
 laptop, ordinateur portable, pc portable, ordinateur, pc, حاسوب, كمبيوتر, ultrabook
 tablet, tablette, لوحه
