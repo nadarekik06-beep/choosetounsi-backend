@@ -145,6 +145,7 @@ Route::get('/packs',        [PublicPackController::class, 'index']);
 Route::get('/packs/{slug}', [PublicPackController::class, 'show']);
 Route::get('/flash-sales', [PublicPromotionController::class, 'flashSales']);
 Route::get('/discounts', [PublicPromotionController::class, 'discounts']);
+Route::get('/promo-flyers', [PublicPromotionController::class, 'flyers'])->middleware('throttle:120,1');
 Route::get('/deals',     [\App\Http\Controllers\Api\DealsController::class, 'index']);
 Route::get('/promotions/product/{productId}', [PublicPromotionController::class, 'forProduct']);
 Route::get('/sellers/{id}', [PublicSellerController::class, 'show']);

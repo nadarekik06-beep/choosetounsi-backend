@@ -200,7 +200,7 @@ class DealsCatalog
                 'seller'            => $product->seller ? ['id' => $product->seller->id, 'name' => $product->seller->name] : null,
             ] + $pricing[$product->id];
         }
-        return $out;
+        return \App\Services\ProductCardImages::attach($out);
     }
 
     /** Same card extras as the catalogue: shop name + tier, rating, active variants (add to cart), category. */

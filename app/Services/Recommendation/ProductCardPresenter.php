@@ -68,9 +68,12 @@ class ProductCardPresenter
             ->get()
             ->groupBy('product_id');
 
-        $pricing = $this->promotions->priceMany($products);
+        $pricing    = $this->promotions->priceMany($products);
+        $cardImages = \App\Services\ProductCardImages::forIds($products->pluck('id')->all());
 
-        return $products->map(function ($p) use ($colorImages, $pricing) {
+        return $products->map(function ($p) use ($colorImages, $pricing, $cardImages) {
+            $p->card_images   = $cardImages[$p->id]['card_images'] ?? [];
+            $p->card_swatches = $cardImages[$p->id]['card_swatches'] ?? [];
             $p->primary_image_url  = $p->primaryImage ? Storage::url($p->primaryImage->image_path) : null;
             $p->is_sponsored       = false;
             unset($p->sponsored_priority);

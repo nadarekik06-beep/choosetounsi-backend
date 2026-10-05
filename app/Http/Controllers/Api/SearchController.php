@@ -189,7 +189,7 @@ class SearchController extends Controller
                 $ordered[] = $this->formatProduct($indexed->get($id), $pricing[$id]);
             }
         }
-        return array_slice($ordered, 0, $limit);
+        return \App\Services\ProductCardImages::attach(array_slice($ordered, 0, $limit));
     }
 
     /** Search card; $pricing is the PromotionService block (final price, promo badge…). */

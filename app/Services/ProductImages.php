@@ -306,6 +306,7 @@ class ProductImages
         }
 
         unset(self::$memo[$product->id]);
+        ProductCardImages::flush();
         return $orphans;
     }
 
@@ -322,6 +323,7 @@ class ProductImages
     public static function flush(): void
     {
         self::$memo = [];
+        ProductCardImages::flush();
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

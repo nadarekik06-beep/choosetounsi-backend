@@ -641,6 +641,7 @@ class ProductController extends Controller
                 'primary_image'    => $p->primary_image ? Storage::url($p->primary_image) : null,
             ] + $pricing[$p->id];
         })->filter()->values();
+        $ordered = collect(\App\Services\ProductCardImages::attach($ordered->all()));
 
         return response()->json(['success' => true, 'products' => $ordered, 'count' => $ordered->count()]);
     }
@@ -653,9 +654,12 @@ private function transformProductCollection($products): array
     $productIds = $products->pluck('id')->toArray();
     $colorImagesMap = $this->batchLoadColorImages($productIds);
     $pricing        = $this->promoService->priceMany($products);
+    $cardImages     = \App\Services\ProductCardImages::forIds($productIds);
     $shops          = \App\Services\ShopOverview::shopsFor($products->pluck('seller_id')->filter()->unique()->all());
 
-    return $products->map(function ($p) use ($colorImagesMap, $pricing, $shops) {
+    return $products->map(function ($p) use ($colorImagesMap, $pricing, $shops, $cardImages) {
+        $p->card_images   = $cardImages[$p->id]['card_images'] ?? [];
+        $p->card_swatches = $cardImages[$p->id]['card_swatches'] ?? [];
         // Cards show the shop's name and pepper tier, not the account's personal name
         if ($p->relationLoaded('seller') && $p->seller && isset($shops[$p->seller_id])) {
             $p->seller->setAttribute('business_name', $shops[$p->seller_id]['business_name']);

@@ -417,11 +417,14 @@ class PromotionService
             ->get()
             ->groupBy('product_id');
 
-        return $promotions->map(function ($promo) use ($allColorImages, $pricing, $winners) {
+        $cardImages = ProductCardImages::forIds($allProducts->pluck('id')->all());
+        $variants   = ProductCardImages::variantsFor($allProducts->pluck('id')->all());
+
+        return $promotions->map(function ($promo) use ($allColorImages, $pricing, $winners, $cardImages, $variants) {
             $products = $promo->products
                 ->filter(fn ($product) => $product->stock > 0
                     && ($winners[$product->id]->id ?? null) === $promo->id)
-                ->map(function ($product) use ($allColorImages, $pricing) {
+                ->map(function ($product) use ($allColorImages, $pricing, $cardImages, $variants) {
                     $variantImages = [];
                     foreach ($allColorImages->get($product->id, collect()) as $img) {
                         $url = Storage::url($img->image_path);
@@ -441,7 +444,8 @@ class PromotionService
                         'seller'            => $product->seller
                             ? ['id' => $product->seller->id, 'name' => $product->seller->name]
                             : null,
-                    ] + $pricing[$product->id];
+                    ] + $pricing[$product->id] + ($cardImages[$product->id] ?? ['card_images' => [], 'card_swatches' => []])
+                      + ['variants' => $variants[$product->id] ?? []];
                 })->values();
 
             if ($products->isEmpty()) return null;

@@ -57,10 +57,12 @@ return [
 
         // ── Placements (buyer protection) ────────────────────────────────
         'max_ads' => [
-            'home_row' => 8, 'home_inline' => 2, 'search_top' => 2, 'category_top' => 2,
+            'home_row' => 8, 'home_inline' => 2, 'search_top' => 4, 'category_top' => 4,
             'product_similar' => 4, 'cart_cross_sell' => 2, 'entry_popup' => 1, 'email_digest' => 2,
         ],
         'reserved_slots' => [1, 7],            // 1-based grid positions for search_top / category_top
+        'grid_ad_every'  => 8,                 // product grids: one sponsored card per N cards (0 = reserved_slots only)
+        'grid_flyer_every' => 12,              // product grids: one promo flyer per N cards (0 = none)
 
         // ── Entry popup ──────────────────────────────────────────────────
         'popup_enabled'               => true,

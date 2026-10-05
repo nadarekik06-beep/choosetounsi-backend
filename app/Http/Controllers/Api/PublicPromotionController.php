@@ -32,6 +32,27 @@ class PublicPromotionController extends Controller
         return $this->publicPromotions('discount');
     }
 
+    // ── GET /api/promo-flyers ──────────────────────────────────────────────────
+    // Promotion "flyers" for product grids (search, category, shop), most relevant first.
+
+    public function flyers(\Illuminate\Http\Request $request, \App\Services\PromoFlyers $flyers)
+    {
+        $data = $request->validate([
+            'category_slug' => ['nullable', 'string', 'max:191'],
+            'q'             => ['nullable', 'string', 'max:200'],
+            'limit'         => ['nullable', 'integer', 'min:1', 'max:6'],
+            'exclude'       => ['nullable', 'array', 'max:200'],
+            'exclude.*'     => ['integer'],
+        ]);
+        $categoryId = !empty($data['category_slug'])
+            ? \Illuminate\Support\Facades\DB::table('categories')->where('slug', $data['category_slug'])->value('id')
+            : null;
+
+        return response()->json(['success' => true, 'data' => $flyers->forPage(
+            $categoryId ? (int) $categoryId : null, $data['q'] ?? null, $data['exclude'] ?? [], (int) ($data['limit'] ?? 3)
+        )]);
+    }
+
     // ── Shared logic ───────────────────────────────────────────────────────────
 
     private function publicPromotions(string $type)

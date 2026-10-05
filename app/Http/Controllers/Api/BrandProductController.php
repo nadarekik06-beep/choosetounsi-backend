@@ -105,7 +105,9 @@ class BrandProductController extends Controller
     private function transformList($products)
     {
         $pricing = app(PromotionService::class)->priceMany($products);
-        return $products->map(fn($p) => $this->transformListItem($p, $pricing[$p->id]))->values();
+        return collect(\App\Services\ProductCardImages::attach(
+            $products->map(fn($p) => $this->transformListItem($p, $pricing[$p->id]))->values()->all()
+        ));
     }
 
     /** $pricing: PromotionService pricing block (final_price, original_price, promo badges). */

@@ -20,6 +20,8 @@ class AdsConfigController extends Controller
             'placements'     => Sponsorship::PLACEMENTS,
             'max_ads'        => $settings->get('max_ads'),
             'reserved_slots' => $settings->get('reserved_slots'),
+            'grid_ad_every'    => $settings->int('grid_ad_every'),
+            'grid_flyer_every' => $settings->int('grid_flyer_every'),
             'popup'          => [
                 'enabled'               => (bool) $settings->get('popup_enabled'),
                 'delay_seconds'         => $settings->int('popup_delay_seconds'),

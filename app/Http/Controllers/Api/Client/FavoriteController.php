@@ -30,6 +30,7 @@ class FavoriteController extends Controller
 
         $promos    = app(PromotionService::class)->activePromotionsFor($favorites->pluck('product_id')->all());
         $favorites = $favorites->map(fn($fav) => $this->formatFavorite($fav, $promos[$fav->product_id] ?? null));
+        $favorites = collect(\App\Services\ProductCardImages::attach($favorites->all(), 'product_id'));
 
         return response()->json(['success' => true, 'data' => $favorites]);
     }
