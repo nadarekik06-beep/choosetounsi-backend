@@ -1,0 +1,18 @@
+# /etc/systemd/system/choosetounsi-frontend.service: storefront + seller dashboard (Next.js),
+# behind nginx. Build first: npm ci && npm run build.
+[Unit]
+Description=Choose'Tounsi storefront (Next.js)
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/choosetounsi-frontend
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
+ExecStart=/usr/bin/npx next start -p 3000 -H 127.0.0.1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

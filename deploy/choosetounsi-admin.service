@@ -1,0 +1,17 @@
+# /etc/systemd/system/choosetounsi-admin.service: admin panel (Next.js), behind nginx.
+# Build first: npm ci && npm run build.
+[Unit]
+Description=Choose'Tounsi admin panel (Next.js)
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/admin-panel
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npx next start -p 3001 -H 127.0.0.1
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

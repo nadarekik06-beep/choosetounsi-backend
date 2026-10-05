@@ -1,0 +1,17 @@
+# /etc/systemd/system/choosetounsi-queue.service: Laravel queue worker (photo fingerprints,
+# e-mails, AI ad copy…). --max-time=3600 exits hourly so systemd restarts it with fresh code.
+#   sudo systemctl enable --now choosetounsi-queue · journalctl -u choosetounsi-queue -f
+[Unit]
+Description=Choose'Tounsi Laravel queue worker
+After=network.target mysql.service
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/choosetounsi-backend
+ExecStart=/usr/bin/php artisan queue:work database --sleep=3 --tries=3 --max-time=3600
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
