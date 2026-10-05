@@ -45,12 +45,19 @@ class ImageSearch
         return ['cached' => false] + $result;
     }
 
-    /** @param array<int, float> $q normalized query vector */
-    public function rank(array $q, ?string $color): array
+    /**
+     * @param array<int, float> $q normalized query vector
+     * @param int[] $exclude products left out, from the results and the centroids (tuning:
+     *              "a photo of an item we don't sell", see php artisan image-search:try)
+     */
+    public function rank(array $q, ?string $color, array $exclude = []): array
     {
         $index = $this->index->get();
         if (!$index['count']) {
             throw new SearchUnavailable('No photo fingerprints yet (php artisan image-search:rebuild)');
+        }
+        if ($exclude) {
+            $index = $this->without($index, $exclude);
         }
         $cfg = config('search.image');
         $queryLab = Fingerprint::lab($color);
@@ -128,6 +135,32 @@ class ImageSearch
             'top'        => array_map(fn ($pid) => [$pid, round($best[$pid]['similarity'], 4), round($best[$pid]['score'], 4)],
                                       array_slice(array_keys($exact + $similar ?: $nearest), 0, 5)),
         ];
+    }
+
+    /** The index minus some products, centroids recomputed without their photos. */
+    private function without(array $index, array $exclude): array
+    {
+        $exclude = array_flip($exclude);
+        $sums = [];
+        foreach ($index['product_ids'] as $i => $pid) {
+            if (isset($exclude[$pid])) {
+                unset($index['vectors'][$i]);
+                continue;
+            }
+            $group = $index['groups'][$i];
+            if ($group === '') {
+                continue;
+            }
+            if (!isset($sums[$group])) {
+                $sums[$group] = $index['vectors'][$i];
+            } else {
+                foreach ($index['vectors'][$i] as $k => $x) {
+                    $sums[$group][$k] += $x;
+                }
+            }
+        }
+        $index['centroids'] = array_map(fn ($sum) => Fingerprint::unpack(Fingerprint::pack($sum)), $sums);
+        return $index;
     }
 
     /**

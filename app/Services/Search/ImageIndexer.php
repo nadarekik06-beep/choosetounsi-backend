@@ -9,13 +9,17 @@ use Illuminate\Support\Facades\Storage;
 
 /**
  * Keeps image_fingerprints in step with one product: every photo (main and color photos)
- * gets a fingerprint; a product that is not live (or whose seller is inactive) has none.
+ * gets a fingerprint; a product that is not live (or whose seller is inactive) has none, and
+ * neither do the demo catalog's placeholder cards.
  *
  * A photo is only sent to the AI service when its file changed (sha1) or was made by another
  * model; identical files elsewhere in the catalog lend their vector.
  */
 class ImageIndexer
 {
+    /** Demo catalog cards (product name on a colored template): not photos, never fingerprinted. */
+    const PLACEHOLDERS = 'products/demo/%';
+
     public function __construct(private FingerprintClient $client, private FingerprintIndex $index) {}
 
     /**
@@ -35,7 +39,8 @@ class ImageIndexer
             return ['indexed' => 0, 'embedded' => 0, 'removed' => true, 'failed' => 0, 'changed' => $removed > 0];
         }
 
-        $images = DB::table('product_images')->where('product_id', $productId)->get(['id', 'image_path']);
+        $images = DB::table('product_images')->where('product_id', $productId)
+            ->where('image_path', 'NOT LIKE', self::PLACEHOLDERS)->get(['id', 'image_path']);
         $existing = DB::table('image_fingerprints')->where('product_id', $productId)
             ->get(['id', 'product_image_id', 'content_hash', 'model'])->keyBy('product_image_id');
         $model = $this->client->model();

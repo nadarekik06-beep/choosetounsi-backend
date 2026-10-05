@@ -131,6 +131,7 @@ class FingerprintIndex
             ->join('products as p', 'p.id', '=', 'f.product_id')
             ->join('users as u', 'u.id', '=', 'p.seller_id')
             ->where('p.is_approved', 1)->where('p.is_active', 1)->whereNull('p.deleted_at')
-            ->where('u.is_active', 1);
+            ->where('u.is_active', 1)
+            ->where('pi.image_path', 'NOT LIKE', ImageIndexer::PLACEHOLDERS);
     }
 }

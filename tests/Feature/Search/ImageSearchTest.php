@@ -169,6 +169,21 @@ class ImageSearchTest extends TestCase
         $this->assertSame([$live->id], array_column($res['sections']['exact'], 'id'));
     }
 
+    public function test_demo_placeholder_cards_are_not_photos(): void
+    {
+        $cat = $this->makeCategory();
+        $real = $this->makeProduct($this->seller, $cat);
+        $this->photoOf($real, $this->vec(1, 0.2));
+        $demo = $this->makeProduct($this->seller, $cat);
+        $card = $this->photoOf($demo, $this->vec(1, 0));
+        DB::table('product_images')->where('id', $card)->update(['image_path' => 'products/demo/card.png']);
+        app(FingerprintIndex::class)->bump();
+
+        $this->fakeService($this->vec(1, 0));
+        $res = $this->search()->assertOk();
+        $this->assertSame([$real->id], array_column(array_merge($res['sections']['exact'], $res['sections']['similar']), 'id'));
+    }
+
     public function test_results_are_cached_per_photo_until_the_catalog_changes_and_logged(): void
     {
         $p = $this->makeProduct($this->seller, $this->makeCategory());
