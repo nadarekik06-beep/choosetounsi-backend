@@ -15,7 +15,7 @@ dropped (`Headlines`, same check as the forecast narrator).
 |---|---|
 | Nightly 02:30 (after `forecast:compute`) | `php artisan growth:compute [--seller=ID] [--no-notify]` |
 | Per seller | `GrowthRadar::compute()` → `SellerContext` (rebuilds the forecast daily series) → detectors → `persist()` → `Scorer` → headlines → notification |
-| Read | `GET /api/seller/growth-radar` (precomputed; a seller never computed is computed on first visit) |
+| Read | `GET /api/seller/growth-radar` (Black Pepper; precomputed, a seller never computed is computed on first visit) |
 | Act | the existing endpoints accept `growth_card_id` (promotions, coupons, ad campaigns) → `growth_actions` |
 | Measure | `growth:measure` (nightly 02:15, before compute) → `ResultMeasurer` |
 
@@ -64,13 +64,15 @@ estimated (then the card says so).
 
 ## Tiers
 
-`config('growth.full_feature')` (= `black_hub`) gets the feed. Other plans get the score and
-one card reduced to type / confidence / impact range by the server (`Presenter::locked`).
+Black Pepper only. The API routes are behind `seller.feature:black_hub`
+(`config('growth.full_feature')`); other plans get 403 `PLAN_REQUIRED`, the sidebar entry sits
+in the Black Pepper section and the page sends other plans to /seller/subscription.
+`growth:compute` only computes Black Pepper sellers.
 
 ## Demo
 
 ```
-php artisan growth:demo            # Black Pepper shop growth-demo@choosetounsi.test + peers, Red, Green
+php artisan growth:demo            # Black Pepper shop growth-demo@choosetounsi.test + peers, Red / Green (no access)
 php artisan growth:demo --fresh    # purge + reseed
 php artisan growth:demo --purge
 ```

@@ -26,8 +26,8 @@ use Illuminate\Support\Facades\DB;
  *   POST /api/seller/growth-radar/cards/{id}/applied   {kind: edit|listing|bundle} (link actions)
  *   GET  /api/seller/growth-radar/history              past actions + what worked
  *
- * Plans without config('growth.full_feature') get the score and one locked card
- * (type, confidence, impact range only).
+ * Black Pepper only: the routes are behind seller.feature:black_hub
+ * (config('growth.full_feature')); other plans get 403 PLAN_REQUIRED.
  */
 class GrowthRadarController extends Controller
 {
@@ -43,7 +43,6 @@ class GrowthRadarController extends Controller
             $this->radar->compute($sellerId, null, false);   // first visit: don't show an empty page
         }
 
-        $full = $this->radar->hasFullFeed($sellerId);
         $snap = DB::table('growth_snapshots')->where('seller_id', $sellerId)->where('week_start', '<=', $week->toDateString())
             ->orderByDesc('week_start')->first();
         $prev = $snap ? DB::table('growth_snapshots')->where('seller_id', $sellerId)
@@ -54,14 +53,12 @@ class GrowthRadarController extends Controller
         $locale = app()->getLocale();
 
         return response()->json(['success' => true, 'data' => [
-            'access'      => $full ? 'full' : 'locked',
             'week_start'  => $week->toDateString(),
             'computed_at' => $snap ? CarbonImmutable::parse($snap->updated_at)->toIso8601String() : null,
             'score'       => $this->score($snap, $prev),
-            'cards'       => $full ? $this->presenter->cards($rows, $locale) : array_map(fn ($r) => $this->presenter->locked($r), array_slice($rows, 0, 1)),
-            'hidden_cards'=> $full ? 0 : max(0, count($rows) - 1),
-            'results'     => $full ? app(Results::class)->recent($sellerId, $locale) : [],
-            'snoozed'     => $full ? DB::table('growth_cards')->where('seller_id', $sellerId)->where('status', 'snoozed')->count() : 0,
+            'cards'       => $this->presenter->cards($rows, $locale),
+            'results'     => app(Results::class)->recent($sellerId, $locale),
+            'snoozed'     => DB::table('growth_cards')->where('seller_id', $sellerId)->where('status', 'snoozed')->count(),
         ]]);
     }
 
@@ -110,11 +107,7 @@ class GrowthRadarController extends Controller
     {
         $sellerId = (int) $request->user()->id;
         if ($deny = $this->ensureSeller($sellerId)) return $deny;
-        if (!$this->radar->hasFullFeed($sellerId)) {
-            return response()->json(['success' => true, 'data' => ['access' => 'locked', 'actions' => [], 'learning' => null]]);
-        }
         return response()->json(['success' => true, 'data' => [
-            'access'   => 'full',
             'actions'  => app(Results::class)->history($sellerId, app()->getLocale()),
             'learning' => Learning::forSeller($sellerId)->summary(),
         ]]);

@@ -16,8 +16,8 @@ use Illuminate\Support\Str;
  * peer shops so the category passes the privacy floor (≥5 shops), interested
  * buyers for a targeted coupon, missed searches, a calendar moment in 3 weeks
  * with an effect measured last year, a finished promotion applied from a card
- * (its result is measured by growth:measure), plus a Red and a Green shop to
- * see the locked view.
+ * (its result is measured by growth:measure), plus a Red and a Green shop that
+ * have no access (Black Pepper only).
  *
  * Everything it creates matches EMAIL_LIKE / the demo-growth-% category slug,
  * and nothing else (the older DemoCatalog accounts share the domain).
@@ -144,7 +144,7 @@ class GrowthDemoSeeder extends Seeder
             'category_ids' => json_encode([$this->category]), 'is_active' => true, 'source' => 'admin', 'created_at' => now(), 'updated_at' => now(),
         ]);
 
-        // ── Red and Green shops (locked view) ─────────────────────────────────
+        // ── Red and Green shops: no Growth Radar (Black Pepper only) ──────────
         foreach (['red' => 'growth-red', 'free' => 'growth-green'] as $plan => $local) {
             $x = $this->seller($local, 'Boutique Démo ' . ($plan === 'free' ? 'Green' : 'Red'), $plan);
             $p = $this->product($x, "Robe longue ($plan)", 130, 10, 60, images: 1);
@@ -158,7 +158,7 @@ class GrowthDemoSeeder extends Seeder
             $radar->compute((int) $sid, null, false);
         }
         $this->command?->info('Growth demo ready — Black Pepper shop: growth-demo' . self::DOMAIN
-            . ' (also growth-red / growth-green). Password: see GrowthDemoSeeder::PASSWORD.');
+            . ' (growth-red / growth-green have no access). Password: see GrowthDemoSeeder::PASSWORD.');
     }
 
     // ── Builders ─────────────────────────────────────────────────────────────

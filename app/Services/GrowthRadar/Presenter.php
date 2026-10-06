@@ -7,9 +7,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
 /**
- * Shapes cards, results and the score for the dashboard, in the request's
- * language. Locked mode (plans without the full feed) strips everything but
- * the card type, confidence and impact range — on the server, not in CSS.
+ * Shapes cards, results and the score for the dashboard, in the request's language.
  */
 class Presenter
 {
@@ -53,15 +51,6 @@ class Presenter
             'params'         => $p['params'] ?? [],
             'snoozed_until'  => $row->snoozed_until,
             'created_at'     => CarbonImmutable::parse($row->created_at)->toIso8601String(),
-        ];
-    }
-
-    /** What a plan without the full feed may see of a card. */
-    public function locked(object $row): array
-    {
-        return [
-            'id' => (int) $row->id, 'type' => $row->type, 'confidence' => $row->confidence, 'locked' => true,
-            'impact' => $row->impact_high !== null ? ['low' => (int) $row->impact_low, 'high' => (int) $row->impact_high] : null,
         ];
     }
 

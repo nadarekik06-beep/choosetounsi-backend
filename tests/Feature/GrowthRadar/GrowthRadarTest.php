@@ -325,30 +325,37 @@ class GrowthRadarTest extends TestCase
 
     // ── API: tiers, lifecycle, recording ──────────────────────────────────
 
-    public function test_black_sees_full_cards_red_sees_score_and_one_locked_card(): void
+    public function test_growth_radar_is_black_pepper_only(): void
     {
         $p = $this->product(['description' => 'Short']);
         $this->events($p, 'view', 120);
         Sanctum::actingAs($this->seller);
         $full = $this->getJson('/api/seller/growth-radar')->assertOk();
-        $full->assertJsonPath('data.access', 'full');
         $this->assertNotEmpty($full->json('data.cards.0.headline'));
 
-        $red = $this->makeSeller('red');
-        $rp = $this->product(['description' => 'Short'], $red);
-        $this->events($rp, 'view', 120);
-        $this->product([], $red);
-        Sanctum::actingAs($red);
-        $res = $this->getJson('/api/seller/growth-radar')->assertOk();
-        $res->assertJsonPath('data.access', 'locked');
-        $this->assertNotNull($res->json('data.score'));
-        $cards = $res->json('data.cards');
-        $this->assertCount(1, $cards);
-        $this->assertTrue($cards[0]['locked']);
-        $this->assertArrayNotHasKey('headline', $cards[0]);
-        $this->assertArrayNotHasKey('product', $cards[0]);
-        $this->assertArrayNotHasKey('action', $cards[0]);
-        $this->assertSame([], $this->getJson('/api/seller/growth-radar/history')->json('data.actions'));
+        foreach (['red', 'free'] as $plan) {
+            $other = $this->makeSeller($plan);
+            $op = $this->product(['description' => 'Short'], $other);
+            $this->events($op, 'view', 120);
+            Sanctum::actingAs($other);
+            $this->getJson('/api/seller/growth-radar')->assertForbidden()->assertJsonPath('code', 'PLAN_REQUIRED');
+            $this->getJson('/api/seller/growth-radar/history')->assertForbidden();
+            $this->postJson('/api/seller/growth-radar/refresh')->assertForbidden();
+            $this->assertNotContains($other->id, app(GrowthRadar::class)->sellerIds());
+        }
+        $this->assertContains($this->seller->id, app(GrowthRadar::class)->sellerIds());
+    }
+
+    public function test_card_texts_follow_the_request_language(): void
+    {
+        $p = $this->product(['description' => 'Short', 'name' => 'Sac test']);
+        $this->events($p, 'view', 120);
+        Sanctum::actingAs($this->seller);
+        $fr = $this->getJson('/api/seller/growth-radar', ['Accept-Language' => 'fr'])->json('data.cards.0');
+        $en = $this->getJson('/api/seller/growth-radar', ['Accept-Language' => 'en'])->json('data.cards.0');
+        $this->assertStringContainsString('vues', $fr['headline']);
+        $this->assertStringContainsString('views', $en['headline']);
+        $this->assertStringContainsString('description', $fr['recommendation']);
     }
 
     public function test_dismissed_card_does_not_come_back_and_snoozed_card_is_hidden(): void

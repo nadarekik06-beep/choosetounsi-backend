@@ -51,10 +51,11 @@ class GrowthRadar
         return $this->gate->feature($sellerId, config('growth.full_feature')) === null;
     }
 
-    /** Approved sellers (every plan gets a score; the full feed is gated at read time). */
+    /** Approved sellers whose plan includes Growth Radar (Black Pepper). */
     public function sellerIds(): array
     {
-        return DB::table('seller_applications')->where('status', 'approved')->pluck('user_id')->map(fn ($id) => (int) $id)->all();
+        return DB::table('seller_applications')->where('status', 'approved')->pluck('user_id')
+            ->map(fn ($id) => (int) $id)->filter(fn ($id) => $this->hasFullFeed($id))->values()->all();
     }
 
     /** @return array{cards: int, new: int, score: ?int} */

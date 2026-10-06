@@ -83,10 +83,10 @@ return [
     ],
 
     'notify' => [
-        'title' => '{1} إجراء جديد في Growth Radar: حتى +:high د.ت|[2,*] :count إجراءات جديدة في Growth Radar، حتى +:high د.ت',
+        'title' => '{1} إجراء جديد في رادار النمو: حتى +:high د.ت|[2,*] :count إجراءات جديدة في رادار النمو، حتى +:high د.ت',
         'body'  => ':headline',
-        'subject' => 'Growth Radar: إجراء جديد لمتجرك',
-        'cta'   => 'افتح Growth Radar',
+        'subject' => 'رادار النمو: إجراء جديد لمتجرك',
+        'cta'   => 'افتح رادار النمو',
         'footer' => 'تصلك هذه الرسالة لأن لديك Black Pepper. بريد واحد في الأسبوع على الأكثر.',
         'result_title' => 'نتائج :kind جاهزة',
         'result_body'  => ':headline',
@@ -104,6 +104,6 @@ return [
     'errors' => [
         'audience_too_small' => 'لا يوجد عدد كافٍ من المشترين المهتمين الآن (يلزم :min على الأقل حتى لا يُستهدف أحد بمفرده). حاول لاحقًا.',
         'audience_product'   => 'يجب أن تشمل القسيمة الموجّهة منتج البطاقة.',
-        'refresh_cooldown'   => 'تم تحديث Growth Radar قبل دقائق. حاول بعد :minutes دقيقة.',
+        'refresh_cooldown'   => 'تم تحديث رادار النمو قبل دقائق. حاول بعد :minutes دقيقة.',
     ],
 ];

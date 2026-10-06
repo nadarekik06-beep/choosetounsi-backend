@@ -8,9 +8,9 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Nightly Growth Radar run: weekly score + action cards for every approved
+ * Nightly Growth Radar run: weekly score + action cards for every Black Pepper
  * seller (cross-seller benchmarks computed once and shared), then
- * notifications for new high-impact cards (full-feed plans only).
+ * notifications for new high-impact cards.
  */
 class GrowthCompute extends Command
 {

@@ -296,8 +296,8 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('/recommender',           [SellerAIController::class, 'recommender']);
             });
 
-        // ── Growth Radar (every plan: score + 1 locked card; full feed = growth.full_feature) ──
-        Route::prefix('growth-radar')->group(function () {
+        // ── Growth Radar (Black Pepper only: plan feature growth.full_feature = black_hub) ──
+        Route::prefix('growth-radar')->middleware('seller.feature:black_hub')->group(function () {
             Route::get('/',                    [GrowthRadarController::class, 'index']);
             Route::get('/history',             [GrowthRadarController::class, 'history']);
             Route::post('/refresh',            [GrowthRadarController::class, 'refresh'])->middleware('throttle:6,1');

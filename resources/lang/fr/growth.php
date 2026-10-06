@@ -1,6 +1,6 @@
 <?php
 
-// Growth Radar (tableau de bord vendeur). Les textes des cartes viennent de ces
+// Radar de croissance / Growth Radar (tableau de bord vendeur). Les textes des cartes viennent de ces
 // modèles ; Groq peut seulement reformuler le titre, jamais les chiffres.
 return [
     'cards' => [
@@ -84,10 +84,10 @@ return [
     ],
 
     'notify' => [
-        'title' => '{1} Nouvelle action Growth Radar : jusqu\'à +:high DT|[2,*] :count nouvelles actions Growth Radar, jusqu\'à +:high DT',
+        'title' => '{1} Nouvelle action du Radar de croissance : jusqu\'à +:high DT|[2,*] :count nouvelles actions du Radar de croissance, jusqu\'à +:high DT',
         'body'  => ':headline',
-        'subject' => 'Growth Radar : une nouvelle action pour votre boutique',
-        'cta'   => 'Ouvrir Growth Radar',
+        'subject' => 'Radar de croissance : une nouvelle action pour votre boutique',
+        'cta'   => 'Ouvrir le Radar de croissance',
         'footer' => 'Vous recevez ce message car vous avez Black Pepper. Au plus un e-mail par semaine.',
         'result_title' => 'Les résultats de votre :kind sont là',
         'result_body'  => ':headline',
@@ -105,6 +105,6 @@ return [
     'errors' => [
         'audience_too_small' => 'Pas assez d\'acheteurs intéressés pour l\'instant (il en faut au moins :min pour que personne ne soit ciblé individuellement). Réessayez plus tard.',
         'audience_product'   => 'Un code ciblé doit inclure le produit de la carte.',
-        'refresh_cooldown'   => 'Growth Radar a été actualisé il y a quelques minutes. Réessayez dans :minutes min.',
+        'refresh_cooldown'   => 'Le Radar de croissance a été actualisé il y a quelques minutes. Réessayez dans :minutes min.',
     ],
 ];
