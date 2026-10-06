@@ -20,7 +20,8 @@ class ForecastHijri extends Command
     {
         $years = $this->argument('year') ? [(int) $this->argument('year')] : [(int) date('Y'), (int) date('Y') + 1];
         foreach ($years as $y) {
-            $this->info("$y: " . Calendar::seedHijriYear($y) . ' event(s) added');
+            $this->info("$y: " . Calendar::seedHijriYear($y) . ' Islamic holiday(s), '
+                . Calendar::seedFixedYear($y) . ' fixed-date moment(s) added');
         }
         return self::SUCCESS;
     }

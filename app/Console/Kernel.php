@@ -96,6 +96,13 @@ class Kernel extends ConsoleKernel
             ->weeklyOn(1, '08:00')->timezone(config('forecast.timezone'))
             ->withoutOverlapping()->runInBackground();
 
+        // ── Growth Radar ───────────────────────────────────────────────────
+        // After forecast:compute (shares its daily series). Scores + cards for every
+        // seller; notifies Black Pepper sellers of new high-impact cards.
+        $schedule->command('growth:compute')
+            ->dailyAt('02:30')->timezone(config('growth.timezone'))
+            ->withoutOverlapping()->runInBackground();
+
         // ── Black Pepper — daily smart notifications ───────────────────────
         // Runs every day at 08:00 server time.
         // Sends: auto-promo, stock-risk, weekend-spike, cooling notifications

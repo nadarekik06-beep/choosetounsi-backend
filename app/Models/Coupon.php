@@ -9,13 +9,14 @@ class Coupon extends Model
     protected $fillable = [
         'seller_id', 'code', 'discount_type', 'discount_value',
         'min_order_amount', 'usage_limit', 'usage_limit_per_customer',
-        'usage_count', 'is_active',
+        'usage_count', 'is_active', 'expires_at',
     ];
 
     protected $casts = [
         'discount_value'    => 'decimal:3',
         'min_order_amount'  => 'decimal:3',
         'is_active'         => 'boolean',
+        'expires_at'        => 'datetime',
     ];
 
     // ── Relationships ─────────────────────────────────────────────────────

@@ -4,7 +4,6 @@ namespace App\Console\Commands;
 
 use App\Models\User;
 use App\Models\SellerApplication;
-use App\Services\AutoPromotionService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -19,11 +18,12 @@ use Carbon\Carbon;
  * Runs daily at 08:00 (registered in Kernel.php).
  * Analyzes each Black Pepper seller and sends smart notifications:
  *
- *   1. AUTO_PROMO   — trending product not yet sponsored
- *   2. STOCK_RISK   — product running out within 7 days
- *   3. COOLING      — product was trending last week, now slowing
- *   4. WEEKEND_SPIKE — if today is Thursday/Friday, warn of weekend demand
- *   5. LOW_QUALITY   — seller has products scoring < 40 with no recent edit
+ *   1. STOCK_RISK   — product running out within 7 days
+ *   2. COOLING      — product was trending last week, now slowing
+ *   3. LOW_QUALITY  — seller has products scoring < 40 with no recent edit
+ *
+ * Promotion ideas (trending product to boost, weekend demand) moved to Growth
+ * Radar (growth:compute), which also measures what happened afterwards.
  *
  * Each notification type fires AT MOST ONCE per seller per day.
  * Uses the existing database notification channel (NotificationBell.tsx reads it).
@@ -96,31 +96,7 @@ class BlackDailyNotify extends Command
             ->pluck(DB::raw("JSON_UNQUOTE(JSON_EXTRACT(data, '$.notify_type'))"))
             ->toArray();
 
-        // ─────────────────────────────────────────────────────────────────
-        // NOTIFICATION 1: Auto-Promote Suggestion
-        // ─────────────────────────────────────────────────────────────────
-        if (!in_array('auto_promo', $sentToday)) {
-            try {
-                $suggestions = (new AutoPromotionService())->suggest($sellerId);
-                $unspon      = array_filter($suggestions, fn($s) => !$s['already_sponsored']);
-
-                if (!empty($unspon)) {
-                    $top = array_values($unspon)[0];
-                    $seller->notify(new \App\Notifications\BlackSmartNotification([
-                        'notify_type' => 'auto_promo',
-                        'source'      => 'black_daily_notify',
-                        'params'      => ['name' => $top['product_name'], 'amount' => $top['estimated_boost_tnd']],
-                        'icon'        => 'zap',
-                        'action'      => 'promote',
-                        'link'        => '/seller/black',
-                        'product_id'  => $top['product_id'],
-                    ]));
-                    $sent++;
-                }
-            } catch (\Throwable $e) {
-                Log::warning("[BlackDailyNotify] auto_promo failed for {$sellerId}: " . $e->getMessage());
-            }
-        }
+        // Promotion ideas (auto-promote, weekend spike) now come from Growth Radar (growth:compute).
 
         // ─────────────────────────────────────────────────────────────────
         // NOTIFICATION 2: Stock Risk
@@ -163,44 +139,6 @@ class BlackDailyNotify extends Command
                 }
             } catch (\Throwable $e) {
                 Log::warning("[BlackDailyNotify] stock_risk failed for {$sellerId}: " . $e->getMessage());
-            }
-        }
-
-        // ─────────────────────────────────────────────────────────────────
-        // NOTIFICATION 3: Weekend Demand Spike (Thursday/Friday only)
-        // ─────────────────────────────────────────────────────────────────
-        if (!in_array('weekend_spike', $sentToday) && in_array($now->dayOfWeek, [4, 5])) {
-            try {
-                // Find top selling product last weekend
-                $topProduct = DB::table('order_items as oi')
-                    ->join('products as p', 'p.id', '=', 'oi.product_id')
-                    ->join('orders as o', 'o.id', '=', 'oi.order_id')
-                    ->where("p.{$sellerCol}", $sellerId)
-                    ->whereNull('p.deleted_at')
-                    ->whereIn('o.status', ['completed', 'delivered'])
-                    ->whereBetween('o.created_at', [
-                        $now->copy()->subWeek()->startOfWeekend(),
-                        $now->copy()->subWeek()->endOfWeekend(),
-                    ])
-                    ->selectRaw("oi.product_id, p.name, SUM(oi.quantity) as units")
-                    ->groupBy('oi.product_id', 'p.name')
-                    ->orderByDesc('units')
-                    ->first();
-
-                if ($topProduct) {
-                    $seller->notify(new \App\Notifications\BlackSmartNotification([
-                        'notify_type' => 'weekend_spike',
-                        'source'      => 'black_daily_notify',
-                        'params'      => ['name' => $topProduct->name],
-                        'icon'        => 'trending-up',
-                        'action'      => 'promote',
-                        'link'        => '/seller/black',
-                        'product_id'  => $topProduct->product_id,
-                    ]));
-                    $sent++;
-                }
-            } catch (\Throwable $e) {
-                Log::warning("[BlackDailyNotify] weekend_spike failed for {$sellerId}: " . $e->getMessage());
             }
         }
 

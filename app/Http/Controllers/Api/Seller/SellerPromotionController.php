@@ -5,6 +5,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Models\Promotion;
 use App\Services\PromotionService;
+use App\Services\GrowthRadar\GrowthActions;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -48,7 +49,7 @@ class SellerPromotionController extends Controller
 
     // ── Store ──────────────────────────────────────────────────────────────
 
-    public function store(Request $request)
+    public function store(Request $request, GrowthActions $actions)
     {
         $seller = $request->user();
 
@@ -129,6 +130,13 @@ if (!empty($businessErrors)) {
             ]);
 
             $promo->products()->attach($productIds);
+
+            // Opened from a Growth Radar card: remember it so the result can be measured
+            if ($card = $actions->cardFromRequest($request)) {
+                $actions->record($seller->id, $card, $promo->type, $promo->id,
+                    in_array((int) $card->product_id, array_map('intval', $productIds), true) ? (int) $card->product_id : (int) $productIds[0],
+                    $promo->starts_at, $promo->ends_at);
+            }
 
             DB::commit();
 

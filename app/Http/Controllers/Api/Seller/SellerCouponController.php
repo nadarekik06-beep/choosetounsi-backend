@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api\Seller;
 use App\Http\Controllers\Controller;
 use App\Models\Coupon;
 use App\Models\Product;
+use App\Services\GrowthRadar\Audience;
+use App\Services\GrowthRadar\GrowthActions;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -40,7 +42,7 @@ class SellerCouponController extends Controller
 
     // ── Store ──────────────────────────────────────────────────────────────
 
-    public function store(Request $request)
+    public function store(Request $request, GrowthActions $actions, Audience $audience)
     {
         $seller = $request->user();
 
@@ -53,11 +55,23 @@ class SellerCouponController extends Controller
                 'usage_limit'                => 'nullable|integer|min:1',
                 'usage_limit_per_customer'   => 'nullable|integer|min:1',
                 'is_active'                  => 'nullable|boolean',
+                'expires_at'                 => 'nullable|date|after:now',
                 'product_ids'                => 'required|array|min:1',
                 'product_ids.*'              => 'integer',
+                'growth_card_id'             => 'nullable|integer',
             ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json(['success' => false, 'errors' => $e->errors()], 422);
+        }
+
+        // Opened from a Growth Radar card: a warm-audience card makes the coupon private to that audience
+        $card = $actions->cardFromRequest($request);
+        $targeted = $card && $card->type === 'warm_audience' && $card->product_id;
+        if ($targeted && !in_array((int) $card->product_id, array_map('intval', $validated['product_ids']), true)) {
+            return response()->json(['success' => false, 'errors' => ['product_ids' => [__('growth.errors.audience_product')]]], 422);
+        }
+        if ($targeted && empty($validated['expires_at'])) {
+            $validated['expires_at'] = now()->addDays((int) config('growth.warm.coupon_days'));
         }
 
         if ($validated['discount_type'] === 'percentage' && $validated['discount_value'] > 100) {
@@ -93,11 +107,28 @@ class SellerCouponController extends Controller
                 'usage_limit_per_customer'  => $validated['usage_limit_per_customer'] ?? null,
                 'usage_count'               => 0,
                 'is_active'                 => $validated['is_active'] ?? true,
+                'expires_at'                => $validated['expires_at'] ?? null,
             ]);
 
             $coupon->products()->attach($productIds);
 
+            if ($targeted) {
+                if ($audience->attach($coupon, $seller->id, (int) $card->product_id) === null) {
+                    DB::rollBack();
+                    return response()->json([
+                        'success' => false, 'code' => 'AUDIENCE_TOO_SMALL',
+                        'message' => __('growth.errors.audience_too_small', ['min' => Audience::minimum()]),
+                    ], 422);
+                }
+            }
+            if ($card) {
+                $actions->record($seller->id, $card, 'coupon', $coupon->id, $targeted ? (int) $card->product_id : (int) $productIds[0],
+                    now(), $coupon->expires_at ?? now()->addDays((int) config('growth.warm.coupon_days')));
+            }
+
             DB::commit();
+
+            if ($targeted) $audience->notify($coupon);
 
             return response()->json([
                 'success' => true,
@@ -209,6 +240,9 @@ class SellerCouponController extends Controller
             'usage_limit_per_customer'  => $c->usage_limit_per_customer,
             'usage_count'               => $c->usage_count,
             'is_active'                 => $c->is_active,
+            'expires_at'                => $c->expires_at?->toISOString(),
+            // Targeted coupons (Growth Radar): the seller only sees how many buyers, never who
+            'audience_size'             => DB::table('coupon_audiences')->where('coupon_id', $c->id)->count() ?: null,
             'products_count'            => $products->count(),
             'products'                  => $products->map(fn ($p) => [
                 'id'                => $p->id,

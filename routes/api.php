@@ -55,6 +55,7 @@ use App\Http\Controllers\Api\PublicSellerController;
 use App\Http\Controllers\Api\Seller\CommissionController;
 use App\Http\Controllers\Api\Delivery\DeliveryAuthController;
 use App\Http\Controllers\Api\Seller\SalesForecastController;
+use App\Http\Controllers\Api\Seller\GrowthRadarController;
 use App\Http\Controllers\Api\ProductReviewController;
 use App\Http\Controllers\Api\Client\ReviewController as ClientReviewController;
 use App\Http\Controllers\Api\Seller\SellerReviewController;
@@ -295,11 +296,20 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::post('/recommender',           [SellerAIController::class, 'recommender']);
             });
 
+        // ── Growth Radar (every plan: score + 1 locked card; full feed = growth.full_feature) ──
+        Route::prefix('growth-radar')->group(function () {
+            Route::get('/',                    [GrowthRadarController::class, 'index']);
+            Route::get('/history',             [GrowthRadarController::class, 'history']);
+            Route::post('/refresh',            [GrowthRadarController::class, 'refresh'])->middleware('throttle:6,1');
+            Route::post('/cards/{id}/dismiss', [GrowthRadarController::class, 'dismiss'])->whereNumber('id');
+            Route::post('/cards/{id}/snooze',  [GrowthRadarController::class, 'snooze'])->whereNumber('id');
+            Route::post('/cards/{id}/applied', [GrowthRadarController::class, 'applied'])->whereNumber('id');
+        });
+
         // ── Black Pepper ───────────────────────────────────────────────────
         Route::prefix('black')
             ->middleware('seller.feature:black_hub')
             ->group(function () {
-                Route::get('/ai-hub',          [BlackPepperController::class, 'aiHub']);
                 Route::get('/revenue-goals',  [BlackPepperController::class, 'revenueGoals']);
                 Route::post('/revenue-goals', [BlackPepperController::class, 'setRevenueGoal']);
                 Route::get('/vip-requests',    [BlackPepperController::class, 'myVipRequests']);
@@ -307,7 +317,6 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::get('/daily-brief', [BlackPepperController::class, 'dailyBrief']);
                 Route::get('/funnel-insights', [BlackPepperController::class, 'funnelInsights']);
                 Route::get('/quality-audit',   [BlackPepperController::class, 'qualityAudit']);
-                Route::get('/auto-promote-suggestions', [BlackPepperController::class, 'autoPromote']);
                 });
 
         Route::get('/dashboard', [SellerDashboardController::class, 'index']);

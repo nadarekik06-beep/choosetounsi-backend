@@ -78,6 +78,8 @@ return [
         'invalid' => 'Invalid coupon code.',
         'invalid_for_seller' => 'Invalid coupon code for this seller.',
         'inactive' => 'This coupon is no longer active.',
+        'expired' => 'This coupon has expired.',
+        'not_for_you' => 'This coupon is reserved for other customers.',
         'limit_reached' => 'This coupon has reached its usage limit.',
         'customer_limit' => 'You have already used this coupon the maximum number of times.',
         'no_eligible_items' => 'None of your items from this seller are eligible for this coupon.',

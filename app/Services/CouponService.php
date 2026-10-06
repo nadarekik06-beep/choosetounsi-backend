@@ -6,6 +6,7 @@ use App\Models\Coupon;
 use App\Models\CouponRedemption;
 use App\Models\Order;
 use App\Models\SellerOrder;
+use App\Services\GrowthRadar\Audience;
 use Illuminate\Support\Facades\DB;
 
 class CouponService
@@ -37,6 +38,13 @@ class CouponService
         }
         if (!$coupon->is_active) {
             return $invalid(__('messages.coupon.inactive'));
+        }
+        if ($coupon->expires_at && $coupon->expires_at->isPast()) {
+            return $invalid(__('messages.coupon.expired'));
+        }
+        // Targeted coupon (Growth Radar): only its audience may use it
+        if (!Audience::allows($coupon->id, $userId)) {
+            return $invalid(__('messages.coupon.not_for_you'));
         }
         if (!$coupon->hasUsesRemaining()) {
             return $invalid(__('messages.coupon.limit_reached'));

@@ -60,6 +60,21 @@ class Calendar
         ] : null;
     }
 
+    /**
+     * Add the fixed-date Tunisian moments (TunisianSeasons) for a year, source = fixed.
+     * Existing rows for the same key and year are left untouched (admin edits win).
+     */
+    public static function seedFixedYear(int $year): int
+    {
+        $created = 0;
+        foreach (TunisianSeasons::eventsForYear($year) as $e) {
+            if (DB::table('calendar_events')->where('key', $e['key'])->whereYear('starts_on', $year)->exists()) continue;
+            CalendarEvent::create($e + ['source' => 'fixed', 'is_active' => true]);
+            $created++;
+        }
+        return $created;
+    }
+
     private function events(CarbonImmutable $today)
     {
         return $this->events ??= CalendarEvent::query()

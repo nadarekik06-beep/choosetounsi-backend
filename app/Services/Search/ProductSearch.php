@@ -95,7 +95,8 @@ class ProductSearch
         [$result['direct'], $result['weak']] = $this->rerank($direct, $weak);
 
         if ($log) {
-            $this->missed->record($result['normalized'], $query, count($result['direct']));
+            $this->missed->record($result['normalized'], $query, count($result['direct']), fn () => $categoryId
+                ?? $this->categoryOf(array_key_first($result['direct']) ?? array_key_first($result['weak'])));
         }
         return $result;
     }
@@ -263,5 +264,12 @@ class ProductSearch
             return $hits;
         };
         return [$sort($direct), $sort($weak)];
+    }
+
+    /** Category of the best (even weak) hit — files a missed search under a category (Growth Radar). */
+    private function categoryOf(?int $productId): ?int
+    {
+        $id = $productId ? DB::table('products')->where('id', $productId)->value('category_id') : null;
+        return $id ? (int) $id : null;
     }
 }

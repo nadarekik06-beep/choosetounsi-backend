@@ -78,6 +78,8 @@ return [
         'invalid' => 'Code promo invalide.',
         'invalid_for_seller' => 'Code promo invalide pour ce vendeur.',
         'inactive' => 'Ce code promo n\'est plus actif.',
+        'expired' => 'Ce code promo a expiré.',
+        'not_for_you' => 'Ce code promo est réservé à d\'autres clients.',
         'limit_reached' => 'Ce code promo a atteint sa limite d\'utilisation.',
         'customer_limit' => 'Vous avez déjà utilisé ce code promo le nombre maximum de fois.',
         'no_eligible_items' => 'Aucun de vos articles de ce vendeur n\'est éligible à ce code promo.',

@@ -11,6 +11,7 @@ use App\Models\Sponsorship;
 use App\Services\Ads\AdClock;
 use App\Services\Ads\AdMetrics;
 use App\Services\Ads\SponsorshipService;
+use App\Services\GrowthRadar\GrowthActions;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -61,9 +62,16 @@ class AdCampaignController extends Controller
         ]]);
     }
 
-    public function store(StoreAdCampaignRequest $request): JsonResponse
+    public function store(StoreAdCampaignRequest $request, GrowthActions $actions): JsonResponse
     {
         $campaign = $this->campaigns->create($request->user(), $request->validated());
+
+        // Opened from a Growth Radar card: measure the first week (or the whole run if shorter)
+        if ($card = $actions->cardFromRequest($request)) {
+            $start = $campaign->start_at ?? now();
+            $end = $campaign->end_at && $campaign->end_at < $start->copy()->addDays(7) ? $campaign->end_at : $start->copy()->addDays(7);
+            $actions->record($request->user()->id, $card, 'boost', $campaign->id, $campaign->product_id, $start, $end);
+        }
 
         return $this->campaignResponse($campaign, 201);
     }

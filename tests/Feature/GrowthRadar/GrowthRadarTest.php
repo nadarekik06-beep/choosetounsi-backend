@@ -1,0 +1,433 @@
+<?php
+
+namespace Tests\Feature\GrowthRadar;
+
+use App\Models\Category;
+use App\Models\Coupon;
+use App\Models\Product;
+use App\Models\SellerApplication;
+use App\Models\User;
+use App\Notifications\Growth\TargetedCouponNotification;
+use App\Services\CouponService;
+use App\Services\GrowthRadar\GrowthRadar;
+use Carbon\CarbonImmutable;
+use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Str;
+use Laravel\Sanctum\Sanctum;
+use Tests\TestCase;
+
+/**
+ * Growth Radar: detectors, privacy floor, targeted coupons, tier gating, card lifecycle.
+ * Disposable sellers / products / buyers only (choosetounsi_test).
+ *
+ * Run only this file:  php vendor/bin/phpunit tests/Feature/GrowthRadar/GrowthRadarTest.php
+ */
+class GrowthRadarTest extends TestCase
+{
+    use DatabaseTransactions;
+
+    private User $seller;
+    private Category $category;
+    private CarbonImmutable $today;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Cache::flush();
+        config(['services.groq.key' => null, 'growth.ai_headlines' => false]);
+        Notification::fake();
+        Mail::fake();
+        $this->today = GrowthRadar::today();
+        $this->seller = $this->makeSeller('black');
+        $s = Str::random(6);
+        $this->category = Category::create(['name' => "Cat $s", 'name_ar' => "Cat $s", 'name_fr' => "Cat $s", 'slug' => "cat-$s", 'is_active' => true]);
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    private function makeUser(string $role, array $extra = []): User
+    {
+        $u = User::create([
+            'name' => ucfirst($role) . ' ' . Str::random(5), 'email' => $role . '_' . Str::random(10) . '@test.local',
+            'password' => bcrypt('secret-password'), 'role' => $role, 'is_active' => true, 'locale' => 'en',
+        ]);
+        if ($extra) DB::table('users')->where('id', $u->id)->update($extra);
+        return $u->fresh();
+    }
+
+    private function makeSeller(string $plan): User
+    {
+        $u = $this->makeUser('seller');
+        SellerApplication::create([
+            'user_id' => $u->id, 'full_name' => 'Growth Test', 'phone_number' => '20000000',
+            'business_name' => 'Growth Shop ' . Str::random(4), 'business_category' => 'other', 'wilaya' => 'Tunis',
+            'city' => 'Tunis', 'status' => 'approved', 'plan' => $plan,
+        ]);
+        return $u;
+    }
+
+    private function product(array $attrs = [], ?User $seller = null): Product
+    {
+        $name = $attrs['name'] ?? 'Growth Product ' . Str::random(6);
+        $listed = $attrs['created_at'] ?? $this->today->subDays(40)->utc();
+        unset($attrs['created_at'], $attrs['name']);
+        $p = Product::create($attrs + [
+            'seller_id' => ($seller ?? $this->seller)->id, 'category_id' => $this->category->id, 'name' => $name,
+            'slug' => Str::slug($name), 'price' => 50, 'stock' => 40, 'is_approved' => true, 'is_active' => true,
+            'description' => str_repeat('Long enough description. ', 20),
+        ]);
+        DB::table('products')->where('id', $p->id)->update(['created_at' => $listed]);
+        foreach (range(1, 3) as $i) {
+            DB::table('product_images')->insert(['product_id' => $p->id, 'image_path' => "test/$p->id-$i.jpg", 'order' => $i, 'is_primary' => $i === 1, 'created_at' => now(), 'updated_at' => now()]);
+        }
+        return $p->fresh();
+    }
+
+    /** $n events of a type on a product, spread over the last $days days. */
+    private function events(Product $p, string $type, int $n, int $days = 20, ?int $userId = null): void
+    {
+        $rows = [];
+        for ($i = 0; $i < $n; $i++) {
+            $rows[] = [
+                'user_id' => $userId, 'session_id' => (string) Str::uuid(), 'product_id' => $p->id, 'seller_id' => $p->seller_id,
+                'category_id' => $p->category_id, 'event_type' => $type,
+                'created_at' => $this->today->subDays(1 + $i % $days)->setTime(10 + $i % 10, 0)->utc(),
+            ];
+        }
+        foreach (array_chunk($rows, 500) as $chunk) DB::table('user_interactions')->insert($chunk);
+    }
+
+    private function sale(Product $p, int $daysAgo, int $qty = 1, ?User $buyer = null): void
+    {
+        $buyer ??= $this->makeUser('client');
+        $at = $this->today->subDays($daysAgo)->setTime(12, 0)->utc();
+        $orderId = DB::table('orders')->insertGetId([
+            'user_id' => $buyer->id, 'order_number' => 'GR-' . Str::random(10), 'total_amount' => $p->price * $qty,
+            'status' => 'delivered', 'created_at' => $at, 'updated_at' => $at,
+        ]);
+        $soId = DB::table('seller_orders')->insertGetId([
+            'order_id' => $orderId, 'seller_id' => $p->seller_id, 'status' => 'delivered',
+            'subtotal' => $p->price * $qty, 'created_at' => $at, 'updated_at' => $at,
+        ]);
+        DB::table('order_items')->insert([
+            'order_id' => $orderId, 'seller_order_id' => $soId, 'product_id' => $p->id, 'quantity' => $qty,
+            'unit_price' => $p->price, 'price' => $p->price, 'total' => $p->price * $qty, 'net_total' => $p->price * $qty,
+            'created_at' => $at, 'updated_at' => $at,
+        ]);
+    }
+
+    /** $count other shops with 2 products each around $price in the test category, with some views. */
+    private function peers(int $count, float $price = 50): void
+    {
+        for ($i = 0; $i < $count; $i++) {
+            $peer = $this->makeSeller('free');
+            foreach ([0.9, 1.1] as $k) {
+                $p = $this->product(['price' => round($price * $k)], $peer);
+                $this->events($p, 'view', 10);
+            }
+            $this->sale($p, 3);
+        }
+    }
+
+    private function compute(?User $seller = null): array
+    {
+        return app(GrowthRadar::class)->compute(($seller ?? $this->seller)->id, null, true, $this->today);
+    }
+
+    private function cards(string $type, ?User $seller = null)
+    {
+        return DB::table('growth_cards')->where('seller_id', ($seller ?? $this->seller)->id)->where('type', $type)->where('status', 'new')->get();
+    }
+
+    // ── Price position + privacy floor ────────────────────────────────────
+
+    public function test_overpriced_product_gets_a_discount_card_above_the_privacy_floor(): void
+    {
+        $this->peers(4);                                   // 4 peers + the seller = 5 shops
+        $p = $this->product(['price' => 120]);
+        $this->events($p, 'view', 60);
+
+        $this->compute();
+        $card = $this->cards('price_position')->first();
+        $this->assertNotNull($card);
+        $payload = json_decode($card->payload, true);
+        $this->assertSame('discount', $payload['action']['kind']);
+        $this->assertSame([$p->id], $payload['action']['product_ids']);
+        $this->assertGreaterThanOrEqual(5, $payload['action']['discount_value']);
+        $this->assertLessThanOrEqual(30, $payload['action']['discount_value']);
+        $this->assertSame('high', $payload['params']['direction']);
+    }
+
+    public function test_no_cross_seller_price_stat_below_five_shops(): void
+    {
+        $this->peers(3);                                   // 4 shops only
+        $p = $this->product(['price' => 120]);
+        $this->events($p, 'view', 60);
+
+        $this->compute();
+        $this->assertCount(0, $this->cards('price_position'));
+        $snap = DB::table('growth_snapshots')->where('seller_id', $this->seller->id)->first();
+        $this->assertNull($snap->pricing);
+    }
+
+    // ── Own-data cards (no floor) ─────────────────────────────────────────
+
+    public function test_leaking_product_without_market_data_uses_a_fallback_and_lowers_confidence(): void
+    {
+        $p = $this->product(['price' => 60, 'description' => 'Short']);
+        $this->events($p, 'view', 120);
+
+        $this->compute();
+        $card = $this->cards('leaking_product')->first();
+        $this->assertNotNull($card);
+        $payload = json_decode($card->payload, true);
+        $this->assertSame('description', $payload['params']['focus']);
+        $this->assertSame('edit', $payload['action']['kind']);
+        $this->assertSame('fallback', $payload['basis']['conversion']);
+        $this->assertSame('low', $card->confidence);               // 120 views = medium, minus one level for the fallback
+        $this->assertNotNull($card->impact_high);
+        $this->assertLessThan($card->impact_high, $card->impact_low);
+    }
+
+    public function test_dead_stock_card_for_stock_that_has_not_moved(): void
+    {
+        $p = $this->product(['stock' => 30, 'created_at' => $this->today->subDays(200)->utc()]);
+        $this->sale($p, 90);
+        $this->events($p, 'view', 40);
+
+        $this->compute();
+        $card = $this->cards('dead_stock')->first();
+        $this->assertNotNull($card);
+        $payload = json_decode($card->payload, true);
+        $this->assertSame('discount', $payload['action']['kind']);
+        $this->assertSame(90, $payload['params']['days']);
+    }
+
+    // ── Warm audience + targeted coupons ──────────────────────────────────
+
+    private function warmBuyers(Product $p, int $n): array
+    {
+        $buyers = [];
+        for ($i = 0; $i < $n; $i++) {
+            $b = $this->makeUser('client');
+            DB::table('favorites')->insert(['user_id' => $b->id, 'product_id' => $p->id, 'created_at' => now()->subDays(3), 'updated_at' => now()]);
+            $buyers[] = $b;
+        }
+        return $buyers;
+    }
+
+    public function test_warm_audience_needs_at_least_three_buyers(): void
+    {
+        $p = $this->product();
+        $this->warmBuyers($p, 2);
+        $this->compute();
+        $this->assertCount(0, $this->cards('warm_audience'));
+
+        $this->warmBuyers($p, 1);
+        $this->compute();
+        $card = $this->cards('warm_audience')->first();
+        $this->assertNotNull($card);
+        $this->assertSame(3, json_decode($card->payload, true)['params']['audience']);
+    }
+
+    public function test_targeted_coupon_is_private_to_the_audience_and_recorded(): void
+    {
+        $p = $this->product();
+        $buyers = $this->warmBuyers($p, 3);
+        $this->compute();
+        $card = $this->cards('warm_audience')->first();
+
+        Sanctum::actingAs($this->seller);
+        $res = $this->postJson('/api/seller/coupons', [
+            'code' => 'WARM' . Str::upper(Str::random(5)), 'discount_type' => 'percentage', 'discount_value' => 10,
+            'usage_limit_per_customer' => 1, 'product_ids' => [$p->id], 'growth_card_id' => $card->id,
+        ])->assertCreated()->assertJsonPath('data.audience_size', 3);
+
+        $coupon = Coupon::find($res->json('data.id'));
+        $this->assertNotNull($coupon->expires_at);
+        $this->assertSame(3, DB::table('coupon_audiences')->where('coupon_id', $coupon->id)->count());
+        Notification::assertSentTo($buyers[0], TargetedCouponNotification::class);
+        $this->assertSame('applied', DB::table('growth_cards')->where('id', $card->id)->value('status'));
+        $this->assertDatabaseHas('growth_actions', ['card_id' => $card->id, 'kind' => 'coupon', 'ref_id' => $coupon->id]);
+
+        // The response never names the buyers
+        $this->assertStringNotContainsString((string) $buyers[0]->email, $res->getContent());
+
+        $service = app(CouponService::class);
+        $items = [['product_id' => $p->id, 'quantity' => 1, 'line_total' => 50.0]];
+        $this->assertTrue($service->validateForSeller($coupon->code, $this->seller->id, $buyers[0]->id, $items)['valid']);
+        $stranger = $this->makeUser('client');
+        $this->assertFalse($service->validateForSeller($coupon->code, $this->seller->id, $stranger->id, $items)['valid']);
+    }
+
+    public function test_marketing_email_only_with_consent(): void
+    {
+        $p = $this->product();
+        $buyers = $this->warmBuyers($p, 3);
+        DB::table('users')->where('id', $buyers[0]->id)->update(['marketing_emails_opt_in' => true, 'email_verified_at' => now()]);
+        $this->compute();
+        $card = $this->cards('warm_audience')->first();
+
+        Sanctum::actingAs($this->seller);
+        $this->postJson('/api/seller/coupons', [
+            'code' => 'MAIL' . Str::upper(Str::random(5)), 'discount_type' => 'percentage', 'discount_value' => 10,
+            'product_ids' => [$p->id], 'growth_card_id' => $card->id,
+        ])->assertCreated();
+
+        Mail::assertQueued(\App\Mail\Growth\TargetedCouponMail::class, 1);
+        Mail::assertQueued(\App\Mail\Growth\TargetedCouponMail::class, fn ($m) => $m->user->id === $buyers[0]->id);
+    }
+
+    public function test_a_buyer_gets_at_most_one_targeted_coupon_a_week(): void
+    {
+        $p = $this->product();
+        $buyers = $this->warmBuyers($p, 3);
+        $this->compute();
+        $card = $this->cards('warm_audience')->first();
+
+        // Another shop already targeted one of these buyers this week
+        $other = $this->makeSeller('black');
+        $otherProduct = $this->product([], $other);
+        $c = Coupon::create(['seller_id' => $other->id, 'code' => 'OTHER' . Str::random(5), 'discount_type' => 'percentage', 'discount_value' => 5, 'usage_count' => 0, 'is_active' => true]);
+        $c->products()->attach($otherProduct->id);
+        DB::table('coupon_audiences')->insert(['coupon_id' => $c->id, 'user_id' => $buyers[0]->id, 'created_at' => now()->subDays(2)]);
+
+        Sanctum::actingAs($this->seller);
+        $this->postJson('/api/seller/coupons', [
+            'code' => 'CAP' . Str::upper(Str::random(5)), 'discount_type' => 'percentage', 'discount_value' => 10,
+            'product_ids' => [$p->id], 'growth_card_id' => $card->id,
+        ])->assertStatus(422)->assertJsonPath('code', 'AUDIENCE_TOO_SMALL');
+        $this->assertDatabaseMissing('coupons', ['seller_id' => $this->seller->id]);   // rolled back, no public coupon left behind
+    }
+
+    // ── Hidden demand ─────────────────────────────────────────────────────
+
+    public function test_hidden_demand_needs_thirty_searches(): void
+    {
+        $this->product(['name' => 'Chemise lin']);
+        DB::table('search_missed_queries')->insert([
+            'query' => 'caftan brode', 'day' => $this->today->subDays(2)->toDateString(), 'searches' => 29, 'results' => 0,
+            'example' => 'caftan brodé', 'category_id' => $this->category->id, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        $this->compute();
+        $this->assertCount(0, $this->cards('hidden_demand'));
+
+        DB::table('search_missed_queries')->where('query', 'caftan brode')->update(['searches' => 30]);
+        $this->compute();
+        $card = $this->cards('hidden_demand')->first();
+        $this->assertNotNull($card);
+        $this->assertSame('caftan brodé', json_decode($card->payload, true)['params']['query']);
+    }
+
+    // ── API: tiers, lifecycle, recording ──────────────────────────────────
+
+    public function test_black_sees_full_cards_red_sees_score_and_one_locked_card(): void
+    {
+        $p = $this->product(['description' => 'Short']);
+        $this->events($p, 'view', 120);
+        Sanctum::actingAs($this->seller);
+        $full = $this->getJson('/api/seller/growth-radar')->assertOk();
+        $full->assertJsonPath('data.access', 'full');
+        $this->assertNotEmpty($full->json('data.cards.0.headline'));
+
+        $red = $this->makeSeller('red');
+        $rp = $this->product(['description' => 'Short'], $red);
+        $this->events($rp, 'view', 120);
+        $this->product([], $red);
+        Sanctum::actingAs($red);
+        $res = $this->getJson('/api/seller/growth-radar')->assertOk();
+        $res->assertJsonPath('data.access', 'locked');
+        $this->assertNotNull($res->json('data.score'));
+        $cards = $res->json('data.cards');
+        $this->assertCount(1, $cards);
+        $this->assertTrue($cards[0]['locked']);
+        $this->assertArrayNotHasKey('headline', $cards[0]);
+        $this->assertArrayNotHasKey('product', $cards[0]);
+        $this->assertArrayNotHasKey('action', $cards[0]);
+        $this->assertSame([], $this->getJson('/api/seller/growth-radar/history')->json('data.actions'));
+    }
+
+    public function test_dismissed_card_does_not_come_back_and_snoozed_card_is_hidden(): void
+    {
+        $p = $this->product(['description' => 'Short']);
+        $this->events($p, 'view', 120);
+        $q = $this->product(['stock' => 30, 'created_at' => $this->today->subDays(200)->utc()]);
+        $this->events($q, 'view', 40);
+        $this->compute();
+        $leak = $this->cards('leaking_product')->first();
+        $dead = $this->cards('dead_stock')->first();
+
+        Sanctum::actingAs($this->seller);
+        $this->postJson("/api/seller/growth-radar/cards/{$leak->id}/dismiss")->assertOk();
+        $this->postJson("/api/seller/growth-radar/cards/{$dead->id}/snooze", ['days' => 3])->assertOk();
+        $this->postJson("/api/seller/growth-radar/cards/{$dead->id}/snooze", ['days' => 30])->assertStatus(422);
+
+        $this->compute();
+        $ids = collect($this->getJson('/api/seller/growth-radar')->json('data.cards'))->pluck('id')->all();
+        $this->assertNotContains($leak->id, $ids);
+        $this->assertNotContains($dead->id, $ids);
+        $this->assertCount(0, $this->cards('leaking_product'));
+        $this->assertSame('snoozed', DB::table('growth_cards')->where('id', $dead->id)->value('status'));
+    }
+
+    public function test_promotion_created_from_a_card_is_recorded(): void
+    {
+        $p = $this->product(['stock' => 30, 'created_at' => $this->today->subDays(200)->utc()]);
+        $this->events($p, 'view', 40);
+        $this->compute();
+        $card = $this->cards('dead_stock')->first();
+        $action = json_decode($card->payload, true)['action'];
+
+        Sanctum::actingAs($this->seller);
+        $res = $this->postJson('/api/seller/promotions', [
+            'name' => 'Clearance', 'type' => 'discount', 'discount_type' => 'percentage', 'discount_value' => $action['discount_value'],
+            'starts_at' => now()->addDay()->toDateTimeString(), 'ends_at' => now()->addDays(11)->toDateTimeString(),
+            'product_ids' => [$p->id], 'growth_card_id' => $card->id,
+        ])->assertCreated();
+
+        $this->assertDatabaseHas('growth_actions', ['card_id' => $card->id, 'kind' => 'discount', 'ref_id' => $res->json('data.id'), 'product_id' => $p->id]);
+        $this->assertSame('applied', DB::table('growth_cards')->where('id', $card->id)->value('status'));
+    }
+
+    public function test_another_sellers_card_id_is_ignored(): void
+    {
+        $other = $this->makeSeller('black');
+        $op = $this->product(['stock' => 30, 'created_at' => $this->today->subDays(200)->utc()], $other);
+        $this->events($op, 'view', 40);
+        $this->compute($other);
+        $card = $this->cards('dead_stock', $other)->first();
+
+        $p = $this->product();
+        Sanctum::actingAs($this->seller);
+        $this->postJson('/api/seller/promotions', [
+            'name' => 'Mine', 'type' => 'discount', 'discount_type' => 'percentage', 'discount_value' => 10,
+            'starts_at' => now()->addDay()->toDateTimeString(), 'ends_at' => now()->addDays(5)->toDateTimeString(),
+            'product_ids' => [$p->id], 'growth_card_id' => $card->id,
+        ])->assertCreated();
+        $this->assertDatabaseMissing('growth_actions', ['card_id' => $card->id]);
+        $this->assertSame('new', DB::table('growth_cards')->where('id', $card->id)->value('status'));
+    }
+
+    public function test_new_shop_gets_honest_unlock_hints_and_no_made_up_cards(): void
+    {
+        $this->product(['created_at' => $this->today->subDays(10)->utc()]);
+        Sanctum::actingAs($this->seller);
+        $res = $this->getJson('/api/seller/growth-radar')->assertOk();
+        $keys = collect($res->json('data.score.unlocks'))->pluck('key')->all();
+        $this->assertContains('add_products', $keys);
+        $this->assertContains('more_views', $keys);
+        $this->assertContains('first_sale', $keys);
+        $this->assertSame([], $res->json('data.cards'));
+    }
+
+    public function test_old_ai_hub_and_auto_promote_routes_are_gone(): void
+    {
+        Sanctum::actingAs($this->seller);
+        $this->getJson('/api/seller/black/ai-hub')->assertNotFound();
+        $this->getJson('/api/seller/black/auto-promote-suggestions')->assertNotFound();
+    }
+}
