@@ -430,4 +430,131 @@ class GrowthRadarTest extends TestCase
         $this->getJson('/api/seller/black/ai-hub')->assertNotFound();
         $this->getJson('/api/seller/black/auto-promote-suggestions')->assertNotFound();
     }
+
+    // ── Results (growth:measure) ──────────────────────────────────────────
+
+    /** A 7-day 15 % discount that started $startAgo days ago, applied from a card. */
+    private function appliedDiscount(Product $p, int $startAgo = 17, int $len = 7): object
+    {
+        $start = $this->today->subDays($startAgo)->setTime(9, 0);
+        $promo = DB::table('promotions')->insertGetId([
+            'seller_id' => $p->seller_id, 'name' => 'Radar test', 'type' => 'discount', 'discount_type' => 'percentage',
+            'discount_value' => 15, 'status' => 'expired', 'starts_at' => $start->utc(), 'ends_at' => $start->addDays($len)->utc(),
+            'priority' => 5, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        DB::table('promotion_products')->insert(['promotion_id' => $promo, 'product_id' => $p->id]);
+        $id = DB::table('growth_actions')->insertGetId([
+            'seller_id' => $p->seller_id, 'product_id' => $p->id, 'kind' => 'discount', 'ref_id' => $promo, 'card_type' => 'leaking_product',
+            'starts_at' => $start->utc(), 'ends_at' => $start->addDays($len)->utc(), 'status' => 'running', 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        return DB::table('growth_actions')->find($id);
+    }
+
+    private function promoSale(Product $p, int $daysAgo, int $promotionId): void
+    {
+        $this->sale($p, $daysAgo);
+        DB::table('order_items')->where('product_id', $p->id)->orderByDesc('id')->limit(1)
+            ->update(['promotion_id' => $promotionId, 'discount_amount' => 7.5, 'net_total' => 42.5, 'unit_price' => 42.5]);
+    }
+
+    private function measure(object $action): object
+    {
+        app(\App\Services\GrowthRadar\ResultMeasurer::class)->measure($action, false);
+        return DB::table('growth_actions')->find($action->id);
+    }
+
+    public function test_a_clear_rise_that_pays_is_a_win_compared_with_the_same_days_before(): void
+    {
+        $p = $this->product(['created_at' => $this->today->subDays(90)->utc()]);
+        $a = $this->appliedDiscount($p);
+        foreach ([24, 21] as $ago) $this->sale($p, $ago);                                  // before: 2
+        foreach ([16, 16, 15, 14, 13, 13, 12, 11, 11, 10] as $ago) $this->promoSale($p, $ago, $a->ref_id);  // during: 10
+        foreach ([8, 6] as $ago) $this->sale($p, $ago);                                    // after: 2
+
+        $row = $this->measure($a);
+        $r = json_decode($row->result, true);
+        $this->assertSame('measured', $row->status);
+        $this->assertSame('win', $row->verdict);
+        $this->assertSame(8, $r['days']);                                                  // 09:00 + 7 days touches 8 calendar days
+        $this->assertSame(2, $r['baseline']['units']);
+        $this->assertSame(10, $r['during']['units']);
+        $this->assertSame(2, $r['after']['units']);
+        $this->assertEqualsWithDelta(75.0, $r['discount_cost'], 0.001);                   // 10 × 7.5
+        $this->assertEqualsWithDelta(425 - 100, $r['net_gain'], 0.001);                    // 10 × 42.5 − 2 × 50
+        $this->assertEqualsWithDelta(500 - 100, $r['gross_gain'], 0.001);
+        $this->assertCount(8 + 8 + 7, $r['daily']);                                       // before, during, after (capped at 7)
+    }
+
+    public function test_another_promotion_in_the_baseline_makes_it_unclear(): void
+    {
+        $p = $this->product(['created_at' => $this->today->subDays(90)->utc()]);
+        $a = $this->appliedDiscount($p);
+        $other = DB::table('promotions')->insertGetId([
+            'seller_id' => $p->seller_id, 'name' => 'Earlier', 'type' => 'flash_sale', 'discount_type' => 'percentage', 'discount_value' => 20,
+            'status' => 'expired', 'starts_at' => $this->today->subDays(22)->utc(), 'ends_at' => $this->today->subDays(21)->utc(),
+            'priority' => 10, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        DB::table('promotion_products')->insert(['promotion_id' => $other, 'product_id' => $p->id]);
+        foreach ([16, 15, 14, 13, 12, 11, 10] as $ago) $this->promoSale($p, $ago, $a->ref_id);
+
+        $row = $this->measure($a);
+        $this->assertSame('unclear', $row->verdict);
+        $this->assertContains('overlap', json_decode($row->result, true)['unclear']);
+    }
+
+    public function test_too_new_or_too_few_sales_is_unclear_never_a_win(): void
+    {
+        $p = $this->product(['created_at' => $this->today->subDays(20)->utc()]);   // listed after the baseline started
+        $a = $this->appliedDiscount($p);
+        foreach ([16, 15, 14] as $ago) $this->promoSale($p, $ago, $a->ref_id);
+
+        $r = json_decode($this->measure($a)->result, true);
+        $this->assertContains('short_history', $r['unclear']);
+        $this->assertContains('few_sales', $r['unclear']);
+    }
+
+    public function test_more_sales_that_cost_more_than_they_brought_is_a_loss(): void
+    {
+        $p = $this->product(['created_at' => $this->today->subDays(90)->utc()]);
+        $a = $this->appliedDiscount($p);
+        foreach ([24, 23, 22, 21, 20, 19, 18, 18] as $ago) $this->sale($p, $ago);          // before: 8 × 50 = 400
+        foreach (range(10, 16) as $ago) foreach ([1, 2, 3] as $_) $this->promoSale($p, $ago, $a->ref_id);  // during: 21 units
+        DB::table('order_items')->where('promotion_id', $a->ref_id)->update(['net_total' => 15, 'discount_amount' => 35]);  // deep cut
+
+        $row = $this->measure($a);
+        $r = json_decode($row->result, true);
+        $this->assertLessThan(0, $r['net_gain']);
+        $this->assertSame('loss', $row->verdict);
+    }
+
+    public function test_measured_actions_feed_the_history_and_the_learning(): void
+    {
+        foreach ([0, 1] as $i) {
+            $p = $this->product(['created_at' => $this->today->subDays(90)->utc()]);
+            $a = $this->appliedDiscount($p);
+            foreach ([24, 21] as $ago) $this->sale($p, $ago);
+            foreach ([16, 16, 15, 14, 13, 13, 12, 11, 11, 10] as $ago) $this->promoSale($p, $ago, $a->ref_id);
+            $this->measure($a);
+        }
+        $learning = \App\Services\GrowthRadar\Learning::forSeller($this->seller->id);
+        $this->assertSame(2, $learning->byKind['discount']['n']);
+        $this->assertGreaterThan(1.0, $learning->multiplier('discount'));
+
+        Sanctum::actingAs($this->seller);
+        $h = $this->getJson('/api/seller/growth-radar/history')->assertOk();
+        $this->assertCount(2, $h->json('data.actions'));
+        $this->assertSame('win', $h->json('data.actions.0.verdict'));
+        $this->assertSame('discount', $h->json('data.learning.best'));
+        $this->assertCount(2, $this->getJson('/api/seller/growth-radar')->json('data.results'));
+    }
+
+    public function test_actions_are_measured_only_after_the_waiting_period(): void
+    {
+        $p = $this->product();
+        $recent = $this->appliedDiscount($p, 9);    // ended 2 days ago
+        $old = $this->appliedDiscount($p, 17);      // ended 10 days ago
+        $due = app(\App\Services\GrowthRadar\ResultMeasurer::class)->due()->pluck('id')->all();
+        $this->assertContains($old->id, $due);
+        $this->assertNotContains($recent->id, $due);
+    }
 }

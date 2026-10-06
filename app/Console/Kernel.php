@@ -99,6 +99,10 @@ class Kernel extends ConsoleKernel
         // ── Growth Radar ───────────────────────────────────────────────────
         // After forecast:compute (shares its daily series). Scores + cards for every
         // seller; notifies Black Pepper sellers of new high-impact cards.
+        // Results first, so tonight's cards already learn from them
+        $schedule->command('growth:measure')
+            ->dailyAt('02:15')->timezone(config('growth.timezone'))
+            ->withoutOverlapping()->runInBackground();
         $schedule->command('growth:compute')
             ->dailyAt('02:30')->timezone(config('growth.timezone'))
             ->withoutOverlapping()->runInBackground();

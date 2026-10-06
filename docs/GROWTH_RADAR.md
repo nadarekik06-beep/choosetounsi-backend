@@ -17,7 +17,7 @@ dropped (`Headlines`, same check as the forecast narrator).
 | Per seller | `GrowthRadar::compute()` → `SellerContext` (rebuilds the forecast daily series) → detectors → `persist()` → `Scorer` → headlines → notification |
 | Read | `GET /api/seller/growth-radar` (precomputed; a seller never computed is computed on first visit) |
 | Act | the existing endpoints accept `growth_card_id` (promotions, coupons, ad campaigns) → `growth_actions` |
-| Measure | `growth:measure` (phase 3) |
+| Measure | `growth:measure` (nightly 02:15, before compute) → `ResultMeasurer` |
 
 ## Cards
 
@@ -34,6 +34,23 @@ dropped (`Headlines`, same check as the forecast narrator).
 Ranking: low-confidence cards always below medium/high, then by the middle of the impact range.
 Impact is always a range in DT, rounded so it never looks precise; `null` when it cannot be
 estimated (then the card says so).
+
+## Results (closing the loop)
+
+`growth:measure` picks actions that ended ≥7 days ago (`results.after_days`).
+
+- **During** = every calendar day the action was live (max 14); **baseline** = the same
+  number of days just before; **after** = up to 7 days after.
+- Extra revenue = gross revenue during (net + discounts given) − baseline revenue.
+  Net gain = net revenue during − baseline revenue − ad spend.
+- **Unclear** (never a win) when: listed too recently for a full baseline, another
+  promotion/boost ran in the baseline, or < 5 units in baseline + during.
+- Otherwise a one-sided test on unit counts, z = (during − before) / √(during + before):
+  win = z ≥ 1.64 and net gain > 0; loss = z ≤ −1.64, or a significant rise that lost money;
+  else neutral.
+- `Learning`: after 2 clear results of a kind, its average lift scales that kind's impact
+  estimates (×0.6–1.5) and picks discount vs flash sale for the seller's next cards.
+- Result cards stay in the feed 14 days; "Past actions" keeps the full history.
 
 ## Privacy
 
