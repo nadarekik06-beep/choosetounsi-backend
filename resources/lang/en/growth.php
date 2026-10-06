@@ -5,7 +5,7 @@
 return [
     'cards' => [
         'leaking_product' => [
-            'headline' => ':product got :views views but only :orders orders in 30 days',
+            'headline' => '{0} :product got :views views but no order in 30 days|{1} :product got :views views but only 1 order in 30 days|[2,*] :product got :views views but only :orders orders in 30 days',
             'recommendation' => [
                 'photos'      => 'Add clear photos (at least 3, you have :images) — buyers leave when they cannot see the product well',
                 'description' => 'Rewrite the description with the AI generator: materials, sizes, delivery',

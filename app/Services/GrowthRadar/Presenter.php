@@ -70,7 +70,7 @@ class Presenter
     {
         $k = "growth.cards.$type";
         return match ($type) {
-            'leaking_product' => [__("$k.headline", $params), __("$k.recommendation." . ($params['focus'] ?? 'price_test'), $params)],
+            'leaking_product' => [trans_choice("$k.headline", (int) ($params['orders'] ?? 0), $params), __("$k.recommendation." . ($params['focus'] ?? 'price_test'), $params)],
             'price_position'  => [__("$k.headline." . ($params['direction'] ?? 'high'), $params), __("$k.recommendation." . ($params['direction'] ?? 'high'), $params)],
             'seasonal'        => [__("$k.headline", $params), __("$k.recommendation." . (($action['kind'] ?? 'discount') === 'flash_sale' ? 'flash_sale' : 'discount'), $params)],
             'dead_stock'      => [__("$k.headline", $params), __("$k.recommendation." . ($params['focus'] ?? 'clearance'), $params)],

@@ -5,7 +5,7 @@
 return [
     'cards' => [
         'leaking_product' => [
-            'headline' => ':product a eu :views vues mais seulement :orders commandes en 30 jours',
+            'headline' => '{0} :product a eu :views vues mais aucune commande en 30 jours|{1} :product a eu :views vues mais une seule commande en 30 jours|[2,*] :product a eu :views vues mais seulement :orders commandes en 30 jours',
             'recommendation' => [
                 'photos'      => 'Ajoutez des photos nettes (au moins 3, vous en avez :images) — les acheteurs partent quand ils voient mal le produit',
                 'description' => 'Réécrivez la description avec le générateur IA : matières, tailles, livraison',
