@@ -12,38 +12,32 @@ use Illuminate\Database\Eloquent\Model;
  * @property int        $tier            0 green | 1 red | 2 black (dashboard experience + sponsorship pricing)
  * @property float|null $commission_rate flat % — overrides the platform tier table when set
  * @property float      $commission_reduction points removed from the platform tier rate
- * @property array      $features
+ * @property array      $features         capability flags, see App\Enums\PlanCapability
  */
 class SubscriptionPlan extends Model
 {
-    /**
-     * Features that are actually implemented and enforced in the backend.
-     * key => [label, how it's enforced]
-     */
-    public const FEATURES = [
-        'analytics'    => 'Advanced analytics & sales forecast',
-        'ai_tools'     => 'AI seller tools (price optimizer, descriptions, predictor)',
-        'black_hub'    => 'Black Pepper hub (AI hub, VIP lounge, insights, free sponsor quota)',
-        'promotions'   => 'Promotions & flash sales',
-        'coupons'      => 'Store coupons',
-        'sponsorships' => 'Sponsored products (paid boosts)',
-    ];
+    /** Limits rendered on the public card; each can be hidden per plan (hidden_limits). */
+    public const PUBLIC_LIMITS = ['max_products', 'max_images_per_product', 'max_sponsored_products'];
 
     /** Legacy slug for each tier — used where pricing/UI is still tier-based. */
     public const TIER_KEYS = [0 => 'free', 1 => 'red', 2 => 'black'];
 
     protected $fillable = [
-        'slug', 'name', 'description', 'badge_color', 'display_order', 'tier',
+        'slug', 'name', 'description', 'tagline', 'badge_color', 'display_order', 'tier',
         'price_monthly', 'price_yearly', 'trial_days',
         'commission_rate', 'commission_reduction',
         'max_products', 'max_images_per_product', 'max_sponsored_products',
-        'features', 'is_active', 'is_default', 'archived_at',
+        'features', 'capability_display', 'hidden_limits',
+        'is_active', 'is_default', 'is_recommended', 'archived_at',
     ];
 
     protected $casts = [
         'features'               => 'array',
         'is_active'              => 'boolean',
         'is_default'             => 'boolean',
+        'is_recommended'         => 'boolean',
+        'capability_display'     => 'array',
+        'hidden_limits'          => 'array',
         'archived_at'            => 'datetime',
         'tier'                   => 'integer',
         'display_order'          => 'integer',
@@ -62,8 +56,8 @@ class SubscriptionPlan extends Model
 
     protected static function booted(): void
     {
-        static::saved(fn() => self::$cache = []);
-        static::deleted(fn() => self::$cache = []);
+        static::saved(function () { self::$cache = []; \App\Services\PricingCatalog::flush(); });
+        static::deleted(function () { self::$cache = []; \App\Services\PricingCatalog::flush(); });
     }
 
     // ── Lookup ─────────────────────────────────────────────────────────────
@@ -95,6 +89,13 @@ class SubscriptionPlan extends Model
     public static function flushCache(): void
     {
         self::$cache = [];
+    }
+
+    // ── Relations ─────────────────────────────────────────────────────────
+
+    public function displayFeatures()
+    {
+        return $this->hasMany(PlanDisplayFeature::class, 'plan_id')->orderBy('sort_order')->orderBy('id');
     }
 
     // ── Scopes ─────────────────────────────────────────────────────────────

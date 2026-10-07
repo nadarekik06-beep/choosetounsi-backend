@@ -52,7 +52,7 @@ class PlanGate
         if (!$plan->hasFeature($feature)) {
             $label  = \Illuminate\Support\Facades\Lang::has("seller.gate.features.{$feature}")
                 ? __("seller.gate.features.{$feature}")
-                : (SubscriptionPlan::FEATURES[$feature] ?? $feature);
+                : (\App\Enums\PlanCapability::tryFrom($feature)?->adminLabel() ?? $feature);
             $offers = SubscriptionPlan::offered()->ordered()->get()->filter(fn($p) => $p->hasFeature($feature));
             $names  = $offers->pluck('name')->join(', ', ' ' . __('seller.gate.or') . ' ');
             return $this->deny(

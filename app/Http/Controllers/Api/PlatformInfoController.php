@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Services\PlatformFacts;
+use App\Services\PricingCatalog;
 use Illuminate\Http\JsonResponse;
 
 /**
@@ -15,12 +16,15 @@ class PlatformInfoController extends Controller
 {
     public function __construct(private PlatformFacts $facts) {}
 
-    /** GET /api/seller-plans */
-    public function sellerPlans(): JsonResponse
+    /**
+     * GET /api/seller-plans: pricing cards for /become-a-vendor. Active plans
+     * only, public fields only, cached until an admin edits a plan.
+     */
+    public function sellerPlans(PricingCatalog $catalog): JsonResponse
     {
         return response()->json([
             'success' => true,
-            'data'    => array_values($this->facts->plans()),
+            'data'    => $catalog->plans(),
         ]);
     }
 

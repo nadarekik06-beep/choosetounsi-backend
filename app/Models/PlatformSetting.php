@@ -13,6 +13,12 @@ class PlatformSetting extends Model
 
     private static array $cache = [];
 
+    protected static function booted(): void
+    {
+        // Plan commission ranges on the public pricing cards derive from these settings.
+        static::saved(fn() => \App\Services\PricingCatalog::flush());
+    }
+
     public static function getValue(string $key, $default = null)
     {
         if (!array_key_exists($key, self::$cache)) {
