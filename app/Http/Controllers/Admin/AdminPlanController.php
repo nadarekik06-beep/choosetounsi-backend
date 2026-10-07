@@ -9,20 +9,25 @@
 //   PATCH  /api/admin/subscription-plans/{id}/default   make this the fallback plan
 //   DELETE /api/admin/subscription-plans/{id}           archive (or delete if never used)
 //   POST   /api/admin/subscription-plans/{id}/restore   un-archive
+//   PATCH  /api/admin/subscription-plans/{id}/recommended "Populaire" badge on the pricing page
+//   (one-by-one pricing-page features: AdminPlanDisplayFeatureController)
 //   GET    /api/admin/commission-settings               platform default tiers
 //   PUT    /api/admin/commission-settings               update them
 
 namespace App\Http\Controllers\Admin;
 
+use App\Enums\PlanCapability;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Admin\Subscriptions\CommissionSettingsRequest;
 use App\Http\Requests\Admin\Subscriptions\PlanRequest;
 use App\Http\Requests\Admin\Subscriptions\ReasonRequest;
+use App\Models\PlanDisplayFeature;
 use App\Models\PlatformSetting;
 use App\Models\SellerSubscription;
 use App\Models\SubscriptionAuditLog;
 use App\Models\SubscriptionPlan;
 use App\Services\CommissionService;
+use App\Services\PricingCatalog;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -36,6 +41,7 @@ class AdminPlanController extends Controller
         $plans = SubscriptionPlan::query()
             ->when(!$request->boolean('with_archived'), fn($q) => $q->whereNull('archived_at'))
             ->ordered()
+            ->with('displayFeatures')
             ->get();
 
         $counts = SellerSubscription::whereHas('sellerApplication', fn($q) => $q->where('status', 'approved'))
@@ -45,7 +51,12 @@ class AdminPlanController extends Controller
 
         return response()->json(['success' => true, 'data' => [
             'plans'    => $plans->map(fn($p) => $this->format($p, $counts[$p->slug] ?? null))->values(),
-            'features' => collect(SubscriptionPlan::FEATURES)->map(fn($label, $key) => ['key' => $key, 'label' => $label])->values(),
+            'features' => PlanCapability::catalogue(),
+            'pricing_page' => [
+                'icons'                => PlanDisplayFeature::ICONS,
+                'limits'               => SubscriptionPlan::PUBLIC_LIMITS,
+                'max_display_features' => PlanDisplayFeature::MAX_PER_PLAN,
+            ],
             'commission_default' => $this->commission->rateTable(),
         ]]);
     }
@@ -57,6 +68,8 @@ class AdminPlanController extends Controller
                 'slug'          => $request->slug,
                 'display_order' => $request->input('display_order', (int) SubscriptionPlan::max('display_order') + 1),
             ]);
+            $this->syncDisplayFeatures($plan, $request);
+            $this->exclusiveRecommended($plan);
             $this->audit($plan, 'plan_created', $request, null);
             return $plan;
         });
@@ -72,10 +85,13 @@ class AdminPlanController extends Controller
         }
 
         DB::transaction(function () use ($plan, $request) {
-            $before = $plan->toArray();
+            $before = self::snapshot($plan);
             $plan->update($this->payload($request));
+            $this->syncDisplayFeatures($plan, $request);
+            $this->exclusiveRecommended($plan);
             $this->audit($plan, 'plan_updated', $request, $before);
         });
+        PricingCatalog::flush();
 
         return response()->json([
             'success' => true,
@@ -94,7 +110,7 @@ class AdminPlanController extends Controller
             return response()->json(['success' => false, 'message' => 'Restore the plan before activating it.'], 422);
         }
 
-        $before = $plan->toArray();
+        $before = self::snapshot($plan);
         $plan->update(['is_active' => !$plan->is_active]);
         $this->audit($plan, 'plan_updated', $request, $before, $plan->is_active ? 'Activated' : 'Deactivated');
 
@@ -121,6 +137,29 @@ class AdminPlanController extends Controller
         return response()->json(['success' => true, 'message' => "{$plan->name} is now the default plan.", 'data' => $this->format($plan->fresh())]);
     }
 
+    /** Toggle the "Populaire" badge on the pricing page; at most one plan carries it. */
+    public function recommend(Request $request, int $id): JsonResponse
+    {
+        $plan = SubscriptionPlan::findOrFail($id);
+        $on   = !$plan->is_recommended;
+        if ($on && (!$plan->is_active || $plan->isArchived())) {
+            return response()->json(['success' => false, 'message' => 'Only an active plan can be recommended.'], 422);
+        }
+
+        DB::transaction(function () use ($plan, $request, $on) {
+            $before = self::snapshot($plan);
+            $plan->update(['is_recommended' => $on]);
+            $this->exclusiveRecommended($plan);
+            $this->audit($plan, 'plan_updated', $request, $before, $on ? 'Marked as recommended' : 'No longer recommended');
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => $on ? "{$plan->name} is now highlighted on the pricing page." : "{$plan->name} is no longer highlighted.",
+            'data'    => $this->format($plan->fresh()),
+        ]);
+    }
+
     /** Archive — a plan that has (or had) sellers is never hard-deleted. */
     public function destroy(ReasonRequest $request, int $id): JsonResponse
     {
@@ -136,12 +175,12 @@ class AdminPlanController extends Controller
             || DB::table('subscription_payments')->where('plan', $plan->slug)->exists();
 
         if (!$everUsed) {
-            $this->audit($plan, 'plan_archived', $request, $plan->toArray(), 'Deleted (never used) — ' . $request->reason);
+            $this->audit($plan, 'plan_archived', $request, self::snapshot($plan), 'Deleted (never used) — ' . $request->reason);
             $plan->delete();
             return response()->json(['success' => true, 'message' => 'Plan deleted (it was never used).']);
         }
 
-        $before = $plan->toArray();
+        $before = self::snapshot($plan);
         $plan->update(['archived_at' => now(), 'is_active' => false]);
         $this->audit($plan, 'plan_archived', $request, $before);
 
@@ -157,7 +196,7 @@ class AdminPlanController extends Controller
     public function restore(Request $request, int $id): JsonResponse
     {
         $plan = SubscriptionPlan::findOrFail($id);
-        $before = $plan->toArray();
+        $before = self::snapshot($plan);
         $plan->update(['archived_at' => null]);
         $this->audit($plan, 'plan_restored', $request, $before);
 
@@ -206,11 +245,64 @@ class AdminPlanController extends Controller
 
     private function payload(PlanRequest $request): array
     {
-        $data = $request->safe()->except(['slug', 'features', 'reason']);
+        $data = $request->safe()->except(['slug', 'features', 'reason', 'capability_display', 'hidden_limits', 'display_features']);
         if (($features = $request->features()) !== null) {
             $data['features'] = $features;
         }
+        if ($request->has('capability_display')) {
+            $data['capability_display'] = $request->capabilityDisplay();
+        }
+        if ($request->has('hidden_limits')) {
+            $data['hidden_limits'] = $request->hiddenLimits() ?: null;
+        }
         return $data;
+    }
+
+    /**
+     * Replace the plan's pricing-page features with the submitted list, in order.
+     * Rows keep their id when sent back; rows left out are deleted.
+     */
+    private function syncDisplayFeatures(SubscriptionPlan $plan, PlanRequest $request): void
+    {
+        if (!$request->has('display_features')) return;
+
+        $existing = $plan->displayFeatures()->get()->keyBy('id');
+        $kept = [];
+        foreach (array_values($request->validated()['display_features'] ?? []) as $i => $row) {
+            $description = trim((string) ($row['description'] ?? ''));
+            $attrs = [
+                'label'       => trim($row['label']),
+                'description' => $description !== '' ? $description : null,
+                'icon'        => $row['icon'] ?? null,
+                'included'    => (bool) ($row['included'] ?? true),
+                'highlight'   => (bool) ($row['highlight'] ?? false),
+                'sort_order'  => $i,
+            ];
+            $feature = isset($row['id']) ? $existing->get((int) $row['id']) : null;
+            if ($feature) {
+                $feature->update($attrs);
+            } else {
+                $feature = $plan->displayFeatures()->create($attrs);
+            }
+            $kept[] = $feature->id;
+        }
+        $plan->displayFeatures()->whereNotIn('id', $kept)->get()->each->delete();
+        $plan->unsetRelation('displayFeatures');
+    }
+
+    private function exclusiveRecommended(SubscriptionPlan $plan): void
+    {
+        if ($plan->is_recommended) {
+            SubscriptionPlan::where('id', '!=', $plan->id)->where('is_recommended', true)->update(['is_recommended' => false]);
+        }
+    }
+
+    /** Plan row + its pricing-page features, for the audit log's before / after. */
+    public static function snapshot(SubscriptionPlan $plan): array
+    {
+        return $plan->attributesToArray() + [
+            'display_features' => $plan->displayFeatures()->get()->map->toSnapshot()->values()->all(),
+        ];
     }
 
     private function audit(SubscriptionPlan $plan, string $action, Request $request, ?array $before, ?string $reason = null): void
@@ -222,7 +314,7 @@ class AdminPlanController extends Controller
             'action'               => $action,
             'reason'               => $reason ?? $request->input('reason'),
             'before'               => $before,
-            'after'                => $plan->exists ? $plan->fresh()?->toArray() : null,
+            'after'                => $plan->exists && ($fresh = $plan->fresh()) ? self::snapshot($fresh) : null,
         ]);
     }
 
@@ -235,7 +327,8 @@ class AdminPlanController extends Controller
         }
         $range = $this->commission->rateRangeForPlan($p->slug);
 
-        return $p->toArray() + [
+        return $p->attributesToArray() + [
+            'display_features' => $p->displayFeatures->map->toSnapshot()->values()->all(),
             'tier_key'         => $p->tierKey(),
             'active_sellers'   => (int) ($count->active ?? 0),
             'total_sellers'    => (int) ($count->total ?? 0),

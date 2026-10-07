@@ -716,6 +716,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/{id}/default',[AdminPlanController::class, 'makeDefault']);
         Route::delete('/{id}',       [AdminPlanController::class, 'destroy']);
         Route::post('/{id}/restore', [AdminPlanController::class, 'restore']);
+        Route::patch('/{id}/recommended', [AdminPlanController::class, 'recommend']);
+
+        // Pricing-page features (/become-a-vendor cards)
+        Route::get('/{planId}/display-features',          [\App\Http\Controllers\Admin\AdminPlanDisplayFeatureController::class, 'index'])->whereNumber('planId');
+        Route::post('/{planId}/display-features',         [\App\Http\Controllers\Admin\AdminPlanDisplayFeatureController::class, 'store'])->whereNumber('planId');
+        Route::put('/{planId}/display-features/reorder',  [\App\Http\Controllers\Admin\AdminPlanDisplayFeatureController::class, 'reorder'])->whereNumber('planId');
+        Route::put('/{planId}/display-features/{id}',     [\App\Http\Controllers\Admin\AdminPlanDisplayFeatureController::class, 'update'])->whereNumber(['planId', 'id']);
+        Route::delete('/{planId}/display-features/{id}',  [\App\Http\Controllers\Admin\AdminPlanDisplayFeatureController::class, 'destroy'])->whereNumber(['planId', 'id']);
     });
     Route::get('/commission-settings', [AdminPlanController::class, 'commissionSettings']);
     Route::put('/commission-settings', [AdminPlanController::class, 'updateCommissionSettings']);

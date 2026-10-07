@@ -43,6 +43,10 @@ class SubscriptionAuditLog extends Model
         'plan_updated'         => 'Plan updated',
         'plan_archived'        => 'Plan archived',
         'plan_restored'        => 'Plan restored',
+        'display_feature_added'      => 'Pricing-page feature added',
+        'display_feature_updated'    => 'Pricing-page feature updated',
+        'display_feature_removed'    => 'Pricing-page feature removed',
+        'display_features_reordered' => 'Pricing-page features reordered',
         'default_commission_updated' => 'Default commission updated',
     ];
 
