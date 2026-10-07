@@ -113,7 +113,7 @@ class FunnelDiagnosis
         $median = $bench('median_price');
         if ($median && $median['value'] > 0 && $price > $median['value'] * $cfg['price_high_factor']) {
             return ['price_high', [$this->evidence('price', $price, $median)],
-                    [['kind' => 'discount', 'pct' => self::pctTo($price, $median['value'])], ['kind' => 'edit', 'focus' => 'price']]];
+                    [['kind' => 'discount', 'pct' => self::pctTo($price, $median['value'])], ['kind' => 'ai_description']]];
         }
         $score = $facts['quality_score'] ?? null;
         if ($score !== null && $score < $cfg['quality_low_score']) {
@@ -144,9 +144,9 @@ class FunnelDiagnosis
         $feeBench = $bench('median_delivery_fee');
         if ($fee !== null && $feeBench && $feeBench['value'] > 0 && (float) $fee > $feeBench['value'] * $cfg['shipping_high_factor']) {
             return ['shipping_cost', [$this->evidence('delivery_fee', (float) $fee, $feeBench)],
-                    [['kind' => 'edit', 'focus' => 'price'], ['kind' => 'discount', 'pct' => 10]]];
+                    [['kind' => 'edit', 'focus' => 'shipping'], ['kind' => 'discount', 'pct' => 10]]];
         }
-        return [$atCheckout ? 'checkout_abandon' : 'cart_abandon', [], [['kind' => 'discount', 'pct' => 10], ['kind' => 'edit', 'focus' => 'price']]];
+        return [$atCheckout ? 'checkout_abandon' : 'cart_abandon', [], [['kind' => 'discount', 'pct' => 10], ['kind' => 'edit', 'focus' => 'shipping']]];
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
