@@ -6,7 +6,9 @@ use App\Models\Coupon;
 use App\Models\User;
 use App\Mail\Growth\TargetedCouponMail;
 use App\Notifications\Growth\TargetedCouponNotification;
+use App\Notifications\Support\NotificationPreferences;
 use App\Services\Ads\MarketingConsent;
+use App\Services\Notifications\BuyerNotifier;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -81,7 +83,10 @@ class Audience
         return count($ids);
     }
 
-    /** Tell each buyer about their code: bell always, e-mail only with marketing consent. */
+    /**
+     * Tell each buyer about their code: bell unless they turned promotions off (and at
+     * most one promotion a day — BuyerNotifier), e-mail only with marketing consent.
+     */
     public function notify(Coupon $coupon): int
     {
         $sent = 0;
@@ -91,11 +96,14 @@ class Audience
         $shop = (string) DB::table('seller_applications')->where('user_id', $coupon->seller_id)->value('business_name');
         $front = rtrim((string) config('app.frontend_url'), '/');
         $consent = app(MarketingConsent::class);
+        $notifier = app(BuyerNotifier::class);
 
         foreach (User::whereIn('id', $ids)->get() as $user) {
             try {
-                $user->notify(TargetedCouponNotification::for($coupon, $product, $shop));
-                $email = $user->marketing_emails_opt_in && filled($user->email) && $user->email_verified_at;
+                $bell = $notifier->send($user, TargetedCouponNotification::for($coupon, $product, $shop));
+                // Same opt-in rule as the promotions category; bell off doesn't stop a wanted e-mail.
+                $email = NotificationPreferences::allows($user, 'promotions', 'email')
+                    && ($bell || !NotificationPreferences::allows($user, 'promotions', 'in_app'));
                 if ($email) {
                     // Texts are rendered when the mail is built, in the buyer's locale (Mail::to($user))
                     Mail::to($user)->queue(new TargetedCouponMail($user, [

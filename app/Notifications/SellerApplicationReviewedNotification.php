@@ -1,61 +1,67 @@
 <?php
-// app/Notifications/SellerApplicationReviewedNotification.php
 
 namespace App\Notifications;
 
-use Illuminate\Notifications\Notification;
+use App\Notifications\Buyer\BuyerNotification;
 
-class SellerApplicationReviewedNotification extends Notification
+/**
+ * The user's seller application was reviewed (account category, always on).
+ *   approved  shown in the seller dashboard bell (the user is a seller now);
+ *             the welcome e-mail is SellerApplicationApprovedMail
+ *   rejected  shown in the storefront bell, with an e-mail and the reason
+ */
+class SellerApplicationReviewedNotification extends BuyerNotification
 {
-    private $action;
-    private $businessName;
-    private $reason;
-
     /**
      * @param string      $action       'approved' | 'rejected'
      * @param string      $businessName
      * @param string|null $reason       rejection reason (optional)
      */
-    public function __construct($action, $businessName, $reason = null)
+    public function __construct(public string $action, public string $businessName, public ?string $reason = null)
     {
-        $this->action       = $action;
-        $this->businessName = $businessName;
-        $this->reason       = $reason;
+        parent::__construct();
     }
 
-    public function via($notifiable)
+    public function category(): string { return 'account'; }
+
+    public function audience($notifiable = null): string
     {
-        return ['database'];
+        return $this->action === 'approved' ? 'seller' : 'buyer';
     }
 
-    public function toDatabase($notifiable)
+    protected function hasMail(): bool { return $this->action === 'rejected'; }
+
+    protected function type(): string { return 'seller_application_reviewed'; }
+    protected function icon(): string { return $this->action === 'approved' ? 'check-circle' : 'x-circle'; }
+    protected function action(): string { return $this->action === 'approved' ? 'approved' : 'rejected'; }
+    protected function link(): ?string { return $this->action === 'approved' ? '/seller' : '/become-a-vendor'; }
+
+    protected function title(): string
     {
-        if ($this->action === 'approved') {
-            return [
-                'type'          => 'seller_application_reviewed',
-                'action'        => 'approved',
-                'title'         => __('seller.notif.application.approved.title'),
-                'body'          => __('seller.notif.application.approved.body', ['name' => $this->businessName]),
-                'icon'          => 'check-circle',
-                'link'          => '/seller/dashboard',
-                'business_name' => $this->businessName,
-            ];
-        }
+        return __("buyer_notifications.account.application_{$this->action}.title");
+    }
 
-        $body = __('seller.notif.application.rejected.body', ['name' => $this->businessName]);
-        if ($this->reason) {
-            $body .= ' ' . __('seller.notif.product_reviewed.reason', ['reason' => $this->reason]);
-        }
+    protected function body(): string
+    {
+        $key = $this->action === 'rejected' && filled($this->reason) ? 'reason' : 'body';
+        return __("buyer_notifications.account.application_{$this->action}.{$key}", [
+            'name'   => $this->businessName,
+            'reason' => (string) $this->reason,
+        ]);
+    }
 
-        return [
-            'type'          => 'seller_application_reviewed',
-            'action'        => 'rejected',
-            'title'         => __('seller.notif.application.rejected.title'),
-            'body'          => $body,
-            'icon'          => 'x-circle',
-            'link'          => '/apply-seller',
-            'business_name' => $this->businessName,
-            'reason'        => $this->reason,
-        ];
+    protected function mailSubject(): string
+    {
+        return __("buyer_notifications.account.application_{$this->action}.subject", ['name' => $this->businessName]);
+    }
+
+    protected function mailButton(): string
+    {
+        return __("buyer_notifications.account.application_{$this->action}.button");
+    }
+
+    protected function data(): array
+    {
+        return array_filter(['business_name' => $this->businessName, 'reason' => $this->reason]);
     }
 }

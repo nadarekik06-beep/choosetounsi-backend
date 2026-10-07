@@ -4,71 +4,16 @@ namespace App\Notifications;
 
 use App\Models\Order;
 use App\Models\RefundDeliveryTask;
-use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Notifications\Messages\MailMessage;
-use Illuminate\Notifications\Notification;
+use App\Notifications\Buyer\RefundNotification;
 
 /**
- * Notification: RefundCompletedNotification
- *
- * Sent to the customer when the delivery guy marks the refund as completed.
- * The customer sees this in their storefront notification bell and receives
- * an email confirming the refund process is done.
- *
- * Implements ShouldQueue so it doesn't block the refund completion response.
+ * The buyer's return is done: refund (or exchange) completed after the courier
+ * brought the item back. Send through App\Services\Notifications\BuyerNotifier.
  */
-class RefundCompletedNotification extends Notification implements ShouldQueue
+class RefundCompletedNotification extends RefundNotification
 {
-    use Queueable;
-
-    public RefundDeliveryTask $task;
-    public Order $order;
-
     public function __construct(RefundDeliveryTask $task, Order $order)
     {
-        $this->task  = $task;
-        $this->order = $order;
-    }
-
-    /**
-     * Deliver via database (in-app bell) and email.
-     */
-    public function via($notifiable): array
-    {
-        // Customer notification preferences (profile → Settings).
-        return array_values(array_filter([
-            $notifiable->wantsNotification('in_app_updates') ? 'database' : null,
-            $notifiable->wantsNotification('email_updates') ? 'mail' : null,
-        ]));
-    }
-
-    // ── In-app notification ────────────────────────────────────────────────
-
-    public function toArray($notifiable): array
-    {
-        return [
-            'type'          => 'refund_completed',
-            'title'         => __('notifications.refund_completed.title'),
-            'message'       => __('notifications.refund_completed.message', ['order' => $this->order->order_number]),
-            'order_id'      => $this->order->id,
-            'order_number'  => $this->order->order_number,
-            'complaint_id'  => $this->task->complaint_id,
-            'task_id'       => $this->task->id,
-        ];
-    }
-
-    // ── Email notification ─────────────────────────────────────────────────
-
-    public function toMail($notifiable): MailMessage
-    {
-        return (new MailMessage)
-            ->subject(__('notifications.refund_completed.subject', ['order' => $this->order->order_number]))
-            ->greeting(__('notifications.mail.greeting', ['name' => $notifiable->name]))
-            ->line(__('notifications.refund_completed.line1', ['order' => $this->order->order_number]))
-            ->line(__('notifications.refund_completed.line2'))
-            ->line(__('notifications.refund_completed.line3'))
-            ->action(__('notifications.refund_completed.action'), url('/orders'))
-            ->line(__('notifications.refund_completed.thanks'));
+        parent::__construct($task, $order, 'completed');
     }
 }

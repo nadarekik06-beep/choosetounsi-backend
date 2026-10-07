@@ -3,32 +3,30 @@
 namespace App\Notifications\Growth;
 
 use App\Models\Coupon;
-use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Notifications\Notification;
+use App\Notifications\Buyer\BuyerNotification;
 
 /**
  * Bell notification to a buyer who is in a targeted coupon's audience
- * (Growth Radar → warm audience), in the buyer's language. The e-mail, sent
- * only with marketing consent, is App\Mail\Growth\TargetedCouponMail.
+ * (Growth Radar → warm audience), in the buyer's language. Promotions category:
+ * the buyer can turn it off, at most one promotion a day (BuyerNotifier).
+ * The e-mail, sent only with marketing consent, is App\Mail\Growth\TargetedCouponMail
+ * (it carries the one-click unsubscribe link).
  */
-class TargetedCouponNotification extends Notification implements ShouldQueue
+class TargetedCouponNotification extends BuyerNotification
 {
-    use Queueable;
-
     public $tries = 3;
 
     public function __construct(public string $code, public string $discountType, public float $discountValue,
                                 public string $productName, public ?string $productSlug, public string $shop,
-                                public ?string $expiresAt)
+                                public ?string $expiresAt, public ?int $couponId = null)
     {
-        $this->onQueue(config('growth.queue'));
+        parent::__construct();
     }
 
     public static function for(Coupon $coupon, ?object $product, string $shop): self
     {
         return new self($coupon->code, $coupon->discount_type, (float) $coupon->discount_value, (string) ($product->name ?? ''),
-            $product->slug ?? null, $shop, $coupon->expires_at?->toIso8601String());
+            $product->slug ?? null, $shop, $coupon->expires_at?->toIso8601String(), $coupon->id);
     }
 
     public static function discountLabel(string $type, float $value): string
@@ -38,21 +36,37 @@ class TargetedCouponNotification extends Notification implements ShouldQueue
             : __('messages.discount.amount_off', ['value' => number_format($value, 3)]);
     }
 
-    public function via($notifiable): array
+    public function category(): string { return 'promotions'; }
+
+    public function dedupeKey(): ?string
     {
-        return ['database'];
+        return $this->couponId ? "coupon:{$this->couponId}:targeted" : null;
     }
 
-    public function toDatabase($notifiable): array
+    protected function hasMail(): bool { return false; }
+
+    protected function type(): string { return 'targeted_coupon'; }
+    protected function icon(): string { return 'ticket'; }
+    protected function action(): string { return 'coupon'; }
+    protected function link(): ?string { return $this->productSlug ? "/products/{$this->productSlug}" : '/'; }
+
+    protected function title(): string
     {
-        $discount = self::discountLabel($this->discountType, $this->discountValue);
+        return __('growth.coupon.title', [
+            'discount' => self::discountLabel($this->discountType, $this->discountValue),
+            'product'  => $this->productName,
+        ]);
+    }
+
+    protected function body(): string
+    {
+        return __('growth.coupon.body', ['code' => $this->code, 'shop' => $this->shop]);
+    }
+
+    protected function data(): array
+    {
         return [
-            'type'        => 'targeted_coupon',
-            'action'      => 'coupon',
-            'icon'        => 'ticket',
-            'title'       => __('growth.coupon.title', ['discount' => $discount, 'product' => $this->productName]),
-            'body'        => __('growth.coupon.body', ['code' => $this->code, 'shop' => $this->shop]),
-            'link'        => $this->productSlug ? "/products/{$this->productSlug}" : '/',
+            'coupon_id'   => $this->couponId,
             'coupon_code' => $this->code,
             'expires_at'  => $this->expiresAt,
         ];
