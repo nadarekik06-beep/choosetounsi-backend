@@ -49,6 +49,9 @@ class Presenter
             'alt'            => $p['alt'] ?? null,
             'product'        => $row->product_id ? ($this->products[$row->product_id] ?? null) : null,
             'params'         => $p['params'] ?? [],
+            // Full funnel diagnosis lives in Analyse des visiteurs (Black Pepper)
+            'insights_href'  => !empty($p['evidence']['insights']) && $row->product_id
+                ? "/seller/black/visitor-insights?product={$row->product_id}" : null,
             'snoozed_until'  => $row->snoozed_until,
             'created_at'     => CarbonImmutable::parse($row->created_at)->toIso8601String(),
         ];

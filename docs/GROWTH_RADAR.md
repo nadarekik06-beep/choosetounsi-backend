@@ -24,7 +24,7 @@ dropped (`Headlines`, same check as the forecast narrator).
 | Type | Rule (config/growth.php) | Action |
 |---|---|---|
 | `price_position` | above p75×1.1 of the category range and converting below the benchmark → discount test to ~median; below p25×0.9 and selling ≥3/month → raise the price | discount / product form |
-| `leaking_product` | ≥40 views, conversion < half the benchmark; fix = photos, description, price vs median, else price test | product form / generator / discount |
+| `leaking_product` | ≥40 views, conversion < half the benchmark; cause from the shared `FunnelDiagnosis` (price vs median, listing quality, reviews, stock/variants, delivery fee, else price test). Short card: problem + one action + "Voir l'analyse" → Analyse des visiteurs (docs/VISITOR_INSIGHTS.md) | discount / product form |
 | `dead_stock` | ≥5 in stock, no sale for 45 days; few views → boost, else clearance | discount or boost (+ bundle) |
 | `warm_audience` | ≥3 buyers favourited / carted and did not buy | coupon private to them |
 | `seasonal` | next calendar moment (admin calendar) in 5–49 days for the seller's categories | discount / flash sale from the best start date |

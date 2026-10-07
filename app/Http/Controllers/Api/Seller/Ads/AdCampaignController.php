@@ -72,6 +72,11 @@ class AdCampaignController extends Controller
             $end = $campaign->end_at && $campaign->end_at < $start->copy()->addDays(7) ? $campaign->end_at : $start->copy()->addDays(7);
             $actions->record($request->user()->id, $card, 'boost', $campaign->id, $campaign->product_id, $start, $end);
         }
+        // Opened from Analyse des visiteurs: remember it for the before / after funnel
+        if ($campaign->product_id) {
+            app(\App\Services\VisitorInsights\InsightActions::class)->recordFromRequest(
+                $request, 'boost', $campaign->id, [(int) $campaign->product_id], $campaign->start_at ?? now(), $campaign->end_at ?? now());
+        }
 
         return $this->campaignResponse($campaign, 201);
     }

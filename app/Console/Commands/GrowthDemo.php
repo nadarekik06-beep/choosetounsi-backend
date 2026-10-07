@@ -72,6 +72,9 @@ class GrowthDemo extends Command
             DB::table('forecast_daily_sales')->whereIn('seller_id', $ids)->delete();
             DB::table('forecast_snapshots')->whereIn('seller_id', $ids)->delete();
             DB::table('product_price_history')->whereIn('product_id', $products)->delete();
+            DB::table('product_funnel_events')->whereIn('product_id', $products)->delete();
+            DB::table('product_daily_stats')->whereIn('product_id', $products)->delete();
+            DB::table('product_daily_traffic')->whereIn('product_id', $products)->delete();
             DB::table('product_images')->whereIn('product_id', $products)->delete();
             DB::table('products')->whereIn('id', $products)->delete();
             DB::table('search_missed_queries')->whereIn('category_id', $cats)->delete();

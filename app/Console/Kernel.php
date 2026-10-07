@@ -107,6 +107,15 @@ class Kernel extends ConsoleKernel
             ->dailyAt('02:30')->timezone(config('growth.timezone'))
             ->withoutOverlapping()->runInBackground();
 
+        // ── Visitor Insights (Analyse des visiteurs) ──────────────────────
+        // Nightly: rebuild the last 3 days (late order status changes) + benchmarks.
+        // Hourly: today, so the page isn't a day behind on busy days.
+        $schedule->command('funnel:aggregate')
+            ->dailyAt('01:10')->timezone(config('funnel.timezone'))
+            ->withoutOverlapping()->runInBackground();
+        $schedule->command('funnel:aggregate --today')
+            ->hourlyAt(20)->withoutOverlapping()->runInBackground();
+
         // ── Black Pepper — daily smart notifications ───────────────────────
         // Runs every day at 08:00 server time.
         // Sends: auto-promo, stock-risk, weekend-spike, cooling notifications

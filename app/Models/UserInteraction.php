@@ -16,6 +16,7 @@ class UserInteraction extends Model
     protected $fillable = [
         'user_id', 'session_id', 'product_id', 'seller_id', 'category_id',
         'event_type', 'source_section', 'search_query', 'order_id', 'created_at',
+        'traffic_source', 'device', 'funnel_excluded',
     ];
 
     protected $casts = [

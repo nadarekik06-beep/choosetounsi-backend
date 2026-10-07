@@ -35,7 +35,7 @@ class ResultMeasurer
     public function due(?CarbonImmutable $now = null): \Illuminate\Support\Collection
     {
         $now ??= CarbonImmutable::now();
-        return DB::table('growth_actions')->where('status', 'running')
+        return DB::table('growth_actions')->where('origin', 'growth_radar')->where('status', 'running')
             ->where('ends_at', '<=', $now->subDays((int) config('growth.results.after_days'))->utc())
             ->orderBy('id')->get();
     }

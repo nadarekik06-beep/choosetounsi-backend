@@ -41,7 +41,7 @@ return [
 
     // Events the storefront may send via POST /api/track. Everything else
     // (cart, favourites, follows, purchases, searches) is recorded server-side.
-    'client_events' => ['view', 'click'],
+    'client_events' => ['view', 'click', 'impression', 'checkout_start'],
 
     // Raw interactions older than this are pruned by recommendations:prune.
     'retention_days' => 365,

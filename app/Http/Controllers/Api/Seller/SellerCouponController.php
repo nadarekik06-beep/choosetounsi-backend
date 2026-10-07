@@ -125,6 +125,9 @@ class SellerCouponController extends Controller
                 $actions->record($seller->id, $card, 'coupon', $coupon->id, $targeted ? (int) $card->product_id : (int) $productIds[0],
                     now(), $coupon->expires_at ?? now()->addDays((int) config('growth.warm.coupon_days')));
             }
+            // Opened from Analyse des visiteurs: remember it for the before / after funnel
+            app(\App\Services\VisitorInsights\InsightActions::class)
+                ->recordFromRequest($request, 'coupon', $coupon->id, $productIds, now(), $coupon->expires_at ?? now());
 
             DB::commit();
 

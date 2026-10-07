@@ -4,6 +4,8 @@ namespace App\Services\Recommendation;
 
 use App\Models\Product;
 use App\Models\UserInteraction;
+use App\Services\VisitorInsights\FunnelExclusions;
+use App\Services\VisitorInsights\TrafficSource;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -47,7 +49,8 @@ class InteractionTracker
 
     /**
      * @param Product|int|null $product
-     * @param array $extra  source_section, search_query, order_id, seller_id, category_id
+     * @param array $extra  source_section, search_query, order_id, seller_id, category_id,
+     *                      traffic_source, device (Visitor Insights funnel)
      */
     public function record(string $event, ?int $userId, ?string $sessionId, $product = null, array $extra = []): bool
     {
@@ -76,6 +79,8 @@ class InteractionTracker
                 return false;
             }
 
+            FunnelExclusions::rememberSessionOwner($userId, $sessionId);
+
             UserInteraction::create([
                 'user_id'        => $userId,
                 // Keep the guest id on logged-in events too: it lets a later merge
@@ -88,6 +93,9 @@ class InteractionTracker
                 'source_section' => isset($extra['source_section']) ? mb_substr((string) $extra['source_section'], 0, 40) : null,
                 'search_query'   => isset($extra['search_query']) ? mb_substr(trim((string) $extra['search_query']), 0, 191) : null,
                 'order_id'       => $extra['order_id'] ?? null,
+                'traffic_source' => $productId ? $this->trafficSource($event, $userId, $sessionId, $productId, $extra) : null,
+                'device'         => $extra['device'] ?? null,
+                'funnel_excluded'=> $productId && FunnelExclusions::isExcluded($userId, $sessionId, $sellerId),
             ]);
 
             $this->markDirty($userId, $sessionId);
@@ -100,8 +108,38 @@ class InteractionTracker
 
     public function recordFromRequest(Request $request, string $event, $product = null, array $extra = []): bool
     {
+        $client = TrafficSource::fromRequest($request);
+        if ($client['bot']) {
+            return false;
+        }
         [$userId, $sessionId] = self::actorFromRequest($request);
-        return $this->record($event, $userId, $sessionId, $product, $extra);
+        return $this->record($event, $userId, $sessionId, $product, $extra + ['device' => $client['device']]);
+    }
+
+    /**
+     * Funnel source of an event. Clicks and views carry their section (a view sends the
+     * section of the click that led to it, or "external" / "direct"); a cart or wishlist
+     * add inherits the source of the actor's latest view of the product.
+     */
+    private function trafficSource(string $event, ?int $userId, ?string $sessionId, int $productId, array $extra): ?string
+    {
+        if (!empty($extra['traffic_source'])) {
+            return in_array($extra['traffic_source'], TrafficSource::all(), true) ? $extra['traffic_source'] : null;
+        }
+        if (in_array($event, ['view', 'click'], true)) {
+            return TrafficSource::fromSection($extra['source_section'] ?? null);
+        }
+        if (!in_array($event, ['cart_add', 'favorite_add', 'purchase'], true)) {
+            return null;
+        }
+        $last = DB::table('user_interactions')
+            ->where('product_id', $productId)->where('event_type', 'view')
+            ->where('created_at', '>=', now()->subDays((int) config('funnel.order_attribution_days')))
+            ->where(fn ($q) => $userId
+                ? $q->where('user_id', $userId)->when($sessionId, fn ($q) => $q->orWhere('session_id', $sessionId))
+                : $q->where('session_id', $sessionId))
+            ->orderByDesc('id')->value('traffic_source');
+        return $last ?: 'direct';
     }
 
     /**

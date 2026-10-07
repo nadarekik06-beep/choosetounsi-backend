@@ -11,6 +11,9 @@ return [
                 'description' => 'Rewrite the description with the AI generator: materials, sizes, delivery',
                 'price'       => 'Discount :pct% for :days days to bring it to the category price',
                 'price_test'  => 'Test a :pct% discount for :days days and watch the orders',
+                'listing'     => 'Complete the listing (score :score/100): details and a precise title',
+                'stock'       => 'The product or some variants are out of stock: buyers cannot order — restock',
+                'shipping'    => 'The delivery fee stops the order: lower it or offer a discount',
             ],
         ],
         'price_position' => [

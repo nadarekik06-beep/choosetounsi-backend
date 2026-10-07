@@ -137,6 +137,9 @@ if (!empty($businessErrors)) {
                     in_array((int) $card->product_id, array_map('intval', $productIds), true) ? (int) $card->product_id : (int) $productIds[0],
                     $promo->starts_at, $promo->ends_at);
             }
+            // Opened from Analyse des visiteurs: remember it for the before / after funnel
+            app(\App\Services\VisitorInsights\InsightActions::class)
+                ->recordFromRequest($request, $promo->type, $promo->id, $productIds, $promo->starts_at, $promo->ends_at);
 
             DB::commit();
 

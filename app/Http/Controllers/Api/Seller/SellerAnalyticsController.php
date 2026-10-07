@@ -269,8 +269,11 @@ class SellerAnalyticsController extends Controller
                 'total_units'    => (int)$r->total_units_sold,
                 'total_orders'   => (int)$r->total_orders,
                 'avg_order_val'  => round((float)$r->avg_order_value, 3),
-                // Views-to-purchase conversion proxy
-                'conversion_rate'=> $r->views > 0 ? round(($r->total_orders / $r->views) * 100, 2) : 0,
+                // Views-to-purchase conversion proxy — null ("not enough data") on a tiny sample:
+                // 3 orders on 4 views is not a 75 % conversion rate
+                'conversion_rate'=> $r->views >= (int) config('funnel.min_views')
+                    ? round(min($r->total_orders / $r->views, 1) * 100, 2) : null,
+                'conversion_sample_ok' => $r->views >= (int) config('funnel.min_views'),
                 // Revenue per view proxy
                 'revenue_per_view'=> $r->views > 0 ? round($r->total_revenue / $r->views, 3) : 0,
             ]);

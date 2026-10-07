@@ -11,6 +11,9 @@ return [
                 'description' => 'Réécrivez la description avec le générateur IA : matières, tailles, livraison',
                 'price'       => 'Remise de :pct% pendant :days jours pour revenir au prix de la catégorie',
                 'price_test'  => 'Testez une remise de :pct% pendant :days jours et suivez les commandes',
+                'listing'     => 'Complétez la fiche (score :score/100) : caractéristiques et titre précis',
+                'stock'       => 'Le produit ou certaines variantes sont en rupture : les acheteurs ne peuvent pas commander — réapprovisionnez',
+                'shipping'    => 'Les frais de livraison freinent la commande : revoyez-les ou offrez une remise',
             ],
         ],
         'price_position' => [

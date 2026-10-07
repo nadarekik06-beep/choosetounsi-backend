@@ -315,7 +315,9 @@ Route::middleware('auth:sanctum')->group(function () {
                 Route::get('/vip-requests',    [BlackPepperController::class, 'myVipRequests']);
                 Route::post('/vip-request',    [BlackPepperController::class, 'submitVipRequest']);
                 Route::get('/daily-brief', [BlackPepperController::class, 'dailyBrief']);
-                Route::get('/funnel-insights', [BlackPepperController::class, 'funnelInsights']);
+                // Analyse des visiteurs: behavioral funnel (replaces /funnel-insights)
+                Route::get('/visitor-insights',          [\App\Http\Controllers\Api\Seller\VisitorInsightsController::class, 'show']);
+                Route::post('/visitor-insights/actions', [\App\Http\Controllers\Api\Seller\VisitorInsightsController::class, 'applied'])->middleware('throttle:30,1');
                 Route::get('/quality-audit',   [BlackPepperController::class, 'qualityAudit']);
                 });
 

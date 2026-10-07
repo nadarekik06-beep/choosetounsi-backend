@@ -13,7 +13,7 @@ class Results
     /** Result cards for the feed: measured in the last config('growth.results.show_days') days. */
     public function recent(int $sellerId, string $locale): array
     {
-        $rows = DB::table('growth_actions')->where('seller_id', $sellerId)->where('status', 'measured')
+        $rows = DB::table('growth_actions')->where('seller_id', $sellerId)->where('origin', 'growth_radar')->where('status', 'measured')
             ->where('measured_at', '>=', now()->subDays((int) config('growth.results.show_days')))
             ->orderByDesc('measured_at')->limit(3)->get()->all();
         return $this->present($rows, $locale);
@@ -21,7 +21,7 @@ class Results
 
     public function history(int $sellerId, string $locale): array
     {
-        $rows = DB::table('growth_actions')->where('seller_id', $sellerId)
+        $rows = DB::table('growth_actions')->where('seller_id', $sellerId)->where('origin', 'growth_radar')
             ->orderByDesc('starts_at')->limit(100)->get()->all();
         return $this->present($rows, $locale);
     }

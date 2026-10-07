@@ -19,7 +19,7 @@ class Learning
     {
         $l = new self();
         $rows = DB::table('growth_actions')
-            ->where('seller_id', $sellerId)->where('status', 'measured')
+            ->where('seller_id', $sellerId)->where('origin', 'growth_radar')->where('status', 'measured')
             ->whereIn('verdict', ['win', 'loss', 'neutral'])
             ->get(['kind', 'verdict', 'result']);
 

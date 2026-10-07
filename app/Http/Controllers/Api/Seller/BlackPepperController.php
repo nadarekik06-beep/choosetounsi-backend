@@ -15,7 +15,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
-use App\Services\FunnelInsightService;
 use App\Services\ProductQualityService;
 use Illuminate\Support\Facades\Cache;
 use App\Models\RevenueGoal;
@@ -26,7 +25,7 @@ use App\Models\RevenueGoal;
  *   GET  /api/seller/black/ai-hub
  *   GET  /api/seller/black/daily-brief
  *   GET  /api/seller/black/profit-center
- *   GET  /api/seller/black/funnel-insights
+ *   GET  /api/seller/black/visitor-insights   (VisitorInsightsController)
  *   GET  /api/seller/black/quality-audit
  *   GET  /api/seller/black/auto-promote-suggestions   ← Phase 3
  *   POST /api/seller/black/vip-request
@@ -315,24 +314,7 @@ class BlackPepperController extends Controller
     }
 
     // =========================================================================
-    // 3. FUNNEL INSIGHTS
-    //    GET /api/seller/black/funnel-insights
-    // =========================================================================
-    public function funnelInsights(Request $request): JsonResponse
-    {
-        $sellerId = auth()->id();
-        $data     = Cache::remember("black_funnel_insights_{$sellerId}_" . app()->getLocale(), now()->addHours(6), function () use ($sellerId) {
-            return (new FunnelInsightService())->analyze($sellerId);
-        });
-
-        return response()->json([
-            'success' => true,
-            'data'    => $data,
-            'meta'    => ['count' => count($data), 'generated_at' => now()->toISOString()],
-        ]);
-    }
-
-    // =========================================================================
+    // 3. FUNNEL INSIGHTS → moved to VisitorInsightsController (GET /seller/black/visitor-insights)
     // 4. QUALITY AUDIT
     //    GET /api/seller/black/quality-audit
     // =========================================================================
@@ -360,10 +342,10 @@ class BlackPepperController extends Controller
     {
         foreach (['fr', 'ar', 'en'] as $loc) {
             Cache::forget("black_quality_audit_{$sellerId}_{$loc}");
-            Cache::forget("black_funnel_insights_{$sellerId}_{$loc}");
             Cache::forget("black_daily_brief_{$sellerId}_{$loc}");
             @unlink(storage_path("app/cache/black_daily_brief_{$sellerId}_{$loc}.json"));
         }  // ← Phase 3 added
+        \App\Services\VisitorInsights\VisitorInsights::forget($sellerId);
     }
 
     // =========================================================================
