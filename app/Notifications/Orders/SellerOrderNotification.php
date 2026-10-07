@@ -4,7 +4,6 @@ namespace App\Notifications\Orders;
 
 use App\Models\SellerOrder;
 use App\Services\Orders\DeliveryDocumentService;
-use App\Services\ProductImages;
 use App\Support\SellerPickup;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -151,7 +150,7 @@ abstract class SellerOrderNotification extends Notification implements ShouldQue
 
         $items = $so->items->map(fn($item) => [
             'name'       => $item->product_name,
-            'variant'    => $item->variant_label,
+            'variant'    => $item->displayVariantLabel(),
             'qty'        => (int) $item->quantity,
             // Pack follower rows carry 0: the pack price sits on its first row.
             'unit_price' => (float) $item->unit_price > 0 ? $this->money((float) $item->unit_price) : null,
@@ -216,7 +215,7 @@ abstract class SellerOrderNotification extends Notification implements ShouldQue
     private function imageUrl($item): ?string
     {
         try {
-            $url = ProductImages::thumbnailFor($item->product, $item->variant);
+            $url = $item->displayImageUrl();   // as bought, never another variant's image
         } catch (\Throwable $e) {
             return null;
         }

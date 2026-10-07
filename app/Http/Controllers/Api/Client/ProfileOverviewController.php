@@ -67,10 +67,11 @@ class ProfileOverviewController extends Controller
         $recent = Order::where('user_id', $userId)
             ->withCount('items')
             ->with([
-                'items' => fn($q) => $q->select('id', 'order_id', 'product_id', 'variant_id', 'product_name', 'quantity')
+                // resolved_image_url: the line as bought (snapshot, else its own variant's image)
+                'items' => fn($q) => $q->select('id', 'order_id', 'product_id', 'variant_id', 'variant_label', 'variant_attributes', 'product_name', 'image_url', 'quantity')
                     ->with([
-                        'product' => fn($pq) => $pq->withTrashed()->select('id', 'name', 'slug')->with('primaryImage'),
-                        'variant.images',
+                        'product' => fn($pq) => $pq->withTrashed()->select('id', 'name', 'slug')->with(['images', 'variants.attributeOptions.attribute']),
+                        'variant.attributeOptions.attribute',
                     ]),
             ])
             ->latest()->orderByDesc('id')

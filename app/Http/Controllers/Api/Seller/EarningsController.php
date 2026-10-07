@@ -4,7 +4,6 @@ namespace App\Http\Controllers\Api\Seller;
 
 use App\Http\Controllers\Controller;
 use App\Models\SellerOrder;
-use App\Services\ProductImages;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -280,10 +279,7 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
                     ])->values()
                 : collect();
 
-            $image = $item->getAttributes()['image_url'] ?? null;
-            if (!$image && $product) {
-                $image = ProductImages::thumbnailFor($product, $variant);
-            }
+            $image = $item->displayImageUrl();   // as bought, never another variant's image
 
             $lineTotal = round((float) $item->total, 3);
             $discount  = round((float) ($item->discount_amount ?? 0), 3);
@@ -291,9 +287,9 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
             return [
                 'id'              => $item->id,
                 'product_name'    => $item->product_name ?: ($product ? ($product->getAttributes()['name'] ?? null) : null),
-                'variant_label'   => $item->variant_label,
+                'variant_label'   => $item->displayVariantLabel(),
                 'variant_options' => $options,
-                'image_url'       => $image ? (str_starts_with($image, 'http') ? $image : url($image)) : null,
+                'image_url'       => $image,
                 'quantity'        => (int) $item->quantity,
                 'unit_price'      => round((float) $item->unit_price, 3),
                 'line_total'      => $lineTotal,                 // before the coupon

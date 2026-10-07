@@ -663,12 +663,9 @@ public function confirmOrder(Request $request, $id)
 
     // ── Private ────────────────────────────────────────────────────────────
 
+    /** As bought: purchase snapshot, else the bought variant's image — never another variant's. */
     private function resolveItemImage($item): ?string
     {
-        if (!empty($item->image_url)) {
-            return str_starts_with($item->image_url, 'http') ? $item->image_url : url($item->image_url);
-        }
-        // Main image of the variant's color group, else the product cover
-        return $item->product ? \App\Services\ProductImages::thumbnailFor($item->product, $item->variant) : null;
+        return $item->displayImageUrl();
     }
 }

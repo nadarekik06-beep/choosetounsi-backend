@@ -5,10 +5,7 @@ namespace App\Http\Controllers\Api\Client;
 use App\Http\Controllers\Controller;
 use App\Models\Complaint;
 use App\Models\Order;
-use App\Models\Product;
-use App\Models\ProductVariant;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Storage;
 
 /**
  * FILE: app/Http/Controllers/Api/Client/ClientOrderApiController.php  ← REPLACE
@@ -134,10 +131,9 @@ class ClientOrderApiController extends Controller
         $enrichedItems = $order->items->map(function ($item) use (
             $sellerOrderMap, $order, $returnedItemIds, $allItemsReturned
         ) {
-            $item->setAttribute(
-                'resolved_image_url',
-                $this->resolveImageUrl($item->product, $item->variant)
-            );
+            // As bought: the checkout snapshot first, never another variant's image
+            $item->setAttribute('resolved_image_url', $item->displayImageUrl());
+            $item->setAttribute('variant_label', $item->displayVariantLabel());
 
             $so = $item->seller_order_id
                 ? ($sellerOrderMap[$item->seller_order_id] ?? null)
@@ -202,11 +198,5 @@ class ClientOrderApiController extends Controller
         $arr['total_amount']    = $money['total'];
 
         return $arr;
-    }
-
-    /** Main image of the variant's color group, else the product cover (sizes share images). */
-    private function resolveImageUrl(?Product $product, ?ProductVariant $variant): ?string
-    {
-        return \App\Services\ProductImages::thumbnailFor($product, $variant);
     }
 }

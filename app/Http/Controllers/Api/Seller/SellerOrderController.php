@@ -7,7 +7,6 @@ use App\Http\Controllers\Controller;
 use App\Models\SellerOrder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 use App\Models\Order;
 use App\Models\Complaint;
 
@@ -148,59 +147,12 @@ $mappedItems = $sellerOrder->items->map(function ($item) use ($returnedItemIds, 
                 ?? $item->product?->name
                 ?? "Product #{$item->product_id}";
 
-            // ── Variant attributes ────────────────────────────────────────
-            $variantAttributes = [];
-            $variantLabel      = $item->variant_label ?? null;
-
-            if ($item->variant && $item->variant->relationLoaded('attributeOptions')) {
-                foreach ($item->variant->attributeOptions as $opt) {
-                    $attr = $opt->attribute;
-                    if (!$attr) continue;
-
-                    $variantAttributes[] = [
-                        'slug'      => $attr->slug,
-                        'label'     => $attr->name,
-                        'value'     => $opt->value,
-                        'color_hex' => $opt->color_hex ?? null,
-                    ];
-                }
-
-                if (!$variantLabel && !empty($variantAttributes)) {
-                    $variantLabel = collect($variantAttributes)
-                        ->pluck('value')
-                        ->filter()
-                        ->join(' / ');
-                }
-            }
-
-            // ── Variant image resolution ──────────────────────────────────
-            // Priority: color group main image → product cover (sizes share images)
-            $resolvedImage = null;
-
-            // 1-2. Main image of the variant's color group (sizes share images)
-            if ($item->variant && $item->product) {
-                $resolvedImage = \App\Services\ProductImages::thumbnailFor($item->product, $item->variant);
-            }
-
-            // 3. Stored checkout snapshot
-            if (!$resolvedImage && !empty($item->image_url)) {
-                $stored = $item->image_url;
-                $resolvedImage = str_starts_with($stored, 'http')
-                    ? $stored
-                    : url($stored);
-            }
-
-            // 4. Product primary image
-            if (!$resolvedImage && $item->product) {
-                $product = $item->product;
-                if ($product->relationLoaded('images')) {
-                    $primary = $product->images->firstWhere('is_primary', true)
-                             ?? $product->images->sortBy('order')->first();
-                    if ($primary) {
-                        $resolvedImage = Storage::url($primary->image_path);
-                    }
-                }
-            }
+            // ── As bought: the order line's purchase snapshot ─────────────
+            // (image, attributes, label — later product edits don't change it)
+            $snapshot          = $item->purchaseSnapshot();
+            $variantAttributes = $snapshot['variant_attributes'];
+            $variantLabel      = $snapshot['variant_label'];
+            $resolvedImage     = $snapshot['image_url'];
 
             // ── Commission snapshot fields ────────────────────────────────
             // NEVER recalculate — always read stored values.

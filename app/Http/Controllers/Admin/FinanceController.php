@@ -250,12 +250,7 @@ class FinanceController extends Controller
                     ])->values()
                 : collect();
 
-            $image = null;
-            if (!empty($item->getAttributes()['image_url'])) {
-                $image = $item->getAttributes()['image_url'];
-            } elseif ($product) {
-                $image = \App\Services\ProductImages::thumbnailFor($product, $variant);
-            }
+            $image = $item->displayImageUrl();   // as bought, never another variant's image
 
             $lineTotal = round((float) $item->total, 3);
             $discount  = round((float) ($item->discount_amount ?? 0), 3);
@@ -265,9 +260,9 @@ class FinanceController extends Controller
                 'product_id'            => $item->product_id,
                 'variant_id'            => $item->variant_id,
                 'product_name'          => $item->product_name ?: optional($product)->getAttributes()['name'] ?? null,
-                'variant_label'         => $item->variant_label,
+                'variant_label'         => $item->displayVariantLabel(),
                 'variant_options'       => $options,
-                'image_url'             => $image ? (str_starts_with($image, 'http') ? $image : url($image)) : null,
+                'image_url'             => $image,
                 'quantity'              => (int) $item->quantity,
                 'unit_price'            => round((float) $item->unit_price, 3),
                 'line_total'            => $lineTotal,                       // before the seller's coupon

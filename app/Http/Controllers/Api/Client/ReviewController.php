@@ -27,7 +27,11 @@ class ReviewController extends Controller
                 ->pluck('order_item_id')
                 ->toArray();
 
-            $items = OrderItem::with(['product.primaryImage', 'product.images', 'sellerOrder'])
+            $items = OrderItem::with([
+                    'product' => fn($q) => $q->withTrashed()->with(['images', 'variants.attributeOptions.attribute']),
+                    'variant.attributeOptions.attribute',
+                    'sellerOrder',
+                ])
                 ->whereHas('sellerOrder', fn($q) => $q->where('status', 'delivered'))
                 ->whereHas('order', fn($q) => $q->where('user_id', $user->id))
                 ->when(!empty($reviewed), fn($q) => $q->whereNotIn('id', $reviewed))
@@ -38,8 +42,8 @@ class ReviewController extends Controller
                     'order_id'      => $item->order_id,
                     'product_id'    => $item->product_id,
                     'product_name'  => $item->product_name ?? $item->product?->name,
-                    'product_image' => $item->product?->primary_image_url,
-                    'variant_label' => $item->variant_label,
+                    'product_image' => $item->displayImageUrl(),   // the variant bought, not the product cover
+                    'variant_label' => $item->displayVariantLabel(),
                     'quantity'      => $item->quantity,
                     'delivered_at'  => $item->sellerOrder?->updated_at,
                 ]);
@@ -240,7 +244,11 @@ class ReviewController extends Controller
     {
         $user = $request->user();
 
-        $prompts = ReviewPrompt::with(['product.primaryImage'])
+        $prompts = ReviewPrompt::with([
+                'product.primaryImage',
+                'orderItem.product' => fn($q) => $q->withTrashed()->with(['images', 'variants.attributeOptions.attribute']),
+                'orderItem.variant.attributeOptions.attribute',
+            ])
             ->where('user_id', $user->id)
             ->whereNull('reviewed_at')
             ->whereNull('dismissed_at')
@@ -250,8 +258,9 @@ class ReviewController extends Controller
             ->map(fn($p) => [
                 'prompt_id'    => $p->id,
                 'product_id'   => $p->product_id,
-                'product_name' => $p->product?->name,
-                'product_image'=> $p->product?->primary_image_url,
+                'product_name' => $p->orderItem?->product_name ?? $p->product?->name,
+                'product_image'=> $p->orderItem ? $p->orderItem->displayImageUrl() : $p->product?->primary_image_url,
+                'variant_label'=> $p->orderItem?->displayVariantLabel(),
                 'order_item_id'=> $p->order_item_id,
                 'sent_at'      => $p->sent_at,
             ]);
