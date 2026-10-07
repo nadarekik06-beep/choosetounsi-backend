@@ -116,6 +116,15 @@ class Kernel extends ConsoleKernel
         $schedule->command('funnel:aggregate --today')
             ->hourlyAt(20)->withoutOverlapping()->runInBackground();
 
+        // ── Centre de profit — goal alerts (bell + opt-in e-mail) ──────────
+        // Milestones also fire live on order status changes; the hourly run is a safety net.
+        // Test: php artisan profit:goal-alerts --task=pace --seller=ID --force
+        $tz = config('profit.timezone');
+        $schedule->command('profit:goal-alerts --task=milestones')->hourlyAt(5)->withoutOverlapping()->runInBackground();
+        $schedule->command('profit:goal-alerts --task=pace')->dailyAt('10:00')->timezone($tz)->withoutOverlapping()->runInBackground();
+        $schedule->command('profit:goal-alerts --task=weekly')->weeklyOn(1, '08:30')->timezone($tz)->withoutOverlapping()->runInBackground();
+        $schedule->command('profit:goal-alerts --task=monthly')->monthlyOn(1, '09:00')->timezone($tz)->withoutOverlapping()->runInBackground();
+
         // ── Black Pepper — daily smart notifications ───────────────────────
         // Runs every day at 08:00 server time.
         // Sends: auto-promo, stock-risk, weekend-spike, cooling notifications

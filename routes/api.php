@@ -310,8 +310,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::prefix('black')
             ->middleware('seller.feature:black_hub')
             ->group(function () {
-                Route::get('/revenue-goals',  [BlackPepperController::class, 'revenueGoals']);
-                Route::post('/revenue-goals', [BlackPepperController::class, 'setRevenueGoal']);
+                // Centre de profit: money, goals and profitability
+                Route::get('/profit-center',          [\App\Http\Controllers\Api\Seller\ProfitCenterController::class, 'show']);
+                Route::get('/revenue-goals',          [\App\Http\Controllers\Api\Seller\ProfitCenterController::class, 'show']); // legacy alias
+                Route::post('/revenue-goals',         [\App\Http\Controllers\Api\Seller\ProfitCenterController::class, 'saveGoal'])->middleware('throttle:30,1');
+                Route::delete('/revenue-goals/{month}', [\App\Http\Controllers\Api\Seller\ProfitCenterController::class, 'deleteGoal'])
+                    ->where('month', '\d{4}-\d{2}')->middleware('throttle:30,1');
+                Route::put('/profit-center/alerts',   [\App\Http\Controllers\Api\Seller\ProfitCenterController::class, 'updateAlerts'])->middleware('throttle:30,1');
+                Route::get('/profit-center/export',   [\App\Http\Controllers\Api\Seller\ProfitCenterController::class, 'export'])->middleware('throttle:20,1');
                 Route::get('/vip-requests',    [BlackPepperController::class, 'myVipRequests']);
                 Route::post('/vip-request',    [BlackPepperController::class, 'submitVipRequest']);
                 Route::get('/daily-brief', [BlackPepperController::class, 'dailyBrief']);

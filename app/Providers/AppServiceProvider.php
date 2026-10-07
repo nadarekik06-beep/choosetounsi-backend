@@ -37,6 +37,8 @@ class AppServiceProvider extends ServiceProvider
         SellerOrder::observe(SellerOrderObserver::class);
         // Sales forecasts recompute when counted sales change (confirmed, cancelled, returned)
         \App\Observers\ForecastTriggers::register();
+        // Centre de profit: goal milestones follow the same counted statuses
+        \App\Observers\ProfitGoalTriggers::register();
 
         // Search index sync: MySQL text index (search bar) and photo fingerprints (search by photo).
         foreach ([Product::class, \App\Models\ProductImage::class, \App\Models\ProductAttributeValue::class,
