@@ -206,7 +206,7 @@ class ComplaintController extends Controller
                     'errors'  => ['item_ids' => ['Invalid item selection.']],
                 ], 422);
             }
-            $validatedItemIds = array_values($validated['item_ids']);
+            $validatedItemIds = array_values(array_map('intval', $validated['item_ids'])); // multipart sends strings
         }
 
         // ── 7. Resolve seller_id ─────────────────────────────────────────
