@@ -95,7 +95,7 @@ class MarkOrderRefunded
             $order = Order::with('user')->find($orderId);
             if ($order?->user) {
                 try {
-                    $order->user->notify(new RefundCompletedNotification($task, $order));
+                    app(\App\Services\Notifications\BuyerNotifier::class)->send($order->user, new RefundCompletedNotification($task, $order));
                 } catch (\Throwable $e) {
                     Log::error("[RefundCompleted] Customer notification failed: " . $e->getMessage());
                 }
@@ -208,6 +208,9 @@ class MarkOrderRefunded
 
                 // Sync parent order (may become 'cancelled' if all sub-orders cancelled)
                 $this->syncParentOrderStatus($orderId);
+
+                // The buyer is told "refund completed", never "order cancelled", for a full return.
+                app(\App\Services\Orders\BuyerOrderNotifier::class)->markHandled($orderId, [$sellerOrder->id], 'cancelled');
 
             } else {
                 // Partial return → keep seller_order as 'delivered' for remaining items

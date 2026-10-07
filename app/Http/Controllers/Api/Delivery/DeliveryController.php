@@ -291,11 +291,11 @@ if ($sellerOrder->status !== 'completed') {
             //
             $this->syncParentOrderStatus($assignment->sellerOrder->order_id);
 
-            // ── 4. Create review prompts when order is delivered ───────────
-            // Mirrors SellerOrderController::createReviewPrompts()
-            if ($newStatus === 'delivered') {
-                $this->createReviewPrompts($assignment->sellerOrder);
-            }
+            // ── 4. Buyer: "on its way" / "delivered", once per step; delivered
+            //       also creates the review prompts (BuyerOrderNotifier)
+            app(\App\Services\Orders\BuyerOrderNotifier::class)->statusChanged(
+                (int) $assignment->sellerOrder->order_id, [$assignment->sellerOrder->id]
+            );
 
             return response()->json([
                 'success' => true,
@@ -376,32 +376,6 @@ if ($sellerOrder->status !== 'completed') {
         Order::where('id', $orderId)->update(['status' => $derived]);
     }
 
-    /**
-     * Create review prompts when a delivery guy confirms delivery.
-     * Mirrors SellerOrderController::createReviewPrompts() exactly.
-     */
-    private function createReviewPrompts(SellerOrder $sellerOrder): void
-    {
-        try {
-            $sellerOrder->loadMissing('order');
-            $userId = $sellerOrder->order?->user_id;
-            if (!$userId) return;
-
-            $items = $sellerOrder->items()->get(['id', 'product_id']);
-
-            foreach ($items as $item) {
-                if (!$item->product_id) continue;
-                \App\Models\ReviewPrompt::firstOrCreate(
-                    ['user_id' => $userId, 'order_item_id' => $item->id],
-                    ['product_id' => $item->product_id, 'sent_at' => now(), 'channel' => 'popup']
-                );
-            }
-        } catch (\Exception $e) {
-            Log::error('[Delivery::createReviewPrompts] ' . $e->getMessage(), [
-                'seller_order_id' => $sellerOrder->id,
-            ]);
-        }
-    }
 
     /**
      * Format a SellerOrder for the delivery app API response.

@@ -33,6 +33,11 @@ class ProductVariantObserver
             return;
         }
 
+        // Buyers who favourited it: this variant is available again
+        if ((int) $variant->getOriginal('stock') <= 0 && (int) $variant->stock > 0 && $variant->is_active !== false) {
+            \App\Jobs\NotifyFavoriteWatchers::dispatch((int) $variant->product_id, 'back_in_stock', (int) $variant->id);
+        }
+
         $product = $variant->product()->with('seller')->first();
         if (!$product) return;
 

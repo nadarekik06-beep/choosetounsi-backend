@@ -89,6 +89,27 @@ class SellerOrderNotificationsTest extends TestCase
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    /**
+     * No seller (or admin) notification went out. The buyer's own notifications
+     * (App\Notifications\Buyer\BuyerNotification, see BuyerNotificationsTest) may.
+     */
+    private function assertNoSellerNotification(): void
+    {
+        $fake = Notification::getFacadeRoot();
+        $prop = (new \ReflectionClass($fake))->getProperty('notifications');
+        $prop->setAccessible(true);
+
+        $sent = [];
+        foreach ($prop->getValue($fake) as $byId) {
+            foreach ($byId as $byClass) {
+                foreach (array_keys($byClass) as $class) {
+                    if (!is_subclass_of($class, \App\Notifications\Buyer\BuyerNotification::class)) $sent[] = $class;
+                }
+            }
+        }
+        $this->assertSame([], $sent, 'no seller notification expected');
+    }
+
     private function makeUser(string $role, string $locale = 'fr'): User
     {
         return $this->withCompleteProfile(User::create([
@@ -218,7 +239,7 @@ class SellerOrderNotificationsTest extends TestCase
         Notification::fake();
         $seller = $this->makeSeller();
         $order  = $this->checkout([$this->makeProduct($seller)], 'card');
-        Notification::assertNothingSent();
+        $this->assertNoSellerNotification();
 
         $order->forceFill(['stripe_payment_intent_id' => 'pi_test_' . Str::random(8)])->save();
         $webhook = (new \ReflectionClass(PaymentController::class));
@@ -229,7 +250,7 @@ class SellerOrderNotificationsTest extends TestCase
         $controller = app(PaymentController::class);
 
         $failure->invoke($controller, $order->stripe_payment_intent_id);
-        Notification::assertNothingSent();
+        $this->assertNoSellerNotification();
 
         $success->invoke($controller, $order->stripe_payment_intent_id);
         $success->invoke($controller, $order->stripe_payment_intent_id); // Stripe retries webhooks
@@ -241,7 +262,7 @@ class SellerOrderNotificationsTest extends TestCase
         Notification::fake();
         $seller = $this->makeSeller();
         $order  = $this->checkout([$this->makeProduct($seller)], 'd17');
-        Notification::assertNothingSent();
+        $this->assertNoSellerNotification();
 
         $this->admin()->patchJson("/api/admin/orders/{$order->id}/confirm-payment", ['d17_reference' => 'D17-123'])->assertOk();
         $this->admin()->patchJson("/api/admin/orders/{$order->id}/payment-status", ['payment_status' => 'paid'])->assertOk();
@@ -259,7 +280,7 @@ class SellerOrderNotificationsTest extends TestCase
         $this->artisan('orders:cancel-abandoned-card')->assertExitCode(0);
 
         $this->assertSame('cancelled', $order->fresh()->status);
-        Notification::assertNothingSent();
+        $this->assertNoSellerNotification();
     }
 
     public function test_cod_payment_collected_after_delivery_does_not_announce_the_order_again(): void
@@ -272,7 +293,7 @@ class SellerOrderNotificationsTest extends TestCase
 
         $this->admin()->patchJson("/api/admin/orders/{$order->id}/confirm-payment")->assertOk();
 
-        Notification::assertNothingSent();
+        $this->assertNoSellerNotification();
     }
 
     public function test_a_rolled_back_transaction_sends_nothing(): void
@@ -291,7 +312,7 @@ class SellerOrderNotificationsTest extends TestCase
         } catch (\RuntimeException $e) {
         }
 
-        Notification::assertNothingSent();
+        $this->assertNoSellerNotification();
         $this->assertSame(0, DB::table('seller_order_notifications')->count(), 'the claim rolls back with the order');
     }
 
@@ -492,7 +513,7 @@ class SellerOrderNotificationsTest extends TestCase
 
         $this->admin()->patchJson("/api/admin/orders/{$order->id}/confirm-order", ['action' => 'cancelled'])->assertOk();
 
-        Notification::assertNothingSent();
+        $this->assertNoSellerNotification();
     }
 
     // ── Language & privacy ────────────────────────────────────────────────────
@@ -566,12 +587,14 @@ class SellerOrderNotificationsTest extends TestCase
         $seller = $this->makeSeller('en');
         config(['mail.default' => 'array']);
 
-        $this->checkout([$this->makeProduct($seller)]);
+        $order = $this->checkout([$this->makeProduct($seller)]);
 
+        // The seller's "new order" + the buyer's receipt (BuyerNotificationsTest)
         $messages = app('mailer')->getSwiftMailer()->getTransport()->messages();
-        $this->assertCount(1, $messages);
-        $message = $messages->first();
-        $this->assertSame([$seller->email], array_keys($message->getTo()));
+        $this->assertCount(2, $messages);
+        $this->assertCount(1, $messages->filter(fn($m) => array_keys($m->getTo()) === [$order->user->email]));
+        $message = $messages->first(fn($m) => array_keys($m->getTo()) === [$seller->email]);
+        $this->assertNotNull($message);
         $this->assertStringStartsWith('New order ', $message->getSubject());
         $this->assertStringContainsString('<html', $message->getBody());
         $this->assertNotEmpty(collect($message->getChildren())->filter(fn($p) => $p->getContentType() === 'text/plain'));
@@ -588,7 +611,7 @@ class SellerOrderNotificationsTest extends TestCase
         Notification::fake();
 
         $this->artisan('orders:remind-seller-pickup')->assertExitCode(0);
-        Notification::assertNothingSent();
+        $this->assertNoSellerNotification();
 
         config(['seller_notifications.pickup_reminder.enabled' => true]);
         $this->artisan('orders:remind-seller-pickup')->assertExitCode(0);
@@ -609,6 +632,6 @@ class SellerOrderNotificationsTest extends TestCase
 
         $this->artisan('orders:remind-seller-pickup')->assertExitCode(0);
 
-        Notification::assertNothingSent();
+        $this->assertNoSellerNotification();
     }
 }

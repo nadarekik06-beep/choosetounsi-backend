@@ -69,6 +69,8 @@ class CancelAbandonedCardOrders extends Command
             // Unpaid card orders were never announced, so this normally sends
             // nothing; it keeps "cancelled → tell notified sellers" true here too.
             app(SellerOrderNotifier::class)->orderCancelled($locked);
+            app(\App\Services\Orders\BuyerOrderNotifier::class)
+                ->statusChanged($locked, null, \App\Services\Orders\BuyerOrderNotifier::REASON_PAYMENT);
 
             Log::info("[AbandonedCard] Order #{$locked->order_number} cancelled: card payment not completed.");
             return true;

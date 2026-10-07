@@ -113,6 +113,11 @@ class SellerComplaintController extends Controller
             return response()->json(['success' => false, 'message' => __('seller.complaint.update_failed')], 500);
         }
 
+        // Buyer: "the shop answered, your complaint is being examined"
+        app(\App\Services\Notifications\BuyerNotifier::class)->send(
+            $complaint->user, new \App\Notifications\Buyer\ComplaintNotification($complaint->fresh(), 'seller_replied')
+        );
+
         return response()->json([
             'success' => true,
             'message' => __('seller.complaint.note_submitted'),
@@ -149,7 +154,7 @@ class SellerComplaintController extends Controller
         }
 
         try {
-            $complaint->user->notify(new ComplaintStatusChangedNotification($complaint));
+            app(\App\Services\Notifications\BuyerNotifier::class)->send($complaint->user, new ComplaintStatusChangedNotification($complaint->fresh()));
         } catch (\Throwable $e) {
             Log::error('[SellerComplaint] Approve notification failed: ' . $e->getMessage());
         }
@@ -188,6 +193,11 @@ class SellerComplaintController extends Controller
             Log::error('[SellerComplaint] reject failed: ' . $e->getMessage());
             return response()->json(['success' => false, 'message' => __('seller.complaint.reject_failed')], 500);
         }
+
+        // Buyer: the shop contested it, the admin decides
+        app(\App\Services\Notifications\BuyerNotifier::class)->send(
+            $complaint->user, new \App\Notifications\Buyer\ComplaintNotification($complaint->fresh(), 'escalated')
+        );
 
         try {
             $admins = \App\Models\User::where('role', 'admin')->where('is_active', true)->get();

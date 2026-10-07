@@ -84,6 +84,8 @@ class ProfileApiController extends Controller
         $current = $user->currentAccessToken();
         $user->tokens()->when($current && $current->id, fn($q) => $q->where('id', '!=', $current->id))->delete();
 
+        app(\App\Services\Notifications\BuyerNotifier::class)->send($user, new \App\Notifications\Buyer\AccountSecurityNotification('password_changed'));
+
         return response()->json([
             'success' => true,
             'message' => __('messages.profile.password_updated'),
@@ -240,7 +242,19 @@ class ProfileApiController extends Controller
         }
 
         Cache::forget($key);
+        $previous = $user->email;
         $user->forceFill(['email' => $pending['email'], 'email_verified_at' => now()])->save();
+
+        // Security: bell + e-mail to the new address, and an e-mail to the previous one.
+        app(\App\Services\Notifications\BuyerNotifier::class)->send($user, new \App\Notifications\Buyer\AccountSecurityNotification('email_changed', ['email' => $user->email]));
+        if (filled($previous) && $previous !== $user->email) {
+            try {
+                \Illuminate\Support\Facades\Notification::route('mail', $previous)
+                    ->notify(new \App\Notifications\Buyer\AccountSecurityNotification('email_changed', ['email' => $user->email]));
+            } catch (\Throwable $e) {
+                Log::error('[Profile] email-change notice to the previous address failed: ' . $e->getMessage());
+            }
+        }
 
         return response()->json([
             'success' => true,
@@ -249,14 +263,25 @@ class ProfileApiController extends Controller
         ]);
     }
 
-    /** PUT /api/profile/notifications */
+    /**
+     * PUT /api/profile/notifications — per-category channel choices
+     * (NotificationPreferences). Locked channels can't be sent; promotions_email
+     * is the marketing e-mail consent (same as /api/account/marketing-consent).
+     */
     public function updateNotifications(NotificationPreferencesRequest $request)
     {
-        $user = $request->user();
+        $user    = $request->user();
+        $choices = array_map('boolval', $request->validated());
+
+        if (array_key_exists('promotions_email', $choices)) {
+            app(\App\Services\Ads\MarketingConsent::class)->set($user, $choices['promotions_email']);
+            unset($choices['promotions_email']);
+        }
+
         $user->notification_preferences = array_merge(
             array_fill_keys(NotificationPreferencesRequest::KEYS, true),
             $user->notification_preferences ?? [],
-            array_map('boolval', $request->validated()),
+            $choices,
         );
         $user->save();
 
@@ -322,6 +347,9 @@ class ProfileApiController extends Controller
                 array_fill_keys(NotificationPreferencesRequest::KEYS, true),
                 $user->notification_preferences ?? [],
             ),
+            // One row per category: in_app / email → {enabled, locked, opt_in}
+            'notification_settings' => \App\Notifications\Support\NotificationPreferences::settings($user),
+            'marketing_emails_opt_in' => (bool) $user->marketing_emails_opt_in,
             'completion'        => $user->profileCompletion()->toArray(),
         ];
     }

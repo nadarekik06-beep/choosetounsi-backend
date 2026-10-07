@@ -194,6 +194,7 @@ class RefundDeliveryController extends Controller
         try {
             if ($newStatus === RefundDeliveryTask::STATUS_PICKED_UP) {
                 $task->markPickedUp();
+                $this->notifyBuyerPickedUp($task->fresh());
             } elseif ($newStatus === RefundDeliveryTask::STATUS_COMPLETED) {
                 $task->markCompleted();
                 RefundCompleted::dispatch($task->fresh());
@@ -321,5 +322,20 @@ class RefundDeliveryController extends Controller
         }
 
         return $data;
+    }
+
+    /** Buyer: "the courier collected your item, refund / exchange in progress". */
+    private function notifyBuyerPickedUp(\App\Models\RefundDeliveryTask $task): void
+    {
+        try {
+            $order = $task->complaint?->order;
+            if ($order?->user) {
+                app(\App\Services\Notifications\BuyerNotifier::class)->send(
+                    $order->user, new \App\Notifications\Buyer\RefundNotification($task, $order, 'picked_up')
+                );
+            }
+        } catch (\Throwable $e) {
+            Log::error('[RefundDelivery] buyer pick-up notification failed: ' . $e->getMessage());
+        }
     }
 }

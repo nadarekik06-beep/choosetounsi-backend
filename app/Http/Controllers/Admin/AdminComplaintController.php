@@ -107,7 +107,7 @@ class AdminComplaintController extends Controller
         $complaint->approve();
 
         try {
-            $complaint->user->notify(new ComplaintStatusChangedNotification($complaint));
+            app(\App\Services\Notifications\BuyerNotifier::class)->send($complaint->user, new ComplaintStatusChangedNotification($complaint->fresh()));
         } catch (\Throwable $e) {
             Log::error('[AdminComplaint] Approve notification failed: ' . $e->getMessage());
         }
@@ -141,7 +141,7 @@ class AdminComplaintController extends Controller
         $complaint->reject($request->rejection_reason);
 
         try {
-            $complaint->user->notify(new ComplaintStatusChangedNotification($complaint));
+            app(\App\Services\Notifications\BuyerNotifier::class)->send($complaint->user, new ComplaintStatusChangedNotification($complaint->fresh()));
         } catch (\Throwable $e) {
             Log::error('[AdminComplaint] Reject notification failed: ' . $e->getMessage());
         }
@@ -171,7 +171,7 @@ class AdminComplaintController extends Controller
         $complaint->confirmRejection();
 
         try {
-            $complaint->user->notify(new ComplaintStatusChangedNotification($complaint));
+            app(\App\Services\Notifications\BuyerNotifier::class)->send($complaint->user, new ComplaintStatusChangedNotification($complaint->fresh()));
         } catch (\Throwable $e) {
             Log::error('[AdminComplaint] ConfirmRejection notification failed: ' . $e->getMessage());
         }
@@ -201,7 +201,7 @@ class AdminComplaintController extends Controller
         $complaint->overrideToApproved();
 
         try {
-            $complaint->user->notify(new ComplaintStatusChangedNotification($complaint));
+            app(\App\Services\Notifications\BuyerNotifier::class)->send($complaint->user, new ComplaintStatusChangedNotification($complaint->fresh()));
         } catch (\Throwable $e) {
             Log::error('[AdminComplaint] OverrideApprove notification failed: ' . $e->getMessage());
         }

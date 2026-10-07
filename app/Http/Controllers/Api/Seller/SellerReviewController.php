@@ -186,6 +186,11 @@ class SellerReviewController extends Controller
             ['body' => $data['body'], 'is_visible' => true]
         );
 
+        // The reviewer hears about the first answer (editing it later sends nothing).
+        if ($reply->wasRecentlyCreated && $review->user) {
+            app(\App\Services\Notifications\BuyerNotifier::class)->send($review->user, new \App\Notifications\Buyer\ReviewReplyNotification($reply));
+        }
+
         return response()->json([
             'success' => true,
             'message' => __('seller.review.reply_saved'),

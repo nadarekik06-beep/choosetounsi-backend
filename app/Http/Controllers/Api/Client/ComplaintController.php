@@ -250,6 +250,10 @@ class ComplaintController extends Controller
         ]);
 
         // ── 10. Notifications ────────────────────────────────────────────
+        // Buyer: acknowledgement (bell + e-mail)
+        app(\App\Services\Notifications\BuyerNotifier::class)
+            ->send($user, new \App\Notifications\Buyer\ComplaintNotification($complaint, 'received'));
+
         try {
             if ($sellerId) {
                 $seller = \App\Models\User::find($sellerId);

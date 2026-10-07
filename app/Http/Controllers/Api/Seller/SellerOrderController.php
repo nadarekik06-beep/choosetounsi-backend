@@ -331,11 +331,6 @@ public function updateStatus(Request $request, $id)
         ], 422);
     }
 
-    // ── Create ReviewPrompts when order is delivered ─────────────────────
-    if ($status === 'delivered') {
-        $this->createReviewPrompts($sellerOrder);
-    }
-
     // ── REFUND PICKUP NOTIFICATION ────────────────────────────────────────
     // When a refunded order is marked 'delivered', it means the seller
     // confirmed the returned product was physically picked up.
@@ -357,45 +352,17 @@ public function updateStatus(Request $request, $id)
 
     $this->syncParentOrderStatus($sellerOrder->order_id);
 
+    // The buyer hears about the step once (packed, shipped, delivered, cancelled by the shop…)
+    app(\App\Services\Orders\BuyerOrderNotifier::class)->statusChanged(
+        (int) $sellerOrder->order_id, [$sellerOrder->id], \App\Services\Orders\BuyerOrderNotifier::REASON_SELLER
+    );
+
     return response()->json([
         'success' => true,
         'message' => __('seller.order.status_updated'),
         'data'    => $sellerOrder,
     ]);
 }
-private function createReviewPrompts(\App\Models\SellerOrder $sellerOrder): void
-    {
-        try {
-            // Eager-load the parent order if not already loaded
-            $sellerOrder->loadMissing('order');
- 
-            $userId = $sellerOrder->order?->user_id;
-            if (!$userId) return;
- 
-            $items = $sellerOrder->items()->get(['id', 'product_id']);
- 
-            foreach ($items as $item) {
-                if (!$item->product_id) continue;
- 
-                \App\Models\ReviewPrompt::firstOrCreate(
-                    [
-                        'user_id'       => $userId,
-                        'order_item_id' => $item->id,
-                    ],
-                    [
-                        'product_id' => $item->product_id,
-                        'sent_at'    => now(),
-                        'channel'    => 'popup',
-                    ]
-                );
-            }
-        } catch (\Exception $e) {
-            \Illuminate\Support\Facades\Log::error(
-                '[ReviewPrompt::createReviewPrompts] ' . $e->getMessage(),
-                ['seller_order_id' => $sellerOrder->id]
-            );
-        }
-    }
     /**
      * Derive and write the correct aggregate status to orders.status
      * based on the current state of all seller_orders for that order.

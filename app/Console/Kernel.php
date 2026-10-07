@@ -125,6 +125,18 @@ class Kernel extends ConsoleKernel
         $schedule->command('profit:goal-alerts --task=weekly')->weeklyOn(1, '08:30')->timezone($tz)->withoutOverlapping()->runInBackground();
         $schedule->command('profit:goal-alerts --task=monthly')->monthlyOn(1, '09:00')->timezone($tz)->withoutOverlapping()->runInBackground();
 
+        // ── Buyer notifications (config/notifications.php) ─────────────────
+        // "Rate your purchase" N days after delivery, and private coupons about to expire.
+        // Daytime only (Tunis time): nobody wants a reminder at 3 a.m.
+        $ntz = config('notifications.timezone');
+        $schedule->command('notifications:review-reminders')->hourlyAt(15)->timezone($ntz)->between('9:00', '20:00')
+            ->withoutOverlapping()->runInBackground();
+        $schedule->command('notifications:coupon-expiry')->hourlyAt(25)->timezone($ntz)->between('9:00', '20:00')
+            ->withoutOverlapping()->runInBackground();
+        $schedule->call(fn () => \Illuminate\Support\Facades\DB::table('notification_dispatches')
+                ->where('created_at', '<', now()->subDays(400))->delete())
+            ->name('notifications:prune-dispatches')->weeklyOn(1, '04:30')->withoutOverlapping();
+
         // ── Black Pepper — daily smart notifications ───────────────────────
         // Runs every day at 08:00 server time.
         // Sends: auto-promo, stock-risk, weekend-spike, cooling notifications

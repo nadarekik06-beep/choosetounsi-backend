@@ -18,6 +18,7 @@ use App\Models\Coupon;
 use App\Services\CommissionService;
 use App\Services\CouponService;
 use App\Services\FinancialSnapshotService;
+use App\Services\Orders\BuyerOrderNotifier;
 use App\Services\Orders\SellerOrderNotifier;
 use App\Services\Orders\OrderStock;
 use App\Services\WalletService;
@@ -46,6 +47,7 @@ class CheckoutController extends Controller
         private CouponService            $couponService,
         private SellerOrderNotifier      $sellerNotifier,
         private OrderStock               $orderStock,
+        private BuyerOrderNotifier       $buyerNotifier,
     ) {}
 
     /**
@@ -458,6 +460,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             // COD / wallet: sellers hear about it now (sent after the commit).
             // Card / D17 wait for the payment: see SellerOrderNotifier.
             $this->sellerNotifier->orderPlaced($order);
+            $this->buyerNotifier->orderPlaced($order);
             DB::commit();
 
             // ── CHANGE 3a: Log purchase activity for preferences ──────────────
@@ -537,6 +540,9 @@ $checkingOutIds = $cartItems->pluck('id')->all();
         if (!$product || !$product->is_approved || !$product->is_active) {
             return response()->json(['success' => false, 'message' => __('messages.checkout.product_unavailable')], 422);
         }
+
+        // Same rule as the cart: a seller can't buy their own product.
+        $this->ensureNotProductOwner($request, $product);
 
         $variant = null;
         if ($request->filled('variant_id')) {
@@ -692,6 +698,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             }
 
             $this->sellerNotifier->orderPlaced($order);
+            $this->buyerNotifier->orderPlaced($order);
             DB::commit();
 
             // ── CHANGE 3b: Log purchase activity for preferences ──────────────

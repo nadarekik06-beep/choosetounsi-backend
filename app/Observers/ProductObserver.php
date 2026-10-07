@@ -3,6 +3,7 @@
 namespace App\Observers;
 
 use App\Models\Product;
+use App\Jobs\NotifyFavoriteWatchers;
 use App\Services\StockAlertService;
 
 /**
@@ -25,6 +26,8 @@ class ProductObserver
 
     public function updated(Product $product): void
     {
+        $this->notifyFavorites($product);
+
         // Only act when stock actually changed
         if (!$product->wasChanged('stock')) {
             return;
@@ -39,5 +42,23 @@ class ProductObserver
         }
 
         $this->stockAlertService->checkProduct($product);
+    }
+
+    /** Buyers who favourited it: price drop (base price) or back in stock (products without variants). */
+    private function notifyFavorites(Product $product): void
+    {
+        if ($product->wasChanged('price')) {
+            $old = (float) $product->getOriginal('price');
+            $new = (float) $product->price;
+            $min = (float) config('notifications.price_drop_min_percent');
+            if ($old > 0 && $new > 0 && $new <= $old * (1 - $min / 100)) {
+                NotifyFavoriteWatchers::dispatch($product->id, 'price_drop', null, $old, $new);
+            }
+        }
+
+        if ($product->wasChanged('stock') && (int) $product->getOriginal('stock') <= 0 && (int) $product->stock > 0
+            && !$product->has_variants) {
+            NotifyFavoriteWatchers::dispatch($product->id, 'back_in_stock');
+        }
     }
 }

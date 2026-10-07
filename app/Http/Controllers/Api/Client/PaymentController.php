@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Client;
 
 use App\Http\Controllers\Controller;
 use App\Models\Order;
+use App\Services\Orders\BuyerOrderNotifier;
 use App\Services\Orders\SellerOrderNotifier;
 use App\Services\PromotionService;
 use App\Services\WalletService;
@@ -129,7 +130,7 @@ class PaymentController extends Controller
         $intent = $event->data->object;
         match ($event->type) {
             'payment_intent.succeeded'      => $this->handlePaymentSuccess($intent->id),
-            'payment_intent.payment_failed',
+            'payment_intent.payment_failed' => $this->handlePaymentFailure($intent->id, true),
             'payment_intent.canceled'       => $this->handlePaymentFailure($intent->id),
             default                         => null,
         };
@@ -181,14 +182,18 @@ class PaymentController extends Controller
         // Paid at the flash price after a failed attempt released the units
         app(PromotionService::class)->reclaimForOrder($order->id);
 
-        // Card orders reach the sellers only now that the payment went through.
+        // Card orders reach the sellers (and the buyer's receipt) only now that the payment went through.
         app(SellerOrderNotifier::class)->orderPlaced($order->fresh());
+        app(BuyerOrderNotifier::class)->orderPlaced($order->fresh());
 
         Log::info("[Stripe Webhook] Order #{$order->order_number} marked as paid.");
     }
 
-    /** Failed / cancelled card payment: the order's flash-sale units go back to the quota. */
-    private function handlePaymentFailure(string $intentId): void
+    /**
+     * Failed / cancelled card payment: the order's flash-sale units go back to the quota.
+     * A refused payment (not our own cancellation of an abandoned intent) is told to the buyer.
+     */
+    private function handlePaymentFailure(string $intentId, bool $refused = false): void
     {
         $order = Order::where('stripe_payment_intent_id', $intentId)->first();
         if (!$order || $order->payment_status === 'paid') {
@@ -197,5 +202,9 @@ class PaymentController extends Controller
 
         $released = app(PromotionService::class)->releaseForOrder($order->id);
         Log::info("[Stripe Webhook] Payment failed for order #{$order->order_number}; released {$released} flash unit(s).");
+
+        if ($refused) {
+            app(BuyerOrderNotifier::class)->paymentFailed($order);
+        }
     }
 }

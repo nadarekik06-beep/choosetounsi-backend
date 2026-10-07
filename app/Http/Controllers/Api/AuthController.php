@@ -582,6 +582,8 @@ class AuthController extends Controller
  
                 // Revoke all existing tokens — force re-login after reset
                 $user->tokens()->delete();
+
+                app(\App\Services\Notifications\BuyerNotifier::class)->send($user, new \App\Notifications\Buyer\AccountSecurityNotification('password_changed'));
             }
         );
  

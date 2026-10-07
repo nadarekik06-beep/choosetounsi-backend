@@ -13,6 +13,7 @@ use App\Models\OrderExport;
 use App\Models\SellerApplication;
 use App\Services\Orders\DeliveryDocumentService;
 use App\Services\Orders\OrderStock;
+use App\Services\Orders\BuyerOrderNotifier;
 use App\Services\Orders\SellerOrderNotifier;
 use App\Support\SellerPickup;
 use Illuminate\Http\Request;
@@ -297,6 +298,7 @@ class OrderController extends Controller
         $order = Order::find($orderId);
         if ($order && in_array($order->payment_method, SellerOrderNotifier::ONLINE_METHODS, true)) {
             app(SellerOrderNotifier::class)->orderPlaced($order);
+            app(BuyerOrderNotifier::class)->orderPlaced($order);
         }
     }
 
@@ -368,6 +370,8 @@ class OrderController extends Controller
                 } elseif ($request->status === 'confirmed') {
                     app(SellerOrderNotifier::class)->orderConfirmed($order, $affectedIds);
                 }
+                // The buyer hears about every step once (confirmed, shipped, delivered, cancelled…)
+                app(BuyerOrderNotifier::class)->statusChanged($order, $affectedIds, BuyerOrderNotifier::REASON_ADMIN);
             });
 
             $order->refresh();
@@ -451,6 +455,7 @@ public function confirmOrder(Request $request, $id)
             } else {
                 app(SellerOrderNotifier::class)->orderConfirmed($order);
             }
+            app(BuyerOrderNotifier::class)->statusChanged($order, null, BuyerOrderNotifier::REASON_ADMIN);
             return true;
         });
 
