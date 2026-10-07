@@ -477,6 +477,10 @@ class BuyerNotificationsTest extends TestCase
         $this->assertSame('/orders', $data['link']);
         $this->assertSame(['order_id' => 9], $data['data']);
         $this->assertTrue(Payload::isNormalized($data));
+
+        // Dead links of older payloads are rewritten
+        $legacy = Payload::normalize(['title' => 'x', 'link' => '/apply-seller'], 'App\\Notifications\\SellerApplicationReviewedNotification', $user);
+        $this->assertSame(['/become-a-vendor', 'account'], [$legacy['link'], $legacy['category']]);
     }
 
     // ── E-mails render ────────────────────────────────────────────────────────

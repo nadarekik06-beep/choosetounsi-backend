@@ -72,6 +72,7 @@ final class Payload
         // Sent to several audiences: the recipient's role decides
         'ComplaintCreatedNotification'          => [null, 'complaints'],
         'ProductActionNotification'             => [null, 'products'],
+        'SellerApplicationReviewedNotification' => [null, 'account'],
     ];
 
     /**
@@ -128,6 +129,12 @@ final class Payload
         return $base && isset(self::CLASS_DEFAULTS[$base]) ? self::CLASS_DEFAULTS[$base] : [null, null];
     }
 
+    /** Links stored by older payloads that point to pages that don't exist. */
+    private const DEAD_LINKS = [
+        '/seller/dashboard' => '/seller',
+        '/apply-seller'     => '/become-a-vendor',
+    ];
+
     /** Frontend path: absolute links to the storefront become relative, '' becomes null. */
     private static function path($link): ?string
     {
@@ -137,7 +144,7 @@ final class Payload
         if ($front !== '' && str_starts_with($link, $front)) {
             $link = substr($link, strlen($front)) ?: '/';
         }
-        return $link;
+        return self::DEAD_LINKS[$link] ?? $link;
     }
 
     private static function snake(?string $class): string
