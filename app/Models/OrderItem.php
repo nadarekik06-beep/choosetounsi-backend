@@ -4,6 +4,8 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use App\Services\Orders\OrderItemSnapshot;
+use App\Services\ProductImages;
 use Illuminate\Support\Facades\Storage;
 
 class OrderItem extends Model
@@ -18,6 +20,7 @@ class OrderItem extends Model
         'product_id',
         'variant_id',
         'variant_label',
+        'variant_attributes', // purchase snapshot — see App\Services\Orders\OrderItemSnapshot
         'product_name',
         'quantity',
         'unit_price',
@@ -27,7 +30,8 @@ class OrderItem extends Model
         'net_total',         // total − discount_amount (commission base)
         'promotion_id',      // promotion that priced this line at checkout
         'flash_reserved',    // units held in that flash sale's quota (0 once released)
-        'image_url',
+        'image_url',          // purchase snapshot: copy of the bought variant's image
+        'image_source',
         // ── Commission columns (populated at checkout) ─────────────────────
         'commission_percentage',
         'commission_source',
@@ -38,6 +42,7 @@ class OrderItem extends Model
 
     protected $casts = [
         'quantity'              => 'integer',
+        'variant_attributes'    => 'array',
         'discount_amount'       => 'decimal:3',
         'net_total'             => 'decimal:3',
         'commission_percentage' => 'decimal:2',
@@ -68,42 +73,73 @@ class OrderItem extends Model
     }
 
     /**
-     * Resolve the best image URL for this order item.
-     *
-     * Priority:
-     *   0. Controller pre-resolved value (set via setAttribute in ClientOrderApiController)
-     *   1. Stored snapshot (image_url column set at checkout time)
-     *   2. Main image of the variant's color group (only if relations are loaded)
-     *   3. Product primary image
-     *   4. null
+     * The image to show for this line — see OrderItemSnapshot for the order:
+     *   0. Controller pre-resolved value (setAttribute('resolved_image_url', …))
+     *   1. displayImageUrl(), with the live lookup only when product is loaded
+     *      (serializing a list must not lazy-load a product per row)
      */
     public function getResolvedImageUrlAttribute(): ?string
     {
-        // 0. Controller pre-resolved — trust it unconditionally
         if (array_key_exists('resolved_image_url', $this->attributes)) {
             return $this->attributes['resolved_image_url'];
         }
+        return $this->displayImageUrl($this->relationLoaded('product'));
+    }
 
-        // 1. Stored snapshot (set at checkout)
-        if (!empty($this->attributes['image_url'])) {
-            $stored = $this->attributes['image_url'];
-            return str_starts_with($stored, 'http') ? $stored : url($stored);
-        }
+    /**
+     * Snapshot taken at checkout → live image of the bought variant's color →
+     * the product's color-less main image → null (the UI shows a placeholder).
+     * Never another variant's image.
+     */
+    public function displayImageUrl(bool $live = true): ?string
+    {
+        $stored = $this->attributes['image_url'] ?? null;
+        if ($stored) return str_starts_with($stored, 'http') ? $stored : url($stored);
+        if (!$live || !$this->product) return null;
 
-        // 2. Main image of the variant's color group (sizes share images)
-        if ($this->relationLoaded('variant') && $this->variant && $this->relationLoaded('product') && $this->product) {
-            if ($url = \App\Services\ProductImages::thumbnailFor($this->product, $this->variant)) return $url;
-        }
+        [$path] = OrderItemSnapshot::pick($this->product, $this->boughtColorIds(), $this->isVariantLine());
+        return $path ? url(Storage::url($path)) : null;
+    }
 
-        // 3. Product primary image
-        if ($this->relationLoaded('product') && $this->product) {
-            $p = $this->product;
-            if ($p->relationLoaded('primaryImage') && $p->primaryImage) {
-                return Storage::url($p->primaryImage->image_path);
-            }
-        }
+    /** "Rouge / M" — snapshot first, then the variant as it is now. */
+    public function displayVariantLabel(): ?string
+    {
+        return $this->attributes['variant_label'] ?? null
+            ?: OrderItemSnapshot::labelOf($this->variant_attributes)
+            ?: ($this->variant_id && $this->variant ? OrderItemSnapshot::labelOf(OrderItemSnapshot::attributesOf($this->variant)) : null);
+    }
 
-        return null;
+    /** Everything a screen needs to show what was bought, from this line only. */
+    public function purchaseSnapshot(): array
+    {
+        return [
+            'id'                 => $this->id,
+            'order_id'           => $this->order_id,
+            'seller_order_id'    => $this->seller_order_id,
+            'product_id'         => $this->product_id,
+            'variant_id'         => $this->variant_id,
+            'product_name'       => $this->product_name ?? $this->product?->getAttributes()['name'] ?? null,
+            'variant_label'      => $this->displayVariantLabel(),
+            'variant_attributes' => $this->variant_attributes
+                ?? ($this->variant_id && $this->variant ? OrderItemSnapshot::attributesOf($this->variant) : []),
+            'quantity'           => (int) $this->quantity,
+            'unit_price'         => (float) $this->unit_price,
+            'total'              => (float) $this->total,
+            'image_url'          => $this->displayImageUrl(),
+        ];
+    }
+
+    /** Colors of the bought variant; [] = it had none; null = unknown (variant gone, no snapshot). */
+    private function boughtColorIds(): ?array
+    {
+        if ($this->variant_id && $this->variant) return ProductImages::colorIdsOf($this->variant->loadMissing('attributeOptions.attribute'));
+        if ($this->variant_attributes) return OrderItemSnapshot::colorIdsIn($this->variant_attributes);
+        return $this->isVariantLine() ? null : [];
+    }
+
+    private function isVariantLine(): bool
+    {
+        return $this->variant_id || !empty($this->attributes['variant_label']) || !empty($this->variant_attributes);
     }
 
     // ── Relationships ──────────────────────────────────────────────────────

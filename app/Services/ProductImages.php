@@ -115,7 +115,7 @@ class ProductImages
     {
         if (!$product) return null;
 
-        $sets = self::$memo[$product->id] ??= self::sets($product);
+        $sets = self::cachedSets($product);
 
         if ($variant) {
             $variant->loadMissing('attributeOptions.attribute');
@@ -131,6 +131,12 @@ class ProductImages
         $product->loadMissing('images');
         $cover = $product->images->firstWhere('is_primary', true) ?? $product->images->sortBy('order')->first();
         return $cover ? Storage::url($cover->image_path) : null;
+    }
+
+    /** sets(), computed once per product for this request. */
+    public static function cachedSets(Product $product): array
+    {
+        return self::$memo[$product->id] ??= self::sets($product);
     }
 
     /** Color group keys ("5|7") of a set of variant rows (option id lists). */

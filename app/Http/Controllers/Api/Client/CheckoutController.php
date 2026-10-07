@@ -9,6 +9,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Cart;
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Services\Orders\OrderItemSnapshot;
 use App\Models\Pack;
 use App\Models\Product;
 use App\Models\ProductVariant;
@@ -270,6 +271,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                             'promotion_id'          => $pricing['promotion']['id'] ?? null,
                             'flash_reserved'        => $held,
                             'variant_label'         => $variantLabel,
+                            ...OrderItemSnapshot::capture($product, $variant), // image + attributes as bought
                             'product_name'          => $product->getAttributes()['name'], // order snapshot keeps the seller's original text
                             'quantity'              => $qty,
                             'unit_price'            => $unitPrice,
@@ -392,6 +394,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                                 'product_id'            => $product->id,
                                 'variant_id'            => $variantId,
                                 'variant_label'         => $variantLabel,
+                                ...OrderItemSnapshot::capture($product, $variant), // image + attributes as bought
                                 'product_name'          => $product->getAttributes()['name'] . ' (Bundle: ' . $pack->name . ')',
                                 'quantity'              => $qty,
 
@@ -422,6 +425,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                                 'product_id'            => $product->id,
                                 'variant_id'            => $variantId,
                                 'variant_label'         => $variantLabel,
+                                ...OrderItemSnapshot::capture($product, $variant), // image + attributes as bought
                                 'product_name'          => $product->getAttributes()['name'] . ' (Bundle: ' . $pack->name . ')',
                                 'quantity'              => $qty,
                                 'unit_price'            => 0,  // financial data is on the first row
@@ -666,6 +670,7 @@ $checkingOutIds = $cartItems->pluck('id')->all();
                 'promotion_id'          => $priceData['promotion']['id'] ?? null,
                 'flash_reserved'        => $held,
                 'variant_label'         => $variantLabel,
+                ...OrderItemSnapshot::capture($product, $variant), // image + attributes as bought
                 'product_name'          => $product->getAttributes()['name'], // order snapshot keeps the seller's original text
                 'quantity'              => $quantity,
                 'unit_price'            => $unitPrice,
