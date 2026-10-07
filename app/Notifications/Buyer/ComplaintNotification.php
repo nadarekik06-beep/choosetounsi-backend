@@ -99,6 +99,12 @@ class ComplaintNotification extends BuyerNotification
         return [__("buyer_notifications.complaint.{$this->event}.line", $this->params())];
     }
 
+    /** The complained items as bought (name — variant × qty). */
+    protected function mailTable(): array
+    {
+        return array_map(fn($line) => [$line, ''], $this->complaint->itemSummaries());
+    }
+
     private function isRefund(): bool
     {
         return $this->complaint->resolution_type === Complaint::RESOLUTION_RETURN_REFUND;

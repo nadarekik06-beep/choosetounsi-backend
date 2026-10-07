@@ -35,7 +35,8 @@ return [
         'image_deleted_long' => 'Image deleted successfully.',
         'primary_updated' => 'Primary image updated.',
         'no_permission' => 'You do not have permission to access this product.',
-    ],
+    ],
+
     'restock' => [
         'updated' => 'Stock updated to :stock units.',
         'variants_updated' => 'Variant stock updated. Total: :total units.',
@@ -315,6 +316,7 @@ return [
             'line_seller' => 'A complaint has been filed about one of your products by a customer.',
             'type' => '**Type:** :type',
             'order' => '**Order:** #:order',
+            'items' => '**Item(s):** :items',
             'description' => '**Description:** :description',
             'action_admin' => 'Review Complaint (Admin Panel)',
             'action_seller' => 'View Complaint',
@@ -336,7 +338,8 @@ return [
                 'body' => 'Your product ":name" was rejected.',
             ],
             'reason' => 'Reason: :reason',
-        ],
+        ],
+
         'application' => [
             'approved' => [
                 'title' => 'Application approved!',

@@ -128,11 +128,61 @@ class Complaint extends Model
         return $this->hasOne(RefundDeliveryTask::class, 'complaint_id');
     }
 
+    /**
+     * Lazy-load only: under with() the ids aren't known yet and every line of
+     * the order would come back. Read endpoints use withItemSnapshots().
+     */
     public function complainedItems()
     {
         $ids = $this->order_item_ids ?? [];
         return $this->hasMany(OrderItem::class, 'order_id', 'order_id')
             ->when(!empty($ids), fn($q) => $q->whereIn('id', $ids));
+    }
+
+    /**
+     * Sets complained_items on each complaint: the lines the buyer picked, each
+     * as bought (OrderItem::purchaseSnapshot — image, name, variant, price).
+     * A legacy complaint without order_item_ids covers that shop's lines of the order.
+     *
+     * @param  self|iterable<self> $complaints
+     */
+    public static function withItemSnapshots($complaints)
+    {
+        $list = $complaints instanceof self ? collect([$complaints]) : collect($complaints instanceof \Illuminate\Pagination\AbstractPaginator ? $complaints->items() : $complaints);
+        if ($list->isEmpty()) return $complaints;
+
+        $lines = OrderItem::whereIn('order_id', $list->pluck('order_id')->unique())
+            ->with([
+                'sellerOrder:id,seller_id',
+                'product' => fn($q) => $q->withTrashed()->with(['images', 'variants.attributeOptions.attribute']),
+                'variant.attributeOptions.attribute',
+            ])
+            ->orderBy('id')->get()->groupBy('order_id');
+
+        foreach ($list as $complaint) {
+            $rows = collect($lines[$complaint->order_id] ?? []);
+            $rows = $complaint->order_item_ids
+                ? $rows->whereIn('id', $complaint->order_item_ids)
+                : $rows->filter(fn($i) => !$complaint->seller_id || !$i->sellerOrder || (int) $i->sellerOrder->seller_id === (int) $complaint->seller_id);
+            $complaint->setAttribute('complained_items', $rows->map->purchaseSnapshot()->values()->all());
+        }
+
+        return $complaints;
+    }
+
+    /**
+     * "T-shirt — Rouge / M × 1" per complained line, as bought — for e-mails.
+     * Works on a copy: complained_items isn't a column and must never be saved.
+     */
+    public function itemSummaries(): array
+    {
+        $copy = clone $this;
+        self::withItemSnapshots($copy);
+
+        return array_map(
+            fn($i) => trim(($i['product_name'] ?? '') . ($i['variant_label'] ? " — {$i['variant_label']}" : '')) . " × {$i['quantity']}",
+            $copy->getAttribute('complained_items') ?? []
+        );
     }
 
     // ── Accessors ──────────────────────────────────────────────────────────

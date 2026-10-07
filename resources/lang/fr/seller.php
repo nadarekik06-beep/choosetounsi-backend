@@ -35,7 +35,8 @@ return [
         'image_deleted_long' => 'Image supprimée avec succès.',
         'primary_updated' => 'Image principale mise à jour.',
         'no_permission' => 'Vous n\'avez pas l\'autorisation d\'accéder à ce produit.',
-    ],
+    ],
+
     'restock' => [
         'updated' => 'Stock mis à jour : :stock unités.',
         'variants_updated' => 'Stock des variantes mis à jour. Total : :total unités.',
@@ -315,6 +316,7 @@ return [
             'line_seller' => 'Un client a déposé une réclamation concernant l\'un de vos produits.',
             'type' => '**Type :** :type',
             'order' => '**Commande :** #:order',
+            'items' => '**Article(s) :** :items',
             'description' => '**Description :** :description',
             'action_admin' => 'Examiner la réclamation (administration)',
             'action_seller' => 'Voir la réclamation',
@@ -336,7 +338,8 @@ return [
                 'body' => 'Votre produit « :name » a été refusé.',
             ],
             'reason' => 'Motif : :reason',
-        ],
+        ],
+
         'application' => [
             'approved' => [
                 'title' => 'Candidature acceptée !',

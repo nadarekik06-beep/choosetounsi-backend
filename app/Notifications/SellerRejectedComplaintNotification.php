@@ -78,6 +78,7 @@ class SellerRejectedComplaintNotification extends Notification
             ->line("**Complaint ID:** #{$this->complaint->id}")
             ->line("**Order:** {$orderNumber}")
             ->line("**Type:** {$this->complaint->getTypeLabel()}")
+            ->line('**Item(s):** ' . (implode(' · ', $this->complaint->itemSummaries()) ?: '—'))
             ->line("**Seller's Reason:** {$this->complaint->rejection_reason}")
             ->line("**Seller's Note:** {$this->complaint->seller_note}")
             ->action('Review & Decide', url("/admin/complaints/{$this->complaint->id}"))

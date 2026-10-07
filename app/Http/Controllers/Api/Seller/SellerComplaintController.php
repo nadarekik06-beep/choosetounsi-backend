@@ -14,8 +14,8 @@ use Illuminate\Support\Facades\Notification;
  * FILE: app/Http/Controllers/Api/Seller/SellerComplaintController.php  ← REPLACE
  *
  * Change from previous version:
- *   - show() now eager-loads 'complainedItems' alongside order.items
- *     so the seller can see exactly which items the customer complained about.
+ *   - index() / show() return complained_items: the lines the customer
+ *     flagged, each as bought (Complaint::withItemSnapshots).
  *
  * All other methods (stats, index, addNote, approve, reject) are unchanged.
  */
@@ -65,6 +65,8 @@ class SellerComplaintController extends Controller
         $complaints = $query->orderByDesc('created_at')
             ->paginate((int) $request->query('per_page', 12));
 
+        Complaint::withItemSnapshots($complaints);
+
         return response()->json(['success' => true, 'data' => $complaints]);
     }
 
@@ -78,13 +80,11 @@ class SellerComplaintController extends Controller
             ->with([
                 'user:id,name,email',
                 'order:id,order_number,total_amount,status,created_at,wilaya,address,phone',
-                'order.items:id,order_id,product_name,quantity,unit_price,total',
-                // ↓ NEW: load the specific items the customer complained about
-                'complainedItems:id,order_id,product_name,quantity,unit_price,total',
             ])
             ->findOrFail($id);
 
-        return response()->json(['success' => true, 'data' => $complaint]);
+        // complained_items: the lines the buyer picked, as bought
+        return response()->json(['success' => true, 'data' => Complaint::withItemSnapshots($complaint)]);
     }
 
     // ─────────────────────────────────────────────────────────────────────

@@ -93,6 +93,7 @@ class ComplaintCreatedNotification extends Notification
             )
             ->line(__('seller.notif.complaint_created.type', ['type' => $label]))
             ->line(__('seller.notif.complaint_created.order', ['order' => $orderNumber]))
+            ->line(__('seller.notif.complaint_created.items', ['items' => implode(' · ', $this->complaint->itemSummaries()) ?: '—']))
             ->line(__('seller.notif.complaint_created.description', ['description' => $this->complaint->description]))
             ->action(
                 $isAdmin ? __('seller.notif.complaint_created.action_admin') : __('seller.notif.complaint_created.action_seller'),

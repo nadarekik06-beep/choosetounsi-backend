@@ -35,7 +35,8 @@ return [
         'image_deleted_long' => 'تم حذف الصورة بنجاح.',
         'primary_updated' => 'تم تحديث الصورة الرئيسية.',
         'no_permission' => 'ليست لديك صلاحية الوصول إلى هذا المنتج.',
-    ],
+    ],
+
     'restock' => [
         'updated' => 'تم تحديث المخزون إلى :stock وحدة.',
         'variants_updated' => 'تم تحديث مخزون المتغيرات. المجموع: :total وحدة.',
@@ -315,6 +316,7 @@ return [
             'line_seller' => 'قدّم زبون شكوى بخصوص أحد منتجاتك.',
             'type' => '**النوع:** :type',
             'order' => '**الطلب:** #:order',
+            'items' => '**المنتج(ات):** :items',
             'description' => '**الوصف:** :description',
             'action_admin' => 'مراجعة الشكوى (لوحة الإدارة)',
             'action_seller' => 'عرض الشكوى',
@@ -336,7 +338,8 @@ return [
                 'body' => 'تم رفض منتجك «:name».',
             ],
             'reason' => 'السبب: :reason',
-        ],
+        ],
+
         'application' => [
             'approved' => [
                 'title' => 'تم قبول طلبك!',

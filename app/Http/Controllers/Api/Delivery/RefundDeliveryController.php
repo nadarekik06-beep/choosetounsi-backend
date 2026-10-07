@@ -59,7 +59,7 @@ class RefundDeliveryController extends Controller
         $query = RefundDeliveryTask::with([
             'deliveryGuy:id,name,email',
             'complaint.order.user:id,name,email',
-            'complaint.order.items:id,order_id,product_name,quantity',
+            'complaint.order.items',
             'complaint',
             'seller.sellerApplication',
         ]);
@@ -82,7 +82,7 @@ class RefundDeliveryController extends Controller
         $task = RefundDeliveryTask::with([
             'deliveryGuy:id,name,email',
             'complaint.order.user:id,name,email',
-            'complaint.order.items:id,order_id,product_name,quantity,unit_price',
+            'complaint.order.items',
             'complaint',
             'seller.sellerApplication',
         ])->findOrFail($id);
@@ -155,7 +155,7 @@ class RefundDeliveryController extends Controller
         $tasks = RefundDeliveryTask::forDeliveryGuy(auth()->id())
             ->with([
                 'complaint.order.user:id,name,email',
-                'complaint.order.items:id,order_id,product_name,quantity',
+                'complaint.order.items',
                 'complaint',
                 'seller.sellerApplication',
             ])
@@ -268,9 +268,13 @@ class RefundDeliveryController extends Controller
             $filteredItems = $allItems;
         }
 
+        // As bought (purchase snapshot), so the agent collects the right color / size
         $items = $filteredItems->map(fn($i) => [
-            'product_name' => $i->product_name,
-            'quantity'     => (int) $i->quantity,
+            'id'            => $i->id,
+            'product_name'  => $i->product_name,
+            'variant_label' => $i->displayVariantLabel(),
+            'quantity'      => (int) $i->quantity,
+            'image_url'     => $i->displayImageUrl(false),
         ])->values();
 
         // ── Build response ─────────────────────────────────────────────────

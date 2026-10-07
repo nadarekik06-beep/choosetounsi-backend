@@ -59,9 +59,9 @@ class ComplaintController extends Controller
             })
             ->with([
                 'sellerOrders',
-                'items:id,order_id,seller_order_id,product_id,product_name,quantity,unit_price',
-                'items.product:id',
-                'items.product.primaryImage:id,product_id,image_path',
+                // Each line as bought: its snapshot, else its own variant's image
+                'items.product' => fn($q) => $q->withTrashed()->with(['images', 'variants.attributeOptions.attribute']),
+                'items.variant.attributeOptions.attribute',
             ])
             ->orderByDesc('updated_at')
             ->get();
@@ -90,15 +90,9 @@ class ComplaintController extends Controller
                 // Keep days_left for backward compat with frontend display
                 'days_left'    => max(0, (int) ceil($hoursLeft / 24)),
                 'total_amount' => (float) $order->total_amount,
-                'items'        => $eligibleItems->map(fn($i) => [
-                    'id'           => $i->id,
-                    'product_name' => $i->product_name,
-                    'quantity'     => $i->quantity,
-                    'unit_price'   => (float) $i->unit_price,
-                    'image_url'    => $i->product?->primaryImage?->image_path
-                        ? Storage::url($i->product->primaryImage->image_path)
-                        : null,
-                ])->values(),
+                // One choice per order line (two colors of a product = two lines),
+                // picked by order_item_id; everything shown comes from the line.
+                'items'        => $eligibleItems->map->purchaseSnapshot()->values(),
             ];
         });
 
@@ -121,6 +115,8 @@ class ComplaintController extends Controller
             ->orderByDesc('created_at')
             ->paginate((int) $request->query('per_page', 10));
 
+        Complaint::withItemSnapshots($complaints);
+
         return response()->json(['success' => true, 'data' => $complaints]);
     }
 
@@ -133,11 +129,10 @@ class ComplaintController extends Controller
         $complaint = Complaint::where('user_id', $request->user()->id)
             ->with([
                 'order:id,order_number,total_amount,status,created_at',
-                'complainedItems',
             ])
             ->findOrFail($id);
 
-        return response()->json(['success' => true, 'data' => $complaint]);
+        return response()->json(['success' => true, 'data' => Complaint::withItemSnapshots($complaint)]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -270,7 +265,7 @@ class ComplaintController extends Controller
         return response()->json([
             'success' => true,
             'message' => __('messages.complaint.submitted'),
-            'data'    => $complaint->load('order:id,order_number', 'complainedItems'),
+            'data'    => Complaint::withItemSnapshots($complaint->load('order:id,order_number')),
         ], 201);
     }
 }

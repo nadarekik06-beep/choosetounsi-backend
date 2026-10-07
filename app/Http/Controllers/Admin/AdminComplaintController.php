@@ -12,8 +12,8 @@ use Illuminate\Support\Facades\Log;
  * FILE: app/Http/Controllers/Admin/AdminComplaintController.php  ← REPLACE
  *
  * Change from previous version:
- *   - show() now eager-loads 'complainedItems' so admin can see exactly
- *     which items the customer flagged.
+ *   - index() / show() return complained_items: the lines the customer
+ *     flagged, each as bought (Complaint::withItemSnapshots).
  *
  * All other methods (stats, index, approve, reject, confirmRejection,
  * overrideToApproved) are unchanged.
@@ -68,6 +68,8 @@ class AdminComplaintController extends Controller
         $complaints = $query->orderByDesc('created_at')
             ->paginate((int) $request->query('per_page', 15));
 
+        Complaint::withItemSnapshots($complaints);
+
         return response()->json(['success' => true, 'data' => $complaints]);
     }
 
@@ -81,12 +83,10 @@ class AdminComplaintController extends Controller
             'user:id,name,email',
             'seller:id,name,email',
             'order:id,order_number,total_amount,status,created_at,wilaya,address,phone',
-            'order.items:id,order_id,product_name,quantity,unit_price,total',
-            // ↓ NEW: load the specific items the customer complained about
-            'complainedItems:id,order_id,product_name,quantity,unit_price,total',
         ])->findOrFail($id);
 
-        return response()->json(['success' => true, 'data' => $complaint]);
+        // complained_items: the lines the buyer picked, as bought
+        return response()->json(['success' => true, 'data' => Complaint::withItemSnapshots($complaint)]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
