@@ -92,8 +92,9 @@ class BlackDailyNotify extends Command
             ->where('notifiable_id', $sellerId)
             ->where('notifiable_type', 'App\\Models\\User')
             ->whereDate('created_at', $now->toDateString())
-            ->whereRaw("JSON_EXTRACT(data, '$.source') = 'black_daily_notify'")
-            ->pluck(DB::raw("JSON_UNQUOTE(JSON_EXTRACT(data, '$.notify_type'))"))
+            // Extra keys live under data.* since the payload contract (older rows: top level)
+            ->whereRaw("JSON_UNQUOTE(COALESCE(JSON_EXTRACT(data, '$.data.source'), JSON_EXTRACT(data, '$.source'))) = 'black_daily_notify'")
+            ->pluck(DB::raw("JSON_UNQUOTE(COALESCE(JSON_EXTRACT(data, '$.data.notify_type'), JSON_EXTRACT(data, '$.notify_type')))"))
             ->toArray();
 
         // Promotion ideas (auto-promote, weekend spike) now come from Growth Radar (growth:compute).

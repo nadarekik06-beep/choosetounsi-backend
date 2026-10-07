@@ -147,7 +147,7 @@ class ProductChangesTest extends TestCase
 
         $this->assertSame(1, $this->adminNotifications()->count(), 'one notification per save');
         $data = json_decode($this->adminNotifications()->value('data'), true);
-        $this->assertTrue($data['sensitive']);
+        $this->assertTrue($data['data']['sensitive']);   // extra keys live under data (payload contract)
         $this->assertSame('/product-changes?set=' . $set->id, $data['link']);
     }
 

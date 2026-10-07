@@ -1,118 +1,140 @@
 <?php
-// app/Http/Controllers/Api/NotificationController.php — FIXED for PHP 8.0
-// Used by the SELLER dashboard (guard: sanctum / api)
-//
-// Fix: replaced ->toISOString() (does not exist on Carbon) with ->format()
-// and replaced arrow function fn() in map() with foreach for safety.
 
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Notifications\Support\Payload;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * The signed-in user's notifications (storefront bell, /notifications page,
+ * seller dashboard bell).
+ *
+ *   ?audience=buyer|seller|admin   one bell's rows only (a seller who buys has both);
+ *                                  applies to the list, the unread count and read-all
+ *   ?category=orders|payments|…    list filter (/notifications tabs)
+ *   ?unread=1                      unread only
+ *
+ * Without ?audience everything is returned, as before.
+ */
 class NotificationController extends Controller
 {
-    /**
-     * GET /api/notifications
-     */
+    /** GET /api/notifications */
     public function index(Request $request)
     {
         try {
-            $user = $request->user();
-
-            if (!$user) {
-                return response()->json(['success' => false, 'message' => __('messages.auth.unauthenticated')], 401);
-            }
-
-            $perPage       = min((int) $request->query('per_page', 20), 100);
-            $notifications = $user->notifications()
-                ->when($request->boolean('unread'), fn($q) => $q->whereNull('read_at'))
+            $perPage       = min(max((int) $request->query('per_page', 20), 1), 100);
+            $notifications = $this->scoped($request)
+                ->when($request->boolean('unread'), fn ($q) => $q->whereNull('read_at'))
+                ->when($request->filled('category'), fn ($q) => $q->where('category', (string) $request->query('category')))
                 ->orderByDesc('created_at')
                 ->paginate($perPage);
 
-            $data = [];
-            foreach ($notifications as $n) {
-                $data[] = [
-                    'id'         => $n->id,
-                    'data'       => is_array($n->data) ? $n->data : json_decode($n->data, true),
-                    'is_read'    => !is_null($n->read_at),
-                    'read_at'    => $n->read_at    ? $n->read_at->format('Y-m-d\TH:i:s\Z')    : null,
-                    'created_at' => $n->created_at ? $n->created_at->format('Y-m-d\TH:i:s\Z') : null,
-                ];
-            }
-
             return response()->json([
                 'success' => true,
-                'data'    => $data,
+                'data'    => $notifications->getCollection()->map(fn ($n) => $this->format($n))->values(),
                 'meta'    => [
                     'current_page' => $notifications->currentPage(),
                     'last_page'    => $notifications->lastPage(),
                     'total'        => $notifications->total(),
                 ],
             ]);
-
-        } catch (\Exception $e) {
-            Log::error('[Api\NotificationController::index] ' . $e->getMessage() . ' on line ' . $e->getLine());
-            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+        } catch (\Throwable $e) {
+            Log::error('[Api\NotificationController::index] ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => __('messages.notification.load_failed')], 500);
         }
     }
 
-    /**
-     * GET /api/notifications/unread-count
-     */
+    /** GET /api/notifications/unread-count — also per category, for the page tabs. */
     public function unreadCount(Request $request)
     {
         try {
-            $user = $request->user();
-
-            if (!$user) {
-                return response()->json(['success' => false, 'message' => __('messages.auth.unauthenticated')], 401);
-            }
+            $byCategory = $this->scoped($request)
+                ->whereNull('read_at')
+                ->selectRaw('category, COUNT(*) as c')
+                ->groupBy('category')
+                ->pluck('c', 'category')
+                ->map(fn ($c) => (int) $c);
 
             return response()->json([
-                'success' => true,
-                'count'   => $user->unreadNotifications()->count(),
+                'success'     => true,
+                'count'       => (int) $byCategory->sum(),
+                'by_category' => $byCategory->filter(fn ($c, $k) => $k !== '' && $k !== null),
             ]);
-
-        } catch (\Exception $e) {
-            Log::error('[Api\NotificationController::unreadCount] ' . $e->getMessage() . ' on line ' . $e->getLine());
-            return response()->json(['success' => false, 'count' => 0, 'message' => $e->getMessage()], 500);
+        } catch (\Throwable $e) {
+            Log::error('[Api\NotificationController::unreadCount] ' . $e->getMessage());
+            return response()->json(['success' => false, 'count' => 0], 500);
         }
     }
 
-    /**
-     * PATCH /api/notifications/{id}/read
-     */
+    /** PATCH /api/notifications/{id}/read */
     public function markRead(Request $request, string $id)
     {
-        try {
-            $notification = $request->user()->notifications()->findOrFail($id);
-            $notification->markAsRead();
-
-            return response()->json(['success' => true]);
-
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+        $notification = $request->user()->notifications()->whereKey($id)->first();
+        if (!$notification) {
             return response()->json(['success' => false, 'message' => __('messages.notification.not_found')], 404);
-        } catch (\Exception $e) {
-            Log::error('[Api\NotificationController::markRead] ' . $e->getMessage());
-            return response()->json(['success' => false], 500);
         }
+
+        $notification->markAsRead();
+        return response()->json(['success' => true]);
     }
 
-    /**
-     * PATCH /api/notifications/read-all
-     */
+    /** PATCH /api/notifications/read-all (?audience=, ?category=) */
     public function markAllRead(Request $request)
     {
         try {
-            $request->user()->unreadNotifications()->update(['read_at' => now()]);
+            $updated = $this->scoped($request)
+                ->whereNull('read_at')
+                ->when($request->filled('category'), fn ($q) => $q->where('category', (string) $request->input('category')))
+                ->update(['read_at' => now()]);
 
-            return response()->json(['success' => true]);
-
-        } catch (\Exception $e) {
+            return response()->json(['success' => true, 'updated' => $updated]);
+        } catch (\Throwable $e) {
             Log::error('[Api\NotificationController::markAllRead] ' . $e->getMessage());
             return response()->json(['success' => false], 500);
         }
+    }
+
+    /** DELETE /api/notifications/{id} */
+    public function destroy(Request $request, string $id)
+    {
+        $deleted = $request->user()->notifications()->whereKey($id)->delete();
+        if (!$deleted) {
+            return response()->json(['success' => false, 'message' => __('messages.notification.not_found')], 404);
+        }
+        return response()->json(['success' => true]);
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    /** The user's notifications, limited to ?audience= when given. */
+    private function scoped(Request $request)
+    {
+        $audience = $request->input('audience');
+        $query    = $request->user()->notifications()->getQuery();
+
+        if (in_array($audience, Payload::AUDIENCES, true)) {
+            $query->where('audience', $audience);
+        }
+
+        return $query;
+    }
+
+    /** Stored row → API row. Rows not yet normalized are read through the contract too. */
+    private function format($n): array
+    {
+        $raw  = is_array($n->data) ? $n->data : (json_decode((string) $n->data, true) ?: []);
+        $data = Payload::isNormalized($raw) ? $raw : Payload::normalize($raw, $n->type, request()->user());
+
+        return [
+            'id'         => $n->id,
+            'data'       => $data,
+            'audience'   => $n->audience ?? $data['audience'],
+            'category'   => $n->category ?? $data['category'],
+            'is_read'    => $n->read_at !== null,
+            'read_at'    => $n->read_at?->format('Y-m-d\TH:i:s\Z'),
+            'created_at' => $n->created_at?->format('Y-m-d\TH:i:s\Z'),
+        ];
     }
 }

@@ -56,8 +56,8 @@ class ComplaintCreatedNotification extends Notification
             'icon'   => 'x-circle',
             'action' => 'created',
             'link'   => $isAdmin
-                ? "/complaints/{$this->complaint->id}"
-                : "/seller/complaints/{$this->complaint->id}",
+                ? '/complaints'
+                : '/seller/complaints?id=' . $this->complaint->id,
             // ── Extra context fields ──────────────────────────────────────
             'type'           => 'complaint_created',
             'complaint_id'   => $this->complaint->id,
@@ -98,7 +98,7 @@ class ComplaintCreatedNotification extends Notification
                 $isAdmin ? __('seller.notif.complaint_created.action_admin') : __('seller.notif.complaint_created.action_seller'),
                 $isAdmin
                     ? url("/admin/complaints/{$this->complaint->id}")
-                    : url("/seller/complaints/{$this->complaint->id}")
+                    : rtrim((string) config('app.frontend_url'), '/') . '/seller/complaints?id=' . $this->complaint->id
             )
             ->line(__('seller.notif.complaint_created.outro'));
     }

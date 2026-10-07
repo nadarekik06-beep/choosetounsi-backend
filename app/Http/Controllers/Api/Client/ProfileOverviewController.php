@@ -59,10 +59,10 @@ class ProfileOverviewController extends Controller
             (SELECT COUNT(*) FROM user_addresses WHERE user_addresses.user_id = users.id) AS addresses,
             (SELECT COUNT(*) FROM complaints WHERE complaints.user_id = users.id AND complaints.status IN (?, ?, ?)) AS complaints_open,
             (SELECT COUNT(*) FROM complaints WHERE complaints.user_id = users.id AND complaints.status NOT IN (?, ?, ?)) AS complaints_resolved,
-            (SELECT COUNT(*) FROM notifications WHERE notifications.notifiable_type = ? AND notifications.notifiable_id = users.id AND notifications.read_at IS NULL) AS unread_notifications,
+            (SELECT COUNT(*) FROM notifications WHERE notifications.notifiable_type = ? AND notifications.notifiable_id = users.id AND notifications.audience = ? AND notifications.read_at IS NULL) AS unread_notifications,
             (SELECT COUNT(*) FROM wallet_transactions WHERE wallet_transactions.user_id = users.id) AS wallet_transactions,
             users.wallet_balance
-        ', [...self::OPEN_COMPLAINTS, ...self::OPEN_COMPLAINTS, get_class($user)])->first();
+        ', [...self::OPEN_COMPLAINTS, ...self::OPEN_COMPLAINTS, get_class($user), 'buyer'])->first();
 
         $recent = Order::where('user_id', $userId)
             ->withCount('items')

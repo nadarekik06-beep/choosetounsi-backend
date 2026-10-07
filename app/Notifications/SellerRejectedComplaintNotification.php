@@ -48,7 +48,7 @@ class SellerRejectedComplaintNotification extends Notification
             'body'   => "Seller {$this->seller->name} rejected complaint #{$this->complaint->id}. Your decision is required.",
             'icon'   => 'x-circle',
             'action' => 'rejected',
-            'link'   => "/complaints/{$this->complaint->id}",
+            'link'   => '/complaints',   // admin panel list (no per-complaint page)
             // Extra context
             'type'           => 'seller_complaint_rejected',
             'complaint_id'   => $this->complaint->id,

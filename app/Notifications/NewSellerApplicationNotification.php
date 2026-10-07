@@ -39,7 +39,7 @@ class NewSellerApplicationNotification extends Notification
             'title'          => 'New seller application',
             'body'           => $this->applicantName . ' applied to become a seller (' . $this->businessName . ').',
             'icon'           => 'store',
-            'link'           => '/seller-applications/' . $this->applicationId,
+            'link'           => '/seller-applications',   // admin panel list (no per-application page)
             'application_id' => $this->applicationId,
             'user_id'        => $this->userId,
             'applicant_name' => $this->applicantName,

@@ -59,6 +59,11 @@ class ProductActionNotification extends Notification
 
         $entry = isset($map[$this->action]) ? $map[$this->action] : $map['updated'];
 
+        // Sellers get it in their dashboard: link to their own product pages, not the admin panel's.
+        if (($notifiable->role ?? null) === 'seller') {
+            $entry['link'] = $this->action === 'deleted' ? '/seller/products' : '/seller/products/' . $this->productId;
+        }
+
         return [
             'type'       => 'product_action',
             'action'     => $this->action,

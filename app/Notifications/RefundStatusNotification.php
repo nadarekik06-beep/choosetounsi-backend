@@ -58,7 +58,7 @@ class RefundStatusNotification extends Notification
             'title'           => $entry['title'],
             'body'            => $entry['body'],
             'icon'            => $entry['icon'],
-            'link'            => '/orders',
+            'link'            => '/seller/orders?order=' . $this->sellerOrder->id,
             'seller_order_id' => $this->sellerOrder->id,
             'order_number'    => $this->orderNumber,
         ];

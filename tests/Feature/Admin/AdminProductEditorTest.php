@@ -317,7 +317,7 @@ class AdminProductEditorTest extends TestCase
 
         $notif = $this->seller->notifications()->latest()->first();
         $this->assertSame('approved', $notif->data['action']);
-        $this->assertTrue($notif->data['admin_adjusted']);
+        $this->assertTrue($notif->data['data']['admin_adjusted']);
 
         // Storefront: product page resolves the color group and the variant images
         $page = $this->getJson('/api/products/' . $product->slug)->assertOk()->json('data');

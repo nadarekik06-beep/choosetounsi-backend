@@ -20,6 +20,13 @@ class AppServiceProvider extends ServiceProvider
     {
         // One settings snapshot per request (it memoizes the cached settings).
         $this->app->singleton(\App\Services\Ads\AdSettings::class);
+
+        // Every database notification is stored in the payload contract
+        // (type, category, audience, title, body, link, icon, action, data).
+        $this->app->bind(
+            \Illuminate\Notifications\Channels\DatabaseChannel::class,
+            \App\Notifications\Channels\ContractDatabaseChannel::class,
+        );
     }
 
     public function boot(): void
