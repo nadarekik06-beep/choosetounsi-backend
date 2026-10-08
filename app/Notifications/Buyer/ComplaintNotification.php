@@ -81,7 +81,15 @@ class ComplaintNotification extends BuyerNotification
 
     protected function body(): string
     {
-        return __("buyer_notifications.complaint.{$this->event}.body", $this->params());
+        return __($this->variant('body'), $this->params());
+    }
+
+    /** Cash-on-delivery orders: the courier pays the client back at pick-up (…_cash texts). */
+    private function variant(string $field): string
+    {
+        $key = "buyer_notifications.complaint.{$this->event}.{$field}";
+        $cod = ($this->complaint->order?->payment_method ?? 'cod') === 'cod';
+        return $cod && \Illuminate\Support\Facades\Lang::has("{$key}_cash") ? "{$key}_cash" : $key;
     }
 
     protected function data(): array
@@ -111,7 +119,7 @@ class ComplaintNotification extends BuyerNotification
 
     protected function mailLines(): array
     {
-        return [__("buyer_notifications.complaint.{$this->event}.line", $this->params())];
+        return [__($this->variant('line'), $this->params())];
     }
 
     /** Returned items as bought (name — variant × qty), plus the refund on "refunded". */

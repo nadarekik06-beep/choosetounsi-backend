@@ -33,6 +33,7 @@ class ReturnPresenter
         $events = $c->relationLoaded('events') ? $c->events : $c->events()->get();
 
         $c->setAttribute('timeline', self::timeline($c, $events));
+        $c->setAttribute('cash_refund', ($c->order?->payment_method ?? 'cod') === 'cod');
         $c->setAttribute('public_events', $events
             ->reject(fn($e) => in_array($e->status, ['finance_applied', 'delivered_to_seller'], true))
             ->map(fn($e) => [

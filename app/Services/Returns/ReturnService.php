@@ -37,8 +37,12 @@ use Illuminate\Support\Facades\Notification;
  *     share and flash price included), minus the return shipping when the
  *     client pays it ("other" reason = changed mind); the seller pays it when
  *     the item was wrong or defective;
- *   - COD → wallet (default) or a manual transfer / D17 with its reference;
- *     card → original method (Stripe) or wallet; wallet → wallet.
+ *   - cash on delivery → the courier checks the item against the proof
+ *     photos and pays the client back in cash at pick-up, out of the cash
+ *     he holds for the platform (refund_method 'cash'); the sale is reversed
+ *     then, the shop still inspects it at reception (restock);
+ *     paid online → after reception: card → original method (Stripe) or
+ *     wallet; wallet → wallet; D17 → D17 / wallet / transfer.
  *   - on refund the sale is reversed on the order line and the sub-order
  *     (revenue, commission, payout); a sub-order already paid out gets a
  *     negative adjustment on the next settlement instead.
@@ -299,10 +303,55 @@ class ReturnService
         return $c;
     }
 
-    public function markPickedUp(Complaint $complaint, ?User $actor, string $role, ?string $note = null): Complaint
+    public function markPickedUp(Complaint $complaint, ?User $actor, string $role, ?string $note = null, ?string $courier = null): Complaint
     {
-        $c = $this->move($complaint, Complaint::STATUS_PICKED_UP, $actor, $role, $note, ['picked_up_at' => now()]);
-        $this->buyer($c, 'picked_up');
+        $cash = $this->isCashRefund($complaint);
+
+        $c = DB::transaction(function () use ($complaint, $actor, $role, $note, $courier, $cash) {
+            $c = $this->move($complaint, Complaint::STATUS_PICKED_UP, $actor, $role, $note, ['picked_up_at' => now()], null, false);
+            return $cash ? $this->payCashAtPickup($c, $actor, $role, $courier ?? ($role === 'delivery' ? $actor?->name : null)) : $c;
+        });
+
+        if ($cash) {
+            $this->buyer($c, 'refunded');
+            $this->seller($c, 'refunded');
+        } else {
+            $this->buyer($c, 'picked_up');
+        }
+        return $c;
+    }
+
+    /** Cash on delivery: the courier pays the client back at pick-up. */
+    public function isCashRefund(Complaint $complaint): bool
+    {
+        return ($complaint->order()->value('payment_method') ?? 'cod') === 'cod';
+    }
+
+    /** Amount the courier hands to the client (0 for orders paid online). */
+    public function cashToPay(Complaint $complaint): float
+    {
+        return $this->isCashRefund($complaint) ? (float) $complaint->refund_amount : 0.0;
+    }
+
+    /**
+     * Records the cash the courier paid the client at pick-up (out of the
+     * platform's cash he holds) and reverses the sale. Runs in the caller's
+     * transaction; the return then only waits for the shop's inspection.
+     */
+    private function payCashAtPickup(Complaint $c, ?User $actor, string $role, ?string $courier): Complaint
+    {
+        $amount = (float) $c->refund_amount;
+        $c->update([
+            'refund_method'    => 'cash',
+            'refund_reference' => 'CASH' . ($courier ? ' · ' . \Illuminate\Support\Str::limit($courier, 60, '') : ''),
+            'refunded_at'      => now(),
+            'refunded_by'      => $actor?->id,
+        ]);
+        $this->applyFinance($c, $actor);
+        $c->refresh();
+        $this->event($c, 'refund_issued', $actor, $role, null, [
+            'method' => 'cash', 'reference' => $c->refund_reference, 'amount' => (float) $c->refund_amount, 'paid_by' => $courier,
+        ]);
         return $c;
     }
 
@@ -361,11 +410,18 @@ class ReturnService
             }
 
             Log::info("[Return] {$c->reference} received: {$restocked} unit(s) restocked.");
+
+            // Already paid back in cash by the courier: nothing left to do
+            if ($c->refunded_at) {
+                $c = $this->move($c, Complaint::STATUS_REFUNDED, $actor, $role, null, ['resolved_at' => now()], null, false);
+            }
             return $c;
         });
 
         $this->buyer($c, 'returned');
-        $this->admin($c, 'returned_to_seller');
+        if (!$c->refunded_at) {
+            $this->admin($c, 'returned_to_seller');
+        }
         return $c;
     }
 
@@ -378,7 +434,7 @@ class ReturnService
             'card'   => ['original', 'wallet'],
             'wallet' => ['wallet'],
             'd17'    => ['d17', 'wallet', 'bank_transfer'],
-            default  => ['wallet', 'bank_transfer', 'd17'],
+            default  => ['cash'],   // paid back by the courier at pick-up
         };
     }
 
@@ -386,6 +442,9 @@ class ReturnService
     {
         $order = $complaint->order()->firstOrFail();
 
+        if ($complaint->refunded_at || $method === 'cash') {
+            throw new ReturnException('Cash on delivery returns are paid back in cash by the courier at pick-up.');
+        }
         if (!in_array($method, $this->refundMethodsFor($order), true)) {
             throw new ReturnException("Refund method \"{$method}\" is not available for a {$order->payment_method} order.");
         }

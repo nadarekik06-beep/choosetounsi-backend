@@ -66,7 +66,7 @@ return [
         'approved' => 'Retour accepté. ChooseTounsi le valide puis planifie l\'enlèvement.',
         'reject_failed' => 'Impossible de refuser la réclamation.',
         'rejected' => 'Refus envoyé. Le client est notifié et peut demander l\'arbitrage de ChooseTounsi.',
-        'received' => 'Réception confirmée. Les articles revendables sont remis en stock ; ChooseTounsi rembourse le client.',
+        'received' => 'Réception confirmée. Les articles revendables sont remis en stock.',
     ],
     'coupon' => [
         'pct_max' => 'Une remise en pourcentage ne peut pas dépasser 100 %.',

@@ -191,7 +191,7 @@ class ReturnFlowTest extends TestCase
 
     // ── Full return, COD → wallet ─────────────────────────────────────────────
 
-    public function test_full_return_cod_refunded_to_wallet_restocks_only_resaleable_variant(): void
+    public function test_full_return_cod_paid_back_in_cash_by_the_courier_and_restocks_only_resaleable_variant(): void
     {
         [$p, $a, $b] = $this->product();
         $order = $this->deliveredOrder([[$p, $a, 1], [$p, $b, 2]]);
@@ -222,9 +222,22 @@ class ReturnFlowTest extends TestCase
 
         $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/schedule-pickup")->assertOk();
         $this->assertNull(RefundDeliveryTask::where('complaint_id', $c->id)->first(), 'outside carrier: the unassigned courier task is dropped');
-        $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/picked-up")->assertOk();
+        $balance = (float) $order->user->fresh()->wallet_balance;
 
-        // Never refunded before the item is back
+        // Cash on delivery: the courier checks the item and pays the client back in cash at pick-up
+        $this->as($this->admin)->getJson("/api/admin/complaints/{$c->id}")->assertJsonPath('data.refund_methods', ['cash'])->assertJsonPath('data.cash_refund', true);
+        $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/picked-up", ['courier' => 'Karim (Aramex)'])->assertOk();
+        $c->refresh();
+        $this->assertSame(Complaint::STATUS_PICKED_UP, $c->status);
+        $this->assertSame('cash', $c->refund_method);
+        $this->assertSame('CASH · Karim (Aramex)', $c->refund_reference);
+        $this->assertNotNull($c->refunded_at);
+        $this->assertEqualsWithDelta($balance, (float) $order->user->fresh()->wallet_balance, 0.001, 'no wallet credit: paid in cash');
+        $this->assertSame('refunded', $order->fresh()->status, 'sale reversed when the cash is paid');
+        Notification::assertSentTo($order->user, ComplaintNotification::class,
+            fn($n) => $n->event === 'refunded' && str_contains($n->toDatabase($order->user)['body'], 'en espèces'));
+
+        // Nothing else can be refunded
         $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/refund", ['method' => 'wallet'])->assertStatus(422);
 
         $stockA = (int) $a->fresh()->stock;
@@ -239,14 +252,11 @@ class ReturnFlowTest extends TestCase
         $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/receive", ['conditions' => [$la->id => 'resaleable', $lb->id => 'resaleable']])->assertStatus(422);
         $this->assertSame($stockA + 1, (int) $a->fresh()->stock);
 
-        $balance = (float) $order->user->fresh()->wallet_balance;
-        $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/refund", ['method' => 'wallet'])->assertOk();
-
+        // Inspected: the return is complete (the client was already paid back)
         $c->refresh();
         $this->assertSame(Complaint::STATUS_REFUNDED, $c->status);
-        $this->assertStringStartsWith('WALLET-TX-', $c->refund_reference);
-        $this->assertEqualsWithDelta($balance + $paid, (float) $order->user->fresh()->wallet_balance, 0.001);
-        $this->assertDatabaseHas('wallet_transactions', ['user_id' => $order->user_id, 'reason' => 'return_refund', 'order_id' => $order->id]);
+        $this->assertEqualsWithDelta($paid, (float) $c->refund_amount, 0.001);
+        $this->assertDatabaseMissing('wallet_transactions', ['user_id' => $order->user_id, 'reason' => 'return_refund']);
 
         // Order + sub-order: "Returned (Refunded)", sale reversed
         $order->refresh();
@@ -268,7 +278,7 @@ class ReturnFlowTest extends TestCase
         $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/refund", ['method' => 'wallet'])->assertStatus(422);
 
         // Client notified at every key step; the tracking shows the whole timeline
-        foreach (['seller_accepted', 'approved', 'pickup_scheduled', 'picked_up', 'returned', 'refunded'] as $event) {
+        foreach (['seller_accepted', 'approved', 'pickup_scheduled', 'refunded', 'returned'] as $event) {
             Notification::assertSentTo($order->user, ComplaintNotification::class, fn($n) => $n->event === $event);
         }
         $timeline = $this->as($order->user)->getJson("/api/client/complaints/{$c->id}")->assertOk()->json('data.timeline');
@@ -306,9 +316,10 @@ class ReturnFlowTest extends TestCase
         $this->assertEqualsWithDelta(37.0, (float) $c->refund_amount, 0.001, 'minus the 8 DT return shipping');
 
         $c = $this->bringBack($c);
+        $this->assertSame('cash', $c->refund_method, 'COD: 37 DT handed back by the courier at pick-up');
+        $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/refund", ['method' => 'd17', 'reference' => 'D17-1'])->assertStatus(422);
         $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/receive", ['conditions' => [$la->id => 'resaleable']])->assertOk();
-        $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/refund", ['method' => 'd17'])->assertStatus(422); // reference required
-        $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/refund", ['method' => 'd17', 'reference' => 'D17-778899'])->assertOk();
+        $this->assertSame(Complaint::STATUS_REFUNDED, $c->fresh()->status);
 
         $line = $la->fresh();
         $this->assertSame(2, (int) $line->quantity);
@@ -352,7 +363,7 @@ class ReturnFlowTest extends TestCase
         $c = Complaint::findOrFail($this->request($order, ['return_all' => 1])->assertCreated()->json('data.id'));
         $c = $this->bringBack($c);
         $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/receive", ['conditions' => [$la->id => 'resaleable']])->assertOk();
-        $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/refund", ['method' => 'bank_transfer', 'reference' => 'VIR-2026-001'])->assertOk();
+        $this->assertSame(Complaint::STATUS_REFUNDED, $c->fresh()->status);
 
         $this->assertEqualsWithDelta($netBefore, (float) DB::table('seller_orders')->where('id', $so->id)->value('seller_net_amount'), 0.001, 'paid history untouched');
         $debit = SellerAdjustment::where('complaint_id', $c->id)->where('type', 'return_debit')->first();
@@ -462,13 +473,14 @@ class ReturnFlowTest extends TestCase
         $this->assertSame(Complaint::STATUS_PICKUP_SCHEDULED, $c->fresh()->status);
         $this->assertSame($c->reference, $this->as($courier)->getJson('/api/delivery/my-refunds')->assertOk()->json('data.data.0.reference'));
 
+        $this->assertEqualsWithDelta((float) $c->refund_amount, $this->as($courier)->getJson('/api/delivery/my-refunds')->json('data.data.0.cash_to_pay'), 0.001);
         $this->as($courier)->putJson("/api/delivery/refunds/{$task->id}/status", ['status' => 'picked_up'])->assertOk();
         $this->assertSame(Complaint::STATUS_PICKED_UP, $c->fresh()->status);
+        $this->assertSame('CASH · ' . $courier->name, $c->fresh()->refund_reference, 'the courier paid the client back');
 
         // Parcel at the shop: nothing refunded yet, the seller must inspect it
         $this->as($courier)->putJson("/api/delivery/refunds/{$task->id}/status", ['status' => 'completed'])->assertOk();
         $this->assertSame(Complaint::STATUS_PICKED_UP, $c->fresh()->status);
-        $this->assertNull($c->fresh()->refunded_at);
         Notification::assertSentTo($this->seller, ReturnSellerNotification::class,
             fn($n) => $n->toDatabase($this->seller)['type'] === 'return_delivered_to_seller');
     }
@@ -487,12 +499,13 @@ class ReturnFlowTest extends TestCase
         $this->assertSame(2, $show->json('data.complained_items.0.return_quantity'));
         $this->assertSame('Sami Ben Salah', $show->json('data.client_address.name'));
         $this->assertSame('Route de Tunis km 5', $show->json('data.seller_pickup.address'));
-        $this->assertSame(['wallet', 'bank_transfer', 'd17'], $show->json('data.refund_methods'));
+        $this->assertSame(['cash'], $show->json('data.refund_methods'));
         $this->assertCount(1, $show->json('data.image_urls'));
 
         $pdf = $this->as($this->admin)->get("/api/admin/complaints/{$c->id}/return-slip")->assertOk();
         $this->assertSame('application/pdf', $pdf->headers->get('Content-Type'));
         $this->assertStringStartsWith('%PDF', $pdf->getContent());
+        $this->assertSame(1, preg_match_all('#/Type\s*/Page[^s]#', $pdf->getContent()), 'one page');
 
         $this->as($this->seller)->get("/api/admin/complaints/{$c->id}/return-slip")->assertForbidden();
     }

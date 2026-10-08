@@ -321,9 +321,9 @@ return [
                                  'fr' => 'Demandez un retour avec remboursement (toute la commande ou certains articles). Besoin d\'un autre article ? Repassez simplement commande.',
                                  'ar' => 'اطلب ترجيع المنتج واسترجاع الفلوس (الطلب الكل ولا بعض المنتجات). تحب منتج آخر؟ اعمل طلب جديد.']],
                     ['title' => ['en' => 'Follow it up', 'fr' => 'Suivez-la', 'ar' => 'تابع الشكوى'],
-                     'text'  => ['en' => 'Track it in My Complaints: pending → reviewing → approved or rejected. If the seller rejects it, our admin team reviews it. For refunds, a courier picks up the item.',
-                                 'fr' => 'Suivez-la dans Mes réclamations : en attente → en examen → acceptée ou refusée. Si le vendeur refuse, notre équipe admin réexamine. Pour un remboursement, un livreur récupère l\'article.',
-                                 'ar' => 'تابعها في «شكاويّ»: في الانتظار ← قيد المراجعة ← مقبولة ولا مرفوضة. كان البائع يرفض، فريق الإدارة يراجعها. في حالة الاسترجاع، موزّع يجي ياخو المنتج.']],
+                     'text'  => ['en' => 'Track it in My Returns. If the shop refuses, you can ask our team to decide. A courier collects the item: paid cash on delivery? He pays you back in cash on the spot. Paid online? Refunded to your payment method after checking.',
+                                 'fr' => 'Suivez-le dans Mes retours. Si la boutique refuse, vous pouvez demander l\'arbitrage de notre équipe. Un livreur récupère l\'article : payé à la livraison ? Il vous rembourse en espèces sur place. Payé en ligne ? Remboursement sur votre moyen de paiement après vérification.',
+                                 'ar' => 'تابعها في «إرجاعاتي». كان المتجر يرفض، تنجم تطلب تحكيم فريقنا. موزّع يجي ياخو المنتج: خلّصت عند الاستلام؟ يرجعلك الفلوس كاش في البلاصة. خلّصت أونلاين؟ ترجع لوسيلة الدفع بعد الفحص.']],
                 ],
                 'links' => [
                     ['label' => ['en' => 'File a complaint', 'fr' => 'Faire une réclamation', 'ar' => 'اعمل شكوى'], 'url' => '/complaints/new'],

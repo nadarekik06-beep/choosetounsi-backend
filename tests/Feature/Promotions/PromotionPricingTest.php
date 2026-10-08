@@ -428,15 +428,15 @@ class PromotionPricingTest extends TestCase
         $complaint = \App\Models\Complaint::create([
             'user_id' => $this->customer->id, 'order_id' => $res['order_id'], 'seller_id' => $this->seller->id,
             'order_item_ids' => [$jeansLine->id], 'complaint_type' => 'damaged_product', 'resolution_type' => 'return_refund',
-            'description' => 'Wrong size', 'status' => \App\Models\Complaint::STATUS_PICKED_UP, 'reference' => 'RET-P' . $res['order_id'],
+            'description' => 'Wrong size', 'status' => \App\Models\Complaint::STATUS_PICKUP_SCHEDULED, 'reference' => 'RET-P' . $res['order_id'],
             'shipping_payer' => 'seller',
         ]);
         $returns = app(\App\Services\Returns\ReturnService::class);
         \App\Models\ComplaintItem::create(['complaint_id' => $complaint->id, 'order_item_id' => $jeansLine->id, 'quantity' => 2]
             + $returns->share(\App\Models\OrderItem::find($jeansLine->id), 2));
         $admin = $this->makeUser('admin');
-        $returns->receive($complaint, $admin, 'admin', [$jeansLine->id => 'resaleable'], null);
-        $returns->refund($complaint->fresh(), $admin, 'wallet', null, null);
+        $returns->markPickedUp($complaint, $admin, 'admin', null, 'Courier');   // COD: cash paid back at pick-up
+        $returns->receive($complaint->fresh(), $admin, 'admin', [$jeansLine->id => 'resaleable'], null);
 
         $this->assertSame('delivered', $sellerOrder->fresh()->status, 'partial return keeps the seller order');
         $this->assertSame(0, $flash->fresh()->flash_stock_used);

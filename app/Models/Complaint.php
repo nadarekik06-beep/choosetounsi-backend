@@ -100,7 +100,8 @@ class Complaint extends Model
     /** Reasons where the seller is at fault → the seller pays the return shipping. */
     const SELLER_FAULT_TYPES = ['wrong_product', 'wrong_size', 'wrong_color', 'damaged_product'];
 
-    const REFUND_METHODS = ['wallet', 'bank_transfer', 'd17', 'original'];
+    /** cash = paid back by the courier at pick-up (cash on delivery orders). */
+    const REFUND_METHODS = ['cash', 'wallet', 'bank_transfer', 'd17', 'original'];
 
     const CONDITION_RESALEABLE = 'resaleable';
     const CONDITION_DAMAGED    = 'damaged';

@@ -94,6 +94,7 @@ class AdminComplaintController extends Controller
         $complaint->setAttribute('client_address', $documents->recipient($complaint->order));
         $complaint->setAttribute('seller_pickup', SellerPickup::for($complaint->seller, $complaint->seller_id));
         $complaint->setAttribute('refund_methods', $this->returns->refundMethodsFor($complaint->order));
+        $complaint->setAttribute('cash_refund', $this->returns->isCashRefund($complaint));
         $complaint->setAttribute('adjustments', SellerAdjustment::where('complaint_id', $complaint->id)->get());
         $complaint->setAttribute('allowed_transitions', Complaint::TRANSITIONS[$complaint->status] ?? []);
 
@@ -167,10 +168,12 @@ class AdminComplaintController extends Controller
 
     public function pickedUp(Request $request, $id)
     {
-        $request->validate(['note' => 'nullable|string|max:500']);
-        $c = $this->returns->markPickedUp(Complaint::findOrFail($id), $request->user(), 'admin', $request->note);
+        $request->validate(['note' => 'nullable|string|max:500', 'courier' => 'nullable|string|max:100']);
+        $c = $this->returns->markPickedUp(Complaint::findOrFail($id), $request->user(), 'admin', $request->note, $request->courier);
 
-        return response()->json(['success' => true, 'message' => 'Marked as picked up.', 'data' => $c]);
+        return response()->json(['success' => true, 'data' => $c, 'message' => $c->refund_method === 'cash'
+            ? 'Picked up — the courier paid the client back in cash. Finance updated, client notified.'
+            : 'Marked as picked up.']);
     }
 
     public function receive(Request $request, $id)
@@ -188,7 +191,7 @@ class AdminComplaintController extends Controller
     public function refund(Request $request, $id)
     {
         $request->validate([
-            'method'    => 'required|in:' . implode(',', Complaint::REFUND_METHODS),
+            'method'    => 'required|in:wallet,bank_transfer,d17,original',
             'reference' => 'nullable|string|max:100',
             'note'      => 'nullable|string|max:1000',
         ]);

@@ -164,14 +164,17 @@ return [
         'approved' => [
             'title'   => 'Retour approuvé',
             'body'    => 'Retour :return (commande :ref) approuvé : un livreur passera récupérer l\'article, puis vous serez remboursé(e).',
+            'body_cash' => 'Retour :return (commande :ref) approuvé : un livreur passera récupérer l\'article et vous rembourser :amount en espèces.',
             'subject' => 'Votre retour a été approuvé — commande :ref',
             'line'    => 'Gardez l\'article et son emballage prêts pour l\'enlèvement. Le remboursement est fait dès que l\'article est reçu et vérifié.',
+            'line_cash' => 'Gardez l\'article et son emballage prêts : le livreur vérifie l\'article avec vos photos puis vous remet :amount en espèces.',
         ],
         'pickup_scheduled' => [
             'title'   => 'Enlèvement planifié',
             'body'    => 'Retour :return (commande :ref) : un livreur va vous contacter pour récupérer l\'article.',
             'subject' => 'Enlèvement de votre retour planifié — commande :ref',
             'line'    => 'Préparez l\'article dans son emballage d\'origine si possible.',
+            'line_cash' => 'Préparez l\'article dans son emballage d\'origine si possible. Le livreur vous rembourse :amount en espèces à l\'enlèvement.',
         ],
         'picked_up' => [
             'title'   => 'Article récupéré',
@@ -182,12 +185,15 @@ return [
         'returned' => [
             'title'   => 'Retour reçu et vérifié',
             'body'    => 'Retour :return (commande :ref) : l\'article a été reçu et vérifié. Votre remboursement de :amount est en préparation.',
+            'body_cash' => 'Retour :return (commande :ref) : l\'article a été reçu et vérifié par la boutique. Votre retour est terminé.',
             'subject' => 'Votre retour a été reçu — commande :ref',
             'line'    => 'Vous serez prévenu(e) dès que le remboursement sera effectué.',
+            'line_cash' => 'Merci, le livreur vous a déjà remboursé en espèces lors de l\'enlèvement.',
         ],
         'refunded' => [
             'title'   => 'Remboursement effectué',
             'body'    => 'Retour :return (commande :ref) : :amount remboursés (:method).',
+            'body_cash' => 'Retour :return (commande :ref) : le livreur a récupéré l\'article et vous a remis :amount en espèces.',
             'subject' => 'Remboursement effectué — commande :ref',
             'line'    => 'Merci pour votre patience, et désolés pour la gêne occasionnée.',
         ],
@@ -207,6 +213,7 @@ return [
         'refund_method'    => 'Mode de remboursement',
         'refund_reference' => 'Référence',
         'methods' => [
+            'cash'          => 'en espèces, remis par le livreur',
             'wallet'        => 'portefeuille ChooseTounsi',
             'bank_transfer' => 'virement bancaire',
             'd17'           => 'D17',

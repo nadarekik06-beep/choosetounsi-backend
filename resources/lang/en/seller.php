@@ -66,7 +66,7 @@ return [
         'approved' => 'Return accepted. ChooseTounsi will validate it and schedule the pick-up.',
         'reject_failed' => 'Failed to reject complaint.',
         'rejected' => 'Refusal sent. The client has been notified and may ask ChooseTounsi to decide.',
-        'received' => 'Reception confirmed. Resaleable items are back in stock; ChooseTounsi will refund the client.',
+        'received' => 'Reception confirmed. Resaleable items are back in stock.',
     ],
     'coupon' => [
         'pct_max' => 'A percentage discount cannot exceed 100%.',

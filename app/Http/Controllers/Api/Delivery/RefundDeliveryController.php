@@ -321,6 +321,9 @@ class RefundDeliveryController extends Controller
 
             'items' => $items,
             'refund_amount' => (float) ($complaint?->refund_amount ?? 0),
+            // Cash on delivery: the courier pays this back to the client at pick-up
+            'cash_to_pay'   => $complaint ? app(ReturnService::class)->cashToPay($complaint) : 0.0,
+            'payment_method'=> $order?->payment_method,
 
             'delivery_guy' => $task->relationLoaded('deliveryGuy') && $task->deliveryGuy
                 ? [

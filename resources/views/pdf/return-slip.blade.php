@@ -56,7 +56,11 @@
         </tr>
     </table>
 
-    <div class="banner" style="margin-top: 4pt;">RETOUR — NE RIEN ENCAISSER / RETURN — COLLECT NO MONEY</div>
+    @if ($slip['cash_refund'])
+        <div class="banner" style="margin-top: 4pt;">RETOUR — LE LIVREUR REMBOURSE LE CLIENT EN ESPÈCES : {{ $dt($slip['refund_amount']) }} / COURIER PAYS THE CLIENT BACK IN CASH</div>
+    @else
+        <div class="banner" style="margin-top: 4pt;">RETOUR — NE RIEN ENCAISSER NI PAYER / RETURN — NO MONEY (PAID ONLINE)</div>
+    @endif
 
     <table class="meta" style="margin-top: 6pt;">
         <tr>
@@ -163,10 +167,17 @@
             </td>
             <td style="width: 3%;"></td>
             <td class="refund" style="width: 43%;">
-                <div class="label" style="color: #111;">Remboursement client prévu</div>
-                <div class="label" style="color: #111;">Client refund (after inspection)</div>
-                <div style="font-size: 20pt; font-weight: bold; color: #198f41;">{{ $dt($slip['refund_amount']) }}</div>
-                <div class="small">Remboursé par ChooseTounsi après réception et contrôle — le livreur n'encaisse ni ne rembourse rien.</div>
+                @if ($slip['cash_refund'])
+                    <div class="label" style="color: #111;">À payer au client par le livreur</div>
+                    <div class="label" style="color: #111;">Courier pays the client (cash)</div>
+                    <div style="font-size: 20pt; font-weight: bold; color: #198f41;">{{ $dt($slip['refund_amount']) }}</div>
+                    <div class="small">À remettre en espèces au client à l'enlèvement, après contrôle de l'article avec les photos. Article non conforme : ne rien payer, ne pas enlever, appeler le service client.</div>
+                @else
+                    <div class="label" style="color: #111;">Remboursement client</div>
+                    <div class="label" style="color: #111;">Client refund</div>
+                    <div style="font-size: 20pt; font-weight: bold; color: #198f41;">{{ $dt($slip['refund_amount']) }}</div>
+                    <div class="small">Commande payée en ligne : remboursée sur le moyen de paiement du client après contrôle. Le livreur ne paie et n'encaisse rien.</div>
+                @endif
             </td>
         </tr>
     </table>
@@ -187,7 +198,7 @@
     {{-- Condition check at pickup --}}
     <table class="check" style="margin-top: 6pt;">
         <tr>
-            <td style="width: 34%;"><span class="label">Contrôle à l'enlèvement / Pickup check</span></td>
+            <td style="width: 34%;"><span class="label">Contrôle à l'enlèvement / Pickup check</span>@if ($slip['cash_refund'])<br><span class="small">☐ Client remboursé en espèces : ____________ DT</span>@endif</td>
             <td style="width: 22%;">☐ Conforme aux photos<br><span class="small">Matches photos</span></td>
             <td style="width: 22%;">☐ Emballage d'origine<br><span class="small">Original packaging</span></td>
             <td style="width: 22%;">☐ Quantité vérifiée<br><span class="small">Quantity checked</span></td>

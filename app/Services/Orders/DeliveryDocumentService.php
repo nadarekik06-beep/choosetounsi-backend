@@ -258,6 +258,8 @@ class DeliveryDocumentService
             'shipping_payer'  => $complaint->shipping_payer,
             'shipping_fee'    => (float) $complaint->return_shipping_fee,
             'refund_amount'   => (float) $complaint->refund_amount,
+            // Cash on delivery: the courier pays the client back at pick-up
+            'cash_refund'     => ($order->payment_method ?? 'cod') === 'cod',
             'photos'          => array_values(array_filter(array_map(
                 fn($path) => is_file($f = storage_path('app/public/' . $path)) ? $f : null,
                 $complaint->image_paths ?: array_filter([$complaint->image_path])
