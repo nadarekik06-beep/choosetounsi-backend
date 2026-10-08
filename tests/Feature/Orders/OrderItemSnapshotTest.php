@@ -269,11 +269,11 @@ class OrderItemSnapshotTest extends TestCase
         $order = $this->deliveredOrder([[$p, $red, 1], [$p, $blue, 1]]);
         $redLine = $this->line($order, $red);
 
-        $res = $this->as($order->user)->postJson('/api/client/complaints', [
-            'order_id' => $order->id, 'complaint_type' => 'wrong_color', 'resolution_type' => 'exchange',
+        $res = $this->as($order->user)->post('/api/client/complaints', [
+            'order_id' => $order->id, 'complaint_type' => 'wrong_color',
             'description' => 'I received a different shade than the one shown.',
-            'item_ids' => [$redLine->id],
-        ])->assertCreated();
+            'item_ids' => [$redLine->id], 'images' => [\Illuminate\Http\UploadedFile::fake()->image('proof.jpg')],
+        ], ['Accept' => 'application/json'])->assertCreated();
 
         $complaint = Complaint::findOrFail($res->json('data.id'));
         $this->assertSame([$redLine->id], $complaint->order_item_ids);
@@ -304,11 +304,11 @@ class OrderItemSnapshotTest extends TestCase
         $order = $this->deliveredOrder([[$p, $red, 1]]);
         $other = $this->deliveredOrder([[$p, $blue, 1]]);
 
-        $this->as($order->user)->postJson('/api/client/complaints', [
-            'order_id' => $order->id, 'complaint_type' => 'wrong_color', 'resolution_type' => 'exchange',
+        $this->as($order->user)->post('/api/client/complaints', [
+            'order_id' => $order->id, 'complaint_type' => 'wrong_color',
             'description' => 'I received a different shade than the one shown.',
-            'item_ids' => [$this->line($other, $blue)->id],
-        ])->assertStatus(422);
+            'item_ids' => [$this->line($other, $blue)->id], 'images' => [\Illuminate\Http\UploadedFile::fake()->image('proof.jpg')],
+        ], ['Accept' => 'application/json'])->assertStatus(422);
     }
 
     // ── Related screens ───────────────────────────────────────────────────────

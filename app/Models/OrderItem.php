@@ -23,6 +23,9 @@ class OrderItem extends Model
         'variant_attributes', // purchase snapshot — see App\Services\Orders\OrderItemSnapshot
         'product_name',
         'quantity',
+        'returned_quantity', // units refunded through a return (quantity is what is kept)
+        'returned_amount',   // what the client paid for those units
+        'returned_at',
         'unit_price',
         'price',
         'total',
@@ -42,6 +45,9 @@ class OrderItem extends Model
 
     protected $casts = [
         'quantity'              => 'integer',
+        'returned_quantity'     => 'integer',
+        'returned_amount'       => 'decimal:3',
+        'returned_at'           => 'datetime',
         'variant_attributes'    => 'array',
         'discount_amount'       => 'decimal:3',
         'net_total'             => 'decimal:3',
@@ -50,7 +56,24 @@ class OrderItem extends Model
         'seller_amount'         => 'decimal:3',
     ];
 
-    protected $appends = ['resolved_image_url'];
+    protected $appends = ['resolved_image_url', 'ordered_quantity', 'return_state'];
+
+    /**
+     * A refunded return reduces the line's live figures (quantity, total,
+     * commission…) so every sales query is net; returned_quantity keeps the rest.
+     */
+    public function getOrderedQuantityAttribute(): int
+    {
+        return (int) ($this->attributes['quantity'] ?? 0) + (int) ($this->attributes['returned_quantity'] ?? 0);
+    }
+
+    /** null | partially_returned | returned */
+    public function getReturnStateAttribute(): ?string
+    {
+        $returned = (int) ($this->attributes['returned_quantity'] ?? 0);
+        if ($returned <= 0) return null;
+        return (int) ($this->attributes['quantity'] ?? 0) > 0 ? 'partially_returned' : 'returned';
+    }
 
     // ── Accessors ──────────────────────────────────────────────────────────
 
@@ -122,9 +145,11 @@ class OrderItem extends Model
             'variant_label'      => $this->displayVariantLabel(),
             'variant_attributes' => $this->variant_attributes
                 ?? ($this->variant_id && $this->variant ? OrderItemSnapshot::attributesOf($this->variant) : []),
-            'quantity'           => (int) $this->quantity,
+            'quantity'           => $this->ordered_quantity,   // as bought
+            'returned_quantity'  => (int) ($this->attributes['returned_quantity'] ?? 0),
+            'return_state'       => $this->return_state,
             'unit_price'         => (float) $this->unit_price,
-            'total'              => (float) $this->total,
+            'total'              => round((float) $this->unit_price * $this->ordered_quantity, 3),
             'image_url'          => $this->displayImageUrl(),
         ];
     }

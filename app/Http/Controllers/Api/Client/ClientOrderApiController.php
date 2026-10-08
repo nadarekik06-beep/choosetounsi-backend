@@ -39,15 +39,7 @@ class ClientOrderApiController extends Controller
                 'items' => fn($q) => $q->with([
                     'product' => fn($pq) => $pq->withTrashed()->with(['images', 'primaryImage']),
                 ]),
-                // ← NEW: load approved return complaints for this order
-                'complaints' => fn($q) => $q
-                    ->where('status', Complaint::STATUS_APPROVED)
-->where(function ($q) {
-    $q->where('resolution_type', Complaint::RESOLUTION_RETURN_REFUND)
-      ->orWhereNull('resolution_type');
-})                  
-                  ->where('refund_status', Complaint::REFUND_STATUS_COMPLETED)
-                    ->select('id', 'order_id', 'order_item_ids', 'refund_status'),
+                'complaints' => fn($q) => $q->select('id', 'order_id', 'reference', 'status', 'refund_amount', 'refund_method', 'refund_reference', 'refunded_at', 'created_at'),
             ])
             ->orderByDesc('created_at')
             ->paginate(20);
@@ -71,12 +63,7 @@ class ClientOrderApiController extends Controller
                 'items' => fn($q) => $q->with([
                     'product' => fn($pq) => $pq->withTrashed()->with(['images', 'primaryImage']),
                 ]),
-                // ← NEW
-                'complaints' => fn($q) => $q
-                    ->where('status', Complaint::STATUS_APPROVED)
-                    ->where('resolution_type', Complaint::RESOLUTION_RETURN_REFUND)
-                    ->where('refund_status', Complaint::REFUND_STATUS_COMPLETED)
-                    ->select('id', 'order_id', 'order_item_ids', 'refund_status'),
+                'complaints' => fn($q) => $q->select('id', 'order_id', 'reference', 'status', 'refund_amount', 'refund_method', 'refund_reference', 'refunded_at', 'created_at'),
             ])
             ->findOrFail($id);
 
@@ -98,6 +85,8 @@ class ClientOrderApiController extends Controller
             'delivered'        => (clone $base)->where('status', 'delivered')->count(),
             'out_for_delivery' => (clone $base)->where('status', 'out_for_delivery')->count(),
             'cancelled'        => (clone $base)->where('status', 'cancelled')->count(),
+            'refunded'         => (clone $base)->where('status', 'refunded')->count(),
+            'partially_returned' => (clone $base)->where('return_status', 'partial')->whereNotIn('status', ['cancelled', 'refunded'])->count(),
         ]]);
     }
 
@@ -107,30 +96,8 @@ class ClientOrderApiController extends Controller
     {
         $sellerOrderMap = $order->sellerOrders->keyBy('id');
 
-        // ── Build the set of returned item IDs ─────────────────────────────
-        // From all approved + completed return_refund complaints on this order.
-        // If a complaint has order_item_ids = null (legacy), it means ALL items
-        // in that order were returned — mark everything.
-        $returnedItemIds = collect();
-        $allItemsReturned = false;
-
-        if ($order->relationLoaded('complaints')) {
-            foreach ($order->complaints as $complaint) {
-                $ids = $complaint->order_item_ids; // array|null (cast on model)
-                if (is_null($ids) || empty($ids)) {
-                    $allItemsReturned = true;
-                    break;
-                }
-                $returnedItemIds = $returnedItemIds->merge($ids);
-            }
-        }
-
-        $returnedItemIds = $returnedItemIds->unique()->toArray();
-
         // ── Enrich items ───────────────────────────────────────────────────
-        $enrichedItems = $order->items->map(function ($item) use (
-            $sellerOrderMap, $order, $returnedItemIds, $allItemsReturned
-        ) {
+        $enrichedItems = $order->items->map(function ($item) use ($sellerOrderMap, $order) {
             // As bought: the checkout snapshot first, never another variant's image
             $item->setAttribute('resolved_image_url', $item->displayImageUrl());
             $item->setAttribute('variant_label', $item->displayVariantLabel());
@@ -143,11 +110,9 @@ class ClientOrderApiController extends Controller
             $item->seller_order_status  = $so?->status         ?? $order->status;
             $item->seller_order_payment = $so?->payment_status ?? $order->payment_status;
 
-            // ← NEW: mark returned items
-            $item->setAttribute(
-                'is_returned',
-                $allItemsReturned || in_array($item->id, $returnedItemIds)
-            );
+            // Returned units are taken off the line when the return is refunded:
+            // ordered_quantity / returned_quantity / return_state tell the story.
+            $item->setAttribute('is_returned', $item->return_state === 'returned');
 
             return $item;
         });
@@ -174,6 +139,8 @@ class ClientOrderApiController extends Controller
             return [
                 'seller_order_id' => $so->id,
                 'status'          => $so->status,
+                'display_status'  => $so->display_status,
+                'return_status'   => $so->return_status,
                 'payment_status'  => $so->payment_status,
                 'subtotal'        => (float) $so->subtotal,
                 'coupon_code'     => $so->coupon_code,
@@ -186,6 +153,20 @@ class ClientOrderApiController extends Controller
         $arr                  = $order->toArray();
         $arr['items']         = $enrichedItems->values();
         $arr['seller_groups'] = $sellerGroups;
+        // Returns on this order (tracking lives at /complaints?id=)
+        $arr['returns'] = $order->relationLoaded('complaints')
+            ? $order->complaints->sortByDesc('created_at')->values()->map(fn($c) => [
+                'id'               => $c->id,
+                'reference'        => $c->reference,
+                'status'           => $c->status,
+                'refund_amount'    => (float) $c->refund_amount,
+                'refund_method'    => $c->refund_method,
+                'refund_reference' => $c->status === 'refunded' ? $c->refund_reference : null,
+                'refunded_at'      => $c->refunded_at,
+                'created_at'       => $c->created_at,
+            ])
+            : [];
+        unset($arr['complaints']);
 
         // Live breakdown from active seller_orders (orders.total_amount may be
         // stale if a partial return reduced a seller subtotal):

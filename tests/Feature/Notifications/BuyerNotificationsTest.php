@@ -401,7 +401,7 @@ class BuyerNotificationsTest extends TestCase
         $complaint = Complaint::create([
             'user_id' => $order->user_id, 'order_id' => $order->id, 'seller_id' => $seller->id,
             'complaint_type' => 'damaged', 'resolution_type' => 'return_refund',
-            'description' => 'Arrived broken, please refund.', 'status' => Complaint::STATUS_PENDING,
+            'description' => 'Arrived broken, please refund.', 'status' => Complaint::STATUS_REQUESTED, 'reference' => 'RET-T' . $order->id,
         ]);
 
         $notifier = app(BuyerNotifier::class);
@@ -410,13 +410,12 @@ class BuyerNotificationsTest extends TestCase
 
         $this->as($seller)->patchJson("/api/seller/complaints/{$complaint->id}/approve", ['seller_note' => 'Sorry about that'])->assertOk();
 
-        // The decision is sent as ComplaintStatusChangedNotification (a ComplaintNotification)
-        $all = $this->sent($order->user, ComplaintNotification::class)
-            ->merge($this->sent($order->user, \App\Notifications\ComplaintStatusChangedNotification::class));
-        $this->assertSame(['received', 'approved'], $all->pluck('event')->all());
-        $approved = $all->firstWhere('event', 'approved');
-        $this->assertStringContainsString('un livreur passera', $approved->toDatabase($order->user)['body']);
-        $this->assertSame('/complaints?id=' . $complaint->id, $approved->toDatabase($order->user)['link']);
+        // The shop's acceptance is a step of its own; ChooseTounsi then validates
+        $all = $this->sent($order->user, ComplaintNotification::class);
+        $this->assertSame(['received', 'seller_accepted'], $all->pluck('event')->all());
+        $accepted = $all->firstWhere('event', 'seller_accepted');
+        $this->assertStringContainsString('la boutique a accepté', $accepted->toDatabase($order->user)['body']);
+        $this->assertSame('/complaints?id=' . $complaint->id, $accepted->toDatabase($order->user)['link']);
     }
 
     // ── Review reminders ──────────────────────────────────────────────────────

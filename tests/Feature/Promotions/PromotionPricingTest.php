@@ -427,11 +427,16 @@ class PromotionPricingTest extends TestCase
         // Only the jeans line comes back; the plain product stays sold
         $complaint = \App\Models\Complaint::create([
             'user_id' => $this->customer->id, 'order_id' => $res['order_id'], 'seller_id' => $this->seller->id,
-            'order_item_ids' => [$jeansLine->id], 'complaint_type' => 'damaged', 'resolution_type' => 'return_refund',
-            'description' => 'Wrong size', 'status' => 'approved',
+            'order_item_ids' => [$jeansLine->id], 'complaint_type' => 'damaged_product', 'resolution_type' => 'return_refund',
+            'description' => 'Wrong size', 'status' => \App\Models\Complaint::STATUS_PICKED_UP, 'reference' => 'RET-P' . $res['order_id'],
+            'shipping_payer' => 'seller',
         ]);
-        $task = \App\Models\RefundDeliveryTask::create(['complaint_id' => $complaint->id, 'seller_id' => $this->seller->id, 'status' => 'completed']);
-        (new \App\Listeners\MarkOrderRefunded())->handle(new \App\Events\RefundCompleted($task));
+        $returns = app(\App\Services\Returns\ReturnService::class);
+        \App\Models\ComplaintItem::create(['complaint_id' => $complaint->id, 'order_item_id' => $jeansLine->id, 'quantity' => 2]
+            + $returns->share(\App\Models\OrderItem::find($jeansLine->id), 2));
+        $admin = $this->makeUser('admin');
+        $returns->receive($complaint, $admin, 'admin', [$jeansLine->id => 'resaleable'], null);
+        $returns->refund($complaint->fresh(), $admin, 'wallet', null, null);
 
         $this->assertSame('delivered', $sellerOrder->fresh()->status, 'partial return keeps the seller order');
         $this->assertSame(0, $flash->fresh()->flash_stock_used);

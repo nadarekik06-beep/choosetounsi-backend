@@ -134,7 +134,7 @@ class SalesForecastTest extends TestCase
         DB::table('complaints')->insert([
             'user_id' => $this->buyer->id, 'order_id' => $orderId, 'seller_id' => $this->seller->id,
             'order_item_ids' => json_encode([$returned]), 'complaint_type' => 'damaged', 'description' => 'x',
-            'resolution_type' => 'return_refund', 'status' => 'approved', 'created_at' => now(), 'updated_at' => now(),
+            'resolution_type' => 'return_refund', 'status' => 'refunded', 'created_at' => now(), 'updated_at' => now(),
         ]);
 
         $this->assertSame(1, $this->series($p)['daily'][$this->today->subDays(10)->toDateString()]['units']);

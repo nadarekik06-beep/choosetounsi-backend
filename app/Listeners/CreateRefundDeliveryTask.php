@@ -36,7 +36,7 @@ class CreateRefundDeliveryTask
         }
 
         // Guard: only create for approved complaints
-        if (!$complaint->isApproved()) {
+        if ($complaint->status !== Complaint::STATUS_ADMIN_APPROVED) {
             Log::warning("[RefundTask] ComplaintApproved event fired for non-approved complaint #{$complaint->id} — skipping.");
             return;
         }

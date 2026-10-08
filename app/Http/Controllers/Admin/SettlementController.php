@@ -112,6 +112,15 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
 
         DB::beginTransaction();
         try {
+            // Seller debits not settled yet (returns refunded after a payout,
+            // return shipping): deducted from this payout, history untouched.
+            $adjustments = DB::table('seller_adjustments')
+                ->where('seller_id', $sellerId)
+                ->whereNull('settlement_batch_id')
+                ->lockForUpdate()
+                ->get();
+            $totalAdjustments = round((float) $adjustments->sum('amount'), 3);
+
             // Compute batch totals
             $grossRevenue       = $orders->sum(fn($o) => (float) $o->subtotal - (float) $o->discount_amount);
             $totalCommission    = $orders->sum('commission_amount');
@@ -135,7 +144,8 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
                 'total_orders_gross'   => round($grossRevenue,        3),
                 'total_commission'     => round($totalCommission,     3),
                 'total_delivery_fees'  => round($totalDeliveryFees,   3),
-                'total_seller_payout'  => round($totalSellerPayout,   3),
+                'total_seller_payout'  => round($totalSellerPayout + $totalAdjustments, 3),
+                'total_adjustments'    => $totalAdjustments,
                 'total_platform_profit'=> round($totalPlatformProfit, 3),
                 'orders_count'         => $orders->count(),
                 'status'               => 'draft',
@@ -152,6 +162,11 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
                     'settlement_batch_id' => $batchId,
                     'updated_at'          => now(),
                 ]);
+
+            if ($adjustments->isNotEmpty()) {
+                DB::table('seller_adjustments')->whereIn('id', $adjustments->pluck('id'))
+                    ->update(['settlement_batch_id' => $batchId, 'updated_at' => now()]);
+            }
 
             DB::commit();
 
@@ -206,9 +221,16 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
             ])
             ->get();
 
+        $adjustments = DB::table('seller_adjustments as a')
+            ->leftJoin('complaints as c', 'c.id', '=', 'a.complaint_id')
+            ->leftJoin('users as u', 'u.id', '=', 'a.created_by')
+            ->where('a.settlement_batch_id', $id)
+            ->orderBy('a.id')
+            ->get(['a.id', 'a.type', 'a.amount', 'a.description', 'a.created_at', 'a.applied_at', 'c.reference as return_reference', 'u.name as created_by_name']);
+
         return response()->json([
             'success' => true,
-            'data'    => array_merge((array) $batch, ['orders' => $orders]),
+            'data'    => array_merge((array) $batch, ['orders' => $orders, 'adjustments' => $adjustments]),
         ]);
     }
 
@@ -244,15 +266,19 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
                 'updated_at'   => $now,
             ]);
 
-            // Mark all orders in batch as paid
+            // Mark all orders in batch as paid (a refunded return keeps its payment_status)
             DB::table('seller_orders')
                 ->where('settlement_batch_id', $id)
                 ->update([
                     'payout_status'  => 'paid',
-                    'payment_status' => 'paid',
+                    'payment_status' => DB::raw("CASE WHEN payment_status = 'refunded' THEN 'refunded' ELSE 'paid' END"),
                     'settled_at'     => $now,
                     'updated_at'     => $now,
                 ]);
+
+            // Debits carried by this batch are now settled
+            DB::table('seller_adjustments')->where('settlement_batch_id', $id)
+                ->update(['applied_at' => $now, 'updated_at' => $now]);
 
             DB::commit();
 
@@ -283,62 +309,24 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
             ], 422);
         }
 
- DB::beginTransaction();
-try {
-    $now = now();
+        DB::transaction(function () use ($id) {
+            $now = now();
 
-    // Mark batch as paid
-    DB::table('settlement_batches')->where('id', $id)->update([
-        'status'       => 'paid',
-        'confirmed_by' => auth()->id(),
-        'confirmed_at' => $now,
-        'paid_at'      => $now,
-        'updated_at'   => $now,
-    ]);
+            DB::table('settlement_batches')->where('id', $id)->update([
+                'status'     => 'cancelled',
+                'updated_at' => $now,
+            ]);
 
-    // Mark all seller_orders in batch as paid
-    DB::table('seller_orders')
-        ->where('settlement_batch_id', $id)
-        ->update([
-            'payout_status'  => 'paid',
-            'payment_status' => 'paid',   // ← ADDED
-            'settled_at'     => $now,
-            'updated_at'     => $now,
+            // Orders and seller debits go back to the queue for the next batch
+            DB::table('seller_orders')->where('settlement_batch_id', $id)
+                ->update(['settlement_batch_id' => null, 'updated_at' => $now]);
+            DB::table('seller_adjustments')->where('settlement_batch_id', $id)
+                ->update(['settlement_batch_id' => null, 'updated_at' => $now]);
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => "Batch {$batch->batch_reference} cancelled. Its orders are ready for a new batch.",
         ]);
-
-    // ── Sync parent orders.payment_status ─────────────────────────────
-    // Only mark an order as 'paid' if ALL its seller_orders are now paid.
-    $orderIds = DB::table('seller_orders')
-        ->where('settlement_batch_id', $id)
-        ->pluck('order_id')
-        ->unique()
-        ->toArray();
-
-    foreach ($orderIds as $orderId) {
-        $allPaid = !DB::table('seller_orders')
-            ->where('order_id', $orderId)
-            ->where('payment_status', '!=', 'paid')
-            ->exists();
-
-        if ($allPaid) {
-            DB::table('orders')
-                ->where('id', $orderId)
-                ->update(['payment_status' => 'paid', 'updated_at' => $now]);
-        }
-    }
-    // ── End sync ──────────────────────────────────────────────────────
-
-    DB::commit();
-
-    return response()->json([
-        'success' => true,
-        'message' => "Batch {$batch->batch_reference} confirmed. Seller marked as paid.",
-    ]);
-
-} catch (\Throwable $e) {
-    DB::rollBack();
-    Log::error('[SettlementController::confirm] ' . $e->getMessage());
-    return response()->json(['success' => false, 'message' => 'Confirmation failed.'], 500);
-}
     }
 }

@@ -30,7 +30,7 @@ class WalletService
 
             $newBalance = round((float) $user->wallet_balance - $amount, 3);
 
-            $user->update(['wallet_balance' => $newBalance]);
+            $user->forceFill(['wallet_balance' => $newBalance])->save(); // not mass-assignable on purpose
 
             return WalletTransaction::create([
                 'user_id'       => $user->id,
@@ -54,7 +54,7 @@ class WalletService
             $amount     = (float) $order->total_amount;
             $newBalance = round((float) $user->wallet_balance + $amount, 3);
 
-            $user->update(['wallet_balance' => $newBalance]);
+            $user->forceFill(['wallet_balance' => $newBalance])->save(); // not mass-assignable on purpose
 
             return WalletTransaction::create([
                 'user_id'       => $user->id,
@@ -69,6 +69,30 @@ class WalletService
     }
 
     /**
+     * Refund of a completed return, credited to the client's wallet.
+     */
+    public function creditReturnRefund(User $user, Order $order, float $amount, string $reference): WalletTransaction
+    {
+        return DB::transaction(function () use ($user, $order, $amount, $reference) {
+            $user       = User::lockForUpdate()->findOrFail($user->id);
+            $amount     = round($amount, 3);
+            $newBalance = round((float) $user->wallet_balance + $amount, 3);
+
+            $user->forceFill(['wallet_balance' => $newBalance])->save(); // not mass-assignable on purpose
+
+            return WalletTransaction::create([
+                'user_id'       => $user->id,
+                'amount'        => $amount,
+                'type'          => 'credit',
+                'reason'        => 'return_refund',
+                'order_id'      => $order->id,
+                'note'          => "Refund of return {$reference} (order #{$order->order_number})",
+                'balance_after' => $newBalance,
+            ]);
+        });
+    }
+
+    /**
      * Admin top-up.
      */
     public function topUp(User $user, float $amount, string $note = ''): WalletTransaction
@@ -77,7 +101,7 @@ class WalletService
             $user       = User::lockForUpdate()->findOrFail($user->id);
             $newBalance = round((float) $user->wallet_balance + $amount, 3);
 
-            $user->update(['wallet_balance' => $newBalance]);
+            $user->forceFill(['wallet_balance' => $newBalance])->save(); // not mass-assignable on purpose
 
             return WalletTransaction::create([
                 'user_id'       => $user->id,

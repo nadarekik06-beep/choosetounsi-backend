@@ -172,38 +172,28 @@ class SellerRevenueService
      */
     public function refunds(int $sellerId, CarbonImmutable $from, CarbonImmutable $to): array
     {
-        $complaints = DB::table('complaints as c')
-            ->join('seller_orders as so', function ($j) {
-                $j->on('so.order_id', '=', 'c.order_id')->on('so.seller_id', '=', 'c.seller_id');
-            })
+        // Refunded returns: what the client was refunded for the returned units
+        // (complaint_items.net_amount), on the month of the sale. Their units are
+        // already off the order lines, so nothing to exclude from product sales.
+        $rows = DB::table('complaint_items as ci')
+            ->join('complaints as c', 'c.id', '=', 'ci.complaint_id')
+            ->join('order_items as oi', 'oi.id', '=', 'ci.order_item_id')
+            ->join('seller_orders as so', 'so.id', '=', 'oi.seller_order_id')
             ->where('c.seller_id', $sellerId)
-            ->where('c.refund_status', 'completed')
-            ->where(fn($q) => $q->where('c.resolution_type', 'return_refund')->orWhereNull('c.resolution_type'))
+            ->where('c.status', 'refunded')
             ->where('so.created_at', '>=', $this->utc($from))
             ->where('so.created_at', '<', $this->utc($to))
-            ->get(['c.order_item_ids', 'so.id as so_id', 'so.created_at']);
-
-        if ($complaints->isEmpty()) return ['by_month' => [], 'item_ids' => []];
-
-        $items = DB::table('order_items')
-            ->whereIn('seller_order_id', $complaints->pluck('so_id')->unique())
-            ->get(['id', 'seller_order_id', 'total', 'discount_amount'])
-            ->groupBy('seller_order_id');
+            ->get(['ci.net_amount', 'oi.id as line_id', 'oi.returned_quantity', 'so.created_at']);
 
         $byMonth = [];
-        $ids     = [];
-        foreach ($complaints as $c) {
-            $chosen = json_decode((string) $c->order_item_ids, true);
-            $lines  = collect($items[$c->so_id] ?? []);
-            if (is_array($chosen) && $chosen) $lines = $lines->whereIn('id', $chosen);
-            $lines  = $lines->reject(fn($l) => in_array($l->id, $ids, true)); // one return per line
-            if ($lines->isEmpty()) continue;
-
-            $ym = CarbonImmutable::parse($c->created_at, 'UTC')->setTimezone($this->tz())->format('Y-m');
-            $byMonth[$ym] = ($byMonth[$ym] ?? 0) + $lines->sum(fn($l) => (float) $l->total - (float) ($l->discount_amount ?? 0));
-            array_push($ids, ...$lines->pluck('id')->map(fn($v) => (int) $v)->all());
+        $legacy  = [];
+        foreach ($rows as $r) {
+            $ym = CarbonImmutable::parse($r->created_at, 'UTC')->setTimezone($this->tz())->format('Y-m');
+            $byMonth[$ym] = ($byMonth[$ym] ?? 0) + (float) $r->net_amount;
+            // Returns refunded before 2026-10 left the line untouched: exclude it
+            if ((int) $r->returned_quantity === 0) $legacy[] = (int) $r->line_id;
         }
-        return ['by_month' => $byMonth, 'item_ids' => $ids];
+        return ['by_month' => $byMonth, 'item_ids' => array_values(array_unique($legacy))];
     }
 
     // ── Ads (Pubs & boost) ──────────────────────────────────────────────────

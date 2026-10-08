@@ -45,6 +45,11 @@ class Handler extends ExceptionHandler
             }
         });
 
+        // A return step that isn't allowed now (wrong status, missing input).
+        $this->renderable(function (\App\Services\Returns\ReturnException $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
+        });
+
         // findOrFail() misses: "No query results for model [...]" is internal and English-only.
         $this->renderable(function (\Symfony\Component\HttpKernel\Exception\NotFoundHttpException $e, $request) {
             if (($request->expectsJson() || $request->is('api/*'))

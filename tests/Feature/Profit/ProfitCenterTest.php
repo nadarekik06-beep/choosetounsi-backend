@@ -167,12 +167,18 @@ class ProfitCenterTest extends TestCase
     public function test_returns_ads_and_shipping_flow_into_the_breakdown(): void
     {
         $so = $this->sale(200, 'delivered', '2026-10-02 10:00', null, null, 7);
-        // Full return: the listener cancels the sub-order and zeroes its commission
-        DB::table('seller_orders')->where('id', $so)->update(['status' => 'cancelled', 'commission_amount' => 0, 'seller_shipping_charge' => 0]);
-        DB::table('complaints')->insert([
-            'user_id' => $this->buyer->id, 'order_id' => DB::table('seller_orders')->where('id', $so)->value('order_id'),
+        // Full return refunded: the sub-order is 'refunded', its line and commission reversed
+        DB::table('seller_orders')->where('id', $so)->update(['status' => 'refunded', 'return_status' => 'full', 'subtotal' => 0, 'commission_amount' => 0, 'seller_shipping_charge' => 0]);
+        $line = DB::table('order_items')->where('seller_order_id', $so)->first();
+        DB::table('order_items')->where('id', $line->id)->update(['quantity' => 0, 'returned_quantity' => 1, 'returned_amount' => 200, 'total' => 0, 'net_total' => 0, 'commission_amount' => 0, 'seller_amount' => 0]);
+        $complaintId = DB::table('complaints')->insertGetId([
+            'user_id' => $this->buyer->id, 'order_id' => $line->order_id,
             'seller_id' => $this->seller->id, 'complaint_type' => 'damaged', 'resolution_type' => 'return_refund',
-            'description' => 'Cassé', 'status' => 'approved', 'refund_status' => 'completed', 'created_at' => now(), 'updated_at' => now(),
+            'description' => 'Cassé', 'status' => 'refunded', 'refund_amount' => 200, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+        DB::table('complaint_items')->insert([
+            'complaint_id' => $complaintId, 'order_item_id' => $line->id, 'quantity' => 1, 'unit_price' => 200,
+            'gross_amount' => 200, 'net_amount' => 200, 'created_at' => now(), 'updated_at' => now(),
         ]);
         $this->sale(100, 'delivered', '2026-10-03 10:00', null, null, 5);
         DB::table('ad_wallet_transactions')->insert([

@@ -21,6 +21,7 @@ class Order extends Model
         'shipping_cost',     // agency cost, frozen at checkout
         'shipping_paid_by',  // customer | seller | platform
         'status',
+        'return_status',   // null | partial | full (returns refunded)
         'payment_status',
         'payment_method',
         'wilaya',
@@ -46,6 +47,23 @@ class Order extends Model
 
     // Internal cost split — the customer only ever sees shipping_fee.
     protected $hidden = ['shipping_cost', 'shipping_paid_by'];
+
+    protected $appends = ['display_status'];
+
+    /**
+     * Status to show: a fully returned order is 'refunded' ("Returned
+     * (Refunded)"); a partial return keeps the sale status (so revenue still
+     * counts the kept items) and shows as 'partially_returned'.
+     */
+    public function getDisplayStatusAttribute(): ?string
+    {
+        $status = $this->attributes['status'] ?? null;
+        if (($this->attributes['return_status'] ?? null) === 'partial' && !in_array($status, ['cancelled', 'refunded'], true)) {
+            return 'partially_returned';
+        }
+        return $status;
+    }
+
 
     /* ── Boot: auto-generate order_number ── */
 

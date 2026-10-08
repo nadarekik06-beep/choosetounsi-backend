@@ -69,6 +69,8 @@ final class Payload
         'SellerUpgradedNotification'            => ['admin', 'subscription'],
         'SellerRejectedComplaintNotification'   => ['admin', 'complaints'],
         'VipRequestSubmittedNotification'       => ['admin', 'subscription'],
+        'ReturnAdminNotification'               => ['admin', 'complaints'],
+        'ReturnSellerNotification'              => ['seller', 'complaints'],
         // Sent to several audiences: the recipient's role decides
         'ComplaintCreatedNotification'          => [null, 'complaints'],
         'ProductActionNotification'             => [null, 'products'],

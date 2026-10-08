@@ -4,50 +4,20 @@ namespace App\Listeners;
 
 use App\Events\RefundCompleted;
 use App\Models\Complaint;
-use App\Models\Order;
-use App\Models\SellerOrder;
-use App\Services\Orders\OrderStock;
-use Illuminate\Support\Facades\DB;
+use App\Services\Returns\RefundTaskSync;
+use App\Services\Returns\ReturnService;
 use Illuminate\Support\Facades\Log;
-use App\Notifications\RefundCompletedNotification;
 
 /**
- * FILE: app/Listeners/MarkOrderRefunded.php  ← REPLACE
+ * Triggered by: RefundCompleted — the courier marked the return pick-up task
+ * 'completed', i.e. the parcel was dropped at the seller's.
  *
- * Triggered by: RefundCompleted event
- * (fired when a delivery guy marks a RefundDeliveryTask as 'completed')
+ * Nothing is refunded here any more (COD rule: money only after the item is
+ * back AND inspected). The seller / admin is asked to confirm the reception
+ * and the condition of each item (ReturnService::receive), then the admin
+ * issues the refund (ReturnService::refund), which reverses stock and finance.
  *
- * This listener handles ALL outcomes based on complaint.resolution_type
- * and whether the complaint covers partial or all items in the seller_order.
- *
- * ══════════════════════════════════════════════════════════════════════════
- * RESOLUTION MATRIX
- * ══════════════════════════════════════════════════════════════════════════
- *
- *  resolution_type = 'exchange':
- *    → Agent delivered a replacement. No stock change. No financial change.
- *      Order stays 'delivered'. Just mark complaint refund_status = completed.
- *
- *  resolution_type = 'return_refund' (or NULL legacy):
- *    → Agent collected the complained item(s) and returned them to seller.
- *
- *    PARTIAL (only some items in seller_order were complained about):
- *      → Restore stock for each returned item (product or variant)
- *      → Reverse commission on returned items
- *      → Adjust seller_order.subtotal downward by returned items' total
- *      → seller_order.status stays 'delivered' (non-complained items are fine)
- *      → seller_order.payment_status = 'refunded' (partial refund noted)
- *      → orders.status stays derived (still 'delivered')
- *
- *    FULL (ALL items in seller_order were complained about, or no specific
- *          items were selected — legacy behaviour):
- *      → Restore stock for all returned items
- *      → Reverse all commission on the seller_order
- *      → seller_order.status = 'cancelled'
- *      → seller_order.payment_status = 'refunded'
- *      → Sync parent orders.status (will become 'cancelled' if all sub-orders cancelled)
- *
- * ══════════════════════════════════════════════════════════════════════════
+ * Legacy exchange tasks just close their complaint.
  */
 class MarkOrderRefunded
 {
@@ -56,230 +26,26 @@ class MarkOrderRefunded
         $task = $event->task;
 
         try {
-            // ── Resolve complaint and order ────────────────────────────────
-            $task->loadMissing('complaint');
-            $complaint = $task->complaint;
-
+            RefundTaskSync::mirror($task);
+            $complaint = Complaint::find($task->complaint_id);
             if (!$complaint) {
                 Log::error("[RefundCompleted] Task #{$task->id} has no complaint.");
                 return;
             }
 
-            $orderId  = $complaint->order_id;
-            $sellerId = $task->seller_id;
+            $service = app(ReturnService::class);
 
-            if (!$orderId || !$sellerId) {
-                Log::error("[RefundCompleted] Task #{$task->id} missing order_id or seller_id.");
-                return;
-            }
-
-            // ── Load the seller_order ──────────────────────────────────────
-            $sellerOrder = SellerOrder::where('order_id', $orderId)
-                ->where('seller_id', $sellerId)
-                ->with('items')
-                ->first();
-
-            if (!$sellerOrder) {
-                Log::error("[RefundCompleted] No seller_order found for order #{$orderId}, seller #{$sellerId}.");
-                return;
-            }
-
-            // ── Branch by resolution type ──────────────────────────────────
             if ($complaint->isExchange()) {
-                $this->handleExchange($task, $complaint);
-            } else {
-                $this->handleReturnRefund($task, $complaint, $sellerOrder, $orderId, $sellerId);
-            }
-
-            // ── Notify customer (always, outside transaction) ──────────────
-            $order = Order::with('user')->find($orderId);
-            if ($order?->user) {
-                try {
-                    app(\App\Services\Notifications\BuyerNotifier::class)->send($order->user, new RefundCompletedNotification($task, $order));
-                } catch (\Throwable $e) {
-                    Log::error("[RefundCompleted] Customer notification failed: " . $e->getMessage());
+                if ($complaint->canTransitionTo(Complaint::STATUS_CLOSED)) {
+                    $complaint->update(['status' => Complaint::STATUS_CLOSED, 'resolved_at' => now()]);
+                    $service->event($complaint, Complaint::STATUS_CLOSED, $task->deliveryGuy, 'delivery', 'Legacy exchange delivered');
                 }
+                return;
             }
 
-            // ── Notify seller ──────────────────────────────────────────────
-            if ($sellerOrder) {
-                $seller      = \App\Models\User::find($sellerId);
-                $orderNumber = $order?->order_number ?? "#{$orderId}";
-                if ($seller) {
-                    try {
-                        $seller->notify(
-                            new \App\Notifications\RefundStatusNotification(
-                                'pickup_done', $sellerOrder, $orderNumber
-                            )
-                        );
-                    } catch (\Throwable $e) {
-                        Log::error("[RefundCompleted] Seller notification failed: " . $e->getMessage());
-                    }
-                }
-            }
-
+            $service->deliveredToSeller($complaint, $task->deliveryGuy);
         } catch (\Throwable $e) {
-            Log::error("[RefundCompleted] Failed for task #{$task->id}: " . $e->getMessage(), [
-                'trace' => $e->getTraceAsString(),
-            ]);
+            Log::error("[RefundCompleted] Failed for task #{$task->id}: " . $e->getMessage());
         }
-    }
-
-    // ──────────────────────────────────────────────────────────────────────
-    // EXCHANGE: agent delivered replacement — nothing changes financially
-    // ──────────────────────────────────────────────────────────────────────
-
-    private function handleExchange($task, Complaint $complaint): void
-    {
-        // Just mark the complaint as fully resolved
-        Complaint::where('id', $complaint->id)
-            ->update(['refund_status' => Complaint::REFUND_STATUS_COMPLETED]);
-
-        Log::info("[RefundCompleted] Exchange completed for complaint #{$complaint->id}. No stock/financial changes.");
-    }
-
-    // ──────────────────────────────────────────────────────────────────────
-    // RETURN + REFUND: agent collected items → restore stock + adjust finances
-    // ──────────────────────────────────────────────────────────────────────
-
-    private function handleReturnRefund(
-        $task,
-        Complaint $complaint,
-        SellerOrder $sellerOrder,
-        int $orderId,
-        int $sellerId
-    ): void {
-        // ── Determine which items are being returned ───────────────────────
-        $complainedItemIds = $complaint->order_item_ids; // array|null
-
-        // All items in this seller_order
-        $allSellerItems = $sellerOrder->items;
-
-        // Items actually being returned
-        if (!empty($complainedItemIds)) {
-            $returnedItems = $allSellerItems->whereIn('id', $complainedItemIds);
-        } else {
-            // Legacy: no specific items → return everything
-            $returnedItems = $allSellerItems;
-        }
-
-        // Is this a full or partial return?
-        $isFullReturn = $returnedItems->count() === $allSellerItems->count();
-
-        DB::transaction(function () use (
-            $task, $complaint, $sellerOrder,
-            $returnedItems, $isFullReturn, $orderId
-        ) {
-            // ── 1. Restore stock for each returned item (once per line) ────
-            $restored = app(OrderStock::class)->releaseForOrderItems($returnedItems->pluck('id')->all());
-            Log::info("[RefundCompleted] Restored {$restored} unit(s) to stock for task #{$task->id}.");
-
-            // Returned lines give their flash-sale units back (partial returns
-            // too; a full return is also covered by the seller-order observer)
-            app(\App\Services\PromotionService::class)->releaseForOrderItems($returnedItems->pluck('id')->all());
-
-            // ── 2. Calculate financial impact of returned items ────────────
-            // subtotal is gross (pre-coupon); the coupon share on each returned
-            // line is reversed separately so seller_order.discount_amount stays
-            // consistent with the remaining items.
-            $returnedSubtotal   = $returnedItems->sum(fn($i) => (float) $i->total);
-            $returnedDiscount   = $returnedItems->sum(fn($i) => (float) ($i->discount_amount ?? 0));
-            $returnedCommission = $returnedItems->sum(fn($i) => (float) ($i->commission_amount ?? 0));
-            $returnedSellerNet  = $returnedItems->sum(fn($i) => (float) ($i->seller_amount ?? $i->total));
-
-            Log::info("[RefundCompleted] Returning {$returnedItems->count()} item(s). " .
-                "Subtotal: {$returnedSubtotal}, Commission reversed: {$returnedCommission}. " .
-                "Full return: " . ($isFullReturn ? 'yes' : 'no'));
-
-            // ── 3. Update seller_order based on partial vs full ────────────
-            if ($isFullReturn) {
-                // Full return → cancel the seller_order entirely
-                $sellerOrder->update([
-                    'status'         => 'cancelled',
-                    'payment_status' => 'refunded',
-                    // Adjust financial columns (reverse commission)
-                    'commission_amount'  => 0,
-                    'seller_net_amount'  => 0,
-                    // Nothing sold → the seller isn't charged shipping; the platform
-                    // keeps the customer's delivery fee and still owes the agency.
-                    'seller_shipping_charge' => 0,
-                    'platform_profit'    => DB::raw('delivery_fee - shipping_cost'),
-                ]);
-
-                // Sync parent order (may become 'cancelled' if all sub-orders cancelled)
-                $this->syncParentOrderStatus($orderId);
-
-                // The buyer is told "refund completed", never "order cancelled", for a full return.
-                app(\App\Services\Orders\BuyerOrderNotifier::class)->markHandled($orderId, [$sellerOrder->id], 'cancelled');
-
-            } else {
-                // Partial return → keep seller_order as 'delivered' for remaining items
-                // Adjust subtotal and commission to exclude returned items
-                $newSubtotal        = max(0, (float) $sellerOrder->subtotal - $returnedSubtotal);
-                $newDiscount        = max(0, (float) $sellerOrder->discount_amount - $returnedDiscount);
-                $newCommission      = max(0, (float) $sellerOrder->commission_amount - $returnedCommission);
-                $newSellerNet       = max(0, (float) $sellerOrder->seller_net_amount - $returnedSellerNet);
-
-                $sellerOrder->update([
-                    // status stays 'delivered' — remaining items are fine
-                    'payment_status'    => 'refunded',   // partial refund
-                    'subtotal'          => round($newSubtotal,   3),
-                    'discount_amount'   => round($newDiscount,   3),
-                    'commission_amount' => round($newCommission,  3),
-                    'seller_net_amount' => round($newSellerNet,   3),
-                ]);
-
-                // Parent order status unchanged (still 'delivered')
-            }
-
-            // ── 4. Mark complaint refund as complete ───────────────────────
-            Complaint::where('id', $complaint->id)
-                ->update(['refund_status' => Complaint::REFUND_STATUS_COMPLETED]);
-                // ── 5. Sync orders.total_amount from sum of seller_orders.subtotal ─────
-                   // What the customer still pays: items after coupon, excluding cancelled sub-orders
-                   $newOrderTotal = SellerOrder::where('order_id', $orderId)
-                        ->where('status', '!=', 'cancelled')
-                        ->sum(DB::raw('subtotal - discount_amount'));
-
-                    $shippingFee = Order::where('id', $orderId)->value('shipping_fee') ?? 0;
-
-                    Order::where('id', $orderId)->update([
-                        'total_amount' => round((float) $newOrderTotal + (float) $shippingFee, 3),
-                    ]);
-
-                    Log::info("[RefundCompleted] orders.total_amount updated → {$newOrderTotal} for order #{$orderId}.");
-        });
-    }
-
-    // ──────────────────────────────────────────────────────────────────────
-    // PARENT ORDER STATUS SYNC (identical to all other controllers)
-    // ──────────────────────────────────────────────────────────────────────
-
-    private function syncParentOrderStatus(int $orderId): void
-    {
-        $statuses = SellerOrder::where('order_id', $orderId)
-            ->pluck('status')
-            ->toArray();
-
-        if (empty($statuses)) return;
-
-        $unique = array_unique($statuses);
-
-        $derived = match (true) {
-            $unique === ['cancelled']
-                => 'cancelled',
-            $unique === ['delivered']
-                => 'delivered',
-            in_array('out_for_delivery', $statuses)
-                => 'out_for_delivery',
-            count(array_diff($unique, ['completed', 'delivered'])) === 0
-                => 'completed',
-            default
-                => 'processing',
-        };
-
-        Order::where('id', $orderId)->update(['status' => $derived]);
-
-        Log::info("[RefundCompleted] Parent order #{$orderId} status synced → {$derived}.");
     }
 }

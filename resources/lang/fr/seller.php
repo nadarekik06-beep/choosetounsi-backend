@@ -63,9 +63,10 @@ return [
         'update_failed' => 'Impossible de mettre à jour la réclamation.',
         'note_submitted' => 'Note envoyée. La réclamation est maintenant en cours d\'examen.',
         'approve_failed' => 'Impossible d\'accepter la réclamation.',
-        'approved' => 'Réclamation acceptée. Le client a été notifié.',
+        'approved' => 'Retour accepté. ChooseTounsi le valide puis planifie l\'enlèvement.',
         'reject_failed' => 'Impossible de refuser la réclamation.',
-        'rejected' => 'Refus envoyé. L\'administration a été notifiée et prendra la décision finale.',
+        'rejected' => 'Refus envoyé. Le client est notifié et peut demander l\'arbitrage de ChooseTounsi.',
+        'received' => 'Réception confirmée. Les articles revendables sont remis en stock ; ChooseTounsi rembourse le client.',
     ],
     'coupon' => [
         'pct_max' => 'Une remise en pourcentage ne peut pas dépasser 100 %.',
@@ -304,6 +305,32 @@ return [
             'pickup_done' => [
                 'title' => '✅ Produit remboursé récupéré',
                 'body' => 'Commande #:order — le produit retourné a été récupéré et marqué comme livré.',
+            ],
+        ],
+        'return' => [
+            'admin_approved' => [
+                'title' => 'Retour :return approuvé',
+                'body' => 'Commande :order — ChooseTounsi a approuvé le retour. Un livreur récupérera l\'article chez le client.',
+            ],
+            'rejected' => [
+                'title' => 'Retour :return refusé par ChooseTounsi',
+                'body' => 'Commande :order — la plateforme n\'a pas validé le retour. Rien de plus à faire.',
+            ],
+            'pickup_scheduled' => [
+                'title' => 'Enlèvement du retour planifié',
+                'body' => 'Retour :return (commande :order) : le livreur récupère l\'article et vous le ramène.',
+            ],
+            'delivered_to_seller' => [
+                'title' => 'Colis retour livré — à vérifier',
+                'body' => 'Retour :return (commande :order) déposé à votre boutique. Confirmez la réception et l\'état de chaque article.',
+            ],
+            'refunded' => [
+                'title' => 'Retour :return remboursé',
+                'body' => 'Commande :order — le client a été remboursé ; :amount DT sont retirés de vos ventes.',
+            ],
+            'cancelled' => [
+                'title' => 'Retour :return annulé',
+                'body' => 'Commande :order — le retour a été annulé.',
             ],
         ],
         'complaint_created' => [

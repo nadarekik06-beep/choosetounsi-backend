@@ -13,6 +13,6 @@ class ComplaintStatusChangedNotification extends ComplaintNotification
 {
     public function __construct(Complaint $complaint)
     {
-        parent::__construct($complaint, $complaint->isApproved() ? 'approved' : 'rejected');
+        parent::__construct($complaint, $complaint->status === Complaint::STATUS_REJECTED ? 'rejected' : 'approved');
     }
 }

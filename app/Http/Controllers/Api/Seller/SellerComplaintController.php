@@ -4,212 +4,123 @@ namespace App\Http\Controllers\Api\Seller;
 
 use App\Http\Controllers\Controller;
 use App\Models\Complaint;
-use App\Notifications\ComplaintStatusChangedNotification;
-use App\Notifications\SellerRejectedComplaintNotification;
+use App\Services\Returns\ReturnPresenter;
+use App\Services\Returns\ReturnService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Notification;
 
 /**
- * FILE: app/Http/Controllers/Api/Seller/SellerComplaintController.php  ← REPLACE
+ * Returns on the seller's sales (owner only: forSeller scope everywhere).
  *
- * Change from previous version:
- *   - index() / show() return complained_items: the lines the customer
- *     flagged, each as bought (Complaint::withItemSnapshots).
- *
- * All other methods (stats, index, addNote, approve, reject) are unchanged.
+ *   GET   /api/seller/complaints[/stats|/{id}]
+ *   PATCH /api/seller/complaints/{id}/note      note to the client (status unchanged)
+ *   PATCH /api/seller/complaints/{id}/approve   accept → the admin validates
+ *   PATCH /api/seller/complaints/{id}/reject    refuse with a reason → the client may escalate
+ *   PATCH /api/seller/complaints/{id}/receive   parcel back: condition per item (restock)
  */
 class SellerComplaintController extends Controller
 {
-    // ─────────────────────────────────────────────────────────────────────
-    // GET /api/seller/complaints/stats
-    // ─────────────────────────────────────────────────────────────────────
+    public function __construct(private ReturnService $returns) {}
 
     public function stats(Request $request)
     {
         $sellerId = $request->user()->id;
+        $counts = Complaint::forSeller($sellerId)->selectRaw('status, COUNT(*) as n')->groupBy('status')->pluck('n', 'status');
+        $n = fn(array $s) => (int) collect($s)->sum(fn($k) => $counts[$k] ?? 0);
 
         return response()->json([
             'success' => true,
             'data' => [
-                'total'           => Complaint::forSeller($sellerId)->count(),
-                'pending'         => Complaint::forSeller($sellerId)->pending()->count(),
-                'reviewing'       => Complaint::forSeller($sellerId)->reviewing()->count(),
-                'approved'        => Complaint::forSeller($sellerId)->approved()->count(),
-                'seller_rejected' => Complaint::forSeller($sellerId)->sellerRejected()->count(),
-                'rejected'        => Complaint::forSeller($sellerId)->rejected()->count(),
-                'needs_action'    => Complaint::forSeller($sellerId)
-                    ->whereIn('status', [Complaint::STATUS_PENDING, Complaint::STATUS_REVIEWING])
-                    ->count(),
+                'total'          => (int) $counts->sum(),
+                'by_status'      => $counts,
+                'needs_action'   => $n([Complaint::STATUS_REQUESTED, Complaint::STATUS_PICKED_UP]),
+                'requested'      => $n([Complaint::STATUS_REQUESTED]),
+                'in_progress'    => $n([Complaint::STATUS_SELLER_ACCEPTED, Complaint::STATUS_ESCALATED, Complaint::STATUS_ADMIN_APPROVED, Complaint::STATUS_PICKUP_SCHEDULED, Complaint::STATUS_PICKED_UP, Complaint::STATUS_RETURNED_TO_SELLER]),
+                'refunded'       => $n([Complaint::STATUS_REFUNDED]),
+                'refused'        => $n([Complaint::STATUS_SELLER_REJECTED, Complaint::STATUS_REJECTED]),
             ],
         ]);
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // GET /api/seller/complaints
-    // ─────────────────────────────────────────────────────────────────────
-
     public function index(Request $request)
     {
-        $sellerId = $request->user()->id;
-        $query    = Complaint::forSeller($sellerId)
-            ->with([
-                'user:id,name,email',
-                'order:id,order_number,total_amount,status',
-            ]);
+        $query = Complaint::forSeller($request->user()->id)
+            ->with(['user:id,name,email', 'order:id,order_number,total_amount,status,return_status']);
 
-        if ($request->filled('status'))    $query->where('status', $request->status);
+        if ($request->filled('status'))    $query->whereIn('status', explode(',', $request->status));
         if ($request->filled('from_date')) $query->whereDate('created_at', '>=', $request->from_date);
         if ($request->filled('to_date'))   $query->whereDate('created_at', '<=', $request->to_date);
 
-        $complaints = $query->orderByDesc('created_at')
-            ->paginate((int) $request->query('per_page', 12));
-
+        $complaints = $query->orderByDesc('created_at')->paginate((int) $request->query('per_page', 12));
         Complaint::withItemSnapshots($complaints);
 
         return response()->json(['success' => true, 'data' => $complaints]);
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // GET /api/seller/complaints/{id}
-    // ─────────────────────────────────────────────────────────────────────
-
     public function show(Request $request, $id)
     {
         $complaint = Complaint::forSeller($request->user()->id)
-            ->with([
-                'user:id,name,email',
-                'order:id,order_number,total_amount,status,created_at,wilaya,address,phone',
-            ])
+            ->with(['user:id,name,email', 'order:id,order_number,total_amount,status,return_status,created_at,wilaya,address,phone', 'refundTask'])
             ->findOrFail($id);
 
-        // complained_items: the lines the buyer picked, as bought
-        return response()->json(['success' => true, 'data' => Complaint::withItemSnapshots($complaint)]);
-    }
+        Complaint::withItemSnapshots($complaint);
 
-    // ─────────────────────────────────────────────────────────────────────
-    // PATCH /api/seller/complaints/{id}/note
-    // ─────────────────────────────────────────────────────────────────────
+        return response()->json(['success' => true, 'data' => ReturnPresenter::forStaff($complaint)]);
+    }
 
     public function addNote(Request $request, $id)
     {
-        $request->validate([
-            'seller_note' => 'required|string|min:10|max:1000',
-        ]);
+        $request->validate(['seller_note' => 'required|string|min:10|max:1000']);
 
         $complaint = Complaint::forSeller($request->user()->id)->findOrFail($id);
-
         if (!$complaint->sellerCanAct()) {
-            return response()->json([
-                'success' => false,
-                'message' => __('seller.complaint.locked'),
-            ], 422);
+            return response()->json(['success' => false, 'message' => __('seller.complaint.locked')], 422);
         }
 
-        try {
-            $complaint->markReviewing($request->seller_note);
-        } catch (\Throwable $e) {
-            Log::error('[SellerComplaint] markReviewing failed: ' . $e->getMessage());
-            return response()->json(['success' => false, 'message' => __('seller.complaint.update_failed')], 500);
-        }
+        $complaint->update(['seller_note' => $request->seller_note, 'reviewed_at' => now()]);
+        $this->returns->event($complaint, 'seller_note', $request->user(), 'seller', $request->seller_note);
 
-        // Buyer: "the shop answered, your complaint is being examined"
+        // Client: "the shop answered, your request is being examined"
         app(\App\Services\Notifications\BuyerNotifier::class)->send(
             $complaint->user, new \App\Notifications\Buyer\ComplaintNotification($complaint->fresh(), 'seller_replied')
         );
 
-        return response()->json([
-            'success' => true,
-            'message' => __('seller.complaint.note_submitted'),
-            'data'    => $complaint->fresh(),
-        ]);
+        return response()->json(['success' => true, 'message' => __('seller.complaint.note_submitted'), 'data' => $complaint->fresh()]);
     }
-
-    // ─────────────────────────────────────────────────────────────────────
-    // PATCH /api/seller/complaints/{id}/approve
-    // ─────────────────────────────────────────────────────────────────────
 
     public function approve(Request $request, $id)
     {
-        $request->validate([
-            'seller_note' => 'nullable|string|max:1000',
-        ]);
+        $request->validate(['seller_note' => 'nullable|string|max:1000']);
+        $complaint = Complaint::forSeller($request->user()->id)->findOrFail($id);
 
-        $complaint = Complaint::forSeller($request->user()->id)
-            ->with('user')
-            ->findOrFail($id);
+        $c = $this->returns->sellerAccept($complaint, $request->user(), $request->seller_note);
 
-        if (!$complaint->sellerCanAct()) {
-            return response()->json([
-                'success' => false,
-                'message' => __('seller.complaint.locked'),
-            ], 422);
-        }
-
-        try {
-            $complaint->sellerApprove($request->seller_note);
-        } catch (\Throwable $e) {
-            Log::error('[SellerComplaint] approve failed: ' . $e->getMessage());
-            return response()->json(['success' => false, 'message' => __('seller.complaint.approve_failed')], 500);
-        }
-
-        try {
-            app(\App\Services\Notifications\BuyerNotifier::class)->send($complaint->user, new ComplaintStatusChangedNotification($complaint->fresh()));
-        } catch (\Throwable $e) {
-            Log::error('[SellerComplaint] Approve notification failed: ' . $e->getMessage());
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => __('seller.complaint.approved'),
-            'data'    => $complaint->fresh(),
-        ]);
+        return response()->json(['success' => true, 'message' => __('seller.complaint.approved'), 'data' => $c]);
     }
-
-    // ─────────────────────────────────────────────────────────────────────
-    // PATCH /api/seller/complaints/{id}/reject
-    // ─────────────────────────────────────────────────────────────────────
 
     public function reject(Request $request, $id)
     {
         $request->validate([
-            'seller_note'      => 'required|string|min:10|max:1000',
             'rejection_reason' => 'required|string|min:10|max:1000',
+            'seller_note'      => 'nullable|string|max:1000',
         ]);
+        $complaint = Complaint::forSeller($request->user()->id)->findOrFail($id);
 
-        $seller    = $request->user();
-        $complaint = Complaint::forSeller($seller->id)->findOrFail($id);
+        $c = $this->returns->sellerReject($complaint, $request->user(), $request->rejection_reason, $request->seller_note);
 
-        if (!$complaint->sellerCanAct()) {
-            return response()->json([
-                'success' => false,
-                'message' => __('seller.complaint.locked'),
-            ], 422);
-        }
+        return response()->json(['success' => true, 'message' => __('seller.complaint.rejected'), 'data' => $c]);
+    }
 
-        try {
-            $complaint->sellerReject($request->seller_note, $request->rejection_reason);
-        } catch (\Throwable $e) {
-            Log::error('[SellerComplaint] reject failed: ' . $e->getMessage());
-            return response()->json(['success' => false, 'message' => __('seller.complaint.reject_failed')], 500);
-        }
-
-        // Buyer: the shop contested it, the admin decides
-        app(\App\Services\Notifications\BuyerNotifier::class)->send(
-            $complaint->user, new \App\Notifications\Buyer\ComplaintNotification($complaint->fresh(), 'escalated')
-        );
-
-        try {
-            $admins = \App\Models\User::where('role', 'admin')->where('is_active', true)->get();
-            Notification::send($admins, new SellerRejectedComplaintNotification($complaint, $seller));
-        } catch (\Throwable $e) {
-            Log::error('[SellerComplaint] Reject admin notification failed: ' . $e->getMessage());
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => __('seller.complaint.rejected'),
-            'data'    => $complaint->fresh(),
+    public function receive(Request $request, $id)
+    {
+        $request->validate([
+            'conditions'   => 'required|array|min:1',
+            'conditions.*' => 'required|in:resaleable,damaged',
+            'note'         => 'nullable|string|max:1000',
         ]);
+        $complaint = Complaint::forSeller($request->user()->id)->findOrFail($id);
+
+        $c = $this->returns->receive($complaint, $request->user(), 'seller', $request->conditions, $request->note);
+
+        return response()->json(['success' => true, 'message' => __('seller.complaint.received'), 'data' => $c]);
     }
 }

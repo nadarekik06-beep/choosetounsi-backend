@@ -24,7 +24,7 @@ class ForecastTriggers
         });
 
         Complaint::updated(function (Complaint $c) {
-            if ($c->wasChanged('status') && $c->status === 'approved' && $c->resolution_type === 'return_refund' && $c->seller_id) {
+            if ($c->wasChanged('status') && $c->status === Complaint::STATUS_REFUNDED && $c->seller_id) {
                 self::dispatch((int) $c->seller_id);
             }
         });

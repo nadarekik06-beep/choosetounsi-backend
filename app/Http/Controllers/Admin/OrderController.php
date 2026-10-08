@@ -43,7 +43,9 @@ class OrderController extends Controller
         }
 
         if ($s = $request->query('status')) {
-            $query->where('status', $s);
+            $s === 'partially_returned'
+                ? $query->where('return_status', 'partial')->whereNotIn('status', ['cancelled', 'refunded'])
+                : $query->where('status', $s);
         }
         if ($s = $request->query('search')) {
             $query->where(function ($q) use ($s) {
@@ -145,46 +147,13 @@ class OrderController extends Controller
             $item->is_platform_item = (bool) optional($item->product)->is_platform_product;
         });
 
-        $returnedItemIds   = collect();
-        $exchangedItemIds  = collect();
-        $allItemsReturned  = false;
-        $allItemsExchanged = false;
-
-        $complaints = \App\Models\Complaint::where('order_id', $id)
-            ->where('status', \App\Models\Complaint::STATUS_APPROVED)
-            ->where('refund_status', \App\Models\Complaint::REFUND_STATUS_COMPLETED)
-            ->get(['id', 'order_item_ids', 'resolution_type']);
-
-        foreach ($complaints as $complaint) {
-            $ids        = $complaint->order_item_ids;
-            $isExchange = $complaint->resolution_type === \App\Models\Complaint::RESOLUTION_EXCHANGE;
-
-            if (is_null($ids) || empty($ids)) {
-                if ($isExchange) { $allItemsExchanged = true; }
-                else             { $allItemsReturned  = true; }
-                continue;
-            }
-            if ($isExchange) {
-                $exchangedItemIds = $exchangedItemIds->merge($ids);
-            } else {
-                $returnedItemIds = $returnedItemIds->merge($ids);
-            }
-        }
-
-        $returnedItemIds  = $returnedItemIds->unique()->toArray();
-        $exchangedItemIds = $exchangedItemIds->unique()->toArray();
-
-        $order->items->each(function ($item) use (
-            $returnedItemIds, $allItemsReturned,
-            $exchangedItemIds, $allItemsExchanged
-        ) {
-            $isReturned  = $allItemsReturned  || in_array($item->id, $returnedItemIds);
-            $isExchanged = $allItemsExchanged || in_array($item->id, $exchangedItemIds);
-            $item->item_status = $isReturned ? 'returned' : ($isExchanged ? 'exchanged' : null);
-            $item->is_returned = $isReturned;
+        // Refunded returns took their units off the line (returned_quantity keeps them)
+        $order->items->each(function ($item) {
+            $item->item_status = $item->return_state;   // returned | partially_returned | null
+            $item->is_returned = $item->return_state === 'returned';
         });
 
-        $nonReturnedItems = $order->items->filter(fn($i) => $i->item_status !== 'returned');
+        $nonReturnedItems = $order->items;   // live figures are already net of refunded returns
 
         // Revenue split on item prices AFTER the seller's coupon (commission base).
         // gross_total = items before discount, net_total = what the customer paid for items.

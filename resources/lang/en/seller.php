@@ -63,9 +63,10 @@ return [
         'update_failed' => 'Failed to update complaint.',
         'note_submitted' => 'Note submitted. The complaint is now under review.',
         'approve_failed' => 'Failed to approve complaint.',
-        'approved' => 'Complaint approved. The client has been notified.',
+        'approved' => 'Return accepted. ChooseTounsi will validate it and schedule the pick-up.',
         'reject_failed' => 'Failed to reject complaint.',
-        'rejected' => 'Rejection submitted. Admin has been notified and will make the final decision.',
+        'rejected' => 'Refusal sent. The client has been notified and may ask ChooseTounsi to decide.',
+        'received' => 'Reception confirmed. Resaleable items are back in stock; ChooseTounsi will refund the client.',
     ],
     'coupon' => [
         'pct_max' => 'A percentage discount cannot exceed 100%.',
@@ -304,6 +305,32 @@ return [
             'pickup_done' => [
                 'title' => '✅ Refunded Product Picked Up',
                 'body' => 'Order #:order — the returned product has been picked up and marked delivered.',
+            ],
+        ],
+        'return' => [
+            'admin_approved' => [
+                'title' => 'Return :return approved',
+                'body' => 'Order :order — ChooseTounsi approved the return. A courier will collect the item from the client.',
+            ],
+            'rejected' => [
+                'title' => 'Return :return refused by ChooseTounsi',
+                'body' => 'Order :order — the platform did not approve the return. Nothing more to do.',
+            ],
+            'pickup_scheduled' => [
+                'title' => 'Return pick-up scheduled',
+                'body' => 'Return :return (order :order): the courier will collect the item and bring it back to you.',
+            ],
+            'delivered_to_seller' => [
+                'title' => 'Return parcel delivered — inspect it',
+                'body' => 'Return :return (order :order) was dropped at your shop. Confirm reception and the condition of each item.',
+            ],
+            'refunded' => [
+                'title' => 'Return :return refunded',
+                'body' => 'Order :order — the client was refunded; :amount DT is removed from your sales.',
+            ],
+            'cancelled' => [
+                'title' => 'Return :return cancelled',
+                'body' => 'Order :order — the return was cancelled.',
             ],
         ],
         'complaint_created' => [

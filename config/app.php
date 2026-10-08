@@ -57,6 +57,9 @@ return [
     // Storefront (Next.js) base URL — used to build "View on storefront" links.
     'frontend_url' => env('FRONTEND_URL', 'http://localhost:3000'),
 
+    // Admin panel (separate Next.js app): links in admin e-mails.
+    'admin_url' => env('ADMIN_URL', 'http://localhost:3001'),
+
     'asset_url' => env('ASSET_URL', null),
 
     /*

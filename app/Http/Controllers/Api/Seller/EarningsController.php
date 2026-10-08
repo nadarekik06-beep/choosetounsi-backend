@@ -63,16 +63,32 @@ class EarningsController extends Controller
             ->get()
             ->keyBy('payout_status');
 
+        // Debits on payouts (returns refunded after the seller was paid, return
+        // shipping when the item was wrong / defective): deducted on the next settlement.
+        $adjustments = DB::table('seller_adjustments')->where('seller_id', $sellerId)
+            ->when($dateRange, fn($q) => $q->whereBetween('created_at', $dateRange));
+        $adjustmentsTotal = round((float) (clone $adjustments)->sum('amount'), 3);
+        $pendingDeductions = round((float) DB::table('seller_adjustments')->where('seller_id', $sellerId)
+            ->whereNull('applied_at')->sum('amount'), 3);
+        $recentAdjustments = DB::table('seller_adjustments as a')
+            ->leftJoin('complaints as c', 'c.id', '=', 'a.complaint_id')
+            ->where('a.seller_id', $sellerId)
+            ->orderByDesc('a.id')->limit(20)
+            ->get(['a.id', 'a.type', 'a.amount', 'a.description', 'a.created_at', 'a.applied_at', 'a.settlement_batch_id', 'c.reference as return_reference']);
+
         return response()->json([
             'success' => true,
             'data' => [
                 'period' => $period,
+                'adjustments' => $recentAdjustments,
                 'kpis' => [
+                    'adjustments_total'      => $adjustmentsTotal,
+                    'pending_deductions'     => $pendingDeductions,
                     'gross_revenue'          => round((float) $totals->gross_revenue,          3),
                     'total_commission'       => round((float) $totals->total_commission,       3),
                     // Free-shipping orders: shipping the seller pays, already out of total_net
                     'total_shipping'         => round((float) $totals->total_shipping,         3),
-                    'total_net'              => round((float) $totals->total_net,              3),
+                    'total_net'              => round((float) $totals->total_net + $adjustmentsTotal, 3),
                     'orders_count'           => (int) $totals->orders_count,
                     'paid_amount'            => round((float) $totals->paid_amount,            3),
                     'pending_amount'         => round((float) $totals->pending_amount,         3),

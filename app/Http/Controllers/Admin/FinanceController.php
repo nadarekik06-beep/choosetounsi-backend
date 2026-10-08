@@ -121,6 +121,14 @@ class FinanceController extends Controller
                     'ad_top_ups_received'   => $adTopUps['amount'],
                     'ad_top_ups_count'      => $adTopUps['count'],
                     'subscription_revenue'  => round($subRevenue, 3),
+                    // Returns refunded to clients in the period, and seller debits not settled yet
+                    'returns_refunded'      => round((float) DB::table('complaints')->where('status', 'refunded')
+                        ->when($dateRange, fn ($q) => $q->whereBetween('refunded_at', $dateRange))->sum('refund_amount'), 3),
+                    'pending_seller_debits' => round((float) DB::table('seller_adjustments')->whereNull('applied_at')->sum('amount'), 3),
+                    // Returns refunded to clients in the period, and seller debits not settled yet
+                    'returns_refunded'      => round((float) DB::table('complaints')->where('status', 'refunded')
+                        ->when($dateRange, fn ($q) => $q->whereBetween('refunded_at', $dateRange))->sum('refund_amount'), 3),
+                    'pending_seller_debits' => round((float) DB::table('seller_adjustments')->whereNull('applied_at')->sum('amount'), 3),
                 ],
                 'payout_summary' => [
                     'pending' => [

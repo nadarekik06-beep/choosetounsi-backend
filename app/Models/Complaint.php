@@ -5,70 +5,89 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Storage;
-use App\Events\ComplaintApproved;
 
 /**
- * FILE: app/Models/Complaint.php  ← REPLACE
+ * A return request ("réclamation"). The only resolution is return + refund:
+ * a client who wants another item simply reorders.
  *
- * Changes from previous version:
- *   - COMPLAINT_WINDOW_DAYS removed, replaced with COMPLAINT_WINDOW_HOURS = 48
- *   - Added 'resolution_type' to $fillable and $casts
- *   - Added RESOLUTION_* constants
- *   - Added isExchange() / isReturnRefund() helpers
- *   - eligibleOrders() query in ComplaintController uses hours now
- *   - All existing methods, scopes, and constants preserved
+ *   requested ──seller──► seller_accepted ──admin──► admin_approved
+ *       │                                              ▲
+ *       ├──seller──► seller_rejected ──client──► escalated ──admin──┘
+ *       └──client──► cancelled          (admin may override any decision)
+ *
+ *   admin_approved → pickup_scheduled → picked_up → returned_to_seller → refunded
+ *   (received & inspected: restock)           (finance + order status + money)
+ *
+ * Transitions, money, stock and notifications live in App\Services\Returns\ReturnService.
+ * Legacy "exchange" records stay readable; they can only be closed.
  */
 class Complaint extends Model
 {
     use HasFactory;
 
-    // ── Status constants ───────────────────────────────────────────────────
+    // ── Status ─────────────────────────────────────────────────────────────
 
-    const STATUS_PENDING         = 'pending';
-    const STATUS_REVIEWING       = 'reviewing';
-    const STATUS_APPROVED        = 'approved';
-    const STATUS_SELLER_REJECTED = 'seller_rejected_pending_admin';
-    const STATUS_REJECTED        = 'rejected';
+    const STATUS_REQUESTED          = 'requested';
+    const STATUS_SELLER_ACCEPTED    = 'seller_accepted';
+    const STATUS_SELLER_REJECTED    = 'seller_rejected';
+    const STATUS_ESCALATED          = 'escalated';
+    const STATUS_ADMIN_APPROVED     = 'admin_approved';
+    const STATUS_PICKUP_SCHEDULED   = 'pickup_scheduled';
+    const STATUS_PICKED_UP          = 'picked_up';
+    const STATUS_RETURNED_TO_SELLER = 'returned_to_seller';
+    const STATUS_REFUNDED           = 'refunded';
+    const STATUS_REJECTED           = 'rejected';
+    const STATUS_CANCELLED          = 'cancelled';
+    const STATUS_CLOSED             = 'closed';   // legacy exchange, done
 
     const VALID_STATUSES = [
-        self::STATUS_PENDING,
-        self::STATUS_REVIEWING,
-        self::STATUS_APPROVED,
-        self::STATUS_SELLER_REJECTED,
-        self::STATUS_REJECTED,
+        self::STATUS_REQUESTED, self::STATUS_SELLER_ACCEPTED, self::STATUS_SELLER_REJECTED,
+        self::STATUS_ESCALATED, self::STATUS_ADMIN_APPROVED, self::STATUS_PICKUP_SCHEDULED,
+        self::STATUS_PICKED_UP, self::STATUS_RETURNED_TO_SELLER, self::STATUS_REFUNDED,
+        self::STATUS_REJECTED, self::STATUS_CANCELLED, self::STATUS_CLOSED,
     ];
 
-    // ── Resolution type constants (NEW) ────────────────────────────────────
+    /** Allowed next statuses — nothing can be skipped. */
+    const TRANSITIONS = [
+        self::STATUS_REQUESTED          => [self::STATUS_SELLER_ACCEPTED, self::STATUS_SELLER_REJECTED, self::STATUS_ADMIN_APPROVED, self::STATUS_REJECTED, self::STATUS_CANCELLED],
+        self::STATUS_SELLER_ACCEPTED    => [self::STATUS_ADMIN_APPROVED, self::STATUS_REJECTED],
+        self::STATUS_SELLER_REJECTED    => [self::STATUS_ESCALATED, self::STATUS_ADMIN_APPROVED, self::STATUS_REJECTED],
+        self::STATUS_ESCALATED          => [self::STATUS_ADMIN_APPROVED, self::STATUS_REJECTED],
+        self::STATUS_ADMIN_APPROVED     => [self::STATUS_PICKUP_SCHEDULED, self::STATUS_CANCELLED, self::STATUS_CLOSED],
+        self::STATUS_PICKUP_SCHEDULED   => [self::STATUS_PICKED_UP, self::STATUS_CANCELLED, self::STATUS_CLOSED],
+        self::STATUS_PICKED_UP          => [self::STATUS_RETURNED_TO_SELLER, self::STATUS_CLOSED],
+        self::STATUS_RETURNED_TO_SELLER => [self::STATUS_REFUNDED],
+    ];
 
-    /**
-     * Customer wants a replacement item sent.
-     * Delivery agent brings the new item. Stock is NOT restored on the
-     * original item (it stays with the customer until exchanged).
-     * No financial adjustment — the seller sends a replacement at own cost.
-     */
-    const RESOLUTION_EXCHANGE = 'exchange';
+    /** Still in progress (counts as "open" for the client). */
+    const OPEN_STATUSES = [
+        self::STATUS_REQUESTED, self::STATUS_SELLER_ACCEPTED, self::STATUS_SELLER_REJECTED, self::STATUS_ESCALATED,
+        self::STATUS_ADMIN_APPROVED, self::STATUS_PICKUP_SCHEDULED, self::STATUS_PICKED_UP, self::STATUS_RETURNED_TO_SELLER,
+    ];
 
-    /**
-     * Customer wants their money back.
-     * Delivery agent collects the complained item(s) and returns them to seller.
-     * Stock IS restored. Commission on returned items is reversed.
-     * seller_order.subtotal is adjusted downward.
-     * If ALL items in the seller_order are returned → seller_order status = 'cancelled'.
-     * If SOME items only → seller_order status stays 'delivered', partial refund noted.
-     */
+    /** Waiting for an admin decision. */
+    const ADMIN_DECISION_STATUSES = [self::STATUS_SELLER_ACCEPTED, self::STATUS_ESCALATED];
+
+    /** Items in these returns are reserved: they can't be requested again. */
+    const BLOCKING_STATUSES = [
+        self::STATUS_REQUESTED, self::STATUS_SELLER_ACCEPTED, self::STATUS_SELLER_REJECTED, self::STATUS_ESCALATED,
+        self::STATUS_ADMIN_APPROVED, self::STATUS_PICKUP_SCHEDULED, self::STATUS_PICKED_UP,
+        self::STATUS_RETURNED_TO_SELLER, self::STATUS_REFUNDED,
+    ];
+
+    // ── Resolution ─────────────────────────────────────────────────────────
+
     const RESOLUTION_RETURN_REFUND = 'return_refund';
+    /** Legacy only — no new exchange can be created. */
+    const RESOLUTION_EXCHANGE      = 'exchange';
 
-    // ── Complaint window ───────────────────────────────────────────────────
+    // ── Rules ──────────────────────────────────────────────────────────────
 
-    /**
-     * How long after delivery a customer can file a complaint.
-     *
-     * CHANGED from 14 days to 48 hours per business requirement.
-     * All eligibility checks use this constant — change it here only.
-     */
+    /** How long after delivery a client can request a return. */
     const COMPLAINT_WINDOW_HOURS = 48;
 
-    // ── Complaint types ────────────────────────────────────────────────────
+    /** How long after the seller's refusal the client can escalate. */
+    const ESCALATION_WINDOW_DAYS = 7;
 
     const COMPLAINT_TYPES = [
         'wrong_product'   => 'Wrong product received',
@@ -78,50 +97,59 @@ class Complaint extends Model
         'other'           => 'Other',
     ];
 
-    // ── Refund status constants ────────────────────────────────────────────
+    /** Reasons where the seller is at fault → the seller pays the return shipping. */
+    const SELLER_FAULT_TYPES = ['wrong_product', 'wrong_size', 'wrong_color', 'damaged_product'];
 
+    const REFUND_METHODS = ['wallet', 'bank_transfer', 'd17', 'original'];
+
+    const CONDITION_RESALEABLE = 'resaleable';
+    const CONDITION_DAMAGED    = 'damaged';
+
+    // Delivery task mirror (refund_delivery_tasks.status)
     const REFUND_STATUS_PENDING   = 'pending';
     const REFUND_STATUS_ASSIGNED  = 'assigned';
     const REFUND_STATUS_PICKED_UP = 'picked_up';
     const REFUND_STATUS_COMPLETED = 'completed';
 
-    // ── Fillable ───────────────────────────────────────────────────────────
-
     protected $fillable = [
-        'user_id',
-        'order_id',
-        'order_item_ids',
-        'seller_id',
-        'complaint_type',
-        'resolution_type',    // ← NEW
-        'other_reason',
-        'description',
-        'image_path',
-        'status',
-        'rejection_reason',
-        'seller_note',
-        'seller_decision',
-        'reviewed_at',
-        'resolved_at',
-        'refund_status',
-        'refund_task_id',
+        'reference', 'user_id', 'order_id', 'order_item_ids', 'seller_id',
+        'complaint_type', 'resolution_type', 'return_scope', 'shipping_payer', 'return_shipping_fee',
+        'items_amount', 'refund_amount', 'refund_method', 'refund_reference',
+        'other_reason', 'description', 'image_path', 'image_paths', 'status',
+        'rejection_reason', 'seller_note', 'seller_decision', 'seller_decided_at',
+        'escalated_at', 'escalation_note', 'admin_decided_by', 'admin_decided_at', 'admin_note',
+        'pickup_scheduled_at', 'pickup_note', 'picked_up_at', 'received_at', 'received_by', 'reception_note',
+        'refunded_at', 'refunded_by', 'finance_applied_at',
+        'reviewed_at', 'resolved_at', 'refund_status', 'refund_task_id',
     ];
-
-    // ── Casts ──────────────────────────────────────────────────────────────
 
     protected $casts = [
-        'reviewed_at'    => 'datetime',
-        'resolved_at'    => 'datetime',
-        'order_item_ids' => 'array',
+        'order_item_ids'      => 'array',
+        'image_paths'         => 'array',
+        'return_shipping_fee' => 'decimal:3',
+        'items_amount'        => 'decimal:3',
+        'refund_amount'       => 'decimal:3',
+        'reviewed_at'         => 'datetime',
+        'resolved_at'         => 'datetime',
+        'seller_decided_at'   => 'datetime',
+        'escalated_at'        => 'datetime',
+        'admin_decided_at'    => 'datetime',
+        'pickup_scheduled_at' => 'datetime',
+        'picked_up_at'        => 'datetime',
+        'received_at'         => 'datetime',
+        'refunded_at'         => 'datetime',
+        'finance_applied_at'  => 'datetime',
     ];
 
-    protected $appends = ['image_url'];
+    protected $appends = ['image_url', 'image_urls', 'can_escalate'];
 
     // ── Relationships ──────────────────────────────────────────────────────
 
     public function user()   { return $this->belongsTo(User::class); }
     public function order()  { return $this->belongsTo(Order::class); }
     public function seller() { return $this->belongsTo(User::class, 'seller_id'); }
+    public function items()  { return $this->hasMany(ComplaintItem::class); }
+    public function events() { return $this->hasMany(ComplaintEvent::class)->orderBy('id'); }
 
     public function refundTask()
     {
@@ -140,9 +168,9 @@ class Complaint extends Model
     }
 
     /**
-     * Sets complained_items on each complaint: the lines the buyer picked, each
-     * as bought (OrderItem::purchaseSnapshot — image, name, variant, price).
-     * A legacy complaint without order_item_ids covers that shop's lines of the order.
+     * Sets complained_items on each complaint: the returned lines, each as bought
+     * (OrderItem::purchaseSnapshot — image, name, variant, price) plus what this
+     * return covers: return_quantity, refund line amount, condition, restock.
      *
      * @param  self|iterable<self> $complaints
      */
@@ -159,19 +187,35 @@ class Complaint extends Model
             ])
             ->orderBy('id')->get()->groupBy('order_id');
 
+        $returned = ComplaintItem::whereIn('complaint_id', $list->pluck('id'))->get()->groupBy('complaint_id');
+
         foreach ($list as $complaint) {
-            $rows = collect($lines[$complaint->order_id] ?? []);
-            $rows = $complaint->order_item_ids
-                ? $rows->whereIn('id', $complaint->order_item_ids)
-                : $rows->filter(fn($i) => !$complaint->seller_id || !$i->sellerOrder || (int) $i->sellerOrder->seller_id === (int) $complaint->seller_id);
-            $complaint->setAttribute('complained_items', $rows->map->purchaseSnapshot()->values()->all());
+            $rows  = collect($lines[$complaint->order_id] ?? []);
+            $mine  = collect($returned[$complaint->id] ?? [])->keyBy('order_item_id');
+            $rows  = $mine->isNotEmpty()
+                ? $rows->whereIn('id', $mine->keys()->all())
+                : ($complaint->order_item_ids
+                    ? $rows->whereIn('id', $complaint->order_item_ids)
+                    : $rows->filter(fn($i) => !$complaint->seller_id || !$i->sellerOrder || (int) $i->sellerOrder->seller_id === (int) $complaint->seller_id));
+
+            $complaint->setAttribute('complained_items', $rows->map(function (OrderItem $line) use ($mine) {
+                $snap = $line->purchaseSnapshot();
+                $ci   = $mine[$line->id] ?? null;
+                return $snap + [
+                    'return_quantity'    => $ci ? (int) $ci->quantity : (int) $snap['quantity'],
+                    'return_unit_price'  => $ci ? round((float) $ci->net_amount / max(1, (int) $ci->quantity), 3) : (float) $snap['unit_price'],
+                    'return_amount'      => $ci ? (float) $ci->net_amount : (float) ($snap['total'] ?? 0),
+                    'condition'          => $ci?->condition,
+                    'restocked_quantity' => $ci ? (int) $ci->restocked_quantity : 0,
+                ];
+            })->values()->all());
         }
 
         return $complaints;
     }
 
     /**
-     * "T-shirt — Rouge / M × 1" per complained line, as bought — for e-mails.
+     * "T-shirt — Rouge / M × 1" per returned line — for e-mails and the slip.
      * Works on a copy: complained_items isn't a column and must never be saved.
      */
     public function itemSummaries(): array
@@ -180,7 +224,7 @@ class Complaint extends Model
         self::withItemSnapshots($copy);
 
         return array_map(
-            fn($i) => trim(($i['product_name'] ?? '') . ($i['variant_label'] ? " — {$i['variant_label']}" : '')) . " × {$i['quantity']}",
+            fn($i) => trim(($i['product_name'] ?? '') . ($i['variant_label'] ? " — {$i['variant_label']}" : '')) . ' × ' . ($i['return_quantity'] ?? $i['quantity']),
             $copy->getAttribute('complained_items') ?? []
         );
     }
@@ -190,6 +234,18 @@ class Complaint extends Model
     public function getImageUrlAttribute(): ?string
     {
         return $this->image_path ? Storage::url($this->image_path) : null;
+    }
+
+    /** Every proof photo (the first one is image_path). */
+    public function getImageUrlsAttribute(): array
+    {
+        $paths = $this->image_paths ?: ($this->image_path ? [$this->image_path] : []);
+        return array_values(array_map(fn($p) => Storage::url($p), $paths));
+    }
+
+    public function getCanEscalateAttribute(): bool
+    {
+        return $this->canEscalate();
     }
 
     public function getTypeLabel(): string
@@ -202,124 +258,45 @@ class Complaint extends Model
 
     // ── Scopes ─────────────────────────────────────────────────────────────
 
-    public function scopePending($q)        { return $q->where('status', self::STATUS_PENDING); }
-    public function scopeReviewing($q)      { return $q->where('status', self::STATUS_REVIEWING); }
-    public function scopeApproved($q)       { return $q->where('status', self::STATUS_APPROVED); }
-    public function scopeRejected($q)       { return $q->where('status', self::STATUS_REJECTED); }
-    public function scopeSellerRejected($q) { return $q->where('status', self::STATUS_SELLER_REJECTED); }
-    public function scopeForSeller($q, int $sellerId) { return $q->where('seller_id', $sellerId); }
+    public function scopeStatus($q, string $status)    { return $q->where('status', $status); }
+    public function scopeOpen($q)                      { return $q->whereIn('status', self::OPEN_STATUSES); }
+    public function scopeForSeller($q, int $sellerId)  { return $q->where('seller_id', $sellerId); }
 
-    // ── Status helpers ─────────────────────────────────────────────────────
+    // ── Helpers ────────────────────────────────────────────────────────────
 
-    public function isPending(): bool                    { return $this->status === self::STATUS_PENDING; }
-    public function isReviewing(): bool                  { return $this->status === self::STATUS_REVIEWING; }
-    public function isApproved(): bool                   { return $this->status === self::STATUS_APPROVED; }
-    public function isSellerRejectedPendingAdmin(): bool { return $this->status === self::STATUS_SELLER_REJECTED; }
-    public function isRejected(): bool                   { return $this->status === self::STATUS_REJECTED; }
-
-    public function isResolved(): bool
+    public function canTransitionTo(string $status): bool
     {
-        return in_array($this->status, [self::STATUS_APPROVED, self::STATUS_REJECTED]);
+        return in_array($status, self::TRANSITIONS[$this->status] ?? [], true);
     }
 
-    public function sellerCanAct(): bool
-    {
-        return in_array($this->status, [self::STATUS_PENDING, self::STATUS_REVIEWING]);
-    }
-
-    // ── Resolution type helpers (NEW) ──────────────────────────────────────
-
-    /** Customer wants a replacement item. */
     public function isExchange(): bool
     {
         return $this->resolution_type === self::RESOLUTION_EXCHANGE;
     }
 
-    /** Customer wants item(s) collected and money returned. */
     public function isReturnRefund(): bool
     {
-        return $this->resolution_type === self::RESOLUTION_RETURN_REFUND
-            || is_null($this->resolution_type); // legacy fallback
+        return !$this->isExchange();
     }
 
-    // ── Refund helpers ──────────────────────────────────────────────────────
+    public function sellerCanAct(): bool
+    {
+        return $this->status === self::STATUS_REQUESTED;
+    }
+
+    public function canEscalate(): bool
+    {
+        return $this->status === self::STATUS_SELLER_REJECTED
+            && (!$this->seller_decided_at || $this->seller_decided_at->gt(now()->subDays(self::ESCALATION_WINDOW_DAYS)));
+    }
 
     public function hasRefundTask(): bool
     {
         return !is_null($this->refund_task_id);
     }
 
-    public function isRefundCompleted(): bool
+    public static function nextReference(int $id): string
     {
-        return $this->refund_status === self::REFUND_STATUS_COMPLETED;
-    }
-
-    // ── Action helpers ─────────────────────────────────────────────────────
-
-    public function markReviewing(?string $sellerNote = null): void
-    {
-        $this->update([
-            'status'      => self::STATUS_REVIEWING,
-            'seller_note' => $sellerNote,
-            'reviewed_at' => now(),
-        ]);
-    }
-
-    public function sellerApprove(?string $sellerNote = null): void
-    {
-        $this->update([
-            'status'          => self::STATUS_APPROVED,
-            'seller_note'     => $sellerNote ?? $this->seller_note,
-            'seller_decision' => 'approved',
-            'reviewed_at'     => $this->reviewed_at ?? now(),
-            'resolved_at'     => now(),
-        ]);
-        ComplaintApproved::dispatch($this->fresh());
-    }
-
-    public function sellerReject(string $sellerNote, string $rejectionReason): void
-    {
-        $this->update([
-            'status'           => self::STATUS_SELLER_REJECTED,
-            'seller_note'      => $sellerNote,
-            'seller_decision'  => 'rejected',
-            'rejection_reason' => $rejectionReason,
-            'reviewed_at'      => now(),
-        ]);
-    }
-
-    public function approve(): void
-    {
-        $this->update([
-            'status'      => self::STATUS_APPROVED,
-            'resolved_at' => now(),
-        ]);
-        ComplaintApproved::dispatch($this->fresh());
-    }
-
-    public function confirmRejection(): void
-    {
-        $this->update([
-            'status'      => self::STATUS_REJECTED,
-            'resolved_at' => now(),
-        ]);
-    }
-
-    public function overrideToApproved(): void
-    {
-        $this->update([
-            'status'      => self::STATUS_APPROVED,
-            'resolved_at' => now(),
-        ]);
-        ComplaintApproved::dispatch($this->fresh());
-    }
-
-    public function reject(string $reason): void
-    {
-        $this->update([
-            'status'           => self::STATUS_REJECTED,
-            'rejection_reason' => $reason,
-            'resolved_at'      => now(),
-        ]);
+        return 'RET-' . str_pad((string) $id, 6, '0', STR_PAD_LEFT);
     }
 }

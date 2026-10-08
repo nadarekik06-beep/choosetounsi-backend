@@ -365,6 +365,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/complaints/{id}/note',    [SellerComplaintController::class, 'addNote']);
         Route::patch('/complaints/{id}/approve', [SellerComplaintController::class, 'approve']);
         Route::patch('/complaints/{id}/reject',  [SellerComplaintController::class, 'reject']);
+        Route::patch('/complaints/{id}/receive', [SellerComplaintController::class, 'receive']);
 
         // ── Ads: wallet, CPC campaigns, wizard tools ──────────────────────
         Route::prefix('ads')->middleware('seller.feature:sponsorships')->group(function () {
@@ -449,6 +450,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/complaints',                 [ClientComplaintController::class, 'index']);
         Route::post('/complaints',                [ClientComplaintController::class, 'store']);
         Route::get('/complaints/{id}',            [ClientComplaintController::class, 'show']);
+        Route::patch('/complaints/{id}/escalate', [ClientComplaintController::class, 'escalate']);
+        Route::patch('/complaints/{id}/cancel',   [ClientComplaintController::class, 'cancel']);
         
         Route::get('/reviews/eligible',            [ClientReviewController::class, 'eligible']);
         Route::get('/reviews/tags',                [ClientReviewController::class, 'tags']);
@@ -609,6 +612,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/complaints/{id}/reject',            [AdminComplaintController::class, 'reject']);
         Route::patch('/complaints/{id}/confirm-rejection', [AdminComplaintController::class, 'confirmRejection']);
         Route::patch('/complaints/{id}/override-approve',  [AdminComplaintController::class, 'overrideToApproved']);
+        Route::patch('/complaints/{id}/schedule-pickup',   [AdminComplaintController::class, 'schedulePickup']);
+        Route::patch('/complaints/{id}/picked-up',         [AdminComplaintController::class, 'pickedUp']);
+        Route::patch('/complaints/{id}/receive',           [AdminComplaintController::class, 'receive']);
+        Route::patch('/complaints/{id}/refund',            [AdminComplaintController::class, 'refund']);
+        Route::patch('/complaints/{id}/cancel',            [AdminComplaintController::class, 'cancel']);
+        Route::patch('/complaints/{id}/close',             [AdminComplaintController::class, 'close']);
+        Route::get('/complaints/{id}/return-slip',         [AdminComplaintController::class, 'returnSlip'])->whereNumber('id');
 
         Route::patch('/users/{id}/wallet/top-up', [\App\Http\Controllers\Admin\UserController::class, 'walletTopUp']);
 

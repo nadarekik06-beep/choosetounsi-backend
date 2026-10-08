@@ -29,6 +29,7 @@ class SellerOrder extends Model
         'order_id',
         'seller_id',
         'status',
+        'return_status',   // null | partial | full (returns refunded)
         'payment_status',
         'subtotal',
         'coupon_id',
@@ -43,6 +44,22 @@ class SellerOrder extends Model
         'coupon_value'    => 'decimal:3',
         'discount_amount' => 'decimal:3',
     ];
+
+    protected $appends = ['display_status'];
+
+    /**
+     * Status to show: a fully returned seller order is 'refunded' ("Returned
+     * (Refunded)"); a partial return keeps the sale status (so revenue still
+     * counts the kept items) and shows as 'partially_returned'.
+     */
+    public function getDisplayStatusAttribute(): ?string
+    {
+        $status = $this->attributes['status'] ?? null;
+        if (($this->attributes['return_status'] ?? null) === 'partial' && !in_array($status, ['cancelled', 'refunded'], true)) {
+            return 'partially_returned';
+        }
+        return $status;
+    }
 
     // ── Relationships ──────────────────────────────────────────────────────
 

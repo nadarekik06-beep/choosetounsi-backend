@@ -175,14 +175,20 @@ class SalesSeries
         return $out;
     }
 
-    /** order_item ids of approved return/refund complaints against this seller. */
+    /**
+     * order_item ids to leave out of the series: lines of legacy refunded
+     * returns (before 2026-10 the line itself was not reduced). New returns
+     * reduce the line's quantity when refunded, so they need no exclusion.
+     */
     private function returnedItemIds(int $sellerId): array
     {
         $ids = [];
         $rows = DB::table('complaints')
             ->where('seller_id', $sellerId)
             ->where('resolution_type', 'return_refund')
-            ->where('status', 'approved')
+            ->where('status', 'refunded')
+            ->whereNotExists(fn($q) => $q->from('complaint_items as ci')->join('order_items as oi', 'oi.id', '=', 'ci.order_item_id')
+                ->whereColumn('ci.complaint_id', 'complaints.id')->where('oi.returned_quantity', '>', 0))
             ->pluck('order_item_ids');
         foreach ($rows as $json) {
             foreach ((array) json_decode((string) $json, true) as $id) {

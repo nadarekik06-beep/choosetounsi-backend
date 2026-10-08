@@ -217,6 +217,69 @@ class DeliveryDocumentService
         ], 'INTERNAL - ' . $order->order_number);
     }
 
+    // ── Return slip (reverse pick-up: client → seller) ───────────────────────
+
+    /**
+     * Everything the courier needs for a return pick-up: the CLIENT is the
+     * pickup address, the SELLER the destination. Proof photos are printed
+     * (anti-fraud) next to the condition check the courier fills in.
+     */
+    public function returnSlip(\App\Models\Complaint $complaint): array
+    {
+        $complaint->loadMissing(['order.user:id,name,email', 'seller.sellerApplication', 'user:id,name,email']);
+        \App\Models\Complaint::withItemSnapshots($complaint);
+        $order  = $complaint->order;
+        $pickup = SellerPickup::for($complaint->seller, $complaint->seller_id);
+        if ($pickup['phone']) {
+            $pickup['phone'] = TunisianPhone::format($pickup['phone']);
+        }
+
+        return [
+            'reference'       => $complaint->reference,
+            'order_number'    => $order->order_number,
+            'order_date'      => $order->created_at,
+            'requested_at'    => $complaint->created_at,
+            'approved_at'     => $complaint->admin_decided_at,
+            'client'          => $this->recipient($order),
+            'seller'          => $pickup,
+            'reason'          => $complaint->getTypeLabel(),
+            'description'     => $complaint->description,
+            'scope'           => $complaint->return_scope,
+            'payment_method'  => $order->payment_method ?? 'cod',
+            'items'           => collect($complaint->getAttribute('complained_items'))->map(fn($i) => [
+                'name'       => $i['product_name'] ?? '—',
+                'variant'    => $i['variant_label'] ?? null,
+                'quantity'   => (int) $i['return_quantity'],
+                'unit_price' => (float) $i['return_unit_price'],
+                'total'      => (float) $i['return_amount'],
+                'image'      => $this->localImage($i['image_url'] ?? null),
+            ])->all(),
+            'items_amount'    => (float) $complaint->items_amount,
+            'shipping_payer'  => $complaint->shipping_payer,
+            'shipping_fee'    => (float) $complaint->return_shipping_fee,
+            'refund_amount'   => (float) $complaint->refund_amount,
+            'photos'          => array_values(array_filter(array_map(
+                fn($path) => is_file($f = storage_path('app/public/' . $path)) ? $f : null,
+                $complaint->image_paths ?: array_filter([$complaint->image_path])
+            ))),
+        ];
+    }
+
+    public function returnSlipPdf(\App\Models\Complaint $complaint): string
+    {
+        return $this->render('pdf.return-slip', ['slip' => $this->returnSlip($complaint)], 'RETURN ' . $complaint->reference);
+    }
+
+    /** A /storage/... URL (or path) → the file on disk, for mPDF. */
+    private function localImage(?string $url): ?string
+    {
+        if (!$url) return null;
+        $path = parse_url($url, PHP_URL_PATH) ?: $url;
+        if (!Str::contains($path, '/storage/')) return null;
+        $file = storage_path('app/public/' . ltrim(Str::after($path, '/storage/'), '/'));
+        return is_file($file) ? $file : null;
+    }
+
     private function render(string $view, array $data, string $title): string
     {
         $tmp = storage_path('app/mpdf');

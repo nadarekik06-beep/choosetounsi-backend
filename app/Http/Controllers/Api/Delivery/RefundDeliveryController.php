@@ -4,7 +4,10 @@ namespace App\Http\Controllers\Api\Delivery;
 
 use App\Events\RefundCompleted;
 use App\Http\Controllers\Controller;
+use App\Models\Complaint;
 use App\Models\RefundDeliveryTask;
+use App\Services\Returns\RefundTaskSync;
+use App\Services\Returns\ReturnService;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -127,6 +130,14 @@ class RefundDeliveryController extends Controller
                 assignedById:  auth()->id(),
                 notes:         $request->notes,
             );
+            RefundTaskSync::mirror($task);
+
+            // The return's pick-up is now scheduled (client + seller notified)
+            $complaint = $task->complaint()->first();
+            if ($complaint && $complaint->status === Complaint::STATUS_ADMIN_APPROVED) {
+                app(ReturnService::class)->schedulePickup($complaint, $request->user(), 'delivery',
+                    $request->notes, ['courier' => $deliveryGuy->name]);
+            }
 
             return response()->json([
                 'success' => true,
@@ -194,7 +205,11 @@ class RefundDeliveryController extends Controller
         try {
             if ($newStatus === RefundDeliveryTask::STATUS_PICKED_UP) {
                 $task->markPickedUp();
-                $this->notifyBuyerPickedUp($task->fresh());
+                RefundTaskSync::mirror($task);
+                $complaint = $task->complaint()->first();
+                if ($complaint && $complaint->canTransitionTo(Complaint::STATUS_PICKED_UP)) {
+                    app(ReturnService::class)->markPickedUp($complaint, $request->user(), 'delivery');
+                }
             } elseif ($newStatus === RefundDeliveryTask::STATUS_COMPLETED) {
                 $task->markCompleted();
                 RefundCompleted::dispatch($task->fresh());
@@ -268,12 +283,15 @@ class RefundDeliveryController extends Controller
             $filteredItems = $allItems;
         }
 
+        // Units to collect per line (a return may cover part of a line)
+        $returnQty = $complaint ? \App\Models\ComplaintItem::where('complaint_id', $complaint->id)->pluck('quantity', 'order_item_id')->all() : [];
+
         // As bought (purchase snapshot), so the agent collects the right color / size
         $items = $filteredItems->map(fn($i) => [
             'id'            => $i->id,
             'product_name'  => $i->product_name,
             'variant_label' => $i->displayVariantLabel(),
-            'quantity'      => (int) $i->quantity,
+            'quantity'      => (int) ($returnQty[$i->id] ?? $i->ordered_quantity),
             'image_url'     => $i->displayImageUrl(false),
         ])->values();
 
@@ -281,6 +299,8 @@ class RefundDeliveryController extends Controller
         $data = [
             'id'           => $task->id,
             'complaint_id' => $task->complaint_id,
+            'reference'    => $complaint?->reference,
+            'return_status'=> $complaint?->status,
             'status'       => $task->status,
             'created_at'   => $task->created_at,
 
@@ -300,6 +320,7 @@ class RefundDeliveryController extends Controller
             ],
 
             'items' => $items,
+            'refund_amount' => (float) ($complaint?->refund_amount ?? 0),
 
             'delivery_guy' => $task->relationLoaded('deliveryGuy') && $task->deliveryGuy
                 ? [
@@ -320,6 +341,7 @@ class RefundDeliveryController extends Controller
                 'type'        => $complaint?->complaint_type,
                 'description' => $complaint?->description,
                 'image_url'   => $complaint?->image_url,
+                'image_urls'  => $complaint?->image_urls ?? [],
             ];
         } else {
             $data['complaint_type'] = $complaint?->complaint_type;
@@ -328,18 +350,4 @@ class RefundDeliveryController extends Controller
         return $data;
     }
 
-    /** Buyer: "the courier collected your item, refund / exchange in progress". */
-    private function notifyBuyerPickedUp(\App\Models\RefundDeliveryTask $task): void
-    {
-        try {
-            $order = $task->complaint?->order;
-            if ($order?->user) {
-                app(\App\Services\Notifications\BuyerNotifier::class)->send(
-                    $order->user, new \App\Notifications\Buyer\RefundNotification($task, $order, 'picked_up')
-                );
-            }
-        } catch (\Throwable $e) {
-            Log::error('[RefundDelivery] buyer pick-up notification failed: ' . $e->getMessage());
-        }
-    }
 }
