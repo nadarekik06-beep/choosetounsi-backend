@@ -285,6 +285,15 @@ class ReturnService
             'pickup_scheduled_at' => now(),
             'pickup_note'         => $note,
         ], $meta ?: null);
+        // Booked by the admin with an outside delivery company: the in-house
+        // courier task nobody took is no longer needed
+        if ($role === 'admin') {
+            \App\Models\RefundDeliveryTask::where('complaint_id', $c->id)
+                ->where('status', \App\Models\RefundDeliveryTask::STATUS_PENDING)->delete();
+            if (!\App\Models\RefundDeliveryTask::where('complaint_id', $c->id)->exists()) {
+                $c->update(['refund_task_id' => null, 'refund_status' => null]);
+            }
+        }
         $this->buyer($c, 'pickup_scheduled');
         $this->seller($c, 'pickup_scheduled');
         return $c;

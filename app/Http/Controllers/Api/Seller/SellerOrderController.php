@@ -373,6 +373,7 @@ public function updatePayment(Request $request, $id)
             'id'              => $so->id,
             'order_number'    => $order?->order_number,
             'status'          => $so->status,
+            'display_status'  => $so->display_status,
             'payment_status'  => $so->payment_status,
             'payment_method'  => $order?->payment_method,
             'total_amount'    => round((float) $so->subtotal - (float) ($so->discount_amount ?? 0), 3),

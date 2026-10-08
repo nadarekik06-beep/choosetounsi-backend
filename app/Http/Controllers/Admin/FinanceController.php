@@ -303,6 +303,7 @@ class FinanceController extends Controller
                 'order_number'    => optional($order)->order_number,
                 'created_at'      => $so->created_at,
                 'status'          => $so->status,
+                'display_status'  => $so->display_status,
                 'order_status'    => optional($order)->status,
                 'payment_method'  => optional($order)->payment_method,
                 'payment_status'  => $so->payment_status,

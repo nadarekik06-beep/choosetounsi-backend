@@ -23,7 +23,7 @@
     .muted      { color: #555; }
     .small      { font-size: 8pt; }
     .label      { font-size: 7.5pt; font-weight: bold; color: #555; text-transform: uppercase; letter-spacing: 0.5pt; }
-    td.box      { border: 1pt solid #222; padding: 6pt 8pt; height: 104pt; }
+    td.box      { border: 1pt solid #222; padding: 6pt 8pt; height: 84pt; }
     td.box-title { background: #111; color: #fff; font-weight: bold; font-size: 8.5pt; padding: 3pt 8pt; text-transform: uppercase; }
     td.box-title.ret { background: #db142e; }
     .big        { font-size: 12pt; font-weight: bold; }
@@ -34,7 +34,7 @@
     .totals td  { padding: 2pt 6pt; }
     td.refund   { border: 2.5pt solid #198f41; background: #effaf3; padding: 8pt; text-align: center; }
     .check td   { border: 0.8pt solid #222; padding: 4pt 6pt; }
-    .sign td    { border: 0.8pt solid #222; height: 58pt; padding: 4pt 6pt; width: 50%; }
+    .sign td    { border: 0.8pt solid #222; height: 50pt; padding: 4pt 6pt; width: 50%; }
     .kv td      { padding: 0 0 1pt 0; }
     .kv td.k    { width: 52pt; }
     .banner     { background: #fff1f2; border: 1pt solid #db142e; color: #db142e; font-weight: bold; text-align: center; padding: 4pt; }
@@ -81,7 +81,7 @@
     </table>
 
     {{-- Pickup = client / Destination = seller --}}
-    <table style="margin-top: 8pt;">
+    <table style="margin-top: 6pt;">
         <tr>
             <td style="width: 49%; padding: 0;">
                 <table>
@@ -121,7 +121,7 @@
     </table>
 
     {{-- Returned products --}}
-    <table class="items" style="margin-top: 8pt;">
+    <table class="items" style="margin-top: 6pt;">
         <thead>
             <tr>
                 <th style="width: 11%;">Photo</th>
@@ -147,7 +147,7 @@
     </table>
 
     {{-- Money + reason --}}
-    <table style="margin-top: 8pt;">
+    <table style="margin-top: 6pt;">
         <tr>
             <td style="width: 54%;">
                 <table class="totals">
@@ -173,11 +173,11 @@
 
     {{-- Proof photos (anti-fraud) --}}
     @if (count($slip['photos']))
-        <table style="margin-top: 8pt;">
+        <table style="margin-top: 6pt;">
             <tr><td class="box-title">Photos du client (preuve) / Client proof photos</td></tr>
             <tr><td style="border: 1pt solid #222; padding: 6pt;">
                 @foreach ($slip['photos'] as $photo)
-                    <img src="{{ $photo }}" style="height: 92pt; margin-right: 6pt;" />
+                    <img src="{{ $photo }}" style="height: 70pt; margin-right: 6pt;" />
                 @endforeach
                 <div class="small muted">Comparez l'article remis avec ces photos avant de l'accepter. / Compare the parcel with these photos before accepting it.</div>
             </td></tr>
@@ -185,7 +185,7 @@
     @endif
 
     {{-- Condition check at pickup --}}
-    <table class="check" style="margin-top: 8pt;">
+    <table class="check" style="margin-top: 6pt;">
         <tr>
             <td style="width: 34%;"><span class="label">Contrôle à l'enlèvement / Pickup check</span></td>
             <td style="width: 22%;">☐ Conforme aux photos<br><span class="small">Matches photos</span></td>
@@ -198,7 +198,7 @@
     </table>
 
     {{-- Signatures --}}
-    <table class="sign" style="margin-top: 8pt;">
+    <table class="sign" style="margin-top: 6pt;">
         <tr>
             <td>
                 <span class="label">Enlèvement chez le client / Pickup</span><br>
@@ -211,10 +211,13 @@
                 <span class="small">Date &amp; heure : ____ / ____ / ________ &nbsp; ____ : ____</span>
             </td>
         </tr>
+        <tr>
+            <td colspan="2" class="small muted" style="height: auto; border: 0; text-align: center; padding-top: 4pt;">
+                CHOOSE'Tounsi — marketplace tunisienne{{ $support ? ' · Service client : ' . $support : '' }} · Retour {{ $slip['reference'] }} · Commande {{ $slip['order_number'] }}
+            </td>
+        </tr>
     </table>
 
-    <div class="small muted" style="margin-top: 6pt; text-align: center;">
-        CHOOSE'Tounsi — marketplace tunisienne{{ $support ? ' · Service client : ' . $support : '' }} · Retour {{ $slip['reference'] }} · Commande {{ $slip['order_number'] }}
-    </div>
+
 </body>
 </html>

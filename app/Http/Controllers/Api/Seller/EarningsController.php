@@ -354,6 +354,7 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
                 'order_number'   => optional($order)->order_number,
                 'created_at'     => $so->created_at,
                 'status'         => $so->status,
+                'display_status' => $so->display_status,
                 'payment_method' => optional($order)->payment_method,
                 'payout_status'  => $so->getAttribute('payout_status'),
                 'paid_out_at'    => $so->getAttribute('settled_at'),

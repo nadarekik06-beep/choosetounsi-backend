@@ -221,6 +221,7 @@ class ReturnFlowTest extends TestCase
         $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/receive", ['conditions' => [$la->id => 'resaleable', $lb->id => 'damaged']])->assertStatus(422);
 
         $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/schedule-pickup")->assertOk();
+        $this->assertNull(RefundDeliveryTask::where('complaint_id', $c->id)->first(), 'outside carrier: the unassigned courier task is dropped');
         $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/picked-up")->assertOk();
 
         // Never refunded before the item is back
@@ -442,6 +443,34 @@ class ReturnFlowTest extends TestCase
         $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/refund", ['method' => 'wallet'])->assertOk();
         $this->assertEqualsWithDelta($before + 25, (float) $order->user->fresh()->wallet_balance, 0.001);
         $this->assertSame('partially_returned', $order->fresh()->display_status);
+    }
+
+    // ── Delivery app (in-house courier) ───────────────────────────────────────
+
+    public function test_delivery_app_task_drives_pickup_statuses_and_asks_the_seller_to_inspect(): void
+    {
+        [$p, $a] = $this->product();
+        $order = $this->deliveredOrder([[$p, $a, 1]]);
+        $c = Complaint::findOrFail($this->request($order, ['return_all' => 1])->assertCreated()->json('data.id'));
+        $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/approve")->assertOk();
+        $task = RefundDeliveryTask::where('complaint_id', $c->id)->firstOrFail();
+
+        $dispatcher = $this->makeUser('delivery_admin');
+        $courier    = $this->makeUser('delivery_guy');
+
+        $this->as($dispatcher)->postJson("/api/delivery/refunds/{$task->id}/assign", ['delivery_guy_id' => $courier->id])->assertOk();
+        $this->assertSame(Complaint::STATUS_PICKUP_SCHEDULED, $c->fresh()->status);
+        $this->assertSame($c->reference, $this->as($courier)->getJson('/api/delivery/my-refunds')->assertOk()->json('data.data.0.reference'));
+
+        $this->as($courier)->putJson("/api/delivery/refunds/{$task->id}/status", ['status' => 'picked_up'])->assertOk();
+        $this->assertSame(Complaint::STATUS_PICKED_UP, $c->fresh()->status);
+
+        // Parcel at the shop: nothing refunded yet, the seller must inspect it
+        $this->as($courier)->putJson("/api/delivery/refunds/{$task->id}/status", ['status' => 'completed'])->assertOk();
+        $this->assertSame(Complaint::STATUS_PICKED_UP, $c->fresh()->status);
+        $this->assertNull($c->fresh()->refunded_at);
+        Notification::assertSentTo($this->seller, ReturnSellerNotification::class,
+            fn($n) => $n->toDatabase($this->seller)['type'] === 'return_delivered_to_seller');
     }
 
     // ── Return slip ───────────────────────────────────────────────────────────

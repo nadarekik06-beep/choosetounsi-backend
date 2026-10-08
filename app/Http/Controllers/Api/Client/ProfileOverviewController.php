@@ -99,7 +99,7 @@ class ProfileOverviewController extends Controller
             'recent_orders' => $recent->map(fn(Order $o) => [
                 'id'           => $o->id,
                 'order_number' => $o->order_number,
-                'status'       => $o->status,
+                'status'       => $o->display_status,   // partially_returned shows as such
                 'status_group' => $this->statusGroup($o->status),
                 'payment_status' => $o->payment_status,
                 'total_amount' => (float) $o->total_amount,
