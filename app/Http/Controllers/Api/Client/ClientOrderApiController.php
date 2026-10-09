@@ -171,12 +171,17 @@ class ClientOrderApiController extends Controller
         // Live breakdown from active seller_orders (orders.total_amount may be
         // stale if a partial return reduced a seller subtotal):
         //   total = subtotal − discount_amount + shipping_fee
+        // A cancelled order owes 0: is_cancelled + original_amounts let the
+        // storefront strike the checkout amounts through.
         $money = $order->moneySummary();
-        $arr['subtotal']        = $money['subtotal'];
-        $arr['discount_amount'] = $money['discount_amount'];
-        $arr['coupon_codes']    = $money['coupon_codes'];
-        $arr['shipping_fee']    = $money['shipping_fee'];
-        $arr['total_amount']    = $money['total'];
+        $arr['subtotal']         = $money['subtotal'];
+        $arr['discount_amount']  = $money['discount_amount'];
+        $arr['coupon_codes']     = $money['coupon_codes'];
+        $arr['shipping_fee']     = $money['shipping_fee'];
+        $arr['total_amount']     = $money['total'];
+        $arr['amount_due']       = $money['total'];
+        $arr['is_cancelled']     = $money['is_cancelled'];
+        $arr['original_amounts'] = $money['original'];
 
         return $arr;
     }

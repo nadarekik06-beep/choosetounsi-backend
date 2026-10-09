@@ -157,25 +157,37 @@ public function complaints()
      * legacy rows) fall back to the stored columns.
      *
      *   total = subtotal − discount_amount + shipping_fee   (what the customer pays)
+     *
+     * Shipping is charged once per order, so it stays while at least one
+     * sub-order is live. A fully cancelled order owes nothing: every figure is
+     * 0 and 'original' keeps the stored checkout amounts (never overwritten)
+     * for the struck-through history line.
      */
     public function moneySummary(): array
     {
         $sellerOrders = $this->relationLoaded('sellerOrders') ? $this->sellerOrders : $this->sellerOrders()->get();
         $shipping     = round((float) ($this->shipping_fee ?? 0), 3);
+        $original     = $this->originalAmounts();
 
-        if ($sellerOrders->isEmpty()) {
-            $total    = round((float) $this->total_amount, 3);
-            $discount = round((float) ($this->discount_amount ?? 0), 3);
+        $active    = $sellerOrders->where('status', '!=', 'cancelled');
+        $cancelled = $this->status === 'cancelled' || ($sellerOrders->isNotEmpty() && $active->isEmpty());
+
+        if ($cancelled) {
             return [
-                'subtotal'        => $this->subtotal !== null ? round((float) $this->subtotal, 3) : max(0, round($total - $shipping + $discount, 3)),
-                'discount_amount' => $discount,
-                'coupon_codes'    => $this->coupon_codes ?? [],
-                'shipping_fee'    => $shipping,
-                'total'           => $total,
+                'subtotal'        => 0.0,
+                'discount_amount' => 0.0,
+                'coupon_codes'    => [],
+                'shipping_fee'    => 0.0,
+                'total'           => 0.0,
+                'is_cancelled'    => true,
+                'original'        => $original,
             ];
         }
 
-        $active   = $sellerOrders->where('status', '!=', 'cancelled');
+        if ($sellerOrders->isEmpty()) {
+            return $original + ['coupon_codes' => $this->coupon_codes ?? [], 'is_cancelled' => false, 'original' => $original];
+        }
+
         $subtotal = round($active->sum(fn($so) => (float) $so->subtotal), 3);
         $discount = round($active->sum(fn($so) => (float) ($so->discount_amount ?? 0)), 3);
 
@@ -185,7 +197,43 @@ public function complaints()
             'coupon_codes'    => $active->pluck('coupon_code')->filter()->unique()->values()->all(),
             'shipping_fee'    => $shipping,
             'total'           => round($subtotal - $discount + $shipping, 3),
+            'is_cancelled'    => false,
+            'original'        => $original,
         ];
+    }
+
+    /** Amounts frozen at checkout — kept as history, cancelled or not. */
+    public function originalAmounts(): array
+    {
+        $shipping = round((float) ($this->shipping_fee ?? 0), 3);
+        $total    = round((float) $this->total_amount, 3);
+        $discount = round((float) ($this->discount_amount ?? 0), 3);
+
+        return [
+            'subtotal'        => $this->subtotal !== null ? round((float) $this->subtotal, 3) : max(0, round($total - $shipping + $discount, 3)),
+            'discount_amount' => $discount,
+            'shipping_fee'    => $shipping,
+            'total'           => $total,
+        ];
+    }
+
+    /**
+     * Copy the live money onto the order for an API payload, plus
+     * is_cancelled / amount_due / original_amounts for the display.
+     * Call AFTER reading anything that needs the stored columns.
+     */
+    public function applyMoneySummary(?array $money = null): array
+    {
+        $money ??= $this->moneySummary();
+        $this->subtotal        = $money['subtotal'];
+        $this->discount_amount = $money['discount_amount'];
+        $this->coupon_codes    = $money['coupon_codes'];
+        $this->shipping_fee    = $money['shipping_fee'];
+        $this->total_amount    = $money['total'];
+        $this->setAttribute('is_cancelled', $money['is_cancelled']);
+        $this->setAttribute('amount_due', $money['total']);
+        $this->setAttribute('original_amounts', $money['original']);
+        return $money;
     }
 
     /* ── Scopes ── */

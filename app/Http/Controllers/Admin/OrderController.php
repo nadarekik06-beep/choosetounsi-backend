@@ -88,11 +88,8 @@ class OrderController extends Controller
 
         $orders->getCollection()->transform(function ($order) use ($platformUserId, $documents) {
             // Same figure as the detail drawer: what the customer pays
-            $money = $order->moneySummary();
-            $order->subtotal        = $money['subtotal'];
-            $order->discount_amount = $money['discount_amount'];
-            $order->coupon_codes    = $money['coupon_codes'];
-            $order->total_amount    = $money['total'];
+            // (cancelled → 0 due, original amounts kept in original_amounts)
+            $order->applyMoneySummary();
 
             $order->has_platform_items = $platformUserId
                 ? $order->sellerOrders->contains('seller_id', $platformUserId)
@@ -153,7 +150,11 @@ class OrderController extends Controller
             $item->is_returned = $item->return_state === 'returned';
         });
 
-        $nonReturnedItems = $order->items;   // live figures are already net of refunded returns
+        // Live figures are already net of refunded returns; cancelled sub-orders
+        // earn nothing (no revenue, commission or payout).
+        $cancelledIds     = $order->sellerOrders->where('status', 'cancelled')->pluck('id')->all();
+        $orderCancelled   = $order->status === 'cancelled';
+        $nonReturnedItems = $order->items->reject(fn($i) => $orderCancelled || in_array((int) $i->seller_order_id, $cancelledIds, true));
 
         // Revenue split on item prices AFTER the seller's coupon (commission base).
         // gross_total = items before discount, net_total = what the customer paid for items.
@@ -178,12 +179,8 @@ class OrderController extends Controller
         $order->setAttribute('commission_summary', $commissionSummary);
 
         // subtotal − discount + shipping, live from non-cancelled seller_orders
-        $money = $order->moneySummary();
-        $order->subtotal        = $money['subtotal'];
-        $order->discount_amount = $money['discount_amount'];
-        $order->coupon_codes    = $money['coupon_codes'];
-        $order->shipping_fee    = $money['shipping_fee'];
-        $order->total_amount    = $money['total'];
+        // (cancelled → 0 due, original amounts kept in original_amounts)
+        $order->applyMoneySummary();
 
         $platformUserId = PlatformUser::id();
         $order->has_platform_items = $platformUserId
@@ -280,6 +277,7 @@ class OrderController extends Controller
         $cancelledIds = DB::table('seller_orders')->where('order_id', $orderId)->where('status', 'cancelled')->pluck('id')->all();
         app(OrderStock::class)->releaseForSellerOrders($cancelledIds);
         app(\App\Services\PromotionService::class)->releaseForSellerOrders($cancelledIds);
+        \App\Models\SellerOrder::syncPayoutWithStatus($cancelledIds, true);
     }
 
     private function insufficientStock(InsufficientStock $e)
@@ -331,6 +329,13 @@ class OrderController extends Controller
                 DB::table('orders')
                     ->where('id', $id)
                     ->update(['status' => $request->status, 'updated_at' => now()]);
+
+                // Re-opened sub-orders wait for cash again
+                if ($request->status !== 'cancelled') {
+                    \App\Models\SellerOrder::syncPayoutWithStatus(
+                        array_keys(array_filter($previous, fn ($s) => $s === 'cancelled')), false
+                    );
+                }
 
                 // One e-mail + bell entry per affected seller sub-order (after commit, never twice)
                 if ($request->status === 'cancelled') {

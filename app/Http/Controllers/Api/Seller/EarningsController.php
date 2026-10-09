@@ -218,14 +218,16 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
                 'o.order_number',
                 'so.status',
                 'so.payout_status',
-                DB::raw('(so.subtotal - so.discount_amount) as gross'),
+                // Cancelled sub-orders earn nothing: money shows 0, original_gross keeps the history
+                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE (so.subtotal - so.discount_amount) END as gross"),
+                DB::raw('(so.subtotal - so.discount_amount) as original_gross'),
                 'so.discount_amount',
                 'so.coupon_code',
-                'so.commission_amount',
-                'so.seller_net_amount as net_earnings',
-                'so.seller_shipping_charge',
-                'so.delivery_fee',
-                'so.platform_profit',
+                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.commission_amount END as commission_amount"),
+                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.seller_net_amount END as net_earnings"),
+                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.seller_shipping_charge END as seller_shipping_charge"),
+                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.delivery_fee END as delivery_fee"),
+                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.platform_profit END as platform_profit"),
                 'so.money_received_at',
                 'so.settled_at',
                 'so.settlement_batch_id',
@@ -332,9 +334,12 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
         $paidBy = $order ? $order->getAttribute('shipping_paid_by') : null;
         $payer  = $charge > 0 || $paidBy === 'seller' ? 'you' : (in_array($paidBy, ['customer', 'platform'], true) ? $paidBy : null);
 
-        $gross      = $num($so->subtotal - $so->discount_amount);
-        $commission = $num($so->getAttribute('commission_amount'));
-        $net        = $num($so->getAttribute('seller_net_amount'));
+        // Cancelled: nothing earned, no commission, no payout (frozen columns stay as history)
+        $cancelled  = $so->status === 'cancelled';
+        $charge     = $cancelled ? 0.0 : $charge;
+        $gross      = $cancelled ? 0.0 : $num($so->subtotal - $so->discount_amount);
+        $commission = $cancelled ? 0.0 : $num($so->getAttribute('commission_amount'));
+        $net        = $cancelled ? 0.0 : $num($so->getAttribute('seller_net_amount'));
         // Non-zero only when the frozen net was adjusted afterwards (e.g. a refund)
         $adjustment = round($net - ($gross - $commission - $charge), 3);
 
@@ -367,6 +372,8 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
                 'items'    => $items,
                 'timeline' => $timeline,
                 'earnings' => [
+                    'is_cancelled'           => $cancelled,
+                    'original_gross'         => $num($so->subtotal - $so->discount_amount),
                     'gross'                  => $gross,
                     'subtotal_before_coupon' => $num($so->subtotal),
                     'discount_amount'        => $num($so->discount_amount),

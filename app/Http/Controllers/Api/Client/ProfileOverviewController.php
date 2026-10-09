@@ -66,6 +66,7 @@ class ProfileOverviewController extends Controller
         $recent = Order::where('user_id', $userId)
             ->withCount('items')
             ->with([
+                'sellerOrders:id,order_id,status,subtotal,discount_amount,coupon_code',   // moneySummary()
                 // resolved_image_url: the line as bought (snapshot, else its own variant's image)
                 'items' => fn($q) => $q->select('id', 'order_id', 'product_id', 'variant_id', 'variant_label', 'variant_attributes', 'product_name', 'image_url', 'quantity')
                     ->with([
@@ -75,7 +76,7 @@ class ProfileOverviewController extends Controller
             ])
             ->latest()->orderByDesc('id')
             ->limit(5)
-            ->get(['id', 'order_number', 'status', 'return_status', 'payment_status', 'total_amount', 'created_at']);
+            ->get(['id', 'order_number', 'status', 'return_status', 'payment_status', 'subtotal', 'discount_amount', 'shipping_fee', 'total_amount', 'created_at']);
 
         return response()->json(['success' => true, 'data' => [
             'profile' => ProfileApiController::payload($user),
@@ -96,20 +97,25 @@ class ProfileOverviewController extends Controller
                     'active'  => (float) $counts->wallet_balance > 0 || $counts->wallet_transactions > 0,
                 ],
             ],
-            'recent_orders' => $recent->map(fn(Order $o) => [
-                'id'           => $o->id,
-                'order_number' => $o->order_number,
-                'status'       => $o->display_status,   // partially_returned shows as such
-                'status_group' => $this->statusGroup($o->status),
-                'payment_status' => $o->payment_status,
-                'total_amount' => (float) $o->total_amount,
-                'created_at'   => $o->created_at?->toISOString(),
-                'items_count'  => (int) $o->items_count,
-                'thumbnails'   => $o->items->take(4)->map(fn($i) => [
-                    'name'  => $i->product_name ?: $i->product?->name,
-                    'image' => $i->resolved_image_url,
-                ])->values(),
-            ]),
+            'recent_orders' => $recent->map(function (Order $o) {
+                $money = $o->moneySummary();
+                return [
+                    'id'           => $o->id,
+                    'order_number' => $o->order_number,
+                    'status'       => $o->display_status,   // partially_returned shows as such
+                    'status_group' => $this->statusGroup($o->status),
+                    'payment_status' => $o->payment_status,
+                    'total_amount' => $money['total'],                 // amount due: 0 when cancelled
+                    'is_cancelled' => $money['is_cancelled'],
+                    'original_total' => $money['original']['total'],
+                    'created_at'   => $o->created_at?->toISOString(),
+                    'items_count'  => (int) $o->items_count,
+                    'thumbnails'   => $o->items->take(4)->map(fn($i) => [
+                        'name'  => $i->product_name ?: $i->product?->name,
+                        'image' => $i->resolved_image_url,
+                    ])->values(),
+                ];
+            }),
         ]]);
     }
 

@@ -63,7 +63,8 @@
         <td><span class="label">Items subtotal</span><br>{{ $dt($money['subtotal']) }}</td>
         <td><span class="label">Seller coupons</span><br>−{{ $dt($money['discount_amount']) }}{{ $money['coupon_codes'] ? ' (' . implode(', ', $money['coupon_codes']) . ')' : '' }}</td>
         <td><span class="label">Shipping (customer)</span><br>{{ $dt($money['shipping_fee']) }}</td>
-        <td><span class="label">Total customer pays</span><br><b>{{ $dt($money['total']) }}</b></td>
+        <td><span class="label">Total customer pays</span><br><b>{{ $dt($money['total']) }}</b>
+            @if ($money['is_cancelled'])<br><span class="muted">Cancelled — nothing to pay (was <s>{{ $dt($money['original']['total']) }}</s>)</span>@endif</td>
     </tr>
     <tr>
         <td><span class="label">Agency shipping cost</span><br>{{ $dt($order->getAttribute('shipping_cost')) }}</td>

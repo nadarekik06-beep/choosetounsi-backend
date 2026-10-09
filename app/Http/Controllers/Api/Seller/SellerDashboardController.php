@@ -337,6 +337,22 @@ class SellerDashboardController extends Controller
                     ->latest()
                     ->limit(5)
                     ->get(['id', 'user_id', 'order_number', 'total_amount', 'status', 'payment_status', 'created_at']);
+
+                // This seller's part only (items − coupon); a cancelled part is worth 0.
+                $parts = DB::table('seller_orders')->where('seller_id', $sellerId)
+                    ->whereIn('order_id', $recentOrders->pluck('id'))
+                    ->get(['order_id', 'status', 'subtotal', 'discount_amount'])
+                    ->groupBy('order_id');
+                $recentOrders->each(function ($o) use ($parts) {
+                    $mine = $parts->get($o->id);
+                    if (!$mine) return;   // legacy order without sub-orders: keep the stored total
+                    $original  = round($mine->sum(fn($so) => (float) $so->subtotal - (float) $so->discount_amount), 3);
+                    $cancelled = $o->status === 'cancelled' || $mine->every(fn($so) => $so->status === 'cancelled');
+                    $o->total_amount = $cancelled ? 0.0 : round($mine->where('status', '!=', 'cancelled')
+                        ->sum(fn($so) => (float) $so->subtotal - (float) $so->discount_amount), 3);
+                    $o->setAttribute('is_cancelled', $cancelled);
+                    $o->setAttribute('original_total', $original);
+                });
             } catch (\Exception $e) {
                 $recentOrders = [];
             }

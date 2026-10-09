@@ -97,4 +97,23 @@ class SellerOrder extends Model
     {
         return $this->hasOne(DeliveryAssignment::class, 'seller_order_id');
     }
+
+    /**
+     * Payouts follow cancellation: a cancelled sub-order owes the seller
+     * nothing (payout 'cancelled'); re-opened, it waits for cash again
+     * ('pending'). Frozen money columns are never touched (history), and a
+     * payout already paid or batched is left alone. Query-builder write, so
+     * callers using DB::table and the observer share it.
+     */
+    public static function syncPayoutWithStatus(array $ids, bool $cancelled): void
+    {
+        if (!$ids) return;
+
+        \Illuminate\Support\Facades\DB::table('seller_orders')
+            ->whereIn('id', $ids)
+            ->whereNull('settlement_batch_id')
+            ->where('payout_status', $cancelled ? 'pending' : 'cancelled')
+            ->where('status', $cancelled ? '=' : '!=', 'cancelled')
+            ->update(['payout_status' => $cancelled ? 'cancelled' : 'pending', 'updated_at' => now()]);
+    }
 }

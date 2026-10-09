@@ -99,10 +99,14 @@ $totalRevenue = round((float) ($revenueRow->platform_profit ?? 0), 3);        } 
 
         // ── Recent orders ──────────────────────────────────────────────
         try {
-            $recentOrders = Order::with(['user:id,name,email'])
+            $recentOrders = Order::with(['user:id,name,email', 'sellerOrders:id,order_id,status,subtotal,discount_amount,coupon_code'])
                 ->latest()
                 ->limit(5)
-                ->get();
+                ->get()
+                ->each(function (Order $o) {
+                    $o->applyMoneySummary();   // cancelled → 0 due, original_amounts kept
+                    $o->unsetRelation('sellerOrders');
+                });
         } catch (\Exception $e) {
             $recentOrders = [];
         }

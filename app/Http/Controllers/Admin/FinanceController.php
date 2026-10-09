@@ -174,16 +174,18 @@ class FinanceController extends Controller
                 'so.status',
                 'so.payout_status',
                 'so.payment_status',
-                DB::raw('(so.subtotal - so.discount_amount) as subtotal'),
+                // Cancelled sub-orders: no revenue, commission or payout (original_subtotal = history)
+                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE (so.subtotal - so.discount_amount) END as subtotal"),
+                DB::raw('(so.subtotal - so.discount_amount) as original_subtotal'),
                 'so.discount_amount',
                 'so.coupon_code',
-                'so.commission_amount',
-                'so.seller_net_amount',
-                'so.delivery_fee',
-                'so.shipping_cost',
-                'so.seller_shipping_charge',
+                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.commission_amount END as commission_amount"),
+                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.seller_net_amount END as seller_net_amount"),
+                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.delivery_fee END as delivery_fee"),
+                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.shipping_cost END as shipping_cost"),
+                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.seller_shipping_charge END as seller_shipping_charge"),
                 'o.shipping_paid_by',
-                'so.platform_profit',
+                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.platform_profit END as platform_profit"),
                 'so.delivery_confirmed_at',
                 'so.money_received_at',
                 'so.settled_at',
@@ -241,8 +243,10 @@ class FinanceController extends Controller
             return response()->json(['success' => false, 'message' => 'Seller order not found.'], 404);
         }
 
-        $order = $so->order;
-        $num   = fn($v) => round((float) ($v ?? 0), 3);
+        $order     = $so->order;
+        $num       = fn($v) => round((float) ($v ?? 0), 3);
+        $cancelled = $so->status === 'cancelled';
+        $live      = fn($v) => $cancelled ? 0.0 : $num($v);
 
         $items = $so->items->map(function ($item) {
             $product = $item->product;   // withTrashed(); null when hard-deleted
@@ -326,18 +330,21 @@ class FinanceController extends Controller
                 ],
                 'items'      => $items,
                 // Same columns / formula as the orders() row
+                // Cancelled: every money figure is 0 ($live); original_gross = history
                 'financials' => [
-                    'gross'                  => $num($so->subtotal - $so->discount_amount),
+                    'is_cancelled'           => $cancelled,
+                    'original_gross'         => $num($so->subtotal - $so->discount_amount),
+                    'gross'                  => $live($so->subtotal - $so->discount_amount),
                     'subtotal_before_coupon' => $num($so->subtotal),
                     'discount_amount'        => $num($so->discount_amount),
-                    'commission_amount'      => $num($so->getAttribute('commission_amount')),
+                    'commission_amount'      => $live($so->getAttribute('commission_amount')),
                     'commission_rate'        => $rate !== null ? (float) $rate : null,
-                    'delivery_fee'           => $num($so->getAttribute('delivery_fee')),
-                    'shipping_cost'          => $num($so->getAttribute('shipping_cost')),
-                    'seller_shipping_charge' => $num($so->getAttribute('seller_shipping_charge')),
+                    'delivery_fee'           => $live($so->getAttribute('delivery_fee')),
+                    'shipping_cost'          => $live($so->getAttribute('shipping_cost')),
+                    'seller_shipping_charge' => $live($so->getAttribute('seller_shipping_charge')),
                     'shipping_paid_by'       => $order ? $order->getAttribute('shipping_paid_by') : null,
-                    'platform_profit'        => $num($so->getAttribute('platform_profit')),
-                    'seller_net_amount'      => $num($so->getAttribute('seller_net_amount')),
+                    'platform_profit'        => $live($so->getAttribute('platform_profit')),
+                    'seller_net_amount'      => $live($so->getAttribute('seller_net_amount')),
                 ],
             ],
         ]);

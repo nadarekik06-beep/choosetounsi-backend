@@ -184,8 +184,9 @@ $totalSellerNet        = $hasAnyCommission
 $shippingCharge  = round((float) ($sellerOrder->seller_shipping_charge ?? 0), 3);
 $netAfterShipping = $totalSellerNet !== null ? round($totalSellerNet - $shippingCharge, 3) : null;
 
-        $order    = $sellerOrder->order;
-        $customer = $order->user ? ['name' => $order->user->name] : null;
+        $order       = $sellerOrder->order;
+        $customer    = $order->user ? ['name' => $order->user->name] : null;
+        $isCancelled = $sellerOrder->status === 'cancelled';
 
         return response()->json([
             'success' => true,
@@ -199,6 +200,10 @@ $netAfterShipping = $totalSellerNet !== null ? round($totalSellerNet - $shipping
                     'wilaya'          => $order->wilaya ?? $order->shipping_address ?? null,
                     'customer'        => $customer,
                     'seller_order_id' => $sellerOrder->id,
+                    // The buyer's whole-order total is not the seller's business
+                    // (other shops, shipping); their part is seller_total below.
+                    'total_amount'    => $isCancelled ? 0.0 : $totalNet,
+                    'is_cancelled'    => $isCancelled,
                 ]),
                 'items'           => $mappedItems->values(),
                 'seller_subtotal' => $totalGross,
@@ -206,12 +211,25 @@ $netAfterShipping = $totalSellerNet !== null ? round($totalSellerNet - $shipping
                 'coupon_code'     => $sellerOrder->coupon_code,
                 'coupon_type'     => $sellerOrder->coupon_type,
                 'coupon_value'    => $sellerOrder->coupon_value !== null ? (float) $sellerOrder->coupon_value : null,
-                'seller_total'    => $totalNet,
+                'seller_total'    => $isCancelled ? 0.0 : $totalNet,
+                'original_total'  => $totalNet,
+                'is_cancelled'    => $isCancelled,
 
                 // ── Commission summary block ───────────────────────────────
                 // Frontend reads detail.commission.has_commission to decide
                 // whether to render the CommissionSummaryCard.
-                'commission' => [
+                'commission' => $isCancelled ? [
+                    // Cancelled: nothing earned, no commission, no payout
+                    'has_commission'          => $hasAnyCommission,
+                    'is_cancelled'            => true,
+                    'total_gross'             => 0.0,
+                    'total_discount'          => 0.0,
+                    'total_net'               => 0.0,
+                    'total_commission_amount' => $hasAnyCommission ? 0.0 : null,
+                    'total_seller_net'        => $hasAnyCommission ? 0.0 : null,
+                    'shipping_paid_by_seller' => 0.0,
+                    'net_after_shipping'      => $hasAnyCommission ? 0.0 : null,
+                ] : [
                     'has_commission'          => $hasAnyCommission,
                     'total_gross'             => $totalGross,
                     'total_discount'          => $totalDiscount,
@@ -376,7 +394,10 @@ public function updatePayment(Request $request, $id)
             'display_status'  => $so->display_status,
             'payment_status'  => $so->payment_status,
             'payment_method'  => $order?->payment_method,
-            'total_amount'    => round((float) $so->subtotal - (float) ($so->discount_amount ?? 0), 3),
+            // Cancelled: 0 due / earned; original_total keeps the history
+            'total_amount'    => $so->status === 'cancelled' ? 0.0 : round((float) $so->subtotal - (float) ($so->discount_amount ?? 0), 3),
+            'original_total'  => round((float) $so->subtotal - (float) ($so->discount_amount ?? 0), 3),
+            'is_cancelled'    => $so->status === 'cancelled',
             'subtotal'        => (float) $so->subtotal,
             'discount_amount' => round((float) ($so->discount_amount ?? 0), 3),
             'coupon_code'     => $so->coupon_code,

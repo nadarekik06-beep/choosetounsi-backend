@@ -91,6 +91,8 @@ class SellerInvoiceController extends Controller
         $discount    = round((float) ($sellerOrder->discount_amount ?? 0), 3);
         $shippingFee = round((float) ($sellerOrder->delivery_fee ?? 0), 3);
         $grandTotal  = round($subtotal - $discount + $shippingFee, 3);
+        // Cancelled: nothing is billed (no shipping either); original_total keeps the history
+        $cancelled   = $sellerOrder->status === 'cancelled';
 
         return response()->json([
             'success' => true,
@@ -122,8 +124,10 @@ class SellerInvoiceController extends Controller
                 'subtotal'        => $subtotal,
                 'discount_amount' => $discount,
                 'coupon_code'     => $sellerOrder->coupon_code,
-                'shipping_fee'    => $shippingFee,
-                'grand_total'     => $grandTotal,
+                'shipping_fee'    => $cancelled ? 0.0 : $shippingFee,
+                'grand_total'     => $cancelled ? 0.0 : $grandTotal,
+                'original_total'  => $grandTotal,
+                'is_cancelled'    => $cancelled,
             ],
         ]);
     }

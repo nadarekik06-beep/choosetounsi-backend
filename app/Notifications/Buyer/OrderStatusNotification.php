@@ -156,11 +156,17 @@ class OrderStatusNotification extends BuyerNotification
             || ($this->order->payment_method === 'wallet' && $this->order->payment_status !== 'refunded');
     }
 
-    /** What these sub-orders cost the buyer (items − discount), shipping excluded. */
+    /**
+     * What these sub-orders cost the buyer (items − discount). Shipping is
+     * added back only when nothing is left to ship (whole order cancelled).
+     */
     private function cancelledAmount(): float
     {
-        return (float) $this->sellerOrdersOf($this->order, $this->sellerOrderIds)
+        $items = (float) $this->sellerOrdersOf($this->order, $this->sellerOrderIds)
             ->sum(fn ($so) => (float) $so->subtotal - (float) ($so->discount_amount ?? 0));
+
+        $stillActive = $this->order->sellerOrders()->where('status', '!=', 'cancelled')->exists();
+        return $stillActive ? $items : $items + (float) ($this->order->shipping_fee ?? 0);
     }
 
     /** Cash the courier collects for these sub-orders (as printed on the delivery slips). */
