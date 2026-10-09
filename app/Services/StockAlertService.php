@@ -2,282 +2,284 @@
 
 namespace App\Services;
 
+use App\Jobs\FlushStockAlerts;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Models\User;
 use App\Notifications\LowStockNotification;
 use App\Notifications\OutOfStockNotification;
+use App\Support\StockLevels;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
- * StockAlertService
+ * Low-stock / out-of-stock alerts to the seller.
  *
- * Single responsibility: decide whether to fire a stock notification
- * and dispatch it to the seller.
+ * ── Rules ──────────────────────────────────────────────────────────────────
  *
- * ── Design principles ──────────────────────────────────────────────────────
+ * 1. PER VARIANT when the product has variants, otherwise per product.
+ *    Threshold: StockLevels::threshold() (product override → shop setting).
  *
- * 1. THRESHOLD CROSSING — not level detection
- *    A notification fires only when stock CROSSES a threshold, not every
- *    time stock is updated while already below it. This prevents spam when
- *    a seller updates stock that is already low.
+ * 2. ONE ALERT PER CROSSING. last_low_stock_notified_at / last_out_of_stock_notified_at
+ *    are the "alert sent" flags: set = the item already is in that zone. A sale
+ *    only alerts when it claims an empty flag (atomic UPDATE … WHERE flag IS NULL,
+ *    so two concurrent orders can't both alert). Flags clear when the stock
+ *    goes back above the threshold (resp. above 0).
  *
- * 2. COOLDOWN DEDUPLICATION
- *    Even on a crossing, we enforce a configurable cooldown window
- *    (default 24h). If a notification of the same type was sent within
- *    the window, we skip.
+ * 3. ONLY SALES ALERT. Seller/admin edits, restocks and new products go
+ *    through syncFlags(): the flags follow the stock silently, so a product
+ *    created or edited at 2 units never alerts.
  *
- * 3. RESET ON RECOVERY
- *    When stock recovers above the threshold, the notified_at timestamps
- *    are cleared. This allows fresh notifications on the NEXT crossing.
+ * 4. OUT OF STOCK is always sent (its own notification), even with low-stock
+ *    alerts switched off. Low-stock alerts follow users.stock_alerts_enabled.
  *
- * 4. VARIANT-AWARE
- *    The service handles both simple products (stock on products table)
- *    and variant products (stock on product_variants table). For variant
- *    products, the product-level notification is derived from variant
- *    aggregate stock.
+ * 5. GROUPED. Crossings are stored in stock_alert_events; FlushStockAlerts
+ *    sends one notification per kind for everything that crossed in the same
+ *    order or within config('stock.alert_group_window_minutes').
  *
- * 5. SILENT FAILURE
- *    All exceptions are caught and logged — a notification failure must
- *    NEVER break the checkout flow.
- *
- * ── Call sites ─────────────────────────────────────────────────────────────
- *
- *   After variant decrement (CheckoutController):
- *     $this->stockAlertService->checkVariant($variant->fresh(), $product);
- *
- *   After product decrement (CheckoutController):
- *     $this->stockAlertService->checkProduct($product->fresh());
- *
- *   From ProductVariantObserver (seller dashboard edits):
- *     $this->stockAlertService->checkVariant($variant, $variant->product);
- *
- *   From ProductObserver (simple product edits):
- *     $this->stockAlertService->checkProduct($product);
+ * 6. SILENT FAILURE: an alert problem never breaks checkout.
  */
 class StockAlertService
 {
-    // ── Public API ──────────────────────────────────────────────────────────
+    public const LOW = 'low';
+    public const OUT = 'out';
+
+    // ── Sales ────────────────────────────────────────────────────────────────
 
     /**
-     * Check a simple (non-variant) product after a stock change.
+     * Stock just left the shelf for an order (after the commit).
      *
-     * Call with the FRESHLY LOADED model (after decrement/save) so the
-     * stock value reflects the current DB state.
+     * @param array<int, array{product_id: int, variant_id: ?int}> $lines
      */
-    public function checkProduct(Product $product): void
+    public function recordSales(array $lines): void
     {
         try {
-            $seller    = $product->seller;
-            $threshold = $this->threshold($product);
-            $stock     = (int) $product->stock;
+            $sellers = [];
+            $seen    = [];
+            foreach ($lines as $line) {
+                $key = ($line['variant_id'] ?? 0) . ':' . $line['product_id'];
+                if (isset($seen[$key])) continue;
+                $seen[$key] = true;
 
-            if (!$seller) return;
+                $product = Product::with('seller')->find($line['product_id']);
+                if (!$product || !$product->seller) continue;
 
-            if ($stock === 0) {
-                $this->maybeNotifyOutOfStock(
-                    notifiable:  $seller,
-                    product:     $product,
-                    variant:     null,
-                    getNotifiedAt: fn() => $product->last_out_of_stock_notified_at,
-                    setNotifiedAt: fn() => $product->updateQuietly(['last_out_of_stock_notified_at' => now()]),
-                    clearLowAt:    fn() => $product->updateQuietly(['last_low_stock_notified_at' => null]),
-                );
-                return;
+                $variant = !empty($line['variant_id']) ? ProductVariant::find($line['variant_id']) : null;
+                if (!empty($line['variant_id']) && !$variant) continue;
+                if ($variant) StockLevels::syncProductStock($product->id);
+
+                if ($this->evaluateSale($product, $variant)) {
+                    $sellers[$product->seller_id] = true;
+                }
             }
-
-            if ($stock <= $threshold) {
-                $this->maybeNotifyLowStock(
-                    notifiable:  $seller,
-                    product:     $product,
-                    variant:     null,
-                    stock:       $stock,
-                    threshold:   $threshold,
-                    getNotifiedAt: fn() => $product->last_low_stock_notified_at,
-                    setNotifiedAt: fn() => $product->updateQuietly(['last_low_stock_notified_at' => now()]),
-                );
-                return;
+            foreach (array_keys($sellers) as $sellerId) {
+                $this->scheduleFlush((int) $sellerId);
             }
-
-            // Stock recovered above threshold — reset flags so next crossing
-            // triggers fresh notifications.
-            $this->resetFlags($product, null);
-
         } catch (\Throwable $e) {
-            Log::error('[StockAlertService::checkProduct] ' . $e->getMessage(), [
-                'product_id' => $product->id,
-            ]);
+            Log::error('[StockAlertService::recordSales] ' . $e->getMessage());
         }
     }
 
-    /**
-     * Check a product variant after a stock change.
-     *
-     * Call with the FRESHLY LOADED variant so the stock value is current.
-     * $product is passed to avoid an extra DB query (it's already loaded
-     * at the call site).
-     */
-    public function checkVariant(ProductVariant $variant, Product $product): void
+    /** True when a crossing was queued. */
+    private function evaluateSale(Product $product, ?ProductVariant $variant): bool
+    {
+        $item      = $variant ?? $product;
+        $stock     = (int) $item->stock;
+        $threshold = StockLevels::threshold($product);
+        $seller    = $product->seller;
+
+        if ($stock <= 0) {
+            // Out supersedes low: a partial restock into the low zone stays silent
+            $this->claim($item, 'last_low_stock_notified_at');
+            return $this->claim($item, 'last_out_of_stock_notified_at')
+                && $this->queue($seller, $product, $variant, self::OUT, 0, $threshold);
+        }
+
+        if ($stock <= $threshold) {
+            $this->release($item, 'last_out_of_stock_notified_at');
+            return $this->claim($item, 'last_low_stock_notified_at')
+                && $seller->stock_alerts_enabled
+                && $this->queue($seller, $product, $variant, self::LOW, $stock, $threshold);
+        }
+
+        $this->release($item, 'last_low_stock_notified_at');
+        $this->release($item, 'last_out_of_stock_notified_at');
+        return false;
+    }
+
+    // ── Edits / restocks (never alert) ───────────────────────────────────────
+
+    /** The flags follow the current stock without alerting. */
+    public function syncFlags(Product $product, ?ProductVariant $variant = null): void
     {
         try {
-            $seller    = $product->seller ?? $variant->product?->seller;
-            $threshold = $this->threshold($product);
-            $stock     = (int) $variant->stock;
+            $item      = $variant ?? $product;
+            $stock     = (int) $item->stock;
+            $threshold = StockLevels::threshold($product);
 
-            if (!$seller) return;
-
-            if ($stock === 0) {
-                $this->maybeNotifyOutOfStock(
-                    notifiable:  $seller,
-                    product:     $product,
-                    variant:     $variant,
-                    getNotifiedAt: fn() => $variant->last_out_of_stock_notified_at,
-                    setNotifiedAt: fn() => $variant->updateQuietly(['last_out_of_stock_notified_at' => now()]),
-                    clearLowAt:    fn() => $variant->updateQuietly(['last_low_stock_notified_at' => null]),
-                );
-                return;
-            }
-
-            if ($stock <= $threshold) {
-                $this->maybeNotifyLowStock(
-                    notifiable:  $seller,
-                    product:     $product,
-                    variant:     $variant,
-                    stock:       $stock,
-                    threshold:   $threshold,
-                    getNotifiedAt: fn() => $variant->last_low_stock_notified_at,
-                    setNotifiedAt: fn() => $variant->updateQuietly(['last_low_stock_notified_at' => now()]),
-                );
-                return;
-            }
-
-            // Stock recovered
-            $this->resetFlags(null, $variant);
-
+            $stock <= $threshold ? $this->claim($item, 'last_low_stock_notified_at') : $this->release($item, 'last_low_stock_notified_at');
+            $stock <= 0          ? $this->claim($item, 'last_out_of_stock_notified_at') : $this->release($item, 'last_out_of_stock_notified_at');
         } catch (\Throwable $e) {
-            Log::error('[StockAlertService::checkVariant] ' . $e->getMessage(), [
-                'variant_id' => $variant->id,
-                'product_id' => $product->id,
-            ]);
+            Log::error('[StockAlertService::syncFlags] ' . $e->getMessage(), ['product_id' => $product->id]);
         }
     }
 
-    // ── Private helpers ──────────────────────────────────────────────────────
-
-    /**
-     * Get the effective low-stock threshold for a product.
-     * Per-product override takes precedence over global config.
-     */
-    private function threshold(Product $product): int
+    /** syncFlags() for a whole product: itself or each of its variants. */
+    public function syncProductFlags(Product $product): void
     {
-        return $product->low_stock_threshold
-            ?? config('stock.low_stock_threshold', 5);
+        $variants = $product->variants()->get();
+        if ($variants->isEmpty()) {
+            $this->syncFlags($product);
+            return;
+        }
+        foreach ($variants as $variant) {
+            $this->syncFlags($product, $variant);
+        }
     }
 
-    /**
-     * Get the cooldown window in hours.
-     */
-    private function cooldownHours(): int
+    /** Stock given back by raw queries (cancelled order, returned item). */
+    public function restocked(int $productId, ?int $variantId): void
     {
-        return (int) config('stock.notification_cooldown_hours', 24);
+        StockLevels::syncProductStock($productId);
+        $product = Product::with('seller')->find($productId);
+        if (!$product) return;
+        $variant = $variantId ? ProductVariant::find($variantId) : null;
+        $this->syncFlags($product, $variant);
     }
 
-    /**
-     * Decide whether to send a LOW STOCK notification.
-     *
-     * Rules:
-     *  1. No prior low-stock notification exists (null timestamp), OR
-     *  2. The cooldown window has elapsed since the last one.
-     *
-     * Note: we do NOT block if an out-of-stock notification was sent
-     * (stock could have partially recovered into the low zone).
-     */
-    private function maybeNotifyLowStock(
-        $notifiable,
-        Product $product,
-        ?ProductVariant $variant,
-        int $stock,
-        int $threshold,
-        callable $getNotifiedAt,
-        callable $setNotifiedAt,
-    ): void {
-        $lastNotifiedAt = $getNotifiedAt();
-
-        if ($lastNotifiedAt !== null) {
-            $cooldown = now()->subHours($this->cooldownHours());
-            if ($lastNotifiedAt > $cooldown) {
-                // Still within cooldown window — skip
-                return;
-            }
-        }
-
-        // Send notification
-        $notifiable->notify(new LowStockNotification($product, $variant, $stock, $threshold));
-
-        // Record timestamp
-        $setNotifiedAt();
-    }
-
-    /**
-     * Decide whether to send an OUT OF STOCK notification.
-     *
-     * Rules:
-     *  1. No prior out-of-stock notification exists (null timestamp), OR
-     *  2. The cooldown window has elapsed.
-     *
-     * Additionally clears the low-stock timestamp since out-of-stock
-     * supersedes it — the next partial restock should trigger low-stock
-     * fresh again.
-     */
-    private function maybeNotifyOutOfStock(
-        $notifiable,
-        Product $product,
-        ?ProductVariant $variant,
-        callable $getNotifiedAt,
-        callable $setNotifiedAt,
-        callable $clearLowAt,
-    ): void {
-        $lastNotifiedAt = $getNotifiedAt();
-
-        if ($lastNotifiedAt !== null) {
-            $cooldown = now()->subHours($this->cooldownHours());
-            if ($lastNotifiedAt > $cooldown) {
-                return;
-            }
-        }
-
-        $notifiable->notify(new OutOfStockNotification($product, $variant));
-
-        $setNotifiedAt();
-        $clearLowAt(); // clear low-stock flag — out-of-stock supersedes it
-    }
-
-    /**
-     * Reset notification flags when stock recovers above threshold.
-     *
-     * Called when stock > threshold so that the NEXT time stock crosses
-     * down, it's treated as a fresh event and will notify again.
-     *
-     * Uses updateQuietly to avoid triggering observers unnecessarily.
-     */
-    private function resetFlags(?Product $product, ?ProductVariant $variant): void
+    /** The shop threshold changed: re-align every flag of the seller, silently. */
+    public function syncSeller(User $seller): void
     {
-        if ($product) {
-            // Only reset if at least one flag is currently set
-            if ($product->last_low_stock_notified_at || $product->last_out_of_stock_notified_at) {
-                $product->updateQuietly([
-                    'last_low_stock_notified_at'    => null,
-                    'last_out_of_stock_notified_at' => null,
-                ]);
+        Product::with('seller')->where('seller_id', $seller->id)->chunkById(100, function ($products) {
+            foreach ($products as $product) {
+                if ($product->low_stock_threshold === null) {
+                    $this->syncProductFlags($product);
+                }
             }
-        }
+        });
+    }
 
-        if ($variant) {
-            if ($variant->last_low_stock_notified_at || $variant->last_out_of_stock_notified_at) {
-                $variant->updateQuietly([
-                    'last_low_stock_notified_at'    => null,
-                    'last_out_of_stock_notified_at' => null,
-                ]);
+    // ── Grouping ─────────────────────────────────────────────────────────────
+
+    /**
+     * Send what is pending for a seller: one notification per kind.
+     * Called by FlushStockAlerts; rows are claimed under a lock, so two
+     * overlapping jobs never send the same crossing twice.
+     */
+    public function flush(int $sellerId): void
+    {
+        $seller = User::find($sellerId);
+        if (!$seller) return;
+
+        $events = DB::transaction(function () use ($sellerId) {
+            $rows = DB::table('stock_alert_events')
+                ->where('seller_id', $sellerId)
+                ->whereNull('notified_at')
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get();
+            if ($rows->isNotEmpty()) {
+                DB::table('stock_alert_events')->whereIn('id', $rows->pluck('id'))->update(['notified_at' => now()]);
             }
+            return $rows;
+        });
+        if ($events->isEmpty()) return;
+
+        $withEmail = $seller->stock_alert_channel === 'in_app_email';
+
+        foreach ([self::OUT, self::LOW] as $kind) {
+            // Latest state per item (an item can go low then out within the window)
+            $items = $events->where('kind', $kind)
+                ->groupBy(fn($e) => $e->product_id . ':' . ($e->variant_id ?? 0))
+                ->map(fn($group) => $group->last())
+                ->values();
+
+            if ($kind === self::LOW) {
+                $outKeys = $events->where('kind', self::OUT)->map(fn($e) => $e->product_id . ':' . ($e->variant_id ?? 0))->all();
+                $items   = $items->reject(fn($e) => in_array($e->product_id . ':' . ($e->variant_id ?? 0), $outKeys, true))->values();
+                if (!$seller->stock_alerts_enabled) $items = collect();
+            }
+            if ($items->isEmpty()) continue;
+
+            $payload = $this->describe($items);
+            if (!$payload) continue;
+
+            $notification = $kind === self::OUT
+                ? new OutOfStockNotification($payload, $withEmail)
+                : new LowStockNotification($payload, $withEmail);
+            $seller->notify($notification);
         }
+    }
+
+    private function queue(User $seller, Product $product, ?ProductVariant $variant, string $kind, int $stock, int $threshold): bool
+    {
+        DB::table('stock_alert_events')->insert([
+            'seller_id'  => $seller->id,
+            'product_id' => $product->id,
+            'variant_id' => $variant?->id,
+            'kind'       => $kind,
+            'stock'      => $stock,
+            'threshold'  => min(255, $threshold),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        return true;
+    }
+
+    /**
+     * One job per window: a job is already on its way when an earlier pending
+     * row is younger than the window (an older one means its job was lost —
+     * this new job picks it up too).
+     */
+    private function scheduleFlush(int $sellerId): void
+    {
+        $window = max(0, (int) config('stock.alert_group_window_minutes', 10));
+
+        $pendingBefore = DB::table('stock_alert_events')
+            ->where('seller_id', $sellerId)
+            ->whereNull('notified_at')
+            ->where('created_at', '>=', now()->subMinutes($window + 1))
+            ->where('created_at', '<', now()->subSecond())
+            ->exists();
+        if ($pendingBefore) return;
+
+        $job = FlushStockAlerts::dispatch($sellerId)->onQueue(config('seller_notifications.queue'));
+        if ($window > 0) $job->delay(now()->addMinutes($window));
+    }
+
+    /** Items of a grouped notification, labelled in the product's original text. */
+    private function describe($events): array
+    {
+        $products = Product::withTrashed()->whereIn('id', $events->pluck('product_id')->unique())->get()->keyBy('id');
+        $variants = ProductVariant::with('attributeOptions')->whereIn('id', $events->pluck('variant_id')->filter()->unique())->get()->keyBy('id');
+
+        $items = [];
+        foreach ($events as $e) {
+            $product = $products->get($e->product_id);
+            if (!$product) continue;
+            $variant = $e->variant_id ? $variants->get($e->variant_id) : null;
+            $items[] = [
+                'product_id'    => (int) $e->product_id,
+                'variant_id'    => $e->variant_id ? (int) $e->variant_id : null,
+                'name'          => $product->getRawOriginal('name') ?? $product->name,
+                'variant_label' => $variant?->label ?: null,
+                'stock'         => (int) $e->stock,
+                'threshold'     => (int) $e->threshold,
+            ];
+        }
+        return $items;
+    }
+
+    // ── Flags ────────────────────────────────────────────────────────────────
+
+    /** Set the flag if empty. True only for the caller that set it. */
+    private function claim(Product|ProductVariant $item, string $column): bool
+    {
+        return DB::table($item->getTable())->where('id', $item->id)->whereNull($column)->update([$column => now()]) === 1;
+    }
+
+    private function release(Product|ProductVariant $item, string $column): void
+    {
+        DB::table($item->getTable())->where('id', $item->id)->whereNotNull($column)->update([$column => null]);
     }
 }

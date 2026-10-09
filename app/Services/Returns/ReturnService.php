@@ -377,7 +377,8 @@ class ReturnService
             throw new ReturnException('Legacy exchange requests can only be closed.');
         }
 
-        $c = DB::transaction(function () use ($complaint, $actor, $role, $conditions, $note) {
+        $restockedLines = [];
+        $c = DB::transaction(function () use ($complaint, $actor, $role, $conditions, $note, &$restockedLines) {
             $items = ComplaintItem::where('complaint_id', $complaint->id)->lockForUpdate()->get();
             foreach ($items as $item) {
                 if (!in_array($conditions[$item->order_item_id] ?? null, [Complaint::CONDITION_RESALEABLE, Complaint::CONDITION_DAMAGED], true)) {
@@ -401,6 +402,7 @@ class ReturnService
                         $line->variant_id && DB::table('product_variants')->where('id', $line->variant_id)->exists()
                             ? DB::table('product_variants')->where('id', $line->variant_id)->increment('stock', $item->quantity)
                             : DB::table('products')->where('id', $line->product_id)->increment('stock', $item->quantity);
+                        $restockedLines[] = $line;
                         $item->restocked_quantity = $item->quantity;
                         $item->restocked_at       = now();
                         $restocked += $item->quantity;
@@ -417,6 +419,11 @@ class ReturnService
             }
             return $c;
         });
+
+        // Product totals + stock-alert flags follow the restock (after the commit)
+        foreach ($restockedLines as $line) {
+            app(\App\Services\StockAlertService::class)->restocked((int) $line->product_id, $line->variant_id ? (int) $line->variant_id : null);
+        }
 
         $this->buyer($c, 'returned');
         if (!$c->refunded_at) {

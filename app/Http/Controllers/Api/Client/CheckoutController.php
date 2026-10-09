@@ -745,22 +745,22 @@ $checkingOutIds = $cartItems->pluck('id')->all();
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
+    /**
+     * After the commit: product totals of variant products follow the sold
+     * variants, and every line of the order is checked for stock crossings
+     * at once, so they end up in one grouped seller notification.
+     */
     private function fireStockAlerts(array $decrementedVariants, array $decrementedProducts): void
     {
         try {
+            $lines = [];
             foreach ($decrementedVariants as $entry) {
-                $freshVariant = ProductVariant::find($entry['variant_id']);
-                if ($freshVariant) {
-                    $freshVariant->load('attributeOptions.attribute');
-                    $this->stockAlertService->checkVariant($freshVariant, $entry['product']);
-                }
+                $lines[] = ['product_id' => (int) $entry['product']->id, 'variant_id' => (int) $entry['variant_id']];
             }
             foreach ($decrementedProducts as $productId) {
-                $freshProduct = Product::with('seller')->find($productId);
-                if ($freshProduct) {
-                    $this->stockAlertService->checkProduct($freshProduct);
-                }
+                $lines[] = ['product_id' => (int) $productId, 'variant_id' => null];
             }
+            $this->stockAlertService->recordSales($lines);
         } catch (\Throwable $e) {
             Log::error('[Checkout] fireStockAlerts failed: ' . $e->getMessage());
         }

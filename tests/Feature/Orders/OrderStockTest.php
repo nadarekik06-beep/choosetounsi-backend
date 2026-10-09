@@ -159,7 +159,7 @@ class OrderStockTest extends TestCase
 
         $this->assertSame(5, $this->stockOf($red));
         $this->assertSame(9, $this->stockOf($blue), 'other variants are untouched');
-        $this->assertSame(7, $this->stockOf($product), 'the parent product of a variant line is untouched');
+        $this->assertSame(14, $this->stockOf($product), 'the parent product holds the sum of its active variants');
         $this->assertSame(4, $this->stockOf($simple));
         $this->assertSame('cancelled', $order->fresh()->status);
     }

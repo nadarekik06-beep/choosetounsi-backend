@@ -4,6 +4,7 @@ namespace App\Observers;
 
 use App\Models\ProductVariant;
 use App\Services\StockAlertService;
+use App\Support\StockLevels;
 
 class ProductVariantObserver
 {
@@ -16,16 +17,24 @@ class ProductVariantObserver
     public function saved(ProductVariant $variant): void
     {
         $variant->product->syncActiveStatusFromVariants();
+        StockLevels::syncProductStock((int) $variant->product_id);
         $this->refreshSearch($variant);
     }
 
     /**
-     * Fires after a variant is UPDATED (not created).
-     * Only acts when stock actually changed — triggers stock alerts.
-     *
-     * NOTE: saved() fires for both create and update, but we only
-     * want stock alerts on updates (not on initial variant creation
-     * where the seller is just building their catalog).
+     * A new variant built at 2 units is already "low": flag it silently,
+     * so its first sale doesn't alert (only sales crossing the threshold do).
+     */
+    public function created(ProductVariant $variant): void
+    {
+        if ($product = $variant->product()->with('seller')->first()) {
+            $this->stockAlertService->syncFlags($product, $variant);
+        }
+    }
+
+    /**
+     * Stock edited by the seller/admin (form, restock): the alert flags
+     * follow it silently. Sales alert from CheckoutController instead.
      */
     public function updated(ProductVariant $variant): void
     {
@@ -41,7 +50,7 @@ class ProductVariantObserver
         $product = $variant->product()->with('seller')->first();
         if (!$product) return;
 
-        $this->stockAlertService->checkVariant($variant, $product);
+        $this->stockAlertService->syncFlags($product, $variant);
     }
 
     /**
@@ -54,6 +63,7 @@ class ProductVariantObserver
         }
 
         $variant->product->syncActiveStatusFromVariants();
+        StockLevels::syncProductStock((int) $variant->product_id);
         $this->refreshSearch($variant);
     }
 

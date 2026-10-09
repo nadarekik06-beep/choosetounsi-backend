@@ -34,6 +34,9 @@ class User extends Authenticatable implements HasLocalePreference
         'locale',
         'marketing_emails_opt_in',
         'marketing_opt_in_at',
+        'stock_alerts_enabled',
+        'stock_alert_threshold',
+        'stock_alert_channel',
         // email_verified_at is set only at creation time via verifyEmail()
         // or immediately for Google OAuth users. It is intentionally NOT
         // in fillable for bulk-assignment safety.
@@ -48,6 +51,8 @@ class User extends Authenticatable implements HasLocalePreference
 
     protected $casts = [
         'email_verified_at'   => 'datetime',
+        'stock_alerts_enabled'  => 'boolean',
+        'stock_alert_threshold' => 'integer',
         'is_active'           => 'boolean',
         'is_approved'         => 'boolean',
         'onboarding_completed' => 'boolean',

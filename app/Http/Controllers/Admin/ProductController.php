@@ -15,6 +15,7 @@ use App\Http\Requests\Admin\RequestProductChangesRequest;
 use App\Http\Resources\Admin\ProductReviewResource;
 use App\Notifications\ProductReviewedNotification;
 use App\Notifications\ProductActionNotification;
+use App\Support\StockLevels;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -52,9 +53,10 @@ public function index(Request $request)
 
     // Normal statuses — SoftDeletes automatically excludes deleted_at IS NOT NULL
     $query = Product::with([
-        'seller:id,name,email',
+        'seller:id,name,email,stock_alert_threshold',
         'category:id,name,name_fr,name_ar',
         'primaryImage',
+        'variants.attributeOptions.attribute:id,slug,name,name_fr,name_ar,type',
     ]);
 
     if ($status === 'pending') {
@@ -88,6 +90,10 @@ public function index(Request $request)
         $product->primary_image_url = $product->primaryImage
             ? Storage::disk('public')->url($product->primaryImage->image_path)
             : null;
+        // Stock column: total from the active variants + per-variant tooltip
+        $product->stock_breakdown = StockLevels::breakdown($product);
+        $product->stock           = $product->stock_breakdown['total'];
+        $product->unsetRelation('variants');
         return $product;
     });
 
@@ -97,7 +103,7 @@ public function index(Request $request)
     public function show($id)
     {
         $product = Product::with([
-            'seller:id,name,email',
+            'seller:id,name,email,stock_alert_threshold',
             'category:id,name,name_fr,name_ar,slug',
             'subcategory:id,name,name_fr,name_ar,slug,category_id',
             'images',
@@ -110,6 +116,8 @@ public function index(Request $request)
         ])->findOrFail($id);
 
         $product->status = $this->deriveStatus($product);
+        $product->stock_breakdown = StockLevels::breakdown($product);
+        $product->stock           = $product->stock_breakdown['total'];
 
         $product->primary_image_url = $product->primaryImage
             ? Storage::disk('public')->url($product->primaryImage->image_path)
@@ -331,7 +339,7 @@ public function index(Request $request)
     public function review(Request $request, $id)
     {
         $product = Product::withTrashed()->with([
-            'seller:id,name,email,is_active,is_approved,created_at',
+            'seller:id,name,email,is_active,is_approved,created_at,stock_alert_threshold',
             'seller.sellerApplication',
             'category:id,name,name_fr,name_ar,slug',
             'subcategory:id,name,name_fr,name_ar,slug,category_id',

@@ -3,6 +3,7 @@
 namespace App\Services\Orders;
 
 use App\Exceptions\InsufficientStock;
+use App\Services\StockAlertService;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -68,7 +69,7 @@ class OrderStock
             return 0;
         }
 
-        return DB::transaction(function () use ($sellerOrderIds) {
+        [$units, $lines] = DB::transaction(function () use ($sellerOrderIds) {
             $lines = DB::table('order_items')
                 ->whereIn('seller_order_id', $sellerOrderIds)
                 ->where('stock_restored_reason', self::CANCELLED)
@@ -87,13 +88,16 @@ class OrderStock
                 DB::table('order_items')->whereIn('id', $lines->pluck('id'))
                     ->update(['stock_restored_at' => null, 'stock_restored_reason' => null]);
             }
-            return $units;
+            return [$units, $lines];
         });
+
+        $this->afterStockMoved($lines);
+        return $units;
     }
 
     private function release(\Closure $scope, string $reason): int
     {
-        return DB::transaction(function () use ($scope, $reason) {
+        [$units, $lines] = DB::transaction(function () use ($scope, $reason) {
             $lines = $scope(DB::table('order_items'))
                 ->whereNull('stock_restored_at')
                 ->orderBy('id')
@@ -116,7 +120,23 @@ class OrderStock
                 DB::table('order_items')->whereIn('id', $lines->pluck('id'))
                     ->update(['stock_restored_at' => now(), 'stock_restored_reason' => $reason]);
             }
-            return $units;
+            return [$units, $lines];
         });
+
+        $this->afterStockMoved($lines);
+        return $units;
+    }
+
+    /**
+     * After the commit (never under the row locks): product totals of variant
+     * products and stock-alert flags follow the new stock (back above the
+     * threshold → alerts re-armed). Checkout does the same for its own lines.
+     */
+    private function afterStockMoved($lines): void
+    {
+        $alerts = app(StockAlertService::class);
+        foreach (collect($lines)->unique(fn($l) => $l->product_id . ':' . ($l->variant_id ?? 0)) as $line) {
+            $alerts->restocked((int) $line->product_id, $line->variant_id ? (int) $line->variant_id : null);
+        }
     }
 }

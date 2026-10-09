@@ -4,30 +4,26 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | Low Stock Threshold
+    | Low Stock Threshold (fallback)
     |--------------------------------------------------------------------------
     |
-    | When a product's stock falls to or below this number, a "Low Stock"
-    | notification is sent to the seller. Set per-product overrides in the
-    | products table (low_stock_threshold column added by migration).
-    |
-    | Default: 5 units (configurable via .env)
+    | A product/variant is "low" at or below its threshold:
+    |   products.low_stock_threshold → users.stock_alert_threshold (shop
+    |   setting, default 2) → this value.
     |
     */
-    'low_stock_threshold' => (int) env('STOCK_LOW_THRESHOLD', 5),
+    'low_stock_threshold' => (int) env('STOCK_LOW_THRESHOLD', 2),
 
     /*
     |--------------------------------------------------------------------------
-    | Notification Cooldown (hours)
+    | Alert grouping window (minutes)
     |--------------------------------------------------------------------------
     |
-    | Minimum hours between repeated notifications for the SAME product/variant
-    | at the SAME level (low or out). Prevents spam when stock fluctuates
-    | around the threshold boundary.
-    |
-    | Default: 24 hours
+    | Crossings of the same seller within this window are sent as ONE
+    | notification (App\Jobs\FlushStockAlerts runs this long after the first).
+    | Crossings caused by the same order are always grouped.
     |
     */
-    'notification_cooldown_hours' => (int) env('STOCK_NOTIFICATION_COOLDOWN', 24),
+    'alert_group_window_minutes' => (int) env('STOCK_ALERT_GROUP_WINDOW', 10),
 
 ];

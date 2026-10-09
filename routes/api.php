@@ -335,6 +335,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/store-profile/cover-photo', [SellerStoreProfileController::class, 'updateCoverPhoto']);
         Route::get('/pickup-address',             [SellerStoreProfileController::class, 'pickupAddress']);
         Route::put('/pickup-address',             [SellerStoreProfileController::class, 'updatePickupAddress']);
+        Route::get('/stock-alerts',               [\App\Http\Controllers\Api\Seller\SellerStockAlertController::class, 'show']);
+        Route::put('/stock-alerts',               [\App\Http\Controllers\Api\Seller\SellerStockAlertController::class, 'update']);
 
         // ── Products ──────────────────────────────────────────────────────
         Route::get('/products/stats',   [SellerProductController::class, 'stats']);

@@ -12,6 +12,7 @@ use App\Services\PriceHistory;
 use App\Services\ProductImages;
 use App\Services\ProductChangeTracker;
 use App\Support\Occasions;
+use App\Support\StockLevels;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -62,7 +63,7 @@ class SellerProductController extends Controller
                     ? $appUrl . Storage::url($p->primaryImage->image_path)
                     : null;
             $p->has_variants  = $p->variants()->exists();
-            $p->variant_stock = $p->variants()->sum('stock');
+            $p->variant_stock = $p->variants()->where('is_active', true)->sum('stock');
             $p->reference_price = PriceHistory::lowestFor($p);
             return $p;
         });
@@ -181,6 +182,13 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
             ];
         });
 
+        // Per-variant stock card; the total always comes from the active variants
+        $product->load('seller:id,stock_alert_threshold');
+        $product->stock_breakdown = StockLevels::breakdown($product);
+        $product->stock           = $product->stock_breakdown['total'];
+        $product->shop_low_stock_threshold = (int) ($product->seller->stock_alert_threshold ?? config('stock.low_stock_threshold', 2));
+        $product->unsetRelation('seller');
+
         $product->pricing = $this->pricingRules($product);
         // Images as the form edits them: gallery + one set per color group
         $product->image_sets = ProductImages::sets($product->fresh());
@@ -258,6 +266,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         'price'       => 'required|numeric|min:0',
         'stock'       => 'required|integer|min:0',
         'category_id' => 'required|exists:categories,id',
+        'low_stock_threshold' => 'nullable|integer|min:1|max:50',
     ]);
     $merch = $this->validateMerchandising($request, null);
 } catch (\Throwable $e) {
@@ -305,6 +314,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                     'pack_quantity'     => $merch['pack_quantity'],
                     'pack_contents'     => $merch['pack_contents'],
                     'delivery_fee' => $this->parseDeliveryFee($request, null),
+                    'low_stock_threshold' => $request->filled('low_stock_threshold') ? (int) $request->low_stock_threshold : null,
                 ]);
                 $product->syncOccasions($merch['occasions']);
                 Log::info('[SellerProduct::store] Product created', ['id' => $product->id]);
@@ -368,6 +378,8 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         Log::info('[SellerProduct::update] START', ['id' => $id]);
 
         $merch = $this->validateMerchandising($request, $product);
+        // Empty = use the shop default (Paramètres de la boutique)
+        $request->validate(['low_stock_threshold' => 'nullable|integer|min:1|max:50']);
 
         $images = $this->readImageManifest($request, $product, $this->requestedGroupKeys($request, $product));
         if ($images instanceof \Illuminate\Http\JsonResponse) return $images;
@@ -416,7 +428,10 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                 'pack_quantity'     => $merch['pack_quantity'],
                 'pack_contents'     => $merch['pack_contents'],
                 'delivery_fee' => $this->parseDeliveryFee($request, $product->delivery_fee),
-            ] + ($resubmitting ? ['changes_requested_at' => null] : []));
+            ] + ($request->exists('low_stock_threshold')
+                ? ['low_stock_threshold' => $request->filled('low_stock_threshold') ? (int) $request->low_stock_threshold : null]
+                : []
+            ) + ($resubmitting ? ['changes_requested_at' => null] : []));
             if ($merch['occasions'] !== null) $product->syncOccasions($merch['occasions']);
             Log::info('[SellerProduct::update] Product updated');
         } catch (\Throwable $e) {

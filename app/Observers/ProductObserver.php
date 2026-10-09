@@ -5,6 +5,7 @@ namespace App\Observers;
 use App\Models\Product;
 use App\Jobs\NotifyFavoriteWatchers;
 use App\Services\StockAlertService;
+use App\Support\StockLevels;
 
 /**
  * ProductObserver
@@ -13,7 +14,7 @@ use App\Services\StockAlertService;
  *
  * Same caveat as ProductVariantObserver: raw `->decrement()` calls in
  * CheckoutController bypass this — those are handled directly in the
- * controller via StockAlertService.
+ * controller via StockAlertService::recordSales().
  *
  * What we watch:
  *   updated() — fires after a product is saved with a changed stock value.
@@ -24,24 +25,35 @@ class ProductObserver
 {
     public function __construct(private StockAlertService $stockAlertService) {}
 
+    /** Created at or below the threshold: flagged silently, never alerts. */
+    public function created(Product $product): void
+    {
+        $this->stockAlertService->syncFlags($product);
+    }
+
     public function updated(Product $product): void
     {
         $this->notifyFavorites($product);
+
+        // New per-product threshold: the flags of the product/its variants follow it silently
+        if ($product->wasChanged('low_stock_threshold')) {
+            $this->stockAlertService->syncProductFlags($product);
+        }
 
         // Only act when stock actually changed
         if (!$product->wasChanged('stock')) {
             return;
         }
 
-        // Skip variant products — their stock is tracked at the variant level.
-        // Checking variants()->exists() would fire a DB query on every product
-        // save. We use the has_variants accessor instead which uses the loaded
-        // relation when available, falling back to exists() only if needed.
+        // Variant products: the total is the active variants' stock, whatever the
+        // form sent. Their alerts are tracked at the variant level.
         if ($product->has_variants) {
+            StockLevels::syncProductStock($product->id);
             return;
         }
 
-        $this->stockAlertService->checkProduct($product);
+        // Seller/admin edit: flags follow the stock silently (sales alert from checkout)
+        $this->stockAlertService->syncFlags($product);
     }
 
     /** Buyers who favourited it: price drop (base price) or back in stock (products without variants). */

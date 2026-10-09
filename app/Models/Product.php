@@ -38,7 +38,7 @@ class Product extends Model
     protected $fillable = [
         'seller_id', 'category_id', 'subcategory_id',
         'name', 'slug', 'description', 'short_description',
-        'price', 'delivery_fee', 'stock', 'sku',
+        'price', 'delivery_fee', 'stock', 'low_stock_threshold', 'sku',
         'is_approved', 'is_active', 'is_platform_product', 'featured', 'views',
         'is_pack', 'pack_quantity', 'pack_contents', 'rejection_reason', 'deleted_by_seller',
         'changes_requested_at',
@@ -54,6 +54,7 @@ class Product extends Model
         'delivery_fee'        => 'decimal:3',   // ← NEW: null = platform default
         'is_pack'             => 'boolean',
         'pack_quantity'       => 'integer',
+        'low_stock_threshold' => 'integer',
         'deleted_by_seller'   => 'boolean',
         'changes_requested_at' => 'datetime',
         'admin_edited_at'     => 'datetime',

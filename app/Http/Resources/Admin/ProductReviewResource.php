@@ -4,6 +4,7 @@ namespace App\Http\Resources\Admin;
 
 use App\Models\Product;
 use App\Support\Occasions;
+use App\Support\StockLevels;
 use App\Models\ProductImage;
 use App\Models\ProductModerationLog;
 use App\Models\ProductVariant;
@@ -25,7 +26,6 @@ use Illuminate\Support\Facades\Storage;
  */
 class ProductReviewResource extends JsonResource
 {
-    public const DEFAULT_LOW_STOCK_THRESHOLD = 5;
     public const MIN_IMAGES                  = 3;
     public const MIN_DESCRIPTION_CHARS       = 50;
 
@@ -44,7 +44,7 @@ class ProductReviewResource extends JsonResource
     public function toArray($request): array
     {
         $p         = $this->resource;
-        $threshold = (int) ($p->low_stock_threshold ?: self::DEFAULT_LOW_STOCK_THRESHOLD);
+        $threshold = StockLevels::threshold($p);
 
         $images   = $this->images($p);
         $variants = $this->variants($p, $threshold);
@@ -220,7 +220,7 @@ class ProductReviewResource extends JsonResource
     {
         $v          = collect($variants);
         $hasVariants = $v->isNotEmpty();
-        $totalStock = $hasVariants ? (int) $v->sum('stock') : (int) $p->stock;
+        $totalStock = $hasVariants ? (int) $v->where('is_active', true)->sum('stock') : (int) $p->stock;
 
         return [
             'has_variants'          => $hasVariants,
@@ -230,6 +230,7 @@ class ProductReviewResource extends JsonResource
             'out_of_stock_variants' => $v->where('availability', 'out_of_stock')->count(),
             'low_stock_variants'    => $v->where('availability', 'low_stock')->count(),
             'low_stock_threshold'   => $threshold,
+            'stock_breakdown'       => StockLevels::breakdown($p),
             'availability'          => $this->availability($totalStock, $threshold),
         ];
     }

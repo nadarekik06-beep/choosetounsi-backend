@@ -287,11 +287,21 @@ return [
         ],
         'low_stock' => [
             'title' => '⚠️ Stock faible : :name',
-            'body' => '{1} Plus qu\'une unité en stock. Réapprovisionnez vite pour ne pas perdre de ventes.|[2,*] Plus que :count unités en stock. Réapprovisionnez vite pour ne pas perdre de ventes.',
+            'title_many' => '⚠️ Stock faible sur :count articles',
+            'body' => '{1} Plus qu\'1 pièce en stock (seuil d\'alerte : :threshold).|[2,*] Plus que :count pièces en stock (seuil d\'alerte : :threshold).',
+            'mail_intro' => 'Ces articles viennent d\'atteindre votre seuil de stock faible suite à des ventes. Réapprovisionnez-les vite pour ne pas perdre de ventes.',
         ],
         'out_of_stock' => [
             'title' => '🚨 Rupture de stock : :name',
+            'title_many' => '🚨 :count articles en rupture de stock',
             'body' => 'Cet article est en rupture de stock. Mettez à jour votre inventaire pour reprendre les ventes.',
+            'mail_intro' => 'Ces articles viennent d\'être épuisés. Les clients ne peuvent plus les commander tant que vous ne les réapprovisionnez pas.',
+        ],
+        'stock_item' => ':name : :count',
+        'stock_more' => '+:count autres',
+        'stock_mail' => [
+            'cta' => 'Gérer mon stock',
+            'footer' => 'Vous recevez cet e-mail car les alertes de stock par e-mail sont activées. Modifiez ce choix dans les paramètres de la boutique.',
         ],
         'order_confirmed' => [
             'title' => '✅ Commande confirmée — à préparer',
@@ -572,5 +582,8 @@ return [
             'faq' => 'FAQ vendeurs',
             'reference' => 'Référence :',
         ],
+    ],
+    'stock_alerts' => [
+        'saved' => 'Paramètres des alertes de stock enregistrés.',
     ],
 ];

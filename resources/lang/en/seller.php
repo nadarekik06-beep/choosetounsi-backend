@@ -286,12 +286,22 @@ return [
             ],
         ],
         'low_stock' => [
-            'title' => '⚠️ Low Stock: :name',
-            'body' => '{1} Only 1 unit left in stock. Restock soon to avoid losing sales.|[2,*] Only :count units left in stock. Restock soon to avoid losing sales.',
+            'title' => '⚠️ Low stock: :name',
+            'title_many' => '⚠️ Low stock on :count items',
+            'body' => '{1} Only 1 left (alert threshold: :threshold).|[2,*] Only :count left (alert threshold: :threshold).',
+            'mail_intro' => 'These items just reached your low-stock threshold after recent sales. Restock them soon to avoid losing sales.',
         ],
         'out_of_stock' => [
-            'title' => '🚨 Out of Stock: :name',
+            'title' => '🚨 Out of stock: :name',
+            'title_many' => '🚨 :count items out of stock',
             'body' => 'This item is now out of stock. Update your inventory to resume sales.',
+            'mail_intro' => 'These items just sold out. Customers can no longer order them until you restock.',
+        ],
+        'stock_item' => ':name: :count',
+        'stock_more' => '+:count more',
+        'stock_mail' => [
+            'cta' => 'Manage my stock',
+            'footer' => 'You receive this e-mail because stock alerts by e-mail are on. Change it in your shop settings.',
         ],
         'order_confirmed' => [
             'title' => '✅ Order Confirmed — Ready to Prepare',
@@ -572,5 +582,8 @@ return [
             'faq' => 'Seller FAQ',
             'reference' => 'Reference:',
         ],
+    ],
+    'stock_alerts' => [
+        'saved' => 'Stock alert settings saved.',
     ],
 ];
