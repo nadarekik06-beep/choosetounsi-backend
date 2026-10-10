@@ -4,6 +4,7 @@
 namespace App\Services;
 
 use App\Models\SellerOrder;
+use App\Support\Millimes;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -82,6 +83,93 @@ class FinancialSnapshotService
     }
 
     /**
+     * Freeze a parcel (seller_order) at checkout: commission from its stored
+     * order_items, delivery from the quote (App\Services\Orders\OrderPricing)
+     * with the admin settings in force. Never called on an existing order.
+     *
+     *   seller_net_amount  = Σ items.seller_amount − seller_shipping_charge (= payout)
+     *   platform_profit    = commission + platform_delivery_margin
+     */
+    public function snapshotParcel(int $sellerOrderId, array $parcel): void
+    {
+        $items = DB::table('order_items')->where('seller_order_id', $sellerOrderId)
+            ->get(['commission_percentage', 'commission_source', 'plan_used', 'net_total', 'commission_amount', 'seller_amount']);
+
+        $commissionM  = $items->sum(fn ($i) => Millimes::of($i->commission_amount));
+        $sellerItemsM = $items->sum(fn ($i) => Millimes::of($i->seller_amount));
+        $rated        = $items->filter(fn ($i) => Millimes::of($i->commission_amount) > 0);
+        $ratedNetM    = $rated->sum(fn ($i) => Millimes::of($i->net_total));
+        $sources      = $rated->pluck('commission_source')->filter()->unique();
+
+        // The quote and the stored lines must agree to the millime
+        if ($commissionM !== $parcel['commission_m'] || $sellerItemsM !== $parcel['seller_items_net_m']) {
+            throw new \LogicException("Parcel {$sellerOrderId}: stored lines differ from the quote.");
+        }
+
+        $s   = $parcel['settings'];
+        $dec = fn (int $m) => Millimes::toDecimal($m);
+
+        DB::table('seller_orders')->where('id', $sellerOrderId)->update([
+            'commission_amount'                 => $dec($commissionM),
+            'commission_rate'                   => $ratedNetM > 0
+                ? round($rated->sum(fn ($i) => Millimes::of($i->commission_amount)) / $ratedNetM * 100, 2)
+                : optional($items->first())->commission_percentage,
+            'commission_source'                 => $sources->count() > 1 ? 'mixed' : $sources->first(),
+            'plan_used'                         => optional($rated->first() ?? $items->first())->plan_used,
+            'seller_net_amount'                 => $dec($parcel['seller_payout_m']),
+            'delivery_fee'                      => $dec($parcel['delivery_fee_m']),
+            'shipping_cost'                     => $dec($parcel['agency_cost_m']),
+            'seller_shipping_charge'            => $dec($parcel['contribution_m']),
+            'platform_profit'                   => $dec($commissionM + $parcel['delivery_margin_m']),
+            'client_delivery_fee'               => $dec($s['client_delivery_fee']),
+            'agency_delivery_cost'              => $dec($s['agency_delivery_cost']),
+            'seller_free_delivery_contribution' => $dec($s['seller_free_delivery_contribution']),
+            'is_free_delivery'                  => $parcel['is_free_delivery'],
+            'platform_delivery_margin'          => $dec($parcel['delivery_margin_m']),
+            'cod_amount'                        => $dec($parcel['cod_amount_m']),
+            'amount_to_remit'                   => $dec($parcel['amount_to_remit_m']),
+            'payout_status'                     => 'pending',
+            'updated_at'                        => now(),
+        ]);
+
+        self::checkParcel($sellerOrderId);
+    }
+
+    /**
+     * Money check, every parcel:
+     *   parcel total (cash collected for COD) = payout + commission + agency fee + delivery margin
+     * Logged (never thrown) when it fails, with the figures.
+     */
+    public static function checkParcel(int $sellerOrderId): bool
+    {
+        $so = DB::table('seller_orders')->where('id', $sellerOrderId)->first();
+        if (!$so || $so->platform_delivery_margin === null) {
+            return true; // legacy row without a parcel snapshot
+        }
+        $m = fn ($v) => Millimes::of($v ?? 0);
+
+        $total = $m($so->subtotal) - $m($so->discount_amount) + $m($so->delivery_fee);
+        $sum   = $m($so->seller_net_amount) + $m($so->commission_amount) + $m($so->shipping_cost) + $m($so->platform_delivery_margin);
+        if ($total === $sum) {
+            return true;
+        }
+
+        Log::error('[MoneyCheck] parcel does not balance', [
+            'seller_order_id' => $sellerOrderId,
+            'parcel_total'    => Millimes::toDecimal($total),
+            'payout'          => $so->seller_net_amount,
+            'commission'      => $so->commission_amount,
+            'agency_fee'      => $so->shipping_cost,
+            'delivery_margin' => $so->platform_delivery_margin,
+            'difference'      => Millimes::toDecimal($total - $sum),
+        ]);
+        return false;
+    }
+
+    /**
+     * LEGACY (orders placed before per-parcel delivery, and the
+     * BackfillSellerOrderFinancials command). Checkout uses snapshotParcel().
+     *
      * Spread the order's agency shipping cost over its seller_orders.
      *
      *   paid_by customer/platform → cost booked on the first seller_order,
@@ -177,8 +265,9 @@ class FinancialSnapshotService
             return false;
         }
 
-        // Guard: must be delivered or completed first
-        if (!in_array($sellerOrder->status, ['delivered', 'completed'])) {
+        // Guard: delivered (legacy 'completed' counts as delivered) with the
+        // cash collected by the courier — the payout is never payable before.
+        if (!in_array($sellerOrder->status, ['delivered', 'completed']) || $sellerOrder->getAttribute('cash_collected_at') === null) {
             return false;
         }
 

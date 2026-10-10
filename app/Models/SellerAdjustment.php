@@ -16,6 +16,10 @@ class SellerAdjustment extends Model
 {
     public const TYPE_RETURN_DEBIT    = 'return_debit';
     public const TYPE_RETURN_SHIPPING = 'return_shipping';
+    /** Agency fee of a parcel the client refused at the door, when the admin setting bills the seller. */
+    public const TYPE_REFUSED_PARCEL  = 'refused_parcel';
+    /** Free-delivery contribution still owed on a fully returned parcel (the delivery was made). */
+    public const TYPE_FREE_DELIVERY   = 'free_delivery_contribution';
 
     protected $fillable = [
         'seller_id', 'seller_order_id', 'complaint_id', 'type', 'amount', 'description',

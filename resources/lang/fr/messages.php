@@ -73,6 +73,7 @@ return [
         'no_coupon_platform' => 'Les codes promo ne s\'appliquent pas aux produits de la plateforme.',
         'own_product' => 'Vous ne pouvez pas acheter votre propre produit.',
         'own_product_save' => 'Vous ne pouvez pas acheter ni enregistrer votre propre produit.',
+        'payment_method_unavailable' => 'Le paiement en ligne arrive bientôt. Pour l\'instant, payez en espèces à la livraison.',
     ],
     'coupon' => [
         'invalid' => 'Code promo invalide.',

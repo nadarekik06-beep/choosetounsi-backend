@@ -59,15 +59,21 @@ class CommissionController extends Controller
     /**
      * GET /api/seller/shipping-cost
      *
-     * Agency cost per order — what a seller pays when they offer free shipping.
+     * What free delivery costs the seller per parcel (admin setting), and
+     * what the client pays otherwise. shipping_cost = the seller's cost (kept
+     * for older clients of this endpoint).
      */
     public function shippingCost(): JsonResponse
     {
+        $settings = app(\App\Services\Delivery\DeliverySettings::class);
+        $contribution = \App\Support\Millimes::toFloat($settings->sellerContribution());
+
         return response()->json([
             'success' => true,
             'data'    => [
-                'shipping_cost'        => \App\Models\Product::shippingCost(),
-                'customer_delivery_fee' => \App\Models\Product::DEFAULT_DELIVERY_FEE,
+                'free_delivery_contribution' => $contribution,
+                'shipping_cost'              => $contribution,
+                'customer_delivery_fee'      => \App\Support\Millimes::toFloat($settings->clientFee()),
             ],
         ]);
     }

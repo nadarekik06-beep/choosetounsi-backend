@@ -10,46 +10,95 @@ use App\Models\Cart;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Services\Orders\OrderItemSnapshot;
-use App\Models\Pack;
 use App\Models\Product;
 use App\Models\ProductVariant;
-use App\Models\SellerApplication;
 use App\Models\SellerOrder;
-use App\Models\Coupon;
-use App\Services\CommissionService;
+use App\Models\User;
 use App\Services\CouponService;
 use App\Services\FinancialSnapshotService;
 use App\Services\Orders\BuyerOrderNotifier;
+use App\Services\Orders\OrderPricing;
+use App\Services\Orders\PricingException;
 use App\Services\Orders\SellerOrderNotifier;
 use App\Services\Orders\OrderStock;
+use App\Services\Payments\CheckoutPaymentMethods;
 use App\Services\WalletService;
 use App\Services\StockAlertService;
 use App\Services\PromotionService;
 use App\Services\Recommendation\InteractionTracker;
+use App\Support\Millimes;
 use App\Support\ShippingAddress;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
+/**
+ * Checkout. Every amount comes from App\Services\Orders\OrderPricing: the
+ * storefront shows its quote (POST /checkout/quote) and the order is priced
+ * again here when placed — prices, fees and totals sent by the client are
+ * never trusted (expected_total only detects a change, see priceChanged()).
+ *
+ * One seller = one parcel (seller_order) with its own delivery fee and COD
+ * amount; regular products and packs of the same seller share that parcel.
+ */
 class CheckoutController extends Controller
 {
-    // InteractionTracker records purchase signals for homepage personalization
-    /** @var array<int, array> cart row id => pricing block (see linePricing()) */
-    private array $linePricing = [];
+    private const CART_RELATIONS = [
+        'product',
+        'variant.attributeOptions.attribute',
+        'pack.items.product',
+        'pack.items.product.variants.attributeOptions.attribute',
+    ];
 
     public function __construct(
         private WalletService            $walletService,
         private StockAlertService        $stockAlertService,
         private PromotionService         $promoService,
-        private CommissionService        $commissionService,
         private FinancialSnapshotService $financialSnapshot,
         private InteractionTracker       $tracker,
         private CouponService            $couponService,
         private SellerOrderNotifier      $sellerNotifier,
         private OrderStock               $orderStock,
         private BuyerOrderNotifier       $buyerNotifier,
+        private OrderPricing             $pricing,
+        private CheckoutPaymentMethods   $paymentMethods,
     ) {}
+
+    /**
+     * POST /api/checkout/quote
+     *
+     * What the order will cost, per parcel: the cart (item_ids / coupon_codes)
+     * or one product (product_id, variant_id, quantity, coupon_code — buy now).
+     */
+    public function quote(Request $request)
+    {
+        $request->validate([
+            'item_ids'       => 'nullable|array',
+            'item_ids.*'     => 'integer',
+            'coupon_codes'   => 'nullable|array',
+            'coupon_codes.*' => 'string',
+            'product_id'     => 'nullable|integer|exists:products,id',
+            'variant_id'     => 'nullable|integer|exists:product_variants,id',
+            'quantity'       => 'nullable|integer|min:1|max:100',
+            'coupon_code'    => 'nullable|string',
+        ]);
+        $user = $request->user();
+
+        try {
+            $quote = $request->filled('product_id')
+                ? $this->buyNowQuote($request, $user, 'cod')
+                : $this->pricing->forCart($this->cartRows($request, $user), $request->input('coupon_codes', []), $user->id, 'cod');
+        } catch (PricingException $e) {
+            return $e->toResponse();
+        }
+
+        return response()->json([
+            'success' => true,
+            'data'    => $this->pricing->present($quote) + ['payment_methods' => $this->paymentMethods->all()],
+        ]);
+    }
 
     /**
      * POST /api/checkout
@@ -62,427 +111,55 @@ class CheckoutController extends Controller
     {
         ShippingAddress::prepare($request);
         $request->validate(ShippingAddress::rules() + [
-            'payment_method' => 'nullable|string|in:cod,card,d17,wallet',
+            'payment_method' => 'nullable|string|in:' . implode(',', CheckoutPaymentMethods::ALL),
             'item_ids'       => 'nullable|array',
             'item_ids.*'     => 'integer',
             'coupon_codes'   => 'nullable|array',
             'coupon_codes.*' => 'string',
             'expected_total' => 'nullable|numeric|min:0',
-            ]);
+        ]);
 
-        $user = $request->user();
+        $user          = $request->user();
+        $paymentMethod = $request->payment_method ?? 'cod';
+        if ($blocked = $this->paymentMethodBlocked($paymentMethod)) {
+            return $blocked;
+        }
 
-       $cartQuery = Cart::with([
-    'product',
-    'variant.attributeOptions.attribute',
-    'pack.items.product',
-    'pack.items.product.variants.attributeOptions.attribute',
-])->where('user_id', $user->id);
-
-$selectedIds = $request->input('item_ids');
-if (!empty($selectedIds)) {
-    $cartQuery->whereIn('id', $selectedIds);
-}
-
-$cartItems      = $cartQuery->get();
-$checkingOutIds = $cartItems->pluck('id')->all();
+        $cartItems = $this->cartRows($request, $user);
         if ($cartItems->isEmpty()) {
             return response()->json(['success' => false, 'message' => __('messages.checkout.cart_empty')], 422);
         }
 
-        $paymentMethod = $request->payment_method ?? 'cod';
-
-        // ── Pre-flight validation ─────────────────────────────────────────────
-        foreach ($cartItems as $item) {
-            if ($item->isPack()) {
-                $pack = $item->pack;
-                if (!$pack || !$pack->is_active || !$pack->is_approved) {
-                    return response()->json(['success' => false, 'message' => __('messages.checkout.pack_unavailable', ['pack' => $item->pack_name])], 422);
-                }
-                $selectionMap = collect($item->pack_selections ?? [])->keyBy('pack_item_id');
-                foreach ($pack->items as $packItem) {
-                    $sel       = $selectionMap->get($packItem->id);
-                    $variantId = $sel['variant_id'] ?? null;
-                    $product   = $packItem->product;
-                    if (!$product || !$product->is_approved || !$product->is_active) {
-                        return response()->json(['success' => false, 'message' => __('messages.checkout.pack_product_unavailable', ['pack' => $pack->name])], 422);
-                    }
-                    $stock = $variantId ? (ProductVariant::find($variantId)?->stock ?? 0) : $product->stock;
-                    if ($stock < $packItem->quantity) {
-                        return response()->json(['success' => false, 'message' => __('messages.checkout.pack_product_stock', ['product' => $product->name, 'pack' => $pack->name, 'stock' => $stock])], 422);
-                    }
-                }
-            } else {
-                $product = $item->product;
-                if (!$product || !$product->is_approved || !$product->is_active) {
-                    return response()->json(['success' => false, 'message' => __('messages.checkout.product_unavailable_named', ['product' => $product->name])], 422);
-                }
-                $this->ensureNotProductOwner($request, $product);
-                $stockPool = $item->variant ? $item->variant->stock : $product->stock;
-                if ($stockPool < $item->quantity) {
-                    $label = $item->variant ? "\"{$product->name}\" ({$item->variant->label})" : "\"{$product->name}\"";
-                    return response()->json(['success' => false, 'message' => __('messages.checkout.stock_requested', ['label' => $label, 'stock' => $stockPool, 'requested' => $item->quantity])], 422);
-                }
-            }
+        try {
+            $quote = $this->pricing->forCart($cartItems, $request->input('coupon_codes', []), $user->id, $paymentMethod);
+        } catch (PricingException $e) {
+            return $e->toResponse();
         }
 
-        $sellerCol       = $this->getSellerCol();
-        $sellerPlanCache = [];
-
-        $productRows = $cartItems->filter(fn($i) => !$i->isPack());
-        $packRows    = $cartItems->filter(fn($i) =>  $i->isPack());
-
-        // Coupons never apply to packs (same precedent as Promotion pricing —
-        // packs are priced as a fixed bundle, not per-product).
-        $groupedBySeller = $productRows->groupBy(function ($item) use ($sellerCol) {
-            $sid = $item->product->{$sellerCol};
-            return $sid !== null ? $sid : 'platform';
-        });
-
-        // ── Resolve + validate any submitted coupon codes, one per seller ──────
-        // Rejects the whole checkout with a clear message if any code is invalid,
-        // rather than silently dropping it — the customer typed it expecting it
-        // to apply.
-        $resolvedCoupons = []; // sellerId => ['coupon' => Coupon, 'discount' => float]
-        $itemDiscounts   = []; // cart row id => discount share
-        $couponCodes = array_filter(array_unique($request->input('coupon_codes', [])));
-
-        foreach ($couponCodes as $rawCode) {
-            $code   = strtoupper($rawCode);
-            $coupon = Coupon::where('code', $code)->first();
-
-            if (!$coupon) {
-                return response()->json(['success' => false, 'message' => __('messages.checkout.coupon_invalid_named', ['code' => $rawCode])], 422);
-            }
-            if (isset($resolvedCoupons[$coupon->seller_id])) {
-                return response()->json(['success' => false, 'message' => __('messages.checkout.one_coupon_per_seller')], 422);
-            }
-
-            $sellerItems = $groupedBySeller->get($coupon->seller_id, collect());
-            $items = $sellerItems->map(fn($item) => [
-                'product_id' => $item->product_id,
-                'quantity'   => $item->quantity,
-                'line_total' => $this->lineTotal($item),
-            ])->values()->all();
-
-            $result = $this->couponService->validateForSeller($code, $coupon->seller_id, $user->id, $items);
-            if (!$result['valid']) {
-                return response()->json(['success' => false, 'message' => $result['message']], 422);
-            }
-
-            $resolvedCoupons[$coupon->seller_id] = [
-                'coupon'   => $result['coupon'],
-                'discount' => $result['discount_amount'],
-            ];
-
-            // Split the seller's discount across ITS eligible lines only
-            // (keyed by cart row id) — stored per order_item below.
-            $eligibleLines = $sellerItems
-                ->filter(fn($item) => in_array($item->product_id, $result['eligible_product_ids']))
-                ->mapWithKeys(fn($item) => [$item->id => $this->lineTotal($item)])
-                ->all();
-            $itemDiscounts += $this->couponService->allocateDiscount($eligibleLines, $result['discount_amount']);
+        // A pack price changed since it was added: the cart now shows the new price
+        if ($quote['pack_price_changed']) {
+            $this->refreshPackSnapshots($cartItems);
         }
-
-        $totalDiscount = round(array_sum(array_column($resolvedCoupons, 'discount')), 3);
-        $subtotal      = $this->calculateCartSubtotal($cartItems);
-        $shippingFee   = $this->resolveCartDeliveryFee($cartItems);
-        $total         = round($subtotal - $totalDiscount + $shippingFee, 3);
-
-        if ($changed = $this->priceChanged($request, $total)) {
+        if ($changed = $this->priceChanged($request, $quote)) {
             return $changed;
         }
-
-        if ($paymentMethod === 'wallet') {
-            if ((float) $user->wallet_balance < $total) {
-                return response()->json(['success' => false, 'message' => __('messages.checkout.insufficient_wallet'), 'data' => ['wallet_balance' => (float) $user->wallet_balance, 'required' => $total]], 422);
-            }
+        if ($short = $this->walletShort($paymentMethod, $user, $quote['total_m'])) {
+            return $short;
         }
 
-        $decrementedVariants = [];
-        $decrementedProducts = [];
+        $checkingOutIds = $cartItems->pluck('id')->all();
 
         DB::beginTransaction();
         try {
-            $order = Order::create([
-                'user_id'        => $user->id,
-                'order_number'   => 'ORD-' . strtoupper(Str::random(8)),
-                'status'         => 'pending',
-                'payment_status' => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
-                'payment_method'  => $paymentMethod,
-                'subtotal'        => $subtotal,
-                'discount_amount' => $totalDiscount,
-                'coupon_codes'    => collect($resolvedCoupons)->map(fn($c) => $c['coupon']->code)->values()->all() ?: null,
-                'shipping_fee'    => $shippingFee,
-                'shipping_cost'   => Product::shippingCost(),
-                'shipping_paid_by' => FinancialSnapshotService::shippingPayer($shippingFee),
-                'total_amount'    => $total,
-                // Address snapshot: later address-book edits never touch this order.
-                ...ShippingAddress::columns($request),
-            ]);
+            [$order, $soldLines] = $this->placeOrder($request, $user, $quote, $paymentMethod);
 
-            // ── A) Regular product rows ───────────────────────────────────────
-            // UNCHANGED — product commission logic is correct as-is.
-            if ($productRows->isNotEmpty()) {
-                foreach ($groupedBySeller as $groupKey => $sellerItems) {
-                    $sellerIdForDb = ($groupKey === 'platform') ? null : $groupKey;
-
-                    if (!isset($sellerPlanCache[$groupKey])) {
-                        $sellerPlanCache[$groupKey] = ($sellerIdForDb === null)
-                            ? 'free'
-                            : (SellerApplication::where('user_id', $sellerIdForDb)->first()?->plan ?? 'free');
-                    }
-                    $sellerPlan = $sellerPlanCache[$groupKey];
-
-                    $sellerSubtotal = round($sellerItems->sum(fn($item) => $this->lineTotal($item)), 3);
-
-                    $appliedCoupon  = $sellerIdForDb !== null ? ($resolvedCoupons[$sellerIdForDb]['coupon']   ?? null) : null;
-                    $couponDiscount = $sellerIdForDb !== null ? ($resolvedCoupons[$sellerIdForDb]['discount'] ?? 0.0) : 0.0;
-
-                    $sellerOrder = SellerOrder::create([
-                        'order_id'         => $order->id,
-                        'seller_id'        => $sellerIdForDb,
-                        'status'           => 'pending',
-                        'payment_status'   => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
-                        'subtotal'         => $sellerSubtotal,
-                        'coupon_id'        => $appliedCoupon?->id,
-                        'coupon_code'      => $appliedCoupon?->code,
-                        'coupon_type'      => $appliedCoupon?->discount_type,
-                        'coupon_value'     => $appliedCoupon?->discount_value,
-                        'discount_amount'  => $couponDiscount,
-                    ]);
-
-                    foreach ($sellerItems as $item) {
-                        $product      = $item->product;
-                        $variant      = $item->variant;
-                        $unitPrice    = $this->unitPrice($item);
-                        $qty          = (int) $item->quantity;
-                        $pricing      = $this->linePricing($item);
-                        $held         = $this->promoService->reserveForLine($pricing, $qty)
-                            ?? throw new FlashSaleSoldOut($product->name);
-                        $commission   = $this->commissionService->calculateForSeller($sellerIdForDb, $unitPrice, $qty, $itemDiscounts[$item->id] ?? 0.0);
-                        $variantLabel = $variant ? $variant->attributeOptions->map(fn ($o) => $o->getAttributes()['value'])->join(' / ') : null;
-
-                        OrderItem::create([
-                            'order_id'              => $order->id,
-                            'seller_order_id'       => $sellerOrder->id,
-                            'product_id'            => $product->id,
-                            'variant_id'            => $variant?->id,
-                            'promotion_id'          => $pricing['promotion']['id'] ?? null,
-                            'flash_reserved'        => $held,
-                            'variant_label'         => $variantLabel,
-                            ...OrderItemSnapshot::capture($product, $variant), // image + attributes as bought
-                            'product_name'          => $product->getAttributes()['name'], // order snapshot keeps the seller's original text
-                            'quantity'              => $qty,
-                            'unit_price'            => $unitPrice,
-                            'price'                 => $unitPrice,
-                            'total'                 => $commission['total_price'],
-                            'discount_amount'       => $commission['discount_amount'],
-                            'net_total'             => $commission['net_total'],
-                            'commission_percentage' => $commission['commission_percentage'],
-                            'commission_source'     => $commission['commission_source'],
-                            'commission_amount'     => $commission['commission_amount'],
-                            'seller_amount'         => $commission['seller_amount'],
-                            'plan_used'             => $commission['plan_used'],
-                        ]);
-
-                        $this->orderStock->reserve($variant?->id, $product->id, $qty, $this->stockLabel($product, $variant));
-                        if ($variant) {
-                            $decrementedVariants[] = ['variant_id' => $variant->id, 'product' => $product];
-                        } else {
-                            $decrementedProducts[] = $product->id;
-                        }
-                    }
-
-                    // Freeze financial snapshot AFTER all items for this seller_order are inserted.
-                    // Items already carry the post-discount commission/seller_amount, so the
-                    // seller-funded coupon is reflected without any further adjustment.
-                    $this->financialSnapshot->freeze($sellerOrder->id);
-
-                    if ($appliedCoupon) {
-                        $this->couponService->redeem($appliedCoupon, $sellerOrder, $order, $user->id, $couponDiscount);
-                    }
-                }
-            }
-
-            // ── B) Pack rows ──────────────────────────────────────────────────
-            //
-            // FIX: Commission is now calculated ONCE on the whole pack_price,
-            // NOT on each individual product inside the pack.
-            //
-            // Why this was wrong before:
-            //   Old code called commissionService->calculate($product->price) per item.
-            //   For a 70 DT pack with a 50 DT + 40 DT product:
-            //     Wrong:   commission(50) + commission(40)  ← wrong price, wrong total
-            //     Correct: commission(70)                  ← pack_price, single calculation
-            //
-            // How the fix works:
-            //   1. One commission calculation per pack using pack_price_snapshot.
-            //   2. The FIRST order_item row carries the full commission figures.
-            //   3. Subsequent items are inventory-tracking rows only (zero commission).
-            //   4. seller_order.subtotal = pack_price_snapshot (already correct above).
-            //
-            foreach ($packRows as $cartRow) {
-                $pack         = $cartRow->pack;
-                $selectionMap = collect($cartRow->pack_selections ?? [])->keyBy('pack_item_id');
-
-                // pack_price_snapshot: the price the customer paid for the whole pack.
-                // This is the ONLY price commission should be calculated on.
-                $packPrice = (float) $cartRow->pack_price_snapshot;
-
-                $packItemsBySeller = $pack->items->groupBy(function ($pi) use ($sellerCol) {
-                    $sid = $pi->product->{$sellerCol};
-                    return $sid !== null ? $sid : 'platform';
-                });
-
-                foreach ($packItemsBySeller as $groupKey => $packItems) {
-                    $proportion     = $packItems->count() / $pack->items->count();
-                    $sellerSubtotal = round($packPrice * $proportion, 3);
-                    $sellerIdForDb  = ($groupKey === 'platform') ? null : $groupKey;
-
-                    if (!isset($sellerPlanCache[$groupKey])) {
-                        $sellerPlanCache[$groupKey] = ($sellerIdForDb === null)
-                            ? 'free'
-                            : (SellerApplication::where('user_id', $sellerIdForDb)->first()?->plan ?? 'free');
-                    }
-                    $sellerPlan = $sellerPlanCache[$groupKey];
-
-                    // ── FIXED: Calculate commission ONCE on the seller's portion ──
-                    // Each seller's commission is calculated on their proportional
-                    // share of the pack_price, not on individual product prices.
-                    //
-                    // If a pack has 2 products from the same seller: proportion = 1.0
-                    //   → commission($packPrice × 1.0, $plan)
-                    //
-                    // If a pack has 4 products, 2 from seller A and 2 from seller B:
-                    //   → seller A: commission($packPrice × 0.5, $plan)
-                    //   → seller B: commission($packPrice × 0.5, $plan)
-                    //
-                    // quantity = 1 because pack_price already covers all items.
-                    $packCommission = $this->commissionService->calculateForSeller(
-                        $sellerIdForDb,
-                        $sellerSubtotal,  // ← proportional share of pack_price
-                        1                 // ← 1 pack unit
-                    );
-
-                    $sellerOrder = SellerOrder::create([
-                        'order_id'       => $order->id,
-                        'seller_id'      => $sellerIdForDb,
-                        'status'         => 'pending',
-                        'payment_status' => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
-                        'subtotal'       => $sellerSubtotal,
-                    ]);
-
-                    // Track whether we've written the commission to the first item yet
-                    $commissionWritten = false;
-
-                    foreach ($packItems as $packItem) {
-                        $product      = $packItem->product;
-                        $sel          = $selectionMap->get($packItem->id);
-                        $variantId    = $sel['variant_id'] ?? null;
-                        $variant      = $variantId ? $product->variants->firstWhere('id', $variantId) : null;
-                        $qty          = (int) $packItem->quantity;
-                        $variantLabel = $variant ? $variant->attributeOptions->map(fn ($o) => $o->getAttributes()['value'])->join(' / ') : null;
-
-                        if (!$commissionWritten) {
-                            // ── FIRST item: carries ALL commission for this pack+seller ──
-                            // The financial figures here represent the whole seller's portion
-                            // of the pack. Subsequent items are stock-tracking rows only.
-                            OrderItem::create([
-                                'order_id'              => $order->id,
-                                'seller_order_id'       => $sellerOrder->id,
-                                'product_id'            => $product->id,
-                                'variant_id'            => $variantId,
-                                'variant_label'         => $variantLabel,
-                                ...OrderItemSnapshot::capture($product, $variant), // image + attributes as bought
-                                'product_name'          => $product->getAttributes()['name'] . ' (Bundle: ' . $pack->name . ')',
-                                'quantity'              => $qty,
-
-                                // unit_price = seller's portion of pack_price
-                                // (not the product's individual retail price)
-                                'unit_price'            => $packCommission['unit_price'],
-                                'price'                 => $packCommission['unit_price'],
-                                'total'                 => $packCommission['total_price'],
-                                'net_total'             => $packCommission['net_total'],
-
-                                // Commission calculated on pack_price portion, not product price
-                                'commission_percentage' => $packCommission['commission_percentage'],
-                                'commission_source'     => $packCommission['commission_source'],
-                                'commission_amount'     => $packCommission['commission_amount'],
-                                'seller_amount'         => $packCommission['seller_amount'],
-                                'plan_used'             => $packCommission['plan_used'],
-                            ]);
-                            $commissionWritten = true;
-
-                        } else {
-                            // ── SUBSEQUENT items: inventory tracking only ──
-                            // Commission is already captured on the first row.
-                            // These rows exist so stock can be decremented per product.
-                            // Financial dashboard queries should filter commission_amount > 0.
-                            OrderItem::create([
-                                'order_id'              => $order->id,
-                                'seller_order_id'       => $sellerOrder->id,
-                                'product_id'            => $product->id,
-                                'variant_id'            => $variantId,
-                                'variant_label'         => $variantLabel,
-                                ...OrderItemSnapshot::capture($product, $variant), // image + attributes as bought
-                                'product_name'          => $product->getAttributes()['name'] . ' (Bundle: ' . $pack->name . ')',
-                                'quantity'              => $qty,
-                                'unit_price'            => 0,  // financial data is on the first row
-                                'price'                 => 0,
-                                'total'                 => 0,
-                                'net_total'             => 0,
-                                'commission_percentage' => 0,  // intentionally zero
-                                'commission_amount'     => 0,  // intentionally zero
-                                'seller_amount'         => 0,  // intentionally zero
-                                'plan_used'             => $sellerPlan,
-                            ]);
-                        }
-
-                        // Stock decrement runs for EVERY item regardless of commission row
-                        $this->orderStock->reserve($variant ? $variantId : null, $product->id, $qty, $this->stockLabel($product, $variant));
-                        if ($variant) {
-                            $decrementedVariants[] = ['variant_id' => $variantId, 'product' => $product];
-                        } else {
-                            $decrementedProducts[] = $product->id;
-                        }
-                    }
-
-                    // Freeze financial snapshot AFTER all pack items for this seller_order
-                    $this->financialSnapshot->freeze($sellerOrder->id);
-                }
-            }
-
-            if ($paymentMethod === 'wallet') {
-                $this->walletService->deductForOrder($user, $order);
-            }
-
-            Cart::where('user_id', $user->id)
-                ->whereIn('id', $checkingOutIds)
-                ->delete();
+            Cart::where('user_id', $user->id)->whereIn('id', $checkingOutIds)->delete();
 
             // COD / wallet: sellers hear about it now (sent after the commit).
             // Card / D17 wait for the payment: see SellerOrderNotifier.
             $this->sellerNotifier->orderPlaced($order);
             $this->buyerNotifier->orderPlaced($order);
             DB::commit();
-
-            // ── CHANGE 3a: Log purchase activity for preferences ──────────────
-            try {
-                foreach ($productRows as $item) {
-                    $this->tracker->recordFromRequest($request, 'purchase', $item->product_id, ['category_id' => $item->product->category_id, 'order_id' => $order->id]);
-                }
-                foreach ($packRows as $cartRow) {
-                    foreach ($cartRow->pack->items as $packItem) {
-                        $this->tracker->recordFromRequest($request, 'purchase', $packItem->product_id, ['category_id' => $packItem->product->category_id, 'order_id' => $order->id]);
-                    }
-                }
-            } catch (\Throwable $e) {
-                Log::warning('[Preferences] purchase log failed: ' . $e->getMessage());
-            }
-            // Credit lines bought after clicking an ad to that campaign (never throws).
-            app(AttributionService::class)->recordOrder($order, InteractionTracker::sessionIdFrom($request));
-
         } catch (FlashSaleSoldOut $e) {
             DB::rollBack();
             return $this->flashSoldOut($e);
@@ -495,34 +172,14 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             return response()->json(['success' => false, 'message' => __('messages.checkout.order_failed')], 500);
         }
 
-        // ── Stock alerts ──────────────────────────────────────────────────────
-        $this->fireStockAlerts($decrementedVariants, $decrementedProducts);
+        $this->afterOrder($request, $order, $soldLines);
 
-
-        $sellerCount = $productRows->isNotEmpty()
-            ? $productRows->groupBy(function ($i) use ($sellerCol) {
-                $sid = $i->product->{$sellerCol};
-                return $sid !== null ? $sid : 'platform';
-            })->count() + $packRows->count()
-            : $packRows->count();
-
-        return response()->json([
-            'success'       => true,
-            'message'       => __('messages.checkout.order_placed'),
-            'order_number'  => $order->order_number,
-            'order_id'      => $order->id,
-            'subtotal'      => $subtotal,
-            'discount_amount' => $totalDiscount,
-            'shipping_fee'  => $shippingFee,
-            'total'         => $total,
-            'seller_count'  => $sellerCount,
-            'needs_payment' => $paymentMethod === 'card',
-        ], 201);
+        return response()->json($this->orderResponse($order, $quote, $paymentMethod), 201);
     }
 
     /**
      * POST /api/checkout/buy-now
-     * Single product direct purchase — bypasses cart. UNCHANGED.
+     * Single product direct purchase — bypasses cart.
      */
     public function buyNow(Request $request)
     {
@@ -531,189 +188,36 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             'product_id'     => 'required|integer|exists:products,id',
             'variant_id'     => 'nullable|integer|exists:product_variants,id',
             'quantity'       => 'required|integer|min:1|max:100',
-            'payment_method' => 'nullable|string|in:cod,card,d17,wallet',
+            'payment_method' => 'nullable|string|in:' . implode(',', CheckoutPaymentMethods::ALL),
             'coupon_code'    => 'nullable|string',
             'expected_total' => 'nullable|numeric|min:0',
         ]);
 
         $user          = $request->user();
-        $quantity      = (int) $request->quantity;
         $paymentMethod = $request->payment_method ?? 'cod';
-        $product       = Product::find($request->product_id);
-
-        if (!$product || !$product->is_approved || !$product->is_active) {
-            return response()->json(['success' => false, 'message' => __('messages.checkout.product_unavailable')], 422);
+        if ($blocked = $this->paymentMethodBlocked($paymentMethod)) {
+            return $blocked;
         }
 
-        // Same rule as the cart: a seller can't buy their own product.
-        $this->ensureNotProductOwner($request, $product);
-
-        $variant = null;
-        if ($request->filled('variant_id')) {
-            $variant = ProductVariant::with('attributeOptions.attribute')
-                ->where('id', $request->variant_id)
-                ->where('product_id', $product->id)
-                ->first();
-            if (!$variant || !$variant->is_active) {
-                return response()->json(['success' => false, 'message' => __('messages.checkout.variant_unavailable')], 422);
-            }
+        try {
+            $quote = $this->buyNowQuote($request, $user, $paymentMethod);
+        } catch (PricingException $e) {
+            return $e->toResponse();
         }
 
-        $stockPool = $variant ? $variant->stock : $product->stock;
-        if ($stockPool < $quantity) {
-            $label = $variant ? "\"{$product->name}\" ({$variant->label})" : "\"{$product->name}\"";
-            return response()->json(['success' => false, 'message' => __('messages.checkout.stock_only', ['label' => $label, 'stock' => $stockPool])], 422);
-        }
-
-        $sellerCol  = $this->getSellerCol();
-        $sellerId   = $product->{$sellerCol};
-        $sellerPlan = 'free';
-        if ($sellerId !== null) {
-            $sellerPlan = SellerApplication::where('user_id', $sellerId)->first()?->plan ?? 'free';
-        }
-
-        $priceData    = $this->promoService->priceLine($product, $variant);
-        $unitPrice    = $priceData['final_price'];
-        $lineTotal    = round($unitPrice * $quantity, 3);
-
-        // ── Coupon (single seller, so no per-seller grouping needed) ───────────
-        $appliedCoupon  = null;
-        $discountAmount = 0.0;
-
-        if ($request->filled('coupon_code')) {
-            if ($sellerId === null) {
-                return response()->json(['success' => false, 'message' => __('messages.checkout.no_coupon_platform')], 422);
-            }
-
-            $code   = strtoupper($request->coupon_code);
-            $coupon = Coupon::where('code', $code)->first();
-            if (!$coupon) {
-                return response()->json(['success' => false, 'message' => __('messages.coupon.invalid')], 422);
-            }
-
-            $items = [[
-                'product_id' => $product->id,
-                'quantity'   => $quantity,
-                'line_total' => $lineTotal,
-            ]];
-            $result = $this->couponService->validateForSeller($code, $sellerId, $user->id, $items);
-            if (!$result['valid']) {
-                return response()->json(['success' => false, 'message' => $result['message']], 422);
-            }
-
-            $appliedCoupon  = $result['coupon'];
-            $discountAmount = $result['discount_amount'];
-        }
-
-        // Single line → the whole seller discount sits on it.
-        $commission = $this->commissionService->calculateForSeller($sellerId, $unitPrice, $quantity, $discountAmount);
-
-        // subtotal stays PRE-discount (matches store()'s convention — SellerOrder.subtotal
-        // is the gross item total, discount_amount is tracked separately).
-        $subtotal    = (float) $commission['total_price'];
-        $deliveryFee = Product::orderDeliveryFee([$product]);
-        $total       = round($subtotal - $discountAmount + $deliveryFee, 3);
-
-        if ($changed = $this->priceChanged($request, $total)) {
+        if ($changed = $this->priceChanged($request, $quote)) {
             return $changed;
         }
-
-        $variantLabel = $variant ? $variant->attributeOptions->map(fn ($o) => $o->getAttributes()['value'])->join(' / ') : null;
-
-        if ($paymentMethod === 'wallet' && (float) $user->wallet_balance < $total) {
-            return response()->json(['success' => false, 'message' => __('messages.checkout.insufficient_wallet'), 'data' => ['wallet_balance' => (float) $user->wallet_balance, 'required' => $total]], 422);
+        if ($short = $this->walletShort($paymentMethod, $user, $quote['total_m'])) {
+            return $short;
         }
-
-        $decrementedVariants = [];
-        $decrementedProducts = [];
 
         DB::beginTransaction();
         try {
-            $order = Order::create([
-                'user_id'        => $user->id,
-                'order_number'   => 'ORD-' . strtoupper(Str::random(8)),
-                'status'         => 'pending',
-                'payment_status' => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
-                'payment_method'  => $paymentMethod,
-                'subtotal'        => $subtotal,
-                'discount_amount' => $discountAmount,
-                'coupon_codes'    => $appliedCoupon ? [$appliedCoupon->code] : null,
-                'shipping_fee'    => $deliveryFee,
-                'shipping_cost'   => Product::shippingCost(),
-                'shipping_paid_by' => FinancialSnapshotService::shippingPayer($deliveryFee),
-                'total_amount'    => $total,
-                // Address snapshot: later address-book edits never touch this order.
-                ...ShippingAddress::columns($request),
-            ]);
-
-            $sellerOrder = SellerOrder::create([
-                'order_id'        => $order->id,
-                'seller_id'       => $sellerId,
-                'status'          => 'pending',
-                'payment_status'  => $paymentMethod === 'wallet' ? 'paid' : 'unpaid',
-                'subtotal'        => $subtotal,
-                'coupon_id'       => $appliedCoupon?->id,
-                'coupon_code'     => $appliedCoupon?->code,
-                'coupon_type'     => $appliedCoupon?->discount_type,
-                'coupon_value'    => $appliedCoupon?->discount_value,
-                'discount_amount' => $discountAmount,
-            ]);
-
-            $held = $this->promoService->reserveForLine($priceData, $quantity)
-                ?? throw new FlashSaleSoldOut($product->name);
-
-            OrderItem::create([
-                'order_id'              => $order->id,
-                'seller_order_id'       => $sellerOrder->id,
-                'product_id'            => $product->id,
-                'variant_id'            => $variant?->id,
-                'promotion_id'          => $priceData['promotion']['id'] ?? null,
-                'flash_reserved'        => $held,
-                'variant_label'         => $variantLabel,
-                ...OrderItemSnapshot::capture($product, $variant), // image + attributes as bought
-                'product_name'          => $product->getAttributes()['name'], // order snapshot keeps the seller's original text
-                'quantity'              => $quantity,
-                'unit_price'            => $unitPrice,
-                'price'                 => $unitPrice,
-                'total'                 => $commission['total_price'],
-                'discount_amount'       => $commission['discount_amount'],
-                'net_total'             => $commission['net_total'],
-                'commission_percentage' => $commission['commission_percentage'],
-                            'commission_source'     => $commission['commission_source'],
-                'commission_amount'     => $commission['commission_amount'],
-                'seller_amount'         => $commission['seller_amount'],
-                'plan_used'             => $commission['plan_used'],
-            ]);
-
-            $this->orderStock->reserve($variant?->id, $product->id, $quantity, $this->stockLabel($product, $variant));
-            if ($variant) {
-                $decrementedVariants[] = ['variant_id' => $variant->id, 'product' => $product];
-            } else {
-                $decrementedProducts[] = $product->id;
-            }
-
-            $this->financialSnapshot->freeze($sellerOrder->id);
-
-            if ($appliedCoupon) {
-                $this->couponService->redeem($appliedCoupon, $sellerOrder, $order, $user->id, $discountAmount);
-            }
-
-            if ($paymentMethod === 'wallet') {
-                $this->walletService->deductForOrder($user, $order);
-            }
-
+            [$order, $soldLines] = $this->placeOrder($request, $user, $quote, $paymentMethod);
             $this->sellerNotifier->orderPlaced($order);
             $this->buyerNotifier->orderPlaced($order);
             DB::commit();
-
-            // ── CHANGE 3b: Log purchase activity for preferences ──────────────
-            try {
-                $this->tracker->recordFromRequest($request, 'purchase', $product->id, ['category_id' => $product->category_id, 'order_id' => $order->id]);
-            } catch (\Throwable $e) {
-                Log::warning('[Preferences] buyNow purchase log failed: ' . $e->getMessage());
-            }
-            app(AttributionService::class)->recordOrder($order, InteractionTracker::sessionIdFrom($request));
-
         } catch (FlashSaleSoldOut $e) {
             DB::rollBack();
             return $this->flashSoldOut($e);
@@ -726,79 +230,286 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             return response()->json(['success' => false, 'message' => __('messages.checkout.order_failed')], 500);
         }
 
-        $this->fireStockAlerts($decrementedVariants, $decrementedProducts);
+        $this->afterOrder($request, $order, $soldLines);
 
-
-        return response()->json([
-            'success'       => true,
-            'message'       => __('messages.checkout.order_placed'),
-            'order_number'  => $order->order_number,
-            'order_id'      => $order->id,
-            'subtotal'      => $subtotal,
-            'discount_amount' => $discountAmount,
-            'delivery_fee'  => $deliveryFee,
-            'shipping_fee'  => $deliveryFee,
-            'total'         => $total,
-            'needs_payment' => $paymentMethod === 'card',
-        ], 201);
+        return response()->json($this->orderResponse($order, $quote, $paymentMethod), 201);
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
+    // ── Order writer ──────────────────────────────────────────────────────────
 
     /**
-     * After the commit: product totals of variant products follow the sold
-     * variants, and every line of the order is checked for stock crossings
-     * at once, so they end up in one grouped seller notification.
+     * Write the order exactly as quoted: one seller_order per parcel, its
+     * lines (pack money on the pack's first line per seller, the other pack
+     * lines track stock only), stock + flash reservations, then the frozen
+     * parcel snapshot. Runs inside the caller's transaction.
+     *
+     * @return array{0: Order, 1: array} the order and the sold lines for stock alerts
      */
-    private function fireStockAlerts(array $decrementedVariants, array $decrementedProducts): void
+    private function placeOrder(Request $request, User $user, array $quote, string $paymentMethod): array
     {
-        try {
-            $lines = [];
-            foreach ($decrementedVariants as $entry) {
-                $lines[] = ['product_id' => (int) $entry['product']->id, 'variant_id' => (int) $entry['variant_id']];
+        $dec    = fn (int $m) => Millimes::toDecimal($m);
+        $paid   = $paymentMethod === 'wallet' ? 'paid' : 'unpaid';
+        $coupons = collect($quote['parcels'])->pluck('coupon')->filter();
+
+        $order = Order::create([
+            'user_id'             => $user->id,
+            'order_number'        => 'ORD-' . strtoupper(Str::random(8)),
+            'status'              => 'pending',
+            'payment_status'      => $paid,
+            'payment_method'      => $paymentMethod,
+            'subtotal'            => $dec($quote['items_subtotal_m']),
+            'discount_amount'     => $dec($quote['discount_m']),
+            'coupon_codes'        => $coupons->map(fn ($c) => $c->code)->values()->all() ?: null,
+            'shipping_fee'        => $dec($quote['delivery_fee_m']),   // Σ parcel fees
+            'shipping_cost'       => $dec($quote['agency_cost_m']),    // Σ agency costs
+            'shipping_paid_by'    => $quote['shipping_paid_by'],       // customer | seller | mixed
+            'shipping_per_parcel' => true,
+            'total_amount'        => $dec($quote['total_m']),
+            // Address snapshot: later address-book edits never touch this order.
+            ...ShippingAddress::columns($request),
+        ]);
+
+        $soldLines = [];
+        foreach ($quote['parcels'] as $parcel) {
+            $coupon = $parcel['coupon'];
+            $sellerOrder = SellerOrder::create([
+                'order_id'        => $order->id,
+                'seller_id'       => $parcel['seller_id'],
+                'status'          => 'pending',
+                'payment_status'  => $paid,
+                'subtotal'        => $dec($parcel['items_subtotal_m']),
+                'coupon_id'       => $coupon?->id,
+                'coupon_code'     => $coupon?->code,
+                'coupon_type'     => $coupon?->discount_type,
+                'coupon_value'    => $coupon?->discount_value,
+                'discount_amount' => $dec($parcel['coupon_discount_m']),
+            ]);
+
+            foreach ($parcel['lines'] as $line) {
+                $line['kind'] === 'pack'
+                    ? $this->writePackLine($order, $sellerOrder, $line, $soldLines)
+                    : $this->writeProductLine($order, $sellerOrder, $line, $soldLines);
             }
-            foreach ($decrementedProducts as $productId) {
-                $lines[] = ['product_id' => (int) $productId, 'variant_id' => null];
+
+            $this->financialSnapshot->snapshotParcel($sellerOrder->id, $parcel);
+
+            if ($coupon) {
+                $this->couponService->redeem($coupon, $sellerOrder, $order, $user->id, Millimes::toFloat($parcel['coupon_discount_m']));
             }
-            $this->stockAlertService->recordSales($lines);
-        } catch (\Throwable $e) {
-            Log::error('[Checkout] fireStockAlerts failed: ' . $e->getMessage());
+        }
+
+        if ($paymentMethod === 'wallet') {
+            $this->walletService->deductForOrder($user, $order);
+        }
+
+        return [$order, $soldLines];
+    }
+
+    private function writeProductLine(Order $order, SellerOrder $sellerOrder, array $line, array &$soldLines): void
+    {
+        $product = $line['product'];
+        $variant = $line['variant'];
+        $qty     = $line['quantity'];
+        $c       = $line['commission'];
+        $held    = $this->promoService->reserveForLine($line['pricing'], $qty) ?? throw new FlashSaleSoldOut($product->name);
+
+        OrderItem::create([
+            'order_id'              => $order->id,
+            'seller_order_id'       => $sellerOrder->id,
+            'product_id'            => $product->id,
+            'variant_id'            => $variant?->id,
+            'promotion_id'          => $line['pricing']['promotion']['id'] ?? null,
+            'flash_reserved'        => $held,
+            'variant_label'         => $this->variantLabel($variant),
+            ...OrderItemSnapshot::capture($product, $variant), // image + attributes as bought
+            'product_name'          => $product->getAttributes()['name'], // order snapshot keeps the seller's original text
+            'quantity'              => $qty,
+            'unit_price'            => Millimes::toDecimal($line['unit_m']),
+            'price'                 => Millimes::toDecimal($line['unit_m']),
+            'total'                 => Millimes::toDecimal($c['total_price_m']),
+            'discount_amount'       => Millimes::toDecimal($c['discount_amount_m']),
+            'net_total'             => Millimes::toDecimal($c['net_total_m']),
+            'commission_percentage' => $c['commission_percentage'],
+            'commission_source'     => $c['commission_source'],
+            'commission_amount'     => Millimes::toDecimal($c['commission_amount_m']),
+            'seller_amount'         => Millimes::toDecimal($c['seller_amount_m']),
+            'plan_used'             => $c['plan_used'],
+        ]);
+
+        $this->orderStock->reserve($variant?->id, $product->id, $qty, $this->stockLabel($product, $variant));
+        $soldLines[] = ['product_id' => (int) $product->id, 'variant_id' => $variant ? (int) $variant->id : null];
+    }
+
+    /**
+     * A pack's share for one seller: the FIRST line carries the money (the
+     * seller's share of the pack price × pack quantity, commission on it);
+     * the following lines track stock only (zero money, by design).
+     */
+    private function writePackLine(Order $order, SellerOrder $sellerOrder, array $line, array &$soldLines): void
+    {
+        $c     = $line['commission'];
+        $first = true;
+
+        foreach ($line['components'] as $component) {
+            $product = $component['product'];
+            $variant = $component['variant'];
+            $money   = $first ? [
+                'unit_price'            => Millimes::toDecimal($line['unit_m']),
+                'price'                 => Millimes::toDecimal($line['unit_m']),
+                'total'                 => Millimes::toDecimal($c['total_price_m']),
+                'discount_amount'       => Millimes::toDecimal($c['discount_amount_m']),
+                'net_total'             => Millimes::toDecimal($c['net_total_m']),
+                'commission_percentage' => $c['commission_percentage'],
+                'commission_source'     => $c['commission_source'],
+                'commission_amount'     => Millimes::toDecimal($c['commission_amount_m']),
+                'seller_amount'         => Millimes::toDecimal($c['seller_amount_m']),
+            ] : [
+                'unit_price' => 0, 'price' => 0, 'total' => 0, 'net_total' => 0,
+                'commission_percentage' => 0, 'commission_amount' => 0, 'seller_amount' => 0,
+            ];
+
+            OrderItem::create([
+                'order_id'        => $order->id,
+                'seller_order_id' => $sellerOrder->id,
+                'product_id'      => $product->id,
+                'variant_id'      => $variant?->id,
+                'variant_label'   => $this->variantLabel($variant),
+                ...OrderItemSnapshot::capture($product, $variant), // image + attributes as bought
+                'product_name'    => $product->getAttributes()['name'] . ' (Bundle: ' . $line['pack']->name . ')',
+                'quantity'        => $component['quantity'],
+                'plan_used'       => $c['plan_used'],
+            ] + $money);
+            $first = false;
+
+            $this->orderStock->reserve($variant?->id, $product->id, $component['quantity'], $this->stockLabel($product, $variant));
+            $soldLines[] = ['product_id' => (int) $product->id, 'variant_id' => $variant ? (int) $variant->id : null];
         }
     }
 
-    /**
-     * Pricing block of a regular (non-pack) cart row, computed once per request so
-     * the subtotal, coupon split, order lines and flash reservation all use the
-     * same price even if a promotion ends mid-request.
-     */
-    private function linePricing($item): array
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private function cartRows(Request $request, User $user): Collection
     {
-        return $this->linePricing[$item->id] ??= $this->promoService->priceLine($item->product, $item->variant);
+        $query = Cart::with(self::CART_RELATIONS)->where('user_id', $user->id)->orderBy('id');
+        if (!empty($ids = $request->input('item_ids'))) {
+            $query->whereIn('id', $ids);
+        }
+        return $query->get();
     }
 
-    /** Post-promotion unit price for a regular (non-pack) cart row. */
-    private function unitPrice($item): float
+    private function buyNowQuote(Request $request, User $user, string $paymentMethod): array
     {
-        return $this->linePricing($item)['final_price'];
+        $product = Product::find($request->product_id);
+        $variant = null;
+        if ($request->filled('variant_id')) {
+            $variant = ProductVariant::with('attributeOptions.attribute')
+                ->where('id', $request->variant_id)
+                ->where('product_id', $request->product_id)
+                ->first();
+            if (!$variant || !$variant->is_active) {
+                throw new PricingException(__('messages.checkout.variant_unavailable'));
+            }
+        }
+        return $this->pricing->forBuyNow($product, $variant, (int) ($request->quantity ?? 1), $request->input('coupon_code'), $user->id, $paymentMethod);
+    }
+
+    /** Disabled methods ("Coming soon" in the storefront) are refused here too. */
+    private function paymentMethodBlocked(string $method): ?\Illuminate\Http\JsonResponse
+    {
+        if ($this->paymentMethods->enabled($method)) {
+            return null;
+        }
+        return response()->json([
+            'success' => false,
+            'code'    => 'payment_method_unavailable',
+            'message' => __('messages.checkout.payment_method_unavailable'),
+            'errors'  => ['payment_method' => [__('messages.checkout.payment_method_unavailable')]],
+        ], 422);
+    }
+
+    private function walletShort(string $method, User $user, int $totalM): ?\Illuminate\Http\JsonResponse
+    {
+        if ($method !== 'wallet' || Millimes::of($user->wallet_balance) >= $totalM) {
+            return null;
+        }
+        return response()->json(['success' => false, 'message' => __('messages.checkout.insufficient_wallet'), 'data' => ['wallet_balance' => (float) $user->wallet_balance, 'required' => Millimes::toFloat($totalM)]], 422);
     }
 
     /**
      * The storefront sends the total it showed (expected_total). When the server's
-     * total differs (a promotion started/ended, a price changed) the order is not
-     * placed: the customer gets the new total and confirms again. The server's
-     * numbers are always the ones charged.
+     * total differs (a promotion started/ended, a price or a fee changed) the order
+     * is not placed: the customer gets the new total and confirms again. Without
+     * expected_total, a pack whose price changed since it was added is refused the
+     * same way. The server's numbers are always the ones charged.
      */
-    private function priceChanged(Request $request, float $total): ?\Illuminate\Http\JsonResponse
+    private function priceChanged(Request $request, array $quote): ?\Illuminate\Http\JsonResponse
     {
-        if (!$request->filled('expected_total') || abs((float) $request->expected_total - $total) < 0.0005) {
+        $differs = $request->filled('expected_total')
+            ? Millimes::of($request->input('expected_total')) !== $quote['total_m']
+            : $quote['pack_price_changed'];
+        if (!$differs) {
             return null;
         }
         return response()->json([
             'success' => false,
             'code'    => 'price_changed',
             'message' => __('messages.checkout.price_changed'),
-            'data'    => ['total' => $total],
+            'data'    => ['total' => Millimes::toFloat($quote['total_m']), 'quote' => $this->pricing->present($quote)],
         ], 409);
+    }
+
+    private function refreshPackSnapshots(Collection $cartItems): void
+    {
+        foreach ($cartItems->filter(fn ($i) => $i->isPack() && $i->pack) as $row) {
+            if (Millimes::of($row->pack_price_snapshot) !== Millimes::of($row->pack->pack_price)) {
+                $row->update(['pack_price_snapshot' => $row->pack->pack_price]);
+            }
+        }
+    }
+
+    private function orderResponse(Order $order, array $quote, string $paymentMethod): array
+    {
+        $shown = $this->pricing->present($quote);
+        return [
+            'success'         => true,
+            'message'         => __('messages.checkout.order_placed'),
+            'order_number'    => $order->order_number,
+            'order_id'        => $order->id,
+            'subtotal'        => $shown['subtotal'],
+            'discount_amount' => $shown['discount_amount'],
+            'delivery_fee'    => $shown['delivery_fee'],
+            'shipping_fee'    => $shown['shipping_fee'],
+            'total'           => $shown['total'],
+            'parcels'         => $shown['parcels'],
+            'seller_count'    => $shown['parcel_count'],
+            'needs_payment'   => $paymentMethod === 'card',
+        ];
+    }
+
+    /** After the commit: stock alerts, purchase signals, ad attribution (never throw). */
+    private function afterOrder(Request $request, Order $order, array $soldLines): void
+    {
+        try {
+            $this->stockAlertService->recordSales($soldLines);
+        } catch (\Throwable $e) {
+            Log::error('[Checkout] fireStockAlerts failed: ' . $e->getMessage());
+        }
+
+        try {
+            $order->loadMissing('items.product:id,category_id');
+            foreach ($order->items as $item) {
+                $this->tracker->recordFromRequest($request, 'purchase', $item->product_id, ['category_id' => $item->product?->category_id, 'order_id' => $order->id]);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[Preferences] purchase log failed: ' . $e->getMessage());
+        }
+        // Credit lines bought after clicking an ad to that campaign (never throws).
+        app(AttributionService::class)->recordOrder($order, InteractionTracker::sessionIdFrom($request));
+    }
+
+    private function variantLabel(?ProductVariant $variant): ?string
+    {
+        return $variant ? $variant->attributeOptions->map(fn ($o) => $o->getAttributes()['value'])->join(' / ') : null;
     }
 
     /** "Name" or "Name" (Variant) — same label as the pre-flight stock messages. */
@@ -814,58 +525,5 @@ $checkingOutIds = $cartItems->pluck('id')->all();
             'code'    => 'flash_sold_out',
             'message' => __('messages.checkout.flash_sold_out', ['product' => $e->productName]),
         ], 422);
-    }
-
-    private function lineTotal($item): float
-    {
-        return round($this->unitPrice($item) * $item->quantity, 3);
-    }
-
-    /** Items total before coupon discount and shipping. */
-    private function calculateCartSubtotal($cartItems): float
-    {
-        return round($cartItems->sum(fn($item) => $item->isPack()
-            ? (float) $item->pack_price_snapshot
-            : $this->lineTotal($item)
-        ), 3);
-    }
-
-    /** One shipment per order: see Product::orderDeliveryFee() (sellers' custom fees included). */
-    private function resolveCartDeliveryFee($cartItems): float
-    {
-        return Product::orderDeliveryFee(
-            $cartItems->reject(fn($i) => $i->isPack())->pluck('product')->filter(),
-            $cartItems->contains(fn($i) => $i->isPack()),
-        );
-    }
-
-    private function getSellerCol(): string
-    {
-        static $col = null;
-        if ($col) return $col;
-        $columns  = DB::select('SHOW COLUMNS FROM products');
-        $colNames = array_map(fn($c) => $c->Field, $columns);
-        $col      = in_array('seller_id', $colNames) ? 'seller_id' : 'user_id';
-        return $col;
-    }
-
-    protected function ensureNotProductOwner(Request $request, Product $product): void
-    {
-        $sellerCol = $this->getSellerCol();
-        $sellerId  = $product->{$sellerCol};
-        if ($sellerId === null) return;
-        if ($sellerId === $request->user()->id) {
-            abort(422, __('messages.checkout.own_product'));
-        }
-    }
-
-    // ── CHANGE 4: Safe session ID helper ─────────────────────────────────────
-    private function safeSessionId(Request $request): ?string
-    {
-        try {
-            return $request->session()->getId();
-        } catch (\Throwable $e) {
-            return null; // API routes may not have a session — that's fine
-        }
     }
 }

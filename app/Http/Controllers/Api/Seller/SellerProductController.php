@@ -778,10 +778,8 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
             return null;
         }
  
-        $fee = (float) $raw;
- 
-        // Only accept 0 (free) or positive values; reject negatives
-        return $fee >= 0 ? round($fee, 3) : null;
+        // No custom fee: 0 = free delivery, anything else = the admin's client fee (null)
+        return is_numeric($raw) && (float) $raw === 0.0 ? 0.0 : null;
     }
 
     private function saveAttributes(Product $product, Request $request): void

@@ -7,6 +7,7 @@ use App\Models\CouponRedemption;
 use App\Models\Order;
 use App\Models\SellerOrder;
 use App\Services\GrowthRadar\Audience;
+use App\Support\Millimes;
 use Illuminate\Support\Facades\DB;
 
 class CouponService
@@ -75,21 +76,23 @@ class CouponService
             }
         }
 
-        $eligibleSubtotal = (float) $eligibleItems->sum('line_total');
+        // Integer millimes; a percentage discount is rounded half-up once.
+        $eligibleSubtotal = $eligibleItems->sum(fn ($item) => Millimes::of($item['line_total']));
 
-        if ($coupon->min_order_amount !== null && $eligibleSubtotal < (float) $coupon->min_order_amount) {
+        if ($coupon->min_order_amount !== null && $eligibleSubtotal < Millimes::of($coupon->min_order_amount)) {
             return $invalid(__('messages.coupon.min_order', ['amount' => number_format((float) $coupon->min_order_amount, 3)]));
         }
 
         $discount = $coupon->discount_type === 'percentage'
-            ? $eligibleSubtotal * ((float) $coupon->discount_value / 100)
-            : min((float) $coupon->discount_value, $eligibleSubtotal);
+            ? min(Millimes::percent($eligibleSubtotal, $coupon->discount_value), $eligibleSubtotal)
+            : min(Millimes::of($coupon->discount_value), $eligibleSubtotal);
 
         return [
             'valid'                 => true,
             'message'               => __('messages.coupon.applied'),
             'coupon'                => $coupon,
-            'discount_amount'       => round($discount, 3),
+            'discount_amount'       => Millimes::toFloat($discount),
+            'discount_amount_m'     => $discount,
             'eligible_product_ids'  => $eligibleItems->pluck('product_id')->values()->toArray(),
         ];
     }
@@ -104,22 +107,38 @@ class CouponService
      */
     public function allocateDiscount(array $lineTotals, float $discount): array
     {
+        $shares = $this->allocateDiscountM(
+            array_map(fn ($t) => Millimes::of($t), $lineTotals),
+            Millimes::of($discount)
+        );
+        return array_map(fn (int $m) => Millimes::toFloat($m), $shares);
+    }
+
+    /**
+     * Same split in integer millimes: half-up share per line, the remainder on
+     * the last line, never more than a line's own total.
+     *
+     * @param array<int|string, int> $lineTotals
+     * @return array<int|string, int>
+     */
+    public function allocateDiscountM(array $lineTotals, int $discount): array
+    {
         $base = array_sum($lineTotals);
         if ($discount <= 0 || $base <= 0) {
-            return array_map(fn () => 0.0, $lineTotals);
+            return array_map(fn () => 0, $lineTotals);
         }
 
         $shares    = [];
-        $allocated = 0.0;
+        $allocated = 0;
         $lastKey   = array_key_last($lineTotals);
 
         foreach ($lineTotals as $key => $lineTotal) {
             $share = $key === $lastKey
-                ? round($discount - $allocated, 3)
-                : round($discount * ($lineTotal / $base), 3);
-            $share        = min($share, round((float) $lineTotal, 3));
+                ? $discount - $allocated
+                : Millimes::share($discount, $lineTotal, $base);
+            $share        = min($share, $lineTotal);
             $shares[$key] = $share;
-            $allocated    = round($allocated + $share, 3);
+            $allocated   += $share;
         }
 
         return $shares;

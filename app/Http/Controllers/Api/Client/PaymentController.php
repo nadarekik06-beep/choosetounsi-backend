@@ -65,6 +65,11 @@ class PaymentController extends Controller
             'order_id' => 'required|integer|exists:orders,id',
         ]);
 
+        // Card payment switched off by the admin ("Coming soon")
+        if (!app(\App\Services\Payments\CheckoutPaymentMethods::class)->enabled('card')) {
+            return response()->json(['success' => false, 'code' => 'payment_method_unavailable', 'message' => __('messages.checkout.payment_method_unavailable')], 422);
+        }
+
         $order = Order::where('id', $request->order_id)
                       ->where('user_id', $request->user()->id)
                       ->where('payment_method', 'card')

@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\PlatformSetting;
 use App\Models\SellerSubscription;
 use App\Models\SubscriptionPlan;
+use App\Support\Millimes;
 
 /**
  * CommissionService
@@ -186,31 +187,42 @@ class CommissionService
             + ['commission_source' => $resolved['source']];
     }
 
+    /**
+     * Integer millimes throughout (App\Support\Millimes): the line's commission
+     * is rounded half-up to the millime, once. The *_m keys carry the exact
+     * millimes; the float keys are the same values for existing callers.
+     */
     private function breakdown(float $unitPrice, float $rate, string $plan, int $quantity, float $discount): array
     {
-        $totalPrice       = round($unitPrice * $quantity, 3);
-        $discount         = round(min(max($discount, 0), $totalPrice), 3);
-        $netTotal         = round($totalPrice - $discount, 3);
-        $commissionAmount = round($netTotal * ($rate / 100), 3);
-        $sellerAmount     = round($netTotal - $commissionAmount, 3);
+        $unitM       = Millimes::of($unitPrice);
+        $totalM      = $unitM * $quantity;
+        $discountM   = min(max(Millimes::of($discount), 0), $totalM);
+        $netM        = $totalM - $discountM;
+        $commissionM = Millimes::percent($netM, $rate);
+        $sellerM     = $netM - $commissionM;
 
         // How much the seller saves vs the default plan (for upgrade nudge)
-        $defaultRate    = $this->planRate($unitPrice, SubscriptionPlan::defaultPlan())['rate'];
-        $savedWithPlan  = round($netTotal * ($defaultRate / 100) - $commissionAmount, 3);
+        $defaultRate = $this->planRate($unitPrice, SubscriptionPlan::defaultPlan())['rate'];
+        $savedM      = Millimes::percent($netM, $defaultRate) - $commissionM;
 
         return [
-            'unit_price'             => $unitPrice,
+            'unit_price'             => Millimes::toFloat($unitM),
             'quantity'               => $quantity,
-            'total_price'            => $totalPrice,
-            'discount_amount'        => $discount,
-            'net_total'              => $netTotal,
+            'total_price'            => Millimes::toFloat($totalM),
+            'discount_amount'        => Millimes::toFloat($discountM),
+            'net_total'              => Millimes::toFloat($netM),
             'commission_percentage'  => $rate,
-            'commission_amount'      => $commissionAmount,
-            'seller_amount'          => $sellerAmount,
+            'commission_amount'      => Millimes::toFloat($commissionM),
+            'seller_amount'          => Millimes::toFloat($sellerM),
             'plan_used'              => $plan,
             'base_rate'              => $this->getBaseRate($unitPrice),
             'plan_reduction'         => $this->getPlanReduction($plan),
-            'saved_with_plan'        => max(0, $savedWithPlan),
+            'saved_with_plan'        => Millimes::toFloat(max(0, $savedM)),
+            'total_price_m'          => $totalM,
+            'discount_amount_m'      => $discountM,
+            'net_total_m'            => $netM,
+            'commission_amount_m'    => $commissionM,
+            'seller_amount_m'        => $sellerM,
         ];
     }
 

@@ -20,21 +20,6 @@ class Product extends Model
 
     protected $hidden = ['translations', 'translations_hash', 'admin_note', 'occasionRows'];
 
-    // ── Platform-level delivery constants ──────────────────────────────────────
-    // Change this ONE constant when the platform delivery fee changes.
-    // Every controller reads from here — never hardcode 8 anywhere else.
-    public const DEFAULT_DELIVERY_FEE = 8.0;
-
-    /**
-     * What the delivery agency bills per order (config platform.shipping_cost).
-     * Never 0: free shipping moves this cost onto the seller, it doesn't remove it.
-     */
-    public static function shippingCost(): float
-    {
-        $cost = (float) config('platform.shipping_cost', self::DEFAULT_DELIVERY_FEE);
-        return round($cost > 0 ? $cost : self::DEFAULT_DELIVERY_FEE, 3);
-    }
-
     protected $fillable = [
         'seller_id', 'category_id', 'subcategory_id',
         'name', 'slug', 'description', 'short_description',
@@ -51,7 +36,7 @@ class Product extends Model
         'featured'            => 'boolean',
         'is_platform_product' => 'boolean',
         'price'               => 'decimal:3',
-        'delivery_fee'        => 'decimal:3',   // ← NEW: null = platform default
+        'delivery_fee'        => 'decimal:3',   // 0 = free delivery, null = admin client fee
         'is_pack'             => 'boolean',
         'pack_quantity'       => 'integer',
         'low_stock_threshold' => 'integer',
@@ -292,52 +277,28 @@ class Product extends Model
         });
     }
 
-    // ── Delivery Fee Helpers (NEW) ──────────────────────────────────────────────
+    // ── Delivery ────────────────────────────────────────────────────────────────
 
     /**
-     * Returns the actual delivery fee for this product.
+     * Two states only (no custom per-product fee):
+     *   delivery_fee = 0     → free delivery, offered by the seller (who pays the
+     *                          admin's seller_free_delivery_contribution per parcel)
+     *   delivery_fee = NULL  → the client pays the admin's client_delivery_fee
      *
-     *   delivery_fee IS NULL  → use platform default (DEFAULT_DELIVERY_FEE constant)
-     *   delivery_fee = 0.000  → free delivery
-     *   delivery_fee = X.XXX  → custom fee
-     *
-     * This is the SINGLE source of truth for delivery fee calculation.
-     * Use this method in ALL controllers — never hardcode 8 anywhere.
-     */
-    /**
-     * Delivery fee the customer pays for one order (one shipment): 0 when every
-     * product ships free, otherwise the highest fee among the others — a
-     * seller's custom fee or the platform default. Packs count at the default.
-     * Buy-now is the one-product case. The checkout page mirrors this rule.
-     *
-     * @param iterable<Product> $products
-     */
-    public static function orderDeliveryFee(iterable $products, bool $hasPack = false): float
-    {
-        $fee = $hasPack ? self::DEFAULT_DELIVERY_FEE : 0.0;
-        foreach ($products as $product) {
-            if (!$product->isFreeDelivery()) {
-                $fee = max($fee, $product->getEffectiveDeliveryFee());
-            }
-        }
-        return round($fee, 3);
-    }
-
-    public function getEffectiveDeliveryFee(): float
-    {
-        if ($this->delivery_fee === null) {
-            return self::DEFAULT_DELIVERY_FEE;
-        }
-        return (float) $this->delivery_fee;
-    }
-
-    /**
-     * Returns true only when the seller explicitly set delivery_fee = 0.
-     * A null delivery_fee is NOT free — it means "use platform default."
+     * Delivery is charged per parcel (one seller = one parcel), never per
+     * product: see App\Services\Orders\OrderPricing.
      */
     public function isFreeDelivery(): bool
     {
         return $this->delivery_fee !== null && (float) $this->delivery_fee === 0.0;
+    }
+
+    /** The parcel fee the client pays when this product ships alone (admin setting). */
+    public function getEffectiveDeliveryFee(): float
+    {
+        return $this->isFreeDelivery()
+            ? 0.0
+            : \App\Support\Millimes::toFloat(app(\App\Services\Delivery\DeliverySettings::class)->clientFee());
     }
 
     // ── Accessors (auto-appended to API responses) ─────────────────────────────

@@ -35,6 +35,8 @@ class PlatformInfoController extends Controller
             'success' => true,
             'data'    => [
                 'd17_account_number' => $this->facts->d17AccountNumber(),
+                // Checkout methods the admin turned on (others show "Coming soon")
+                'payment_methods'    => app(\App\Services\Payments\CheckoutPaymentMethods::class)->all(),
             ],
         ]);
     }

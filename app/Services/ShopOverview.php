@@ -27,7 +27,7 @@ class ShopOverview
     /** @return array{products: int, sellers: int, categories: int, average_rating: ?float, reviews: int, delivery_fee: float, free_delivery_products: int, complaint_window_hours: int} */
     public function stats(): array
     {
-        return Cache::remember('shop:overview:stats', now()->addMinutes(self::CACHE_MINUTES), function () {
+        $stats = Cache::remember('shop:overview:stats', now()->addMinutes(self::CACHE_MINUTES), function () {
             $avg = Review::approved()->avg('rating');
 
             return [
@@ -38,11 +38,14 @@ class ShopOverview
                 'average_rating' => $avg !== null ? round((float) $avg, 1) : null,
                 'reviews'        => Review::approved()->count(),
                 // Trust strip: what checkout really charges and allows
-                'delivery_fee'           => Product::DEFAULT_DELIVERY_FEE,
                 'free_delivery_products' => Product::available()->where('delivery_fee', 0)->count(),
                 'complaint_window_hours' => (int) \App\Models\Complaint::COMPLAINT_WINDOW_HOURS,
             ];
         });
+
+        // Read live (not cached): the admin can change it at any time
+        $stats['delivery_fee'] = \App\Support\Millimes::toFloat(app(\App\Services\Delivery\DeliverySettings::class)->clientFee());
+        return $stats;
     }
 
     /**

@@ -27,6 +27,12 @@ class PlatformSetting extends Model
         return self::$cache[$key] ?? $default;
     }
 
+    /** Forget the per-process cache (long-lived workers, tests). */
+    public static function flushCache(): void
+    {
+        self::$cache = [];
+    }
+
     public static function setValue(string $key, $value, ?int $userId = null): void
     {
         self::updateOrCreate(['key' => $key], ['value' => $value, 'updated_by' => $userId]);

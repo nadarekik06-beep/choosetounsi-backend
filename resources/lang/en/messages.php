@@ -73,6 +73,7 @@ return [
         'no_coupon_platform' => 'Coupons are not available for platform products.',
         'own_product' => 'You cannot purchase your own product.',
         'own_product_save' => 'You cannot purchase or save your own product.',
+        'payment_method_unavailable' => 'Online payment is coming soon. For now, please pay cash on delivery.',
     ],
     'coupon' => [
         'invalid' => 'Invalid coupon code.',

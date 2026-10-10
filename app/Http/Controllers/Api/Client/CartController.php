@@ -294,20 +294,16 @@ class CartController extends Controller
         }
 
         // ── Upsert: one pack = one cart row ───────────────────────────────────
-        Cart::updateOrCreate(
-            [
-                'user_id' => $user->id,
-                'pack_id' => $pack->id,
-            ],
-            [
-                'product_id'           => null,
-                'variant_id'           => null,
-                'quantity'             => 1,
-                'pack_price_snapshot'  => (float) $pack->pack_price,
-                'pack_name'            => $pack->name,
-                'pack_selections'      => $request->pack_selections,
-            ]
-        );
+        // Adding it again refreshes the price and selections, keeps the quantity
+        $row = Cart::firstOrNew(['user_id' => $user->id, 'pack_id' => $pack->id]);
+        $row->fill([
+            'product_id'           => null,
+            'variant_id'           => null,
+            'quantity'             => $row->exists ? max(1, (int) $row->quantity) : 1,
+            'pack_price_snapshot'  => $pack->pack_price,
+            'pack_name'            => $pack->name,
+            'pack_selections'      => $request->pack_selections,
+        ])->save();
 
         return $this->index($request);
     }
@@ -373,14 +369,13 @@ private function safeSessionId(Request $request): ?string
             'promotion'        => $promoData['promotion'],
             'quantity'         => $item->quantity,
             'stock'            => $stock,
-            'line_total'       => round($price * $item->quantity, 3),
+            'line_total'       => \App\Support\Millimes::toFloat(\App\Support\Millimes::of($price) * (int) $item->quantity),
             'image_url'        => $imageUrl,
             'variant_label'    => $variantLabel,
             'variant_options'  => $variantOptions,
             'is_pack'          => false,
-            // ── NEW: delivery fee fields ──────────────────────────────────
+            // Delivery is charged per seller parcel at checkout (POST /checkout/quote)
             'is_free_delivery' => $product->isFreeDelivery(),
-            'delivery_fee'     => $product->getEffectiveDeliveryFee(),
         ];
     }
 
@@ -411,10 +406,11 @@ private function safeSessionId(Request $request): ?string
             'category'        => 'Bundle',
             'seller_id'       => null,
             'seller_name'     => null,
+            // Display only: checkout re-prices the pack at its current price (409 if changed)
             'price'           => $item->pack_price_snapshot,
-            'quantity'        => 1,
-            'stock'           => 999,
-            'line_total'      => $item->pack_price_snapshot,
+            'quantity'        => max(1, (int) $item->quantity),
+            'stock'           => 999, // checked per product at checkout
+            'line_total'      => \App\Support\Millimes::toFloat(\App\Support\Millimes::of($item->pack_price_snapshot) * max(1, (int) $item->quantity)),
             'image_url'       => $imageUrl,
             'variant_label'   => null,
             'variant_options' => [],

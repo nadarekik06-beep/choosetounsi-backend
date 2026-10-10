@@ -81,6 +81,14 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
         $sellerId  = (int) $request->seller_id;
         $batchDate = Carbon::parse($request->batch_date)->toDateString();
 
+        // CHOOSE'Tounsi's own products: their net is platform revenue, never a payout
+        if (\App\Helpers\PlatformUser::isPlatform($sellerId)) {
+            return response()->json([
+                'success' => false,
+                'message' => "CHOOSE'Tounsi's own parcels are platform revenue: they are never settled as a seller payout.",
+            ], 422);
+        }
+
         // Find all ready orders for this seller (not yet in a batch)
         $orders = DB::table('seller_orders')
             ->where('seller_id', $sellerId)
