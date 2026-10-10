@@ -38,7 +38,9 @@ class DeliveryDocumentsTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        config(['platform.shipping_cost' => 8.0]);
+        // Online methods are "Coming soon" by default; these flows exercise them
+        \App\Models\PlatformSetting::flushCache();
+        app(\App\Services\Payments\CheckoutPaymentMethods::class)->set(['card' => true, 'd17' => true, 'wallet' => true], null);
 
         // config/platform.php names user #1 as the platform seller: make sure
         // that id is never one of the test sellers created below.
@@ -224,22 +226,23 @@ class DeliveryDocumentsTest extends TestCase
         $slips = $this->slips($order);
         $this->assertCount(2, $slips);
 
-        $shipping = (float) $order->shipping_fee;
-        $this->assertGreaterThan(0, $shipping);
-
-        // Shipping is collected once, on the first sub-order only.
-        $this->assertEquals($shipping, $slips[0]['money']['shipping']);
-        $this->assertEquals(0.0, $slips[1]['money']['shipping']);
-        $this->assertEqualsWithDelta(100 + $shipping, $slips[0]['money']['cod'], 0.0005);
-        $this->assertEqualsWithDelta(45.5, $slips[1]['money']['cod'], 0.0005);
+        // One parcel per seller, each with its own delivery fee (admin client fee)
+        $fee = \App\Support\Millimes::toFloat(app(\App\Services\Delivery\DeliverySettings::class)->clientFee());
+        $this->assertGreaterThan(0, $fee);
+        $this->assertEquals($fee * 2, (float) $order->shipping_fee);
+        $this->assertEquals($fee, $slips[0]['money']['shipping']);
+        $this->assertEquals($fee, $slips[1]['money']['shipping']);
+        $this->assertEqualsWithDelta(100 + $fee, $slips[0]['money']['cod'], 0.0005);
+        $this->assertEqualsWithDelta(45.5 + $fee, $slips[1]['money']['cod'], 0.0005);
 
         $this->assertEqualsWithDelta((float) $order->fresh()->moneySummary()['total'], array_sum(array_map(fn($s) => $s['money']['cod'], $slips)), 0.0005);
 
-        // First sub-order cancelled → shipping moves to the next one, nothing is lost.
+        // A cancelled parcel gets no slip; the other keeps exactly its own fee
         DB::table('seller_orders')->where('id', DB::table('seller_orders')->where('order_id', $order->id)->min('id'))->update(['status' => 'cancelled']);
         $slips = $this->slips($order);
         $this->assertCount(1, $slips);
-        $this->assertEqualsWithDelta(45.5 + $shipping, $slips[0]['money']['cod'], 0.0005);
+        $this->assertEqualsWithDelta(45.5 + $fee, $slips[0]['money']['cod'], 0.0005);
+        $this->assertEqualsWithDelta((float) $order->fresh()->moneySummary()['total'], $slips[0]['money']['cod'], 0.0005);
     }
 
     public function test_prepaid_orders_collect_nothing(): void

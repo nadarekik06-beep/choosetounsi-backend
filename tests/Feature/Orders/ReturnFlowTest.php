@@ -65,6 +65,10 @@ class ReturnFlowTest extends TestCase
             ]);
         }
         PlatformUser::reset();
+        // These flows cover online-paid orders too (card / D17 / wallet refunds):
+        // the methods are switched on here, they are "Coming soon" by default.
+        \App\Models\PlatformSetting::flushCache();
+        app(\App\Services\Payments\CheckoutPaymentMethods::class)->set(['card' => true, 'd17' => true, 'wallet' => true], null);
 
         $this->seller = $this->makeUser('seller');
         SellerApplication::create([
@@ -508,5 +512,162 @@ class ReturnFlowTest extends TestCase
         $this->assertSame(1, preg_match_all('#/Type\s*/Page[^s]#', $pdf->getContent()), 'one page');
 
         $this->as($this->seller)->get("/api/admin/complaints/{$c->id}/return-slip")->assertForbidden();
+    }
+
+    public function test_full_return_of_a_free_delivery_parcel_keeps_the_contribution_charged(): void
+    {
+        [$p, $a] = $this->product(40);
+        $p->update(['delivery_fee' => 0]);   // the seller offers free delivery
+        $order = $this->deliveredOrder([[$p, $a, 1]]);
+        $so    = \App\Models\SellerOrder::where('order_id', $order->id)->firstOrFail();
+        $contribution = (float) $so->getAttribute('seller_shipping_charge');
+        $this->assertGreaterThan(0, $contribution);
+        $this->assertTrue((bool) $so->getAttribute('is_free_delivery'));
+
+        $c = Complaint::findOrFail($this->request($order, ['return_all' => 1])->assertCreated()->json('data.id'));
+        $this->bringBack($c);   // COD: cash paid back at pick-up, sale reversed
+
+        $so->refresh();
+        $this->assertSame('refunded', $so->status);
+        // The delivery was made and the agency paid: the contribution stays charged
+        $this->assertEqualsWithDelta($contribution, (float) $so->getAttribute('seller_shipping_charge'), 0.0005);
+        $this->assertEqualsWithDelta(0, (float) $so->getAttribute('seller_net_amount'), 0.0005);
+        $this->assertSame('cancelled', $so->getAttribute('payout_status'));
+        $debit = SellerAdjustment::where('seller_order_id', $so->id)->where('type', SellerAdjustment::TYPE_FREE_DELIVERY)->firstOrFail();
+        $this->assertEqualsWithDelta(-$contribution, (float) $debit->amount, 0.0005);
+        $this->assertNull($debit->settlement_batch_id, 'deducted from the next settlement');
+    }
+
+    // ── Refunds vs payouts, through the real money flow ───────────────────────
+    // (delivered by the admin → remittance confirmed → settlement batch paid)
+
+    /** Real COD order, delivered through the parcel workflow (cash collected). */
+    private function deliveredForReal(array $lines): Order
+    {
+        $buyer = $this->makeUser('client');
+        foreach ($lines as [$product, $variant, $qty]) {
+            Cart::create(['user_id' => $buyer->id, 'product_id' => $product->id, 'variant_id' => $variant?->id, 'quantity' => $qty]);
+        }
+        $order = Order::findOrFail($this->as($buyer)->postJson('/api/checkout', self::ADDRESS + ['payment_method' => 'cod'])->assertCreated()->json('order_id'));
+        $so = SellerOrder::where('order_id', $order->id)->firstOrFail();
+        foreach (['confirmed', 'out_for_delivery'] as $step) {
+            $this->as($this->admin)->postJson("/api/admin/seller-orders/{$so->id}/status", ['status' => $step])->assertOk();
+        }
+        $this->as($this->admin)->postJson("/api/admin/seller-orders/{$so->id}/delivered")->assertOk();
+        return $order->fresh();
+    }
+
+    private function remit(SellerOrder $so): void
+    {
+        $this->as($this->admin)->postJson("/api/admin/finance/confirm-money/{$so->id}")->assertOk();
+    }
+
+    /** Settles everything payable for the seller and confirms (pays) the batch. */
+    private function settle(string $date): array
+    {
+        $batch = $this->as($this->admin)->postJson('/api/admin/settlements/create', ['seller_id' => $this->seller->id, 'batch_date' => $date])->assertOk()->json('data');
+        $this->as($this->admin)->postJson("/api/admin/settlements/{$batch['id']}/confirm")->assertOk();
+        return $batch;
+    }
+
+    public function test_full_refund_after_the_payout_was_paid_is_debited_on_the_next_settlement(): void
+    {
+        [$p, $a] = $this->product(40);
+        $order = $this->deliveredForReal([[$p, $a, 1]]);
+        $la = $this->line($order, $a);
+        $so = SellerOrder::where('order_id', $order->id)->firstOrFail();
+        $this->remit($so);
+        $first = $this->settle(now()->toDateString());
+        $so->refresh();
+        $this->assertSame('paid', $so->getAttribute('payout_status'));
+        $paidNet = (float) $so->getAttribute('seller_net_amount');
+        $this->assertGreaterThan(0, $paidNet);
+        $this->assertEqualsWithDelta($paidNet, (float) $first['total_seller_payout'], 0.001);
+
+        // Full return, refunded (COD: cash back at pick-up), inspected
+        $c = Complaint::findOrFail($this->request($order, ['return_all' => 1])->assertCreated()->json('data.id'));
+        $c = $this->bringBack($c);
+        $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/receive", ['conditions' => [$la->id => 'resaleable']])->assertOk();
+
+        // Paid history untouched, the parcel is "refunded" (never "cancelled")
+        $so->refresh();
+        $this->assertSame('refunded', $so->status);
+        $this->assertSame('paid', $so->getAttribute('payout_status'));
+        $this->assertEqualsWithDelta($paidNet, (float) $so->getAttribute('seller_net_amount'), 0.001);
+
+        // The whole paid share comes back as a debit (plus the seller-paid return shipping)
+        $debit = SellerAdjustment::where('complaint_id', $c->id)->where('type', SellerAdjustment::TYPE_RETURN_DEBIT)->sole();
+        $this->assertEqualsWithDelta(-$paidNet, (float) $debit->amount, 0.001);
+        $owed = (float) SellerAdjustment::where('seller_id', $this->seller->id)->whereNull('applied_at')->sum('amount');
+        $this->assertEqualsWithDelta(-$paidNet - 8.0, $owed, 0.001, 'debit + return shipping, nothing lost');
+
+        // …deducted from the next settlement, once
+        [$p2, $a2] = $this->product(100);
+        $next = SellerOrder::where('order_id', $this->deliveredForReal([[$p2, $a2, 1]])->id)->firstOrFail();
+        $this->remit($next);
+        $nextNet = (float) $next->fresh()->getAttribute('seller_net_amount');
+        $batch = $this->settle(now()->addDay()->toDateString());
+        $this->assertEqualsWithDelta($owed, (float) $batch['total_adjustments'], 0.001);
+        $this->assertEqualsWithDelta($nextNet + $owed, (float) $batch['total_seller_payout'], 0.001);
+        $this->assertSame(0, SellerAdjustment::where('seller_id', $this->seller->id)->whereNull('applied_at')->count(), 'every debit applied');
+        $this->assertNotNull($debit->fresh()->applied_at);
+        $this->assertSame((int) $batch['id'], (int) $debit->fresh()->settlement_batch_id);
+    }
+
+    public function test_full_refund_before_the_payout_cancels_it_and_the_seller_gets_nothing(): void
+    {
+        [$p, $a] = $this->product(40);
+        $order = $this->deliveredForReal([[$p, $a, 1]]);
+        $la = $this->line($order, $a);
+        $so = SellerOrder::where('order_id', $order->id)->firstOrFail();
+        $this->remit($so);
+        $this->assertSame('ready', $so->fresh()->getAttribute('payout_status'), 'payable, not paid yet');
+
+        $c = Complaint::findOrFail($this->request($order, ['return_all' => 1])->assertCreated()->json('data.id'));
+        $c = $this->bringBack($c);
+        $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/receive", ['conditions' => [$la->id => 'resaleable']])->assertOk();
+
+        $so->refresh();
+        $this->assertSame('refunded', $so->status);
+        $this->assertSame('cancelled', $so->getAttribute('payout_status'));
+        $this->assertEqualsWithDelta(0, (float) $so->getAttribute('seller_net_amount'), 0.001);
+        $this->assertEqualsWithDelta(0, (float) $so->getAttribute('commission_amount'), 0.001);
+        $this->assertSame(0, SellerAdjustment::where('complaint_id', $c->id)->where('type', SellerAdjustment::TYPE_RETURN_DEBIT)->count(), 'nothing was paid, nothing to claw back');
+
+        // Not payable any more: no settlement can include it
+        $this->assertSame([], collect($this->as($this->admin)->getJson("/api/admin/finance/pending-payouts?seller_id={$this->seller->id}")->json('data.data'))->pluck('id')->all());
+        $this->as($this->admin)->postJson('/api/admin/settlements/create', ['seller_id' => $this->seller->id, 'batch_date' => now()->toDateString()])->assertStatus(422);
+        $this->assertNull($so->fresh()->getAttribute('settlement_batch_id'));
+    }
+
+    public function test_partial_refund_reduces_the_payout_by_the_refunded_units_seller_share(): void
+    {
+        [$p, $a, $b] = $this->product(50);
+        $order = $this->deliveredForReal([[$p, $a, 3], [$p, $b, 1]]);
+        $la = $this->line($order, $a);
+        $so = SellerOrder::where('order_id', $order->id)->firstOrFail();
+        $netBefore   = (float) $so->getAttribute('seller_net_amount');
+        $unitShare   = round((float) $la->seller_amount / 3, 3);   // seller's share of one unit of line A
+        $this->assertGreaterThan(0, $unitShare);
+
+        $c = Complaint::findOrFail($this->request($order, [
+            'complaint_type' => 'other', 'other_reason' => 'Changed my mind',
+            'items' => [['order_item_id' => $la->id, 'quantity' => 1]],
+        ])->assertCreated()->json('data.id'));
+        $c = $this->bringBack($c);
+        $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/receive", ['conditions' => [$la->id => 'resaleable']])->assertOk();
+
+        $so->refresh();
+        $this->assertSame('delivered', $so->status);
+        $this->assertSame('partial', $so->return_status);
+        $this->assertSame('pending', $so->getAttribute('payout_status'), 'kept units are still owed');
+        $this->assertEqualsWithDelta($netBefore - $unitShare, (float) $so->getAttribute('seller_net_amount'), 0.001);
+        $this->assertEqualsWithDelta(round((float) $la->seller_amount - $unitShare, 3), (float) $la->fresh()->seller_amount, 0.001);
+
+        // Settled at the reduced amount, with no extra debit
+        $this->remit($so);
+        $batch = $this->settle(now()->toDateString());
+        $this->assertEqualsWithDelta($netBefore - $unitShare, (float) $batch['total_seller_payout'], 0.001);
+        $this->assertSame(0, SellerAdjustment::where('complaint_id', $c->id)->count(), 'client paid the return shipping');
     }
 }

@@ -51,7 +51,10 @@ class BuyerNotificationsTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        config(['platform.shipping_cost' => 8.0, 'mail.default' => 'array']);
+        config(['mail.default' => 'array']);
+        // Online methods are "Coming soon" by default; these flows exercise them
+        \App\Models\PlatformSetting::flushCache();
+        app(\App\Services\Payments\CheckoutPaymentMethods::class)->set(['card' => true, 'd17' => true, 'wallet' => true], null);
 
         if (!DB::table('users')->where('id', 1)->exists()) {
             DB::table('users')->insert([
@@ -146,13 +149,18 @@ class BuyerNotificationsTest extends TestCase
         $this->admin()->patchJson("/api/admin/orders/{$order->id}/confirm-order", ['action' => 'confirmed'])->assertOk();
         $this->admin()->patchJson("/api/admin/orders/{$order->id}/status", ['status' => 'confirmed'])->assertOk();
 
-        // Seller packs, ships, delivers — and clicks "delivered" twice
-        foreach (['completed', 'out_for_delivery', 'delivered', 'delivered'] as $status) {
+        // Seller hands the parcel to the courier (twice: double click); only the
+        // admin records it delivered (cash collected) — a second click is refused
+        foreach (['handed_to_courier', 'handed_to_courier'] as $status) {
             $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => $status])->assertOk();
         }
+        // The courier is on its way (admin / agency), then delivers
+        $this->admin()->postJson("/api/admin/seller-orders/{$so->id}/status", ['status' => 'out_for_delivery'])->assertOk();
+        $this->admin()->postJson("/api/admin/seller-orders/{$so->id}/delivered")->assertOk();
+        $this->admin()->postJson("/api/admin/seller-orders/{$so->id}/delivered")->assertStatus(422);
 
         $steps = $this->sent($order->user, OrderStatusNotification::class)->pluck('event')->all();
-        $this->assertSame(['confirmed', 'packed', 'shipped', 'delivered'], $steps);
+        $this->assertSame(['confirmed', 'shipped', 'delivered'], $steps);
 
         $shipped = $this->sent($order->user, OrderStatusNotification::class)->firstWhere('event', 'shipped');
         $db = $shipped->toDatabase($order->user);
@@ -183,7 +191,7 @@ class BuyerNotificationsTest extends TestCase
         $this->assertStringContainsString('Shop Alpha et Shop Beta', $body);
 
         // Then each shop ships on its own: one message per shop, naming it
-        $this->as($a)->patchJson('/api/seller/orders/' . $this->subOrder($order, $a)->id . '/status', ['status' => 'out_for_delivery'])->assertOk();
+        $this->as($a)->patchJson('/api/seller/orders/' . $this->subOrder($order, $a)->id . '/status', ['status' => 'handed_to_courier'])->assertOk();
         $shipped = $this->sent($order->user, OrderStatusNotification::class)->where('event', 'shipped');
         $this->assertCount(1, $shipped);
         $this->assertStringContainsString('Shop Alpha', $shipped->first()->toDatabase($order->user)['title']);
@@ -428,7 +436,11 @@ class BuyerNotificationsTest extends TestCase
         $p2 = $this->makeProduct($seller);
         $order = $this->checkout([$p1, $p2]);
         $so = $this->subOrder($order, $seller);
-        $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => 'delivered'])->assertOk();
+        // Delivered only once shipped (ParcelStatus)
+        foreach (['confirmed', 'out_for_delivery'] as $step) {
+            $this->admin()->postJson("/api/admin/seller-orders/{$so->id}/status", ['status' => $step])->assertOk();
+        }
+        $this->admin()->postJson("/api/admin/seller-orders/{$so->id}/delivered")->assertOk();
         $this->assertSame(2, ReviewPrompt::where('user_id', $order->user_id)->count());
 
         Notification::fake();

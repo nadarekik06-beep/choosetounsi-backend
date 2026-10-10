@@ -46,10 +46,12 @@ class PromotionPricingTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Online methods are "Coming soon" by default; these flows exercise them
+        \App\Models\PlatformSetting::flushCache();
+        app(\App\Services\Payments\CheckoutPaymentMethods::class)->set(['card' => true, 'd17' => true, 'wallet' => true], null);
         Storage::fake('public');
         Cache::flush();
         PriceHistory::flush();
-        config(['platform.shipping_cost' => 8.0]);
         $this->app->instance(\App\Services\ProductTranslator::class, \Mockery::mock(\App\Services\ProductTranslator::class)->shouldIgnoreMissing());
         // AI service down: search uses the SQL fallback, chat skips semantic scores
         Http::fake(['*' => Http::response([], 500)]);
@@ -455,35 +457,36 @@ class PromotionPricingTest extends TestCase
         return $this->asCustomer()->postJson('/api/checkout', $this->address())->assertCreated()->json();
     }
 
-    public function test_cart_checkout_charges_the_sellers_custom_delivery_fee(): void
+    public function test_cart_checkout_charges_one_admin_delivery_fee_per_seller_parcel(): void
     {
-        $custom5  = $this->makeProduct("Custom5 {$this->token}", 20);
-        $custom5->update(['delivery_fee' => 5]);
-        $custom12 = $this->makeProduct("Custom12 {$this->token}", 30);
-        $custom12->update(['delivery_fee' => 12]);
-        $free     = $this->makeProduct("Free {$this->token}", 10);
+        $fee = \App\Support\Millimes::toFloat(app(\App\Services\Delivery\DeliverySettings::class)->clientFee());
+        // A stray custom value (custom fees no longer exist) is never charged
+        $legacy  = $this->makeProduct("Legacy {$this->token}", 20);
+        DB::table('products')->where('id', $legacy->id)->update(['delivery_fee' => 5]);
+        $other   = $this->makeProduct("Other {$this->token}", 30);
+        $free    = $this->makeProduct("Free {$this->token}", 10);
         $free->update(['delivery_fee' => 0]);
-        $default  = $this->makeProduct("Default {$this->token}", 15);
+        $free2   = $this->makeProduct("Free2 {$this->token}", 12);
+        $free2->update(['delivery_fee' => 0]);
 
-        $res = $this->cartTotalFor([$custom5]);
-        $this->assertEqualsWithDelta(5, $res['shipping_fee'], 0.0005, 'custom fee, like buy-now');
-        $this->assertEqualsWithDelta(25, $res['total'], 0.0005);
+        $res = $this->cartTotalFor([$legacy->fresh()]);
+        $this->assertEqualsWithDelta($fee, $res['shipping_fee'], 0.0005, 'the admin fee, never a custom one');
+        $this->assertEqualsWithDelta(20 + $fee, $res['total'], 0.0005);
 
-        $this->assertEqualsWithDelta(5,  $this->cartTotalFor([$custom5, $free])['shipping_fee'], 0.0005, 'free item adds nothing');
-        $this->assertEqualsWithDelta(12, $this->cartTotalFor([$custom5, $custom12])['shipping_fee'], 0.0005, 'one shipment: highest fee');
-        $this->assertEqualsWithDelta(8,  $this->cartTotalFor([$custom5, $default])['shipping_fee'], 0.0005, 'platform default counts');
-        $this->assertEqualsWithDelta(0,  $this->cartTotalFor([$free])['shipping_fee'], 0.0005);
+        $this->assertEqualsWithDelta($fee, $this->cartTotalFor([$legacy, $other])['shipping_fee'], 0.0005, 'one seller = one parcel = one fee');
+        $this->assertEqualsWithDelta($fee, $this->cartTotalFor([$free, $other])['shipping_fee'], 0.0005, 'free only when ALL items are free');
+        $this->assertEqualsWithDelta(0, $this->cartTotalFor([$free, $free2])['shipping_fee'], 0.0005);
 
         // Buy-now uses the same rule
-        $buy = $this->asCustomer()->postJson('/api/checkout/buy-now', $this->address() + ['product_id' => $custom12->id, 'quantity' => 1])
+        $buy = $this->asCustomer()->postJson('/api/checkout/buy-now', $this->address() + ['product_id' => $other->id, 'quantity' => 1])
             ->assertCreated()->json();
-        $this->assertEqualsWithDelta(42, $buy['total'], 0.0005);
+        $this->assertEqualsWithDelta(30 + $fee, $buy['total'], 0.0005);
 
-        // The cart lines expose what the checkout page needs to show the same fee
-        Cart::create(['user_id' => $this->customer->id, 'product_id' => $custom12->id, 'quantity' => 1]);
-        $line = collect($this->asCustomer()->getJson('/api/cart')->json('data.items'))->firstWhere('product_id', $custom12->id);
-        $this->assertEqualsWithDelta(12, $line['delivery_fee'], 0.0005);
-        $this->assertFalse($line['is_free_delivery']);
+        // Cart lines only flag free delivery; the fee comes from the checkout quote
+        Cart::create(['user_id' => $this->customer->id, 'product_id' => $free->id, 'quantity' => 1]);
+        $line = collect($this->asCustomer()->getJson('/api/cart')->json('data.items'))->firstWhere('product_id', $free->id);
+        $this->assertTrue($line['is_free_delivery']);
+        $this->assertArrayNotHasKey('delivery_fee', $line);
     }
 
     // ── Paginated lists filter and sort on the final price, in SQL ─────────

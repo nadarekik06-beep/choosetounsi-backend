@@ -40,7 +40,9 @@ class OrderStockTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        config(['platform.shipping_cost' => 8.0]);
+        // Online methods are "Coming soon" by default; these flows exercise them
+        \App\Models\PlatformSetting::flushCache();
+        app(\App\Services\Payments\CheckoutPaymentMethods::class)->set(['card' => true, 'd17' => true, 'wallet' => true], null);
         Notification::fake();
 
         if (!DB::table('users')->where('id', 1)->exists()) {
@@ -236,7 +238,9 @@ class OrderStockTest extends TestCase
         $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => 'cancelled'])->assertOk();
         $this->assertSame(10, $this->stockOf($product));
 
-        $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => 'confirmed'])->assertOk();
+        // Re-opening a cancel is the admin's (sellers can't)
+        $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => 'confirmed'])->assertStatus(422);
+        $this->admin()->postJson("/api/admin/seller-orders/{$so->id}/status", ['status' => 'confirmed'])->assertOk();
         $this->assertSame(6, $this->stockOf($product));
 
         // …and cancelling once more gives them back once more
@@ -296,7 +300,9 @@ class OrderStockTest extends TestCase
         $this->assertSame(10, $this->stockOf($kept));
 
         // Re-opening takes back only what the cancel released, not the returned line
-        $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => 'confirmed'])->assertOk();
+        // Re-opening a cancel is the admin's (sellers can't)
+        $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => 'confirmed'])->assertStatus(422);
+        $this->admin()->postJson("/api/admin/seller-orders/{$so->id}/status", ['status' => 'confirmed'])->assertOk();
         $this->assertSame(8, $this->stockOf($kept));
         $this->assertSame(10, $this->stockOf($back));
     }

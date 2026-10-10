@@ -48,7 +48,9 @@ class SellerOrderNotificationsTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        config(['platform.shipping_cost' => 8.0]);
+        // Online methods are "Coming soon" by default; these flows exercise them
+        \App\Models\PlatformSetting::flushCache();
+        app(\App\Services\Payments\CheckoutPaymentMethods::class)->set(['card' => true, 'd17' => true, 'wallet' => true], null);
 
         if (!DB::table('users')->where('id', 1)->exists()) {
             DB::table('users')->insert([

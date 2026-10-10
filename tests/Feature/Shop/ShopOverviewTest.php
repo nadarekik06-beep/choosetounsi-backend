@@ -80,7 +80,8 @@ class ShopOverviewTest extends TestCase
         $this->assertSame(Review::approved()->count(), $stats['reviews']);
         $this->assertGreaterThanOrEqual(1, $stats['sellers']);
         $this->assertGreaterThanOrEqual(1, $stats['categories']);
-        $this->assertEquals(Product::DEFAULT_DELIVERY_FEE, $stats['delivery_fee']);
+        // The admin's client delivery fee (Delivery & Fees), read live
+        $this->assertEquals(\App\Support\Millimes::toFloat(app(\App\Services\Delivery\DeliverySettings::class)->clientFee()), $stats['delivery_fee']);
         $this->assertSame(Product::available()->where('delivery_fee', 0)->count(), $stats['free_delivery_products']);
     }
 

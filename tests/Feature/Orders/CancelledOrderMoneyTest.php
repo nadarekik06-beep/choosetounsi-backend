@@ -39,7 +39,9 @@ class CancelledOrderMoneyTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        config(['platform.shipping_cost' => 8.0]);
+        // Online methods are "Coming soon" by default; these flows exercise them
+        \App\Models\PlatformSetting::flushCache();
+        app(\App\Services\Payments\CheckoutPaymentMethods::class)->set(['card' => true, 'd17' => true, 'wallet' => true], null);
         Notification::fake();
 
         if (!DB::table('users')->where('id', 1)->exists()) {
@@ -181,7 +183,7 @@ class CancelledOrderMoneyTest extends TestCase
         $this->assertEquals(0, $earn['commission_amount']);
     }
 
-    public function test_partial_cancel_keeps_shipping_once_for_the_live_part(): void
+    public function test_partial_cancel_drops_the_cancelled_parcels_delivery_fee(): void
     {
         $sellerA = $this->makeSeller();
         $sellerB = $this->makeSeller();
@@ -194,8 +196,9 @@ class CancelledOrderMoneyTest extends TestCase
         $money = $order->fresh()->moneySummary();
         $this->assertFalse($money['is_cancelled']);
         $this->assertEquals((float) $soB->subtotal, $money['subtotal']);
-        $this->assertEquals((float) $order->shipping_fee, $money['shipping_fee']);
-        $this->assertEquals(round((float) $soB->subtotal - (float) $soB->discount_amount + (float) $order->shipping_fee, 3), $money['total']);
+        // Delivery is per parcel: only B's own fee is still owed
+        $this->assertEquals((float) $soB->getAttribute('delivery_fee'), $money['shipping_fee']);
+        $this->assertEquals(round((float) $soB->subtotal - (float) $soB->discount_amount + (float) $soB->getAttribute('delivery_fee'), 3), $money['total']);
         $this->assertSame('cancelled', $soA->fresh()->payout_status);
         $this->assertSame('pending', $soB->fresh()->payout_status);
 

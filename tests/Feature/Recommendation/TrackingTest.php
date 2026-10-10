@@ -109,8 +109,10 @@ class TrackingTest extends TestCase
         $token   = $user->createToken('test')->plainTextToken;
         $auth    = ['Authorization' => "Bearer $token"];
 
+        // POST adds idempotently (a second POST tracks nothing); DELETE removes
         $this->withHeaders($auth)->postJson('/api/favorites', ['product_id' => $product->id])->assertOk();
         $this->withHeaders($auth)->postJson('/api/favorites', ['product_id' => $product->id])->assertOk();
+        $this->withHeaders($auth)->deleteJson("/api/favorites/{$product->id}")->assertOk();
         $this->withHeaders($auth)->postJson("/api/seller-follows/{$seller->id}")->assertOk();
 
         $events = UserInteraction::where('user_id', $user->id)->orderBy('id')->pluck('event_type')->all();
