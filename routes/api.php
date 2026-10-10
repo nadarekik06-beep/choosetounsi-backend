@@ -340,6 +340,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/pickup-address',             [SellerStoreProfileController::class, 'updatePickupAddress']);
         Route::get('/stock-alerts',               [\App\Http\Controllers\Api\Seller\SellerStockAlertController::class, 'show']);
         Route::put('/stock-alerts',               [\App\Http\Controllers\Api\Seller\SellerStockAlertController::class, 'update']);
+        // WhatsApp number + language of the order messages from CHOOSE'Tounsi
+        Route::get('/whatsapp',                   [\App\Http\Controllers\Api\Seller\SellerWhatsAppController::class, 'show']);
+        Route::put('/whatsapp',                   [\App\Http\Controllers\Api\Seller\SellerWhatsAppController::class, 'update'])->middleware('throttle:20,1');
 
         // ── Products ──────────────────────────────────────────────────────
         Route::get('/products/stats',   [SellerProductController::class, 'stats']);
@@ -361,6 +364,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/orders/{id}',           [SellerOrderController::class, 'show']);
         Route::patch('/orders/{id}/status',  [SellerOrderController::class, 'updateStatus']);
         Route::patch('/orders/{id}/payment', [SellerOrderController::class, 'updatePayment']);
+        Route::post('/orders/{id}/prepared', [SellerOrderController::class, 'markPrepared'])->whereNumber('id');
         Route::get('orders/{id}/invoice', [\App\Http\Controllers\Api\Seller\SellerInvoiceController::class, 'show']);
 
         // ── Complaints ────────────────────────────────────────────────────
@@ -606,6 +610,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/seller-orders/{id}/returned-to-seller', [\App\Http\Controllers\Admin\ParcelController::class, 'returnedToSeller'])->whereNumber('id');
         Route::post('/seller-orders/{id}/status',    [\App\Http\Controllers\Admin\ParcelController::class, 'status'])->whereNumber('id');
         Route::get('/seller-orders/{id}/status-history', [\App\Http\Controllers\Admin\ParcelController::class, 'history'])->whereNumber('id');
+        // Seller WhatsApp notices (manual wa.me): due reminders, overdue parcels, "sent" record
+        Route::get('/whatsapp-reminders',        [\App\Http\Controllers\Admin\SellerWhatsAppController::class, 'index']);
+        Route::get('/whatsapp-reminders/count',  [\App\Http\Controllers\Admin\SellerWhatsAppController::class, 'count']);
+        Route::post('/seller-orders/{id}/whatsapp-sent', [\App\Http\Controllers\Admin\SellerWhatsAppController::class, 'sent'])->whereNumber('id');
         // Delivery & Fees (+ checkout payment-method switches)
         Route::get('/delivery-settings', [\App\Http\Controllers\Admin\DeliverySettingsController::class, 'show']);
         Route::put('/delivery-settings', [\App\Http\Controllers\Admin\DeliverySettingsController::class, 'update']);

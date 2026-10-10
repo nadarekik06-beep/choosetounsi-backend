@@ -28,6 +28,20 @@ class TunisianPhone
         return $value !== null && preg_match(self::PATTERN, (string) self::normalize($value)) === 1;
     }
 
+    /**
+     * International form without "+" for wa.me links ("21622123456"), or null
+     * when it isn't a valid Tunisian mobile. Also takes a bare "216…" prefix.
+     */
+    public static function toInternational(?string $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+        $digits = preg_replace('/\D/', '', $value);
+        $digits = preg_replace('/^(00)?216(?=\d{8}$)/', '', $digits);
+        return preg_match(self::PATTERN, $digits) === 1 ? '216' . $digits : null;
+    }
+
     /** "22123456" → "+216 22 123 456" for documents. */
     public static function format(?string $value): string
     {

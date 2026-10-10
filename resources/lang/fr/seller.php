@@ -588,4 +588,10 @@ return [
     'stock_alerts' => [
         'saved' => 'Paramètres des alertes de stock enregistrés.',
     ],
+    'whatsapp' => [
+        'saved'          => 'Numéro WhatsApp enregistré.',
+        'invalid_number' => 'Numéro WhatsApp invalide : saisissez un numéro mobile tunisien (8 chiffres après +216).',
+    ],
+    'order_prepared'     => 'Commande marquée comme préparée.',
+    'order_not_preparable' => 'Seule une commande confirmée, pas encore remise au livreur, peut être marquée comme préparée.',
 ];

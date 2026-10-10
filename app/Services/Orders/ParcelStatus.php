@@ -9,6 +9,7 @@ use App\Models\SellerAdjustment;
 use App\Models\SellerOrder;
 use App\Models\User;
 use App\Services\Delivery\DeliverySettings;
+use App\Services\Orders\WhatsApp\SellerReminderService;
 use App\Services\FinancialSnapshotService;
 use App\Services\PromotionService;
 use App\Support\Millimes;
@@ -341,10 +342,23 @@ class ParcelStatus
         self::record($so, $from, $to, $options);
     }
 
-    /** After the commit: integrity check and buyer notification. */
+    /** After the commit: integrity check, seller WhatsApp reminders and buyer notification. */
     private function after(array $parcels, string $to, array $options): void
     {
         if (!$parcels) return;
+
+        // Admin confirmed: the seller is asked on WhatsApp to prepare it. Any
+        // other move (shipped, cancelled, back to pending…) stops the reminders.
+        try {
+            $reminders = app(SellerReminderService::class);
+            if ($to !== 'confirmed') {
+                $reminders->cancel(array_map(fn ($so) => $so->id, $parcels));
+            } elseif (($options['source'] ?? 'admin') === 'admin') {
+                $reminders->schedule($parcels);
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[ParcelStatus] seller WhatsApp reminders failed: ' . $e->getMessage());
+        }
 
         if ($to === 'delivered') {
             foreach ($parcels as $so) {

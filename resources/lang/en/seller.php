@@ -588,4 +588,10 @@ return [
     'stock_alerts' => [
         'saved' => 'Stock alert settings saved.',
     ],
+    'whatsapp' => [
+        'saved'          => 'WhatsApp number saved.',
+        'invalid_number' => 'Invalid WhatsApp number: enter a Tunisian mobile number (8 digits after +216).',
+    ],
+    'order_prepared'     => 'Order marked as prepared.',
+    'order_not_preparable' => 'Only a confirmed order, not yet handed to the courier, can be marked as prepared.',
 ];

@@ -48,6 +48,8 @@ class SellerOrder extends Model
         'refused_at'            => 'datetime',
         'returned_to_seller_at' => 'datetime',
         'carrier_status_at'     => 'datetime',
+        'prepared_at'           => 'datetime',
+        'overdue_at'            => 'datetime',
     ];
 
     /**
@@ -129,6 +131,12 @@ class SellerOrder extends Model
     public function statusHistory()
     {
         return $this->hasMany(SellerOrderStatusHistory::class)->orderBy('created_at')->orderBy('id');
+    }
+
+    /** WhatsApp notices / reminders the admin sends the seller (App\Services\Orders\WhatsApp). */
+    public function reminders()
+    {
+        return $this->hasMany(SellerOrderReminder::class)->orderBy('attempt');
     }
 
     public function deliveryAssignment()

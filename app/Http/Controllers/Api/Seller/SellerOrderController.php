@@ -197,6 +197,9 @@ $netAfterShipping = $totalSellerNet !== null ? round($totalSellerNet - $shipping
                     'display_status'  => $sellerOrder->display_status,
                     // The only statuses this seller may set next (build the buttons from it)
                     'allowed_next'    => ParcelStatus::allowedNext($sellerOrder, 'seller'),
+                    // Confirmed parcels: "Mark as prepared" stops the WhatsApp reminders
+                    'prepared_at'     => $sellerOrder->prepared_at,
+                    'can_mark_prepared' => $sellerOrder->status === 'confirmed' && $sellerOrder->prepared_at === null,
                     'return_status'   => $sellerOrder->return_status,
                     'payment_status'  => $sellerOrder->payment_status,
                     'payment_method'  => $order->payment_method,
@@ -294,7 +297,28 @@ public function updateStatus(Request $request, $id)
         'data'    => $sellerOrder->setAttribute('allowed_next', ParcelStatus::allowedNext($sellerOrder, 'seller')),
     ]);
 }
-    /* ── PATCH /api/seller/orders/{id}/payment ── */
+    /* ── POST /api/seller/orders/{id}/prepared ── */
+    // The parcel is packed and waiting for the courier: WhatsApp reminders stop.
+    // Not a status: the parcel stays 'confirmed' until handed to the courier.
+    public function markPrepared(Request $request, $id)
+    {
+        $sellerOrder = SellerOrder::where('seller_id', auth()->id())->findOrFail($id);
+
+        if ($sellerOrder->prepared_at === null) {
+            if ($sellerOrder->status !== 'confirmed') {
+                return response()->json(['success' => false, 'message' => __('seller.order_not_preparable')], 422);
+            }
+            app(\App\Services\Orders\WhatsApp\SellerReminderService::class)->markPrepared($sellerOrder, auth()->id());
+            $sellerOrder->refresh();
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => __('seller.order_prepared'),
+            'data'    => ['id' => $sellerOrder->id, 'prepared_at' => $sellerOrder->prepared_at],
+        ]);
+    }
+
     /* ── PATCH /api/seller/orders/{id}/payment ── */
 public function updatePayment(Request $request, $id)
 {
@@ -360,6 +384,7 @@ public function updatePayment(Request $request, $id)
             'status'          => $so->status,
             'display_status'  => $so->display_status,
             'allowed_next'    => ParcelStatus::allowedNext($so, 'seller'),
+            'prepared_at'     => $so->prepared_at,
             'payment_status'  => $so->payment_status,
             'payment_method'  => $order?->payment_method,
             // Cancelled: 0 due / earned; original_total keeps the history

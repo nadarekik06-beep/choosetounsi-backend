@@ -122,7 +122,7 @@ class OrderController extends Controller
             'items.variant.images',
             'items.variant.attributeOptions.attribute:id,slug,name,name_fr,name_ar,type',
             'sellerOrders' => fn($q) => $q->orderBy('id'),
-            'sellerOrders.seller:id,name,email',
+            'sellerOrders.seller:id,name,email,phone,whatsapp_number,preferred_language',
             'sellerOrders.seller.sellerApplication',
             'exports' => fn($q) => $q->latest('created_at'),
             'exports.exporter:id,name',
@@ -194,6 +194,16 @@ class OrderController extends Controller
 
         // Per parcel: the statuses the admin may set next (the UI's buttons)
         $order->sellerOrders->each(fn ($so) => $so->setAttribute('allowed_next', ParcelStatus::allowedNext($so)));
+
+        // Per parcel: WhatsApp notice to send the seller + history (sent when, by whom)
+        $order->sellerOrders->load(['reminders.sentBy:id,name', 'items:id,seller_order_id,quantity']);
+        $whatsapp = app(\App\Services\Orders\WhatsApp\SellerReminderPayload::class);
+        $order->sellerOrders->each(function ($so) use ($whatsapp) {
+            $so->setAttribute('whatsapp', $whatsapp->forParcel($so));
+            // Loaded only to build the messages: the drawer doesn't need them twice
+            $so->unsetRelation('reminders')->unsetRelation('items')->unsetRelation('order');
+            $so->seller?->unsetRelation('sellerApplication');
+        });
 
         return response()->json(['success' => true, 'data' => $order]);
     }

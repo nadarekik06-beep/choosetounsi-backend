@@ -37,6 +37,8 @@ class User extends Authenticatable implements HasLocalePreference
         'stock_alerts_enabled',
         'stock_alert_threshold',
         'stock_alert_channel',
+        'whatsapp_number',
+        'preferred_language',
         // email_verified_at is set only at creation time via verifyEmail()
         // or immediately for Google OAuth users. It is intentionally NOT
         // in fillable for bulk-assignment safety.

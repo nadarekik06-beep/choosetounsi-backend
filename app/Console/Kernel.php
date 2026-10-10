@@ -41,6 +41,8 @@ class Kernel extends ConsoleKernel
         $schedule->command('orders:cancel-abandoned-card')->everyFiveMinutes()->withoutOverlapping();
         // Confirmed sub-orders still not ready for pickup after 24h (no-op unless SELLER_PICKUP_REMINDER=true)
         $schedule->command('orders:remind-seller-pickup')->hourly()->withoutOverlapping();
+        // Seller WhatsApp reminders (config/seller_whatsapp.php): pending → due, prepared / cancelled → closed
+        $schedule->command('orders:whatsapp-reminders')->everyFiveMinutes()->withoutOverlapping();
 
         // ── Sponsoring ──────────────────────────────────────────────────────
         // Ends overdue sponsorships (read paths only filter, they never write).
