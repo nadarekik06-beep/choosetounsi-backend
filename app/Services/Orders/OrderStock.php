@@ -24,6 +24,8 @@ class OrderStock
 {
     public const CANCELLED = 'cancelled';
     public const RETURNED  = 'returned';
+    /** Refused at the door, given back once the parcel is returned to the seller. */
+    public const REFUSED   = 'refused';
 
     /**
      * Take $qty units for one line. Conditional decrement under a row lock: the

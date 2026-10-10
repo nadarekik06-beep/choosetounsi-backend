@@ -33,11 +33,12 @@ class BuyerOrderNotifier
 {
     /** seller_orders.status → buyer step. pending / processing say nothing. */
     public const STEPS = [
-        'confirmed'        => 'confirmed',
-        'completed'        => 'packed',
-        'out_for_delivery' => 'shipped',
-        'delivered'        => 'delivered',
-        'cancelled'        => 'cancelled',
+        'confirmed'         => 'confirmed',
+        'completed'         => 'packed',
+        'handed_to_courier' => 'shipped',
+        'out_for_delivery'  => 'shipped',
+        'delivered'         => 'delivered',
+        'cancelled'         => 'cancelled',
     ];
 
     /** Cancellation reasons (wording of the cancelled notification). */

@@ -230,8 +230,11 @@ if ($sellerOrder->status !== 'completed') {
      */
     public function updateStatus(Request $request, int $id)
     {
+        // Abandoned in-house delivery app. Deliveries go through one external
+        // company and ONLY the admin records a parcel delivered (cash collected)
+        // or refused: App\Http\Controllers\Admin\ParcelController.
         $request->validate([
-            'status' => 'required|in:picked_up,delivered,canceled',
+            'status' => 'required|in:picked_up',
         ]);
 
         $assignment = DeliveryAssignment::where('seller_order_id', $id)
@@ -253,49 +256,12 @@ if ($sellerOrder->status !== 'completed') {
         }
 
         try {
-            // ── 1. Update delivery_assignment timestamps ────────────────────
-            $update = ['status' => $newStatus];
-            if ($newStatus === 'picked_up') $update['picked_up_at'] = now();
-            if ($newStatus === 'delivered')  $update['delivered_at'] = now();
-            $assignment->update($update);
-
-            // ── 2. Map assignment status → seller_order status ─────────────
-            //
-            // CHANGE: picked_up now maps to 'out_for_delivery' instead of
-            // 'processing'. This exposes the in-transit state everywhere.
-            //
-            // OLD: 'picked_up' => 'processing'  ← was invisible (same as before)
-            // NEW: 'picked_up' => 'out_for_delivery' ← distinct, trackable step
-            //
-            $sellerOrderStatus = match ($newStatus) {
-                'picked_up' => 'out_for_delivery', // ← FIX (was: 'processing')
-                'delivered' => 'delivered',
-                'canceled'  => 'completed',         // revert to seller's last known good
-                default     => 'processing',
-            };
-
-            $sellerOrderUpdate = ['status' => $sellerOrderStatus];
-
-            // Stamp the financial confirmation timestamp on delivery
-            if ($newStatus === 'delivered') {
-                $sellerOrderUpdate['delivery_confirmed_at'] = now();
-            }
-
-            $assignment->sellerOrder->update($sellerOrderUpdate);
-
-            // ── 3. Sync the parent orders.status ──────────────────────────
-            //
-            // FIX (Bug 1): This was missing. Without it, orders.status never
-            // reached 'delivered', so the complaint eligibility check always
-            // failed for delivery-completed orders.
-            //
-            $this->syncParentOrderStatus($assignment->sellerOrder->order_id);
-
-            // ── 4. Buyer: "on its way" / "delivered", once per step; delivered
-            //       also creates the review prompts (BuyerOrderNotifier)
-            app(\App\Services\Orders\BuyerOrderNotifier::class)->statusChanged(
-                (int) $assignment->sellerOrder->order_id, [$assignment->sellerOrder->id]
-            );
+            // Picked up = the parcel is on its way. The move itself (validated,
+            // history, order status, buyer notification): ParcelStatus.
+            app(\App\Services\Orders\ParcelStatus::class)->transition($assignment->sellerOrder, 'out_for_delivery', [
+                'by' => auth()->id(), 'source' => 'courier',
+            ]);
+            $assignment->update(['status' => $newStatus, 'picked_up_at' => now()]);
 
             return response()->json([
                 'success' => true,
@@ -303,6 +269,8 @@ if ($sellerOrder->status !== 'completed') {
                 'data'    => $assignment->fresh()->load('sellerOrder'),
             ]);
 
+        } catch (\App\Services\Orders\IllegalTransition $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         } catch (\Throwable $e) {
             Log::error('[Delivery::updateStatus] ' . $e->getMessage());
             return response()->json(['success' => false, 'message' => 'Failed to update status.'], 500);
@@ -336,46 +304,6 @@ if ($sellerOrder->status !== 'completed') {
     // ══════════════════════════════════════════════════════════════════════
     // PRIVATE HELPERS
     // ══════════════════════════════════════════════════════════════════════
-
-    /**
-     * Derive and write the correct aggregate status to orders.status
-     * based on the current state of all seller_orders for that order.
-     *
-     * Priority cascade (highest → lowest):
-     *   all cancelled           → cancelled
-     *   all delivered           → delivered
-     *   any out_for_delivery    → out_for_delivery
-     *   all completed/delivered → completed
-     *   default                 → processing
-     *
-     * Identical logic to SellerOrderController::syncParentOrderStatus().
-     */
-    private function syncParentOrderStatus(int $orderId): void
-    {
-        $statuses = SellerOrder::where('order_id', $orderId)
-            ->pluck('status')
-            ->toArray();
-
-        if (empty($statuses)) return;
-
-        $unique = array_unique($statuses);
-
-        $derived = match (true) {
-            $unique === ['cancelled']
-                => 'cancelled',
-            $unique === ['delivered']
-                => 'delivered',
-            in_array('out_for_delivery', $statuses)
-                => 'out_for_delivery',
-            count(array_diff($unique, ['completed', 'delivered'])) === 0
-                => 'completed',
-            default
-                => 'pending',
-        };
-
-        Order::where('id', $orderId)->update(['status' => $derived]);
-    }
-
 
     /**
      * Format a SellerOrder for the delivery app API response.

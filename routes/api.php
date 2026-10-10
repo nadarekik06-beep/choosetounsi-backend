@@ -222,6 +222,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/check/{sellerId}',  [SellerFollowController::class, 'check']);
     });
 
+    // What the order will cost, per parcel (the storefront only displays this)
+    Route::post('/checkout/quote',   [CheckoutController::class, 'quote']);
+
     Route::middleware('profile.complete')->group(function () {
         Route::post('/checkout',         [CheckoutController::class, 'store']);
         Route::post('/checkout/buy-now', [CheckoutController::class, 'buyNow']);
@@ -597,6 +600,15 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/orders/{id}/export/slips/{sellerOrderId}',     [\App\Http\Controllers\Admin\OrderExportController::class, 'slip'])->whereNumber(['id', 'sellerOrderId']);
         Route::get('/orders/{id}/export/summary',                   [\App\Http\Controllers\Admin\OrderExportController::class, 'summary'])->whereNumber('id');
         Route::put('/sellers/{sellerId}/pickup-address',            [AdminOrderController::class, 'updateSellerPickup'])->whereNumber('sellerId');
+        // Per parcel (seller order): only the admin records delivery (= cash collected) or a refusal
+        Route::post('/seller-orders/{id}/delivered', [\App\Http\Controllers\Admin\ParcelController::class, 'delivered'])->whereNumber('id');
+        Route::post('/seller-orders/{id}/refused',   [\App\Http\Controllers\Admin\ParcelController::class, 'refused'])->whereNumber('id');
+        Route::post('/seller-orders/{id}/returned-to-seller', [\App\Http\Controllers\Admin\ParcelController::class, 'returnedToSeller'])->whereNumber('id');
+        Route::post('/seller-orders/{id}/status',    [\App\Http\Controllers\Admin\ParcelController::class, 'status'])->whereNumber('id');
+        Route::get('/seller-orders/{id}/status-history', [\App\Http\Controllers\Admin\ParcelController::class, 'history'])->whereNumber('id');
+        // Delivery & Fees (+ checkout payment-method switches)
+        Route::get('/delivery-settings', [\App\Http\Controllers\Admin\DeliverySettingsController::class, 'show']);
+        Route::put('/delivery-settings', [\App\Http\Controllers\Admin\DeliverySettingsController::class, 'update']);
 
         // ── Admin Notifications ───────────────────────────────────────────
         Route::prefix('notifications')->group(function () {

@@ -12,7 +12,9 @@ use App\Models\Order;
 use App\Models\OrderExport;
 use App\Models\SellerApplication;
 use App\Services\Orders\DeliveryDocumentService;
+use App\Services\Orders\IllegalTransition;
 use App\Services\Orders\OrderStock;
+use App\Services\Orders\ParcelStatus;
 use App\Services\Orders\BuyerOrderNotifier;
 use App\Services\Orders\SellerOrderNotifier;
 use App\Support\SellerPickup;
@@ -152,7 +154,8 @@ class OrderController extends Controller
 
         // Live figures are already net of refunded returns; cancelled sub-orders
         // earn nothing (no revenue, commission or payout).
-        $cancelledIds     = $order->sellerOrders->where('status', 'cancelled')->pluck('id')->all();
+        // Cancelled and refused parcels earn nothing (no revenue, commission or payout)
+        $cancelledIds     = $order->sellerOrders->whereIn('status', \App\Models\SellerOrder::NOT_SHIPPED)->pluck('id')->all();
         $orderCancelled   = $order->status === 'cancelled';
         $nonReturnedItems = $order->items->reject(fn($i) => $orderCancelled || in_array((int) $i->seller_order_id, $cancelledIds, true));
 
@@ -168,7 +171,7 @@ class OrderController extends Controller
 
         // Shipping: the agency always bills the order; on free-shipping orders
         // the seller pays it out of their earnings.
-        $activeSellerOrders = $order->sellerOrders->where('status', '!=', 'cancelled');
+        $activeSellerOrders = $order->sellerOrders->whereNotIn('status', \App\Models\SellerOrder::NOT_SHIPPED);
         $sellerShipping     = round($activeSellerOrders->sum(fn($so) => (float) ($so->seller_shipping_charge ?? 0)), 3);
         $commissionSummary += [
             'shipping_cost'    => $order->getAttribute('shipping_cost') !== null ? round((float) $order->getAttribute('shipping_cost'), 3) : null,
@@ -188,6 +191,9 @@ class OrderController extends Controller
             : false;
 
         $this->attachDeliveryData($order);
+
+        // Per parcel: the statuses the admin may set next (the UI's buttons)
+        $order->sellerOrders->each(fn ($so) => $so->setAttribute('allowed_next', ParcelStatus::allowedNext($so)));
 
         return response()->json(['success' => true, 'data' => $order]);
     }
@@ -268,18 +274,6 @@ class OrderController extends Controller
         }
     }
 
-    /**
-     * Cancelled seller orders written with DB::table skip the observer: their
-     * stock and flash units go back here (each line only once — OrderStock).
-     */
-    private function releaseCancelled(int $orderId): void
-    {
-        $cancelledIds = DB::table('seller_orders')->where('order_id', $orderId)->where('status', 'cancelled')->pluck('id')->all();
-        app(OrderStock::class)->releaseForSellerOrders($cancelledIds);
-        app(\App\Services\PromotionService::class)->releaseForSellerOrders($cancelledIds);
-        \App\Models\SellerOrder::syncPayoutWithStatus($cancelledIds, true);
-    }
-
     private function insufficientStock(InsufficientStock $e)
     {
         return response()->json([
@@ -291,71 +285,53 @@ class OrderController extends Controller
     public function updateStatus(Request $request, $id)
     {
         $request->validate([
-            'status' => 'required|string|in:pending,confirmed,completed,cancelled,delivered,refunded,out_for_delivery',
+            // 'completed' is retired (legacy rows still read as delivered);
+            // refused / returned_to_seller are per parcel: /admin/seller-orders/{id}/…
+            'status' => 'required|string|in:pending,confirmed,handed_to_courier,out_for_delivery,cancelled,delivered,refunded',
             'scope'  => 'nullable|string|in:all,platform,sellers',
         ]);
 
         try {
             $scope          = $request->input('scope', 'all');
             $platformUserId = PlatformUser::id();
+            $status         = $request->status;
+            $order          = Order::findOrFail($id);
 
-            $sellerOrderQuery = DB::table('seller_orders')->where('order_id', $id);
-
-            if ($scope === 'platform' && $platformUserId) {
-                $sellerOrderQuery->where('seller_id', $platformUserId);
-            } elseif ($scope === 'sellers' && $platformUserId) {
-                $sellerOrderQuery->where('seller_id', '!=', $platformUserId);
+            // Legacy order without parcels: only its own status
+            if (!DB::table('seller_orders')->where('order_id', $id)->exists()) {
+                DB::table('orders')->where('id', $id)->update(['status' => $status, 'updated_at' => now()]);
+                return response()->json(['success' => true, 'message' => 'Status updated.', 'data' => $order->refresh()]);
             }
 
-            $order = Order::findOrFail($id);
-
-            DB::transaction(function () use ($request, $id, $order, $sellerOrderQuery) {
-                Order::whereKey($id)->lockForUpdate()->first();
-                $previous    = (clone $sellerOrderQuery)->lockForUpdate()->pluck('status', 'id')->all();
-                $affectedIds = array_keys($previous);
-
-                // Cancelled → anything else: the lines take their stock back first
-                if ($request->status !== 'cancelled') {
-                    app(OrderStock::class)->reclaimForSellerOrders(
-                        array_keys(array_filter($previous, fn ($s) => $s === 'cancelled'))
-                    );
-                }
-
-                $sellerOrderQuery->update([
-                    'status'     => $request->status,
-                    'updated_at' => now(),
-                ]);
-
-                DB::table('orders')
-                    ->where('id', $id)
-                    ->update(['status' => $request->status, 'updated_at' => now()]);
-
-                // Re-opened sub-orders wait for cash again
-                if ($request->status !== 'cancelled') {
-                    \App\Models\SellerOrder::syncPayoutWithStatus(
-                        array_keys(array_filter($previous, fn ($s) => $s === 'cancelled')), false
-                    );
-                }
+            // Every allowed move, stock, payouts and history: ParcelStatus.
+            // Closed parcels (refused, returned, refunded, cancelled) are skipped.
+            $affectedIds = DB::transaction(function () use ($id, $order, $status, $scope, $platformUserId, $request) {
+                $ids = app(ParcelStatus::class)->transitionOrder((int) $id, $status, ['by' => $request->user(), 'source' => 'admin'],
+                    match (true) {
+                        $scope === 'platform' && $platformUserId => fn ($q) => $q->where('seller_id', $platformUserId),
+                        $scope === 'sellers' && $platformUserId  => fn ($q) => $q->where('seller_id', '!=', $platformUserId),
+                        default                                  => null,
+                    });
 
                 // One e-mail + bell entry per affected seller sub-order (after commit, never twice)
-                if ($request->status === 'cancelled') {
-                    $this->releaseCancelled((int) $id);
-                    app(SellerOrderNotifier::class)->orderCancelled($order, $affectedIds);
-                } elseif ($request->status === 'confirmed') {
-                    app(SellerOrderNotifier::class)->orderConfirmed($order, $affectedIds);
+                if ($status === 'cancelled') {
+                    app(SellerOrderNotifier::class)->orderCancelled($order, $ids);
+                } elseif ($status === 'confirmed') {
+                    app(SellerOrderNotifier::class)->orderConfirmed($order, $ids);
                 }
-                // The buyer hears about every step once (confirmed, shipped, delivered, cancelled…)
-                app(BuyerOrderNotifier::class)->statusChanged($order, $affectedIds, BuyerOrderNotifier::REASON_ADMIN);
+                return $ids;
             });
 
             $order->refresh();
 
             return response()->json([
                 'success' => true,
-                'message' => 'Status updated.',
+                'message' => $affectedIds ? 'Status updated.' : 'Nothing to change.',
                 'data'    => $order,
             ]);
 
+        } catch (IllegalTransition $e) {
+            return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         } catch (InsufficientStock $e) {
             return $this->insufficientStock($e);
         } catch (\Throwable $e) {
@@ -414,22 +390,25 @@ public function confirmOrder(Request $request, $id)
             }
             DB::table('seller_orders')->where('order_id', $id)->lockForUpdate()->get(['id']);
 
-            DB::table('orders')->where('id', $id)->update($updateData);
+            // Every live parcel moves (a parcel the shop already cancelled stays
+            // cancelled); stock, payouts and history: ParcelStatus.
+            $ids = app(ParcelStatus::class)->transitionOrder((int) $id, $newStatus, [
+                'by' => request()->user(), 'source' => 'admin', 'note' => $updateData['admin_note'] ?? null,
+            ], $newStatus === 'confirmed' ? fn ($q) => $q->where('status', '!=', 'cancelled') : null);
 
-            // Cascade to all seller sub-orders
-            DB::table('seller_orders')
-                ->where('order_id', $id)
-                ->update(['status' => $newStatus, 'updated_at' => now()]);
+            // Parcels decide the order status; the note / confirmation time are the order's own
+            DB::table('orders')->where('id', $id)->update(array_diff_key($updateData, ['status' => 1]));
+            if (!$ids) {
+                DB::table('orders')->where('id', $id)->update(['status' => $newStatus]);
+            }
 
             // Each seller gets one e-mail + bell entry for their sub-order
             // (sent after the commit, never twice).
             if ($newStatus === 'cancelled') {
-                $this->releaseCancelled((int) $id);
                 app(SellerOrderNotifier::class)->orderCancelled($order);
             } else {
                 app(SellerOrderNotifier::class)->orderConfirmed($order);
             }
-            app(BuyerOrderNotifier::class)->statusChanged($order, null, BuyerOrderNotifier::REASON_ADMIN);
             return true;
         });
 

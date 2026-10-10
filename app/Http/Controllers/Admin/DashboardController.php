@@ -46,7 +46,7 @@ class DashboardController extends Controller
         // Excludes cancelled orders — same filter as FinanceController.
         try {
             $revenueRow = DB::table('seller_orders')
-                ->where('status', '!=', 'cancelled')
+                ->whereNotIn('status', \App\Models\SellerOrder::NOT_SHIPPED)
                 ->selectRaw('
                     COALESCE(SUM(subtotal - discount_amount), 0) as gross_revenue,
                     COALESCE(SUM(platform_profit), 0)   as platform_profit,
@@ -56,13 +56,13 @@ class DashboardController extends Controller
 
 $totalRevenue = round((float) ($revenueRow->platform_profit ?? 0), 3);        } catch (\Exception $e) {
             // Fallback if seller_orders columns don't exist yet
-            $totalRevenue = round((float) Order::where('status', '!=', 'cancelled')->sum('total_amount'), 3);
+            $totalRevenue = round((float) Order::whereNotIn('status', \App\Models\SellerOrder::NOT_SHIPPED)->sum('total_amount'), 3);
         }
 
         // ── Order count — match Finance (non-cancelled seller_orders) ──
         try {
             $totalOrders = DB::table('seller_orders')
-                ->where('status', '!=', 'cancelled')
+                ->whereNotIn('status', \App\Models\SellerOrder::NOT_SHIPPED)
                 ->count();
         } catch (\Exception $e) {
             $totalOrders = Order::count();
@@ -84,7 +84,7 @@ $totalRevenue = round((float) ($revenueRow->platform_profit ?? 0), 3);        } 
         // Gross revenue per month from seller_orders — matches Finance chart
         try {
             $monthlyRevenue = DB::table('seller_orders')
-                ->where('status', '!=', 'cancelled')
+                ->whereNotIn('status', \App\Models\SellerOrder::NOT_SHIPPED)
                 ->where('created_at', '>=', $now->copy()->subMonths(6))
                 ->select(
                     DB::raw("DATE_FORMAT(created_at, '%Y-%m') as month"),

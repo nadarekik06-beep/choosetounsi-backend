@@ -50,6 +50,8 @@ return [
     ],
     'order' => [
         'status_updated' => 'Statut de la commande mis à jour.',
+        'status_admin_only' => 'Vous pouvez confirmer votre colis ou le remettre au livreur. Seul CHOOSE\'Tounsi marque un colis livré ou refusé.',
+        'status_locked' => 'Ce changement n\'est pas possible à ce stade : un colis ne peut être annulé qu\'avant sa remise au livreur, et un colis expédié, livré, refusé ou retourné ne peut plus être modifié depuis l\'espace vendeur.',
         'payment_locked' => 'Le paiement a déjà été confirmé par l\'administration et ne peut plus être modifié.',
         'refund_after_delivery' => 'Le remboursement n\'est possible qu\'après la livraison ou la finalisation de la commande.',
         'refunded' => 'Commande marquée comme remboursée.',

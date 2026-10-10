@@ -151,7 +151,7 @@ class SellerDashboardController extends Controller
         $shippingQuery = fn() => DB::table('seller_orders as so')
             ->join('orders as o', 'o.id', '=', 'so.order_id')
             ->where('so.seller_id', $sellerId)
-            ->where('so.status', '!=', 'cancelled')
+            ->whereNotIn('so.status', \App\Models\SellerOrder::NOT_SHIPPED)
             ->whereIn('o.status', ['completed', 'delivered']);
 
         $totalShipping = 0.0;
@@ -348,7 +348,7 @@ class SellerDashboardController extends Controller
                     if (!$mine) return;   // legacy order without sub-orders: keep the stored total
                     $original  = round($mine->sum(fn($so) => (float) $so->subtotal - (float) $so->discount_amount), 3);
                     $cancelled = $o->status === 'cancelled' || $mine->every(fn($so) => $so->status === 'cancelled');
-                    $o->total_amount = $cancelled ? 0.0 : round($mine->where('status', '!=', 'cancelled')
+                    $o->total_amount = $cancelled ? 0.0 : round($mine->whereNotIn('status', \App\Models\SellerOrder::NOT_SHIPPED)
                         ->sum(fn($so) => (float) $so->subtotal - (float) $so->discount_amount), 3);
                     $o->setAttribute('is_cancelled', $cancelled);
                     $o->setAttribute('original_total', $original);

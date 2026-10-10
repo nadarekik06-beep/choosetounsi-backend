@@ -5,6 +5,7 @@ namespace App\Services\Orders;
 use App\Models\Order;
 use App\Models\OrderExport;
 use App\Models\SellerOrder;
+use App\Support\Millimes;
 use App\Support\SellerPickup;
 use App\Support\TunisianPhone;
 use Illuminate\Support\Collection;
@@ -15,18 +16,18 @@ use Mpdf\Output\Destination;
 /**
  * Delivery documents for the courier, and the internal admin summary.
  *
- * One order = one buyer, but every seller sub-order is a separate pickup, so
- * the courier gets ONE SLIP PER ACTIVE SUB-ORDER. Money on the slips adds up
- * to exactly what the buyer owes:
+ * One order = one buyer, but every seller sub-order is a separate parcel and
+ * pickup, so the courier gets ONE SLIP PER ACTIVE PARCEL. Money on the slips
+ * adds up to exactly what the buyer owes:
  *
- *   slip total = sub-order subtotal − seller coupon + shipping share
- *   shipping   = the order's shipping_fee, all of it on the FIRST active
- *                sub-order (lowest id), 0 on the others — the customer pays
- *                shipping once per order (same rule as
- *                FinancialSnapshotService::deliveryFeeFor, but skipping
- *                cancelled sub-orders so the fee is never lost)
+ *   slip total = parcel subtotal − seller coupon + that parcel's delivery fee
+ *   delivery   = per parcel (orders.shipping_per_parcel): the parcel's own
+ *                delivery_fee frozen at checkout (0 = free delivery).
+ *                Legacy orders: the order's shipping_fee on the FIRST active
+ *                sub-order only (it was charged once per order).
  *   COD        = slip total, or 0 when the order is prepaid (wallet / card /
  *                D17 confirmed) — Σ COD over the slips = order total.
+ *                Cancelled / refused parcels get no slip and owe nothing.
  *
  * Slips never contain internal data (commission, payouts, plan, admin note);
  * those only appear in summary().
@@ -34,7 +35,7 @@ use Mpdf\Output\Destination;
 class DeliveryDocumentService
 {
     /** Sub-orders that will not be shipped. */
-    const INACTIVE_STATUSES = ['cancelled', 'refunded'];
+    const INACTIVE_STATUSES = ['cancelled', 'refused', 'returned_to_seller', 'refunded'];
 
     /** Eager loads for every document — no query per sub-order or item. */
     public function query()
@@ -70,18 +71,25 @@ class DeliveryDocumentService
      */
     public function money(Order $order, SellerOrder $sellerOrder): array
     {
-        $first    = $this->activeSellerOrders($order)->first();
-        $subtotal = round((float) $sellerOrder->subtotal, 3);
-        $discount = round((float) ($sellerOrder->discount_amount ?? 0), 3);
-        $shipping = $first && $first->id === $sellerOrder->id ? round((float) ($order->shipping_fee ?? 0), 3) : 0.0;
-        $total    = round($subtotal - $discount + $shipping, 3);
+        $m        = fn ($v) => Millimes::of($v ?? 0);
+        $subtotal = $m($sellerOrder->subtotal);
+        $discount = $m($sellerOrder->discount_amount);
+        if ($order->shipping_per_parcel) {
+            $shipping = $m($sellerOrder->getAttribute('delivery_fee'));
+        } else {
+            $first    = $this->activeSellerOrders($order)->first();
+            $shipping = $first && $first->id === $sellerOrder->id ? $m($order->shipping_fee) : 0;
+        }
+        $total = $subtotal - $discount + $shipping;
+        $f     = fn (int $v) => Millimes::toFloat($v);
 
         return [
-            'subtotal' => $subtotal,
-            'discount' => $discount,
-            'shipping' => $shipping,
-            'total'    => $total,
-            'cod'      => $this->isPrepaid($order) ? 0.0 : $total,
+            'subtotal'         => $f($subtotal),
+            'discount'         => $f($discount),
+            'shipping'         => $f($shipping),
+            'is_free_delivery' => $order->shipping_per_parcel && $shipping === 0,
+            'total'            => $f($total),
+            'cod'              => $this->isPrepaid($order) ? 0.0 : $f($total),
         ];
     }
 

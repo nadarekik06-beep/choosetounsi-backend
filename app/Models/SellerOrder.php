@@ -16,7 +16,7 @@ use Illuminate\Database\Eloquent\Model;
  * @property int    $id
  * @property int    $order_id
  * @property int    $seller_id
- * @property string $status          pending|processing|completed|delivered|cancelled
+ * @property string $status          see App\Services\Orders\ParcelStatus (the only writer)
  * @property string $payment_status  unpaid|paid|refunded
  * @property float  $subtotal         items total BEFORE the seller's coupon
  * @property float  $discount_amount  seller-funded coupon discount (0 when none)
@@ -40,10 +40,43 @@ class SellerOrder extends Model
     ];
 
     protected $casts = [
-        'subtotal'        => 'decimal:3',
-        'coupon_value'    => 'decimal:3',
-        'discount_amount' => 'decimal:3',
+        'subtotal'          => 'decimal:3',
+        'coupon_value'      => 'decimal:3',
+        'discount_amount'   => 'decimal:3',
+        'is_free_delivery'  => 'boolean',
+        'cash_collected_at'     => 'datetime',
+        'refused_at'            => 'datetime',
+        'returned_to_seller_at' => 'datetime',
+        'carrier_status_at'     => 'datetime',
     ];
+
+    /**
+     * Parcels that are owed nothing by the client and earn nothing: cancelled
+     * before the courier, or refused at the door (then returned to the seller).
+     */
+    public const NOT_SHIPPED = ['cancelled', 'refused', 'returned_to_seller'];
+
+    /** Refused at the door, before or after it is back at the seller. */
+    public const REFUSED = ['refused', 'returned_to_seller'];
+
+    /** "'cancelled','refused',…" for raw SQL IN (…) lists. */
+    public static function notShippedSql(): string
+    {
+        return "'" . implode("','", self::NOT_SHIPPED) . "'";
+    }
+
+    /** CHOOSE'Tounsi's own products: its net is platform revenue, never a seller payout. */
+    public function isPlatformParcel(): bool
+    {
+        return $this->seller_id === null || \App\Helpers\PlatformUser::isPlatform((int) $this->seller_id);
+    }
+
+    /** SQL for "this seller_orders row is a platform parcel" (alias $a). */
+    public static function platformParcelSql(string $a = 'so'): string
+    {
+        $id = (int) \App\Helpers\PlatformUser::id();
+        return "({$a}.seller_id IS NULL OR {$a}.seller_id = {$id})";
+    }
 
     protected $appends = ['display_status'];
 
@@ -93,6 +126,11 @@ class SellerOrder extends Model
     public function scopeDelivered($q)  { return $q->where('status', 'delivered'); }
     public function scopeCancelled($q)  { return $q->where('status', 'cancelled'); }
     public function scopePaid($q)       { return $q->where('payment_status', 'paid'); }
+    public function statusHistory()
+    {
+        return $this->hasMany(SellerOrderStatusHistory::class)->orderBy('created_at')->orderBy('id');
+    }
+
     public function deliveryAssignment()
     {
         return $this->hasOne(DeliveryAssignment::class, 'seller_order_id');

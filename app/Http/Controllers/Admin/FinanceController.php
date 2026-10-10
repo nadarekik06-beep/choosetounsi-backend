@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\SellerOrder;
 use App\Services\FinancialSnapshotService;
+use App\Support\Millimes;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -35,7 +36,15 @@ class FinanceController extends Controller
     {
         $period = $request->query('period', 'today'); // today | week | month | all
 
+        // date_from / date_to (Y-m-d) override the period; seller_id narrows everything
         $dateRange = $this->resolveDateRange($period);
+        if ($request->filled('date_from') || $request->filled('date_to')) {
+            $dateRange = [
+                Carbon::parse($request->query('date_from', '2000-01-01'))->startOfDay(),
+                Carbon::parse($request->query('date_to', now()->toDateString()))->endOfDay(),
+            ];
+        }
+        $sellerId = $request->filled('seller_id') ? (int) $request->query('seller_id') : null;
 
         // ── Platform KPIs ────────────────────────────────────────────────────
 
@@ -45,9 +54,12 @@ class FinanceController extends Controller
         if ($dateRange) {
             $base->whereBetween('so.created_at', $dateRange);
         }
+        if ($sellerId) {
+            $base->where('so.seller_id', $sellerId);
+        }
 
         $totals = (clone $base)
-            ->where('so.status', '!=', 'cancelled')
+            ->whereNotIn('so.status', SellerOrder::NOT_SHIPPED)
             ->selectRaw('
                 COALESCE(SUM(so.subtotal - so.discount_amount), 0) as gross_revenue,
                 COALESCE(SUM(so.commission_amount), 0) as total_commission,
@@ -73,10 +85,12 @@ class FinanceController extends Controller
 
         // ── Pending vs Ready vs Paid ─────────────────────────────────────────
 
-        $payoutCounts = DB::table('seller_orders')
-            ->selectRaw('payout_status, COUNT(*) as cnt, COALESCE(SUM(seller_net_amount), 0) as total')
-            ->where('status', '!=', 'cancelled')
-            ->groupBy('payout_status')
+        // Seller payouts only: CHOOSE'Tounsi's own parcels are platform revenue
+        $payoutCounts = (clone $base)
+            ->selectRaw('so.payout_status, COUNT(*) as cnt, COALESCE(SUM(so.seller_net_amount), 0) as total')
+            ->whereNotIn('so.status', SellerOrder::NOT_SHIPPED)
+            ->whereRaw('NOT ' . SellerOrder::platformParcelSql('so'))
+            ->groupBy('so.payout_status')
             ->get()
             ->keyBy('payout_status');
 
@@ -101,6 +115,10 @@ class FinanceController extends Controller
             ->orderByDesc('collection_date')
             ->get();
 
+        $delivery = $this->deliveryKpis(clone $base);
+        // The agency fees the platform absorbed on refused parcels are a real loss
+        $profit = Millimes::of($totals->total_platform_profit) - Millimes::of($delivery['refused_platform_loss']);
+
         return response()->json([
             'success' => true,
             'data' => [
@@ -114,7 +132,8 @@ class FinanceController extends Controller
                     'total_delivery_fees'   => round((float) $totals->total_delivery_fees,  3),
                     'total_seller_shipping' => round((float) $totals->total_seller_shipping, 3),
                     'total_shipping_cost'   => round((float) $totals->total_shipping_cost,  3),
-                    'total_platform_profit' => round((float) $totals->total_platform_profit,3),
+                    'total_platform_profit' => Millimes::toFloat($profit),
+                    'platform_profit_before_refusals' => round((float) $totals->total_platform_profit, 3),
                     'orders_count'          => (int) $totals->orders_count,
                     'ad_revenue'            => $adRevenue['paid'],
                     'ad_credit_spent'       => $adRevenue['credit'],
@@ -125,10 +144,13 @@ class FinanceController extends Controller
                     'returns_refunded'      => round((float) DB::table('complaints')->where('status', 'refunded')
                         ->when($dateRange, fn ($q) => $q->whereBetween('refunded_at', $dateRange))->sum('refund_amount'), 3),
                     'pending_seller_debits' => round((float) DB::table('seller_adjustments')->whereNull('applied_at')->sum('amount'), 3),
-                    // Returns refunded to clients in the period, and seller debits not settled yet
-                    'returns_refunded'      => round((float) DB::table('complaints')->where('status', 'refunded')
-                        ->when($dateRange, fn ($q) => $q->whereBetween('refunded_at', $dateRange))->sum('refund_amount'), 3),
-                    'pending_seller_debits' => round((float) DB::table('seller_adjustments')->whereNull('applied_at')->sum('amount'), 3),
+                    // Refused at the door: no sale; the agency fee is a platform loss or billed to the seller
+                    'refused_parcels'       => [
+                        'count'              => $delivery['refused_parcels'],
+                        'awaiting_return'    => $delivery['refused_awaiting_return'],
+                        'agency_fees_lost'   => $delivery['refused_platform_loss'],
+                        'agency_fees_billed' => $delivery['refused_fees_billed_to_sellers'],
+                    ],
                 ],
                 'payout_summary' => [
                     'pending' => [
@@ -145,6 +167,7 @@ class FinanceController extends Controller
                     ],
                 ],
                 'daily_collections' => $dailyCollections,
+                'delivery'          => $delivery,
             ],
         ]);
     }
@@ -157,7 +180,7 @@ class FinanceController extends Controller
     {
         $query = DB::table('seller_orders as so')
             ->join('orders as o', 'o.id', '=', 'so.order_id')
-            ->join('users as s', 's.id', '=', 'so.seller_id')
+            ->leftJoin('users as s', 's.id', '=', 'so.seller_id')
             ->leftJoin('users as admin', 'admin.id', '=', 'so.money_received_by')
             ->leftJoin('seller_applications as sa', function ($join) {
                 $join->on('sa.user_id', '=', 'so.seller_id')
@@ -175,20 +198,36 @@ class FinanceController extends Controller
                 'so.payout_status',
                 'so.payment_status',
                 // Cancelled sub-orders: no revenue, commission or payout (original_subtotal = history)
-                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE (so.subtotal - so.discount_amount) END as subtotal"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE (so.subtotal - so.discount_amount) END as subtotal"),
                 DB::raw('(so.subtotal - so.discount_amount) as original_subtotal'),
                 'so.discount_amount',
                 'so.coupon_code',
-                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.commission_amount END as commission_amount"),
-                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.seller_net_amount END as seller_net_amount"),
-                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.delivery_fee END as delivery_fee"),
-                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.shipping_cost END as shipping_cost"),
-                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.seller_shipping_charge END as seller_shipping_charge"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.commission_amount END as commission_amount"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.seller_net_amount END as seller_net_amount"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.delivery_fee END as delivery_fee"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.shipping_cost END as shipping_cost"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.seller_shipping_charge END as seller_shipping_charge"),
                 'o.shipping_paid_by',
-                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.platform_profit END as platform_profit"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.platform_profit END as platform_profit"),
                 'so.delivery_confirmed_at',
                 'so.money_received_at',
                 'so.settled_at',
+                // Parcel delivery snapshot + cash flow (null on legacy rows)
+                'so.is_free_delivery',
+                'so.client_delivery_fee',
+                'so.agency_delivery_cost',
+                'so.seller_free_delivery_contribution',
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.platform_delivery_margin END as platform_delivery_margin"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.cod_amount END as cod_amount"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.amount_to_remit END as amount_to_remit"),
+                'so.cod_amount as original_cod_amount',
+                'so.cash_collected_at',
+                'so.refused_at',
+                'so.refused_agency_fee',
+                'so.refused_fee_paid_by',
+                'so.returned_to_seller_at',
+                'so.carrier_tracking_number',
+                DB::raw(SellerOrder::platformParcelSql('so') . ' as is_platform_parcel'),
                 'so.settlement_batch_id',
                 'so.created_at',
                 DB::raw("CONCAT(o.payment_method) as payment_method"),
@@ -202,6 +241,16 @@ class FinanceController extends Controller
         }
         if ($s = $request->query('payout_status')) {
             $query->where('so.payout_status', $s);
+        }
+        // Cancelled parcels (never handed to the courier) are hidden unless asked
+        // for; 'refused' covers refused parcels before and after their return.
+        $status = $request->query('status');
+        if ($status === 'refused') {
+            $query->whereIn('so.status', SellerOrder::REFUSED);
+        } elseif ($status) {
+            $query->where('so.status', $status);
+        } elseif (!$request->boolean('include_cancelled')) {
+            $query->where('so.status', '!=', 'cancelled');
         }
         if ($d = $request->query('date_from')) {
             $query->whereDate('so.created_at', '>=', $d);
@@ -245,7 +294,7 @@ class FinanceController extends Controller
 
         $order     = $so->order;
         $num       = fn($v) => round((float) ($v ?? 0), 3);
-        $cancelled = $so->status === 'cancelled';
+        $cancelled = in_array($so->status, SellerOrder::NOT_SHIPPED, true);
         $live      = fn($v) => $cancelled ? 0.0 : $num($v);
 
         $items = $so->items->map(function ($item) {
@@ -312,6 +361,8 @@ class FinanceController extends Controller
                 'payment_method'  => optional($order)->payment_method,
                 'payment_status'  => $so->payment_status,
                 'payout_status'   => $so->getAttribute('payout_status'),
+                'carrier_tracking_number' => $so->getAttribute('carrier_tracking_number'),
+                'carrier_status_raw'      => $so->getAttribute('carrier_status_raw'),
                 'coupon_code'     => $so->coupon_code,
                 'items_count'     => $items->count(),
                 'seller' => [
@@ -345,6 +396,21 @@ class FinanceController extends Controller
                     'shipping_paid_by'       => $order ? $order->getAttribute('shipping_paid_by') : null,
                     'platform_profit'        => $live($so->getAttribute('platform_profit')),
                     'seller_net_amount'      => $live($so->getAttribute('seller_net_amount')),
+                    // Parcel delivery snapshot + cash flow (null on legacy rows)
+                    'is_free_delivery'                  => $so->getAttribute('is_free_delivery'),
+                    'client_delivery_fee'               => $so->getAttribute('client_delivery_fee') !== null ? $num($so->getAttribute('client_delivery_fee')) : null,
+                    'agency_delivery_cost'              => $so->getAttribute('agency_delivery_cost') !== null ? $num($so->getAttribute('agency_delivery_cost')) : null,
+                    'seller_free_delivery_contribution' => $so->getAttribute('seller_free_delivery_contribution') !== null ? $num($so->getAttribute('seller_free_delivery_contribution')) : null,
+                    'platform_delivery_margin'          => $live($so->getAttribute('platform_delivery_margin')),
+                    'cod_amount'                        => $live($so->getAttribute('cod_amount')),
+                    'amount_to_remit'                   => $live($so->getAttribute('amount_to_remit')),
+                    'cash_collected_at'                 => $so->getAttribute('cash_collected_at'),
+                    'remittance_received_at'            => $so->getAttribute('money_received_at'),
+                    'refused_at'                        => $so->getAttribute('refused_at'),
+                    'refused_agency_fee'                => $so->getAttribute('refused_agency_fee') !== null ? $num($so->getAttribute('refused_agency_fee')) : null,
+                    'refused_fee_paid_by'               => $so->getAttribute('refused_fee_paid_by'),
+                    'returned_to_seller_at'             => $so->getAttribute('returned_to_seller_at'),
+                    'is_platform_parcel'                => $so->isPlatformParcel(),
                 ],
             ],
         ]);
@@ -362,7 +428,8 @@ class FinanceController extends Controller
                 $join->on('sa.user_id', '=', 'so.seller_id')
                     ->where('sa.status', '=', 'approved');
             })
-            ->where('so.status', '!=', 'cancelled')
+            ->whereNotIn('so.status', SellerOrder::NOT_SHIPPED)
+            ->whereRaw('NOT ' . SellerOrder::platformParcelSql('so'))
             ->groupBy('so.seller_id', 'u.name', 'u.email', 'sa.phone_number')
             ->select([
                 'so.seller_id',
@@ -391,6 +458,10 @@ class FinanceController extends Controller
             });
         }
 
+        if ($s = $request->query('seller_id')) {
+            $query->where('so.seller_id', $s);
+        }
+
         $results = $query
             ->orderByDesc('total_net')
             ->paginate((int) $request->query('per_page', 15));
@@ -413,6 +484,8 @@ class FinanceController extends Controller
             })
             ->where('so.payout_status', 'ready')
             ->whereNull('so.settlement_batch_id')
+            ->whereRaw('NOT ' . SellerOrder::platformParcelSql('so'))
+            ->when($request->filled('seller_id'), fn ($q) => $q->where('so.seller_id', (int) $request->query('seller_id')))
             ->select([
                 'so.id',
                 'o.order_number',
@@ -449,7 +522,7 @@ class FinanceController extends Controller
         if (!$success) {
             return response()->json([
                 'success' => false,
-                'message' => 'Cannot confirm money: order must be delivered and payout must be pending.',
+                'message' => 'Cannot confirm the remittance: the parcel must be delivered (cash collected by the courier) and its payout still pending.',
             ], 422);
         }
 
@@ -462,6 +535,88 @@ class FinanceController extends Controller
     // ─────────────────────────────────────────────────────────────────────────
     // Private helpers
     // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Cash on delivery flow over the filtered parcels, from the frozen
+     * seller_orders columns only (so it reconciles with the order rows):
+     *
+     *   cash collected       Σ cod_amount of delivered parcels (cash_collected_at)
+     *   agency fees          Σ agency cost the courier kept on them
+     *   remitted to us       Σ (cod − agency) whose remittance the admin confirmed
+     *   pending at agency    Σ (cod − agency) collected but not remitted yet
+     *   reconciliation       cash collected = payouts + commission + agency fees + delivery margin
+     *                        (delivered COD parcels without a return: difference must be 0)
+     */
+    private function deliveryKpis($base): array
+    {
+        $notPlatform = 'NOT ' . SellerOrder::platformParcelSql('so');
+        $live        = (clone $base)->whereNotIn('so.status', SellerOrder::NOT_SHIPPED);
+        $collected   = (clone $live)->whereNotNull('so.cash_collected_at')->where('o.payment_method', 'cod');
+
+        $c = (clone $collected)->selectRaw('
+            COUNT(*) as parcels,
+            COALESCE(SUM(so.cod_amount), 0) as cash,
+            COALESCE(SUM(so.shipping_cost), 0) as agency,
+            COALESCE(SUM(CASE WHEN so.money_received_at IS NOT NULL THEN so.amount_to_remit ELSE 0 END), 0) as remitted,
+            COALESCE(SUM(CASE WHEN so.money_received_at IS NULL THEN so.amount_to_remit ELSE 0 END), 0) as pending
+        ')->first();
+
+        // Reconciliation over parcels untouched by returns (a return reverses part of the sale)
+        $k = (clone $collected)->whereNull('so.return_status')->selectRaw('
+            COALESCE(SUM(so.cod_amount), 0) as cash,
+            COALESCE(SUM(so.seller_net_amount), 0) as payouts,
+            COALESCE(SUM(so.commission_amount), 0) as commission,
+            COALESCE(SUM(so.shipping_cost), 0) as agency,
+            COALESCE(SUM(so.platform_delivery_margin), 0) as margin
+        ')->first();
+
+        $l = (clone $live)->selectRaw("
+            COALESCE(SUM(so.seller_shipping_charge), 0) as contributions,
+            COALESCE(SUM(so.platform_delivery_margin), 0) as margin,
+            COALESCE(SUM(so.commission_amount), 0) as commission,
+            COALESCE(SUM(CASE WHEN {$notPlatform} AND so.payout_status = 'pending' THEN so.seller_net_amount ELSE 0 END), 0) as payouts_not_payable,
+            COALESCE(SUM(CASE WHEN {$notPlatform} AND so.payout_status = 'ready' THEN so.seller_net_amount ELSE 0 END), 0) as payouts_payable,
+            COALESCE(SUM(CASE WHEN {$notPlatform} AND so.payout_status = 'paid' THEN so.seller_net_amount ELSE 0 END), 0) as payouts_paid,
+            COALESCE(SUM(CASE WHEN NOT ({$notPlatform}) THEN so.seller_net_amount ELSE 0 END), 0) as platform_products_net
+        ")->first();
+
+        $r = (clone $base)->whereIn('so.status', SellerOrder::REFUSED)->selectRaw("
+            COUNT(*) as parcels,
+            COALESCE(SUM(so.status = 'refused'), 0) as awaiting_return,
+            COALESCE(SUM(CASE WHEN so.refused_fee_paid_by = 'platform' THEN so.refused_agency_fee ELSE 0 END), 0) as platform_loss,
+            COALESCE(SUM(CASE WHEN so.refused_fee_paid_by = 'seller' THEN so.refused_agency_fee ELSE 0 END), 0) as billed_to_sellers
+        ")->first();
+
+        $m = fn ($v) => Millimes::of($v ?? 0);
+        $f = fn (int $v) => Millimes::toFloat($v);
+        $explained = $m($k->payouts) + $m($k->commission) + $m($k->agency) + $m($k->margin);
+
+        return [
+            'delivered_parcels'                  => (int) $c->parcels,
+            'cash_collected'                     => $f($m($c->cash)),
+            'agency_fees'                        => $f($m($c->agency)),
+            'remitted_to_platform'               => $f($m($c->remitted)),
+            'pending_at_delivery_company'        => $f($m($c->pending)),
+            'seller_free_delivery_contributions' => $f($m($l->contributions)),
+            // Net of the agency fees the platform absorbed on refused parcels
+            'platform_delivery_margin'           => $f($m($l->margin) - $m($r->platform_loss)),
+            'delivery_margin_before_refusals'    => $f($m($l->margin)),
+            'commission'                         => $f($m($l->commission)),
+            'seller_payouts_not_payable'         => $f($m($l->payouts_not_payable)),
+            'seller_payouts_payable'             => $f($m($l->payouts_payable)),
+            'seller_payouts_paid'                => $f($m($l->payouts_paid)),
+            'platform_products_net'              => $f($m($l->platform_products_net)),
+            'refused_parcels'                    => (int) $r->parcels,
+            'refused_awaiting_return'            => (int) $r->awaiting_return,
+            'refused_platform_loss'              => $f($m($r->platform_loss)),
+            'refused_fees_billed_to_sellers'     => $f($m($r->billed_to_sellers)),
+            'reconciliation'                     => [
+                'cash_collected' => $f($m($k->cash)),
+                'explained'      => $f($explained),
+                'difference'     => $f($m($k->cash) - $explained),
+            ],
+        ];
+    }
 
     private function resolveDateRange(string $period): ?array
     {

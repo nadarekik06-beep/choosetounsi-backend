@@ -248,7 +248,7 @@ class SellerRevenueService
     {
         $row = DB::table('seller_orders')
             ->where('seller_id', $sellerId)
-            ->where('status', '!=', 'cancelled')
+            ->whereNotIn('status', \App\Models\SellerOrder::NOT_SHIPPED)
             ->selectRaw("COALESCE(SUM(CASE WHEN payout_status = 'pending' AND status IN ('delivered') THEN seller_net_amount ELSE 0 END), 0) as awaiting,
                 COALESCE(SUM(CASE WHEN payout_status = 'ready' THEN seller_net_amount ELSE 0 END), 0) as ready")
             ->first();
@@ -332,7 +332,7 @@ class SellerRevenueService
                    'so.commission_amount', 'so.seller_shipping_charge', 'so.seller_net_amount', 'so.payout_status'])
             ->map(function ($r) {
                 $amount = (float) $r->subtotal - (float) $r->discount_amount;
-                $net    = $r->status === 'cancelled' ? 0.0
+                $net    = in_array($r->status, \App\Models\SellerOrder::NOT_SHIPPED, true) ? 0.0
                     : $amount - (float) $r->commission_amount - (float) $r->seller_shipping_charge;
                 return [
                     'order'      => $r->order_number,

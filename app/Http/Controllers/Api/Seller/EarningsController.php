@@ -19,7 +19,7 @@ class EarningsController extends Controller
 
         $base = DB::table('seller_orders')
             ->where('seller_id', $sellerId)
-            ->where('status', '!=', 'cancelled');
+            ->whereNotIn('status', \App\Models\SellerOrder::NOT_SHIPPED);
 
         if ($dateRange) {
             $base->whereBetween('created_at', $dateRange);
@@ -41,7 +41,7 @@ class EarningsController extends Controller
 
         $daily = DB::table('seller_orders')
             ->where('seller_id', $sellerId)
-            ->where('status', '!=', 'cancelled')
+            ->whereNotIn('status', \App\Models\SellerOrder::NOT_SHIPPED)
             ->where('created_at', '>=', Carbon::now()->subDays(30))
             ->selectRaw(
                 'DATE(created_at) as day,' .
@@ -57,7 +57,7 @@ class EarningsController extends Controller
 
         $payoutBreakdown = DB::table('seller_orders')
             ->where('seller_id', $sellerId)
-            ->where('status', '!=', 'cancelled')
+            ->whereNotIn('status', \App\Models\SellerOrder::NOT_SHIPPED)
             ->selectRaw('payout_status, COUNT(*) as cnt, COALESCE(SUM(seller_net_amount), 0) as total')
             ->groupBy('payout_status')
             ->get()
@@ -118,7 +118,7 @@ class EarningsController extends Controller
 
     $totals = DB::table('seller_orders')
         ->where('seller_id', $sellerId)
-        ->where('status', '!=', 'cancelled')
+        ->whereNotIn('status', \App\Models\SellerOrder::NOT_SHIPPED)
         ->selectRaw('
             COALESCE(SUM(subtotal - discount_amount), 0) as gross_revenue,
             COALESCE(SUM(commission_amount), 0) as total_commission,
@@ -219,19 +219,30 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
                 'so.status',
                 'so.payout_status',
                 // Cancelled sub-orders earn nothing: money shows 0, original_gross keeps the history
-                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE (so.subtotal - so.discount_amount) END as gross"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE (so.subtotal - so.discount_amount) END as gross"),
                 DB::raw('(so.subtotal - so.discount_amount) as original_gross'),
                 'so.discount_amount',
                 'so.coupon_code',
-                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.commission_amount END as commission_amount"),
-                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.seller_net_amount END as net_earnings"),
-                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.seller_shipping_charge END as seller_shipping_charge"),
-                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.delivery_fee END as delivery_fee"),
-                DB::raw("CASE WHEN so.status = 'cancelled' THEN 0 ELSE so.platform_profit END as platform_profit"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.commission_amount END as commission_amount"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.seller_net_amount END as net_earnings"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.seller_shipping_charge END as seller_shipping_charge"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.delivery_fee END as delivery_fee"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.platform_profit END as platform_profit"),
                 'so.money_received_at',
                 'so.settled_at',
                 'so.settlement_batch_id',
                 'so.created_at',
+                // Per parcel: item amount (before coupon), free delivery and what it cost,
+                // and where the payout stands (pending delivery / payable / paid)
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.subtotal END as items_amount"),
+                'so.is_free_delivery',
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.seller_shipping_charge END as free_delivery_contribution"),
+                'so.cash_collected_at',
+                DB::raw("CASE
+                    WHEN so.status IN (" . SellerOrder::notShippedSql() . ") OR so.payout_status = 'cancelled' THEN 'none'
+                    WHEN so.payout_status = 'paid'  THEN 'paid'
+                    WHEN so.payout_status = 'ready' THEN 'payable'
+                    ELSE 'pending_delivery' END as payout_stage"),
                 // Line items of this seller order only (same rows as SellerOrder->items)
                 DB::raw('(SELECT COUNT(*) FROM order_items oi WHERE oi.seller_order_id = so.id) as items_count'),
             ]);
@@ -335,7 +346,7 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
         $payer  = $charge > 0 || $paidBy === 'seller' ? 'you' : (in_array($paidBy, ['customer', 'platform'], true) ? $paidBy : null);
 
         // Cancelled: nothing earned, no commission, no payout (frozen columns stay as history)
-        $cancelled  = $so->status === 'cancelled';
+        $cancelled  = in_array($so->status, \App\Models\SellerOrder::NOT_SHIPPED, true);
         $charge     = $cancelled ? 0.0 : $charge;
         $gross      = $cancelled ? 0.0 : $num($so->subtotal - $so->discount_amount);
         $commission = $cancelled ? 0.0 : $num($so->getAttribute('commission_amount'));

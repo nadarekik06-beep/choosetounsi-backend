@@ -165,7 +165,7 @@ class OrderStatusNotification extends BuyerNotification
         $items = (float) $this->sellerOrdersOf($this->order, $this->sellerOrderIds)
             ->sum(fn ($so) => (float) $so->subtotal - (float) ($so->discount_amount ?? 0));
 
-        $stillActive = $this->order->sellerOrders()->where('status', '!=', 'cancelled')->exists();
+        $stillActive = $this->order->sellerOrders()->whereNotIn('status', \App\Models\SellerOrder::NOT_SHIPPED)->exists();
         return $stillActive ? $items : $items + (float) ($this->order->shipping_fee ?? 0);
     }
 

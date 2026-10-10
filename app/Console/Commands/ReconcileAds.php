@@ -166,8 +166,8 @@ class ReconcileAds extends Command
             ->join('orders as o', 'o.id', '=', 'a.order_id')
             ->leftJoin('seller_orders as so', 'so.id', '=', 'oi.seller_order_id')
             ->whereIn('a.sponsorship_id', $campaignIds)
-            ->whereNotIn('o.status', ['cancelled', 'refunded'])
-            ->where(fn ($q) => $q->whereNull('so.id')->orWhere(fn ($q) => $q->whereNotIn('so.status', ['cancelled', 'refunded'])
+            ->whereNotIn('o.status', ['cancelled', 'refused', 'returned_to_seller', 'refunded'])
+            ->where(fn ($q) => $q->whereNull('so.id')->orWhere(fn ($q) => $q->whereNotIn('so.status', ['cancelled', 'refused', 'returned_to_seller', 'refunded'])
                 ->where('so.payment_status', '!=', 'refunded')))
             ->get(['a.order_id', 'a.revenue', 'o.created_at as ordered_at']);
     }

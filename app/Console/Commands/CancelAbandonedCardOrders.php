@@ -59,9 +59,10 @@ class CancelAbandonedCardOrders extends Command
                 return false;
             }
 
-            foreach ($locked->sellerOrders as $sellerOrder) {
-                $sellerOrder->update(['status' => 'cancelled']);   // observer gives back stock + flash units
-            }
+            // Stock, flash units, payouts and history: ParcelStatus
+            app(\App\Services\Orders\ParcelStatus::class)->transitionOrder((int) $locked->id, 'cancelled', [
+                'source' => 'system', 'note' => 'Card payment not completed', 'notify' => false,
+            ]);
             $locked->update(['status' => 'cancelled']);
 
             $coupons->releaseForOrder($locked);

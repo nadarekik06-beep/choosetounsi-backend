@@ -353,6 +353,44 @@ class PromotionService
         }
     }
 
+    /**
+     * A cancelled seller order re-opened: its flash-priced lines take their
+     * quota back. The customer keeps the flash price, so a sold-out quota
+     * rejects the re-open (FlashSaleSoldOut) instead of over-selling it.
+     * Call inside the re-open transaction: a failure rolls everything back.
+     *
+     * @throws \App\Exceptions\FlashSaleSoldOut
+     */
+    public function reclaimForSellerOrders(array $sellerOrderIds): int
+    {
+        if (!$sellerOrderIds) return 0;
+
+        $lines = DB::table('order_items as oi')
+            ->join('promotions as pr', 'pr.id', '=', 'oi.promotion_id')
+            ->whereIn('oi.seller_order_id', $sellerOrderIds)
+            ->where('oi.flash_reserved', 0)
+            ->where('oi.quantity', '>', 0)
+            ->where('pr.type', 'flash_sale')
+            ->whereNotNull('pr.flash_stock')
+            ->orderBy('oi.id')
+            ->lockForUpdate()
+            ->get(['oi.id', 'oi.promotion_id', 'oi.quantity', 'oi.product_name']);
+
+        $held = 0;
+        foreach ($lines as $line) {
+            $qty = (int) $line->quantity;
+            $ok  = DB::table('promotions')->where('id', $line->promotion_id)
+                ->whereRaw('flash_stock - flash_stock_used >= ?', [$qty])
+                ->update(['flash_stock_used' => DB::raw('flash_stock_used + ' . $qty)]);
+            if (!$ok) {
+                throw new \App\Exceptions\FlashSaleSoldOut((string) $line->product_name);
+            }
+            DB::table('order_items')->where('id', $line->id)->update(['flash_reserved' => $qty]);
+            $held += $qty;
+        }
+        return $held;
+    }
+
     /** Release each line once: flash_reserved goes back to 0 in the same transaction. */
     private function releaseOrderItems(\Closure $scope): int
     {

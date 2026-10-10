@@ -34,7 +34,7 @@ use Illuminate\Support\Facades\DB;
 class AdMetrics
 {
     /** Order / seller-order states that no longer count as a sale. */
-    public const DEAD_STATUSES = ['cancelled', 'refunded'];
+    public const DEAD_STATUSES = ['cancelled', 'refused', 'returned_to_seller', 'refunded'];
 
     /** Totals for these campaigns (null = every campaign). */
     public function summary(?array $campaignIds, ?string $from = null, ?string $to = null): array

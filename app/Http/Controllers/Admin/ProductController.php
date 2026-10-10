@@ -177,7 +177,8 @@ public function index(Request $request)
             'is_active'         => 'sometimes|boolean',
             'is_approved'       => 'sometimes|boolean',
             'featured'          => 'sometimes|boolean',
-            'delivery_fee'      => 'sometimes|nullable|numeric|min:0',
+            // No custom fee: 0 = free delivery, null = the admin client fee
+            'delivery_fee'      => 'sometimes|nullable|numeric|min:0|max:0',
         ]);
 
         $fieldsToUpdate = [];
@@ -518,7 +519,7 @@ public function index(Request $request)
         $sales = DB::table('order_items')
             ->join('orders', 'orders.id', '=', 'order_items.order_id')
             ->where('order_items.product_id', $product->id)
-            ->whereNotIn('orders.status', ['cancelled', 'refunded'])
+            ->whereNotIn('orders.status', ['cancelled', 'refused', 'returned_to_seller', 'refunded'])
             ->selectRaw('COUNT(DISTINCT order_items.order_id) AS orders_count')
             ->selectRaw('COALESCE(SUM(order_items.quantity), 0) AS units_sold')
             ->selectRaw('COALESCE(SUM(order_items.total), 0) AS revenue')

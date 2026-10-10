@@ -588,15 +588,15 @@ class ReturnService
         $oldCharge = (float) $so->getAttribute('seller_shipping_charge');
 
         $commission = max(0, round((float) $so->getAttribute('commission_amount') - $sum['commission'], 3));
-        // Nothing sold → the seller isn't charged the original shipping any more
-        $charge = $full ? 0.0 : $oldCharge;
-        $newNet = $full ? 0.0 : round($oldNet - $sum['seller'], 3);
+        // The free-delivery contribution stays charged even when everything
+        // comes back: the delivery was made and the agency was paid.
+        $newNet = round($oldNet - $sum['seller'], 3);
 
         $update = [
             'subtotal'          => max(0, round((float) $so->subtotal - $sum['gross'], 3)),
             'discount_amount'   => max(0, round((float) $so->discount_amount - $sum['discount'], 3)),
             'commission_amount' => $commission,
-            'platform_profit'   => round((float) $so->getAttribute('platform_profit') - $sum['commission'] - ($oldCharge - $charge), 3),
+            'platform_profit'   => round((float) $so->getAttribute('platform_profit') - $sum['commission'], 3),
             'return_status'     => $full ? 'full' : 'partial',
             'payment_status'    => 'refunded',
         ];
@@ -618,15 +618,35 @@ class ReturnService
                     'created_by'      => $admin?->id,
                 ]);
             }
-        } else {
-            $update['seller_net_amount']      = $newNet;
-            $update['seller_shipping_charge'] = $charge;
-            if ($full) {
-                $update['payout_status'] = 'cancelled';
+        } elseif ($full) {
+            // Nothing left to pay out; the contribution still owed (if any)
+            // comes off the seller's next settlement.
+            $update['seller_net_amount'] = 0;
+            $update['payout_status']     = 'cancelled';
+            if ($oldCharge > 0 && !$so->isPlatformParcel()) {
+                SellerAdjustment::create([
+                    'seller_id'       => $so->seller_id,
+                    'seller_order_id' => $so->id,
+                    'complaint_id'    => $complaint->id,
+                    'type'            => SellerAdjustment::TYPE_FREE_DELIVERY,
+                    'amount'          => -round($oldCharge, 3),
+                    'description'     => "Free delivery contribution, order {$complaint->order?->order_number} fully returned ({$complaint->reference})",
+                    'created_by'      => $admin?->id,
+                ]);
             }
+        } else {
+            $update['seller_net_amount'] = $newNet;
         }
 
+        $from = $so->status;
         $so->forceFill($update)->save();   // Eloquent: forecast / goal triggers run
+
+        // Fully returned: the parcel's last step, in its status history
+        if ($full && $from !== 'refunded') {
+            \App\Services\Orders\ParcelStatus::record($so, $from, 'refunded', [
+                'by' => $admin, 'source' => $admin ? 'admin' : 'system', 'note' => "Return {$complaint->reference}",
+            ]);
+        }
 
         if (!$paidOut && $so->getAttribute('settlement_batch_id')) {
             Settlements::recomputeDraft((int) $so->getAttribute('settlement_batch_id'));
@@ -640,9 +660,13 @@ class ReturnService
         if (!$order) return;
 
         $sos    = SellerOrder::where('order_id', $orderId)->get();
-        $active = $sos->where('status', '!=', 'cancelled');
+        $active = $sos->whereNotIn('status', SellerOrder::NOT_SHIPPED);
 
-        $total = $active->sum(fn($so) => (float) $so->subtotal - (float) $so->discount_amount) + (float) ($order->shipping_fee ?? 0);
+        // Delivery: per parcel (live parcels' own fees), or once per legacy order
+        $shipping = $order->shipping_per_parcel
+            ? $active->sum(fn($so) => (float) $so->getAttribute('delivery_fee'))
+            : (float) ($order->shipping_fee ?? 0);
+        $total = $active->sum(fn($so) => (float) $so->subtotal - (float) $so->discount_amount) + $shipping;
         $update = ['total_amount' => round($total, 3)];
 
         if ($active->isNotEmpty() && $active->every(fn($so) => $so->status === 'refunded')) {
@@ -679,9 +703,10 @@ class ReturnService
         ];
     }
 
+    /** Admin setting (Delivery & Fees), frozen on the return when it is created. */
     public function returnShippingFee(): float
     {
-        return round((float) config('platform.return_shipping_fee', config('platform.shipping_cost', 8.0)), 3);
+        return \App\Support\Millimes::toFloat(app(\App\Services\Delivery\DeliverySettings::class)->returnShippingFee());
     }
 
     private function refundFor(Complaint $complaint, float $itemsAmount): float

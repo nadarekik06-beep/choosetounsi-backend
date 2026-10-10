@@ -55,10 +55,11 @@ class EventServiceProvider extends ServiceProvider
          * RefundCompleted fires when a delivery guy marks a refund task as
          * 'completed' via PUT /api/delivery/refunds/{id}/status.
          *
-         * The MarkOrderRefunded listener cascades the status update to:
-         *   - orders.status           → 'refunded'
-         *   - seller_orders.status    → 'refunded'
-         *   - complaints.refund_status → 'completed'
+         * The MarkOrderRefunded listener only records that the item is back
+         * at the seller's (ReturnService::deliveredToSeller). It never writes
+         * a parcel status or money: the refund and its reversal (status
+         * 'refunded', payout cancelled or a debit on the next settlement)
+         * belong to ReturnService.
          */
         RefundCompleted::class => [
             MarkOrderRefunded::class,

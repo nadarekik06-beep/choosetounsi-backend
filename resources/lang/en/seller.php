@@ -50,6 +50,8 @@ return [
     ],
     'order' => [
         'status_updated' => 'Order status updated.',
+        'status_admin_only' => 'You can confirm your parcel or hand it to the courier. Only CHOOSE\'Tounsi marks a parcel delivered or refused.',
+        'status_locked' => 'This change is not possible at this stage: a parcel can only be cancelled before the courier has it, and a shipped, delivered, refused or returned parcel can no longer be changed from the seller space.',
         'payment_locked' => 'Payment has already been confirmed by admin and cannot be changed.',
         'refund_after_delivery' => 'Can only mark as refunded after order is delivered or completed.',
         'refunded' => 'Order marked as refunded.',

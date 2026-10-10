@@ -33,7 +33,7 @@ class BusinessSignals
 
         $sold = DB::table('order_items as oi')->join('orders as o', 'o.id', '=', 'oi.order_id')
             ->whereIn('oi.product_id', $ids)
-            ->whereNotIn('o.status', ['cancelled', 'refunded'])
+            ->whereNotIn('o.status', ['cancelled', 'refused', 'returned_to_seller', 'refunded'])
             ->where('o.created_at', '>=', now()->subDays(self::SALES_DAYS))
             ->groupBy('oi.product_id')->selectRaw('oi.product_id, SUM(oi.quantity) AS qty')
             ->pluck('qty', 'oi.product_id');

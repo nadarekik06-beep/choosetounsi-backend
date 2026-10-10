@@ -11,7 +11,7 @@
 return [
 
     // seller_orders statuses that count as a real sale. pending = not confirmed yet.
-    'sale_statuses' => ['confirmed', 'out_for_delivery', 'delivered', 'completed'],
+    'sale_statuses' => ['confirmed', 'handed_to_courier', 'out_for_delivery', 'delivered', 'completed'],
 
     // How far back the daily series goes.
     'history_days' => 730,

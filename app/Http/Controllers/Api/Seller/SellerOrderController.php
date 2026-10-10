@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Seller;
 use App\Exceptions\InsufficientStock;
 use App\Http\Controllers\Controller;
 use App\Models\SellerOrder;
+use App\Services\Orders\ParcelStatus;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use App\Models\Order;
@@ -194,6 +195,8 @@ $netAfterShipping = $totalSellerNet !== null ? round($totalSellerNet - $shipping
                 'order' => array_merge($order->toArray(), [
                     'status'          => $sellerOrder->status,
                     'display_status'  => $sellerOrder->display_status,
+                    // The only statuses this seller may set next (build the buttons from it)
+                    'allowed_next'    => ParcelStatus::allowedNext($sellerOrder, 'seller'),
                     'return_status'   => $sellerOrder->return_status,
                     'payment_status'  => $sellerOrder->payment_status,
                     'payment_method'  => $order->payment_method,
@@ -245,87 +248,51 @@ $netAfterShipping = $totalSellerNet !== null ? round($totalSellerNet - $shipping
 
 public function updateStatus(Request $request, $id)
 {
+    // A seller confirms the parcel, hands it to the courier, or cancels it
+    // before the courier has it. Shipped, delivered and refused come from the
+    // admin (later the agency API); re-opening a cancel is admin-only.
+    // The allowed moves for each parcel are in its payload (allowed_next).
     $request->validate([
-'status' => 'required|in:pending,confirmed,out_for_delivery,completed,delivered,cancelled',
+        'status' => 'required|in:' . implode(',', ParcelStatus::SELLER_TARGETS),
+    ], [
+        'status.in' => __('seller.order.status_admin_only'),
     ]);
 
     $sellerId    = auth()->id();
     $sellerOrder = SellerOrder::where('seller_id', $sellerId)->findOrFail($id);
 
-    $status = $request->status;
+    // Double click: already there, nothing to do
+    if ($sellerOrder->status === $request->status) {
+        return response()->json([
+            'success' => true,
+            'message' => __('seller.order.status_updated'),
+            'data'    => $sellerOrder->setAttribute('allowed_next', ParcelStatus::allowedNext($sellerOrder, 'seller')),
+        ]);
+    }
 
-    // Stock follows the status (SellerOrderObserver): cancelled gives the lines
-    // back once, re-opening a cancelled sub-order reserves them again.
-    try {
-        $sellerOrder = DB::transaction(function () use ($sellerOrder, $status) {
-            $locked = SellerOrder::whereKey($sellerOrder->id)->lockForUpdate()->first();
-            $locked->update(['status' => $status]);
-            return $locked;
-        });
-    } catch (InsufficientStock $e) {
+    if (!in_array($request->status, ParcelStatus::allowedNext($sellerOrder, 'seller'), true)) {
         return response()->json([
             'success' => false,
-            'message' => $e->getMessage(),
+            'message' => __('seller.order.status_locked'),
         ], 422);
     }
 
-    // ── REFUND PICKUP NOTIFICATION ────────────────────────────────────────
-    // When a refunded order is marked 'delivered', it means the seller
-    // confirmed the returned product was physically picked up.
-    if ($status === 'delivered' && $sellerOrder->payment_status === 'refunded') {
-        $sellerOrder->loadMissing('order');
-        $orderNumber = $sellerOrder->order?->order_number ?? "#{$sellerOrder->id}";
-
-        $seller = \App\Models\User::find($sellerId);
-        if ($seller) {
-            $seller->notify(
-                new \App\Notifications\RefundStatusNotification(
-                    'pickup_done',
-                    $sellerOrder,
-                    $orderNumber
-                )
-            );
-        }
+    try {
+        $sellerOrder = app(ParcelStatus::class)->transition($sellerOrder, $request->status, [
+            'by' => $sellerId, 'source' => 'seller',
+        ]);
+    } catch (\App\Services\Orders\IllegalTransition $e) {
+        return response()->json([
+            'success' => false,
+            'message' => __('seller.order.status_locked'),
+        ], 422);
     }
-
-    $this->syncParentOrderStatus($sellerOrder->order_id);
-
-    // The buyer hears about the step once (packed, shipped, delivered, cancelled by the shop…)
-    app(\App\Services\Orders\BuyerOrderNotifier::class)->statusChanged(
-        (int) $sellerOrder->order_id, [$sellerOrder->id], \App\Services\Orders\BuyerOrderNotifier::REASON_SELLER
-    );
 
     return response()->json([
         'success' => true,
         'message' => __('seller.order.status_updated'),
-        'data'    => $sellerOrder,
+        'data'    => $sellerOrder->setAttribute('allowed_next', ParcelStatus::allowedNext($sellerOrder, 'seller')),
     ]);
-}
-    /**
-     * Derive and write the correct aggregate status to orders.status
-     * based on the current state of all seller_orders for that order.
-     */
- private function syncParentOrderStatus(int $orderId): void
-{
-    $statuses = SellerOrder::where('order_id', $orderId)->pluck('status')->toArray();
-    if (empty($statuses)) return;
-    $unique = array_unique($statuses);
-
-    $derived = match(true) {
-        $unique === ['cancelled']
-            => 'cancelled',
-        $unique === ['delivered']
-            => 'delivered',
-        in_array('out_for_delivery', $statuses)
-            => 'out_for_delivery',
-        count(array_diff($unique, ['completed', 'delivered'])) === 0
-            => 'completed',
-        in_array('confirmed', $statuses)
-            => 'confirmed',   // ← NEW: at least one seller confirmed
-        default => 'pending', // ← was 'processing'
-    };
-
-    Order::where('id', $orderId)->update(['status' => $derived]);
 }
     /* ── PATCH /api/seller/orders/{id}/payment ── */
     /* ── PATCH /api/seller/orders/{id}/payment ── */
@@ -392,6 +359,7 @@ public function updatePayment(Request $request, $id)
             'order_number'    => $order?->order_number,
             'status'          => $so->status,
             'display_status'  => $so->display_status,
+            'allowed_next'    => ParcelStatus::allowedNext($so, 'seller'),
             'payment_status'  => $so->payment_status,
             'payment_method'  => $order?->payment_method,
             // Cancelled: 0 due / earned; original_total keeps the history

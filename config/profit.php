@@ -15,7 +15,7 @@ return [
 
     // Sub-order statuses that count as a sale (same as the sales forecast):
     // the seller confirmed it and it was not cancelled or fully returned.
-    'sale_statuses' => ['confirmed', 'completed', 'out_for_delivery', 'delivered'],
+    'sale_statuses' => ['confirmed', 'completed', 'handed_to_courier', 'out_for_delivery', 'delivered'],
 
     // Of those, the ones where the money is secured.
     'delivered_statuses' => ['delivered'],
