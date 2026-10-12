@@ -366,6 +366,7 @@ class ProductReviewResource extends JsonResource
             'delivery_fee'        => $p->getEffectiveDeliveryFee(),
             'is_free_delivery'    => $p->isFreeDelivery(),
             'uses_platform_default' => $p->delivery_fee === null,
+            'parcel_size'         => $p->parcel_size ?? 'S',
             'fields'              => $fields,
         ];
     }
