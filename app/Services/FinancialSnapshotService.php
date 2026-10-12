@@ -125,6 +125,8 @@ class FinancialSnapshotService
             'agency_delivery_cost'              => $dec($s['agency_delivery_cost']),
             'seller_free_delivery_contribution' => $dec($s['seller_free_delivery_contribution']),
             'is_free_delivery'                  => $parcel['is_free_delivery'],
+            'parcel_size'                       => $parcel['parcel_size'] ?? 'S',
+            'parcel_size_computed'              => $parcel['parcel_size'] ?? 'S',
             'platform_delivery_margin'          => $dec($parcel['delivery_margin_m']),
             'cod_amount'                        => $dec($parcel['cod_amount_m']),
             'amount_to_remit'                   => $dec($parcel['amount_to_remit_m']),

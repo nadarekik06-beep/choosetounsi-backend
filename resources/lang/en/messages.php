@@ -54,6 +54,7 @@ return [
         'item_stock' => 'Not enough stock for ":product".',
     ],
     'checkout' => [
+        'reselect_region' => 'Please select your governorate and delegation again from the list.',
         'cart_empty' => 'Your cart is empty.',
         'pack_unavailable' => 'The bundle ":pack" is no longer available.',
         'pack_product_unavailable' => 'A product in bundle ":pack" is no longer available.',

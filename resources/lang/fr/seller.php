@@ -16,6 +16,7 @@ return [
         'cache_cleared' => 'Cache vidé.',
     ],
     'product' => [
+        'parcel_size_required' => 'Choisissez la taille du colis (S, L ou XL).',
         'color_images_required' => 'Ajoutez au moins une image pour chaque couleur : :colors.',
         'price_decrease_discount' => 'Pour baisser le prix d\'un produit en ligne, créez une réduction : les clients voient alors l\'ancien prix barré et le badge « -% ».',
         'created_review' => 'Produit créé ! Il sera examiné par un administrateur.',

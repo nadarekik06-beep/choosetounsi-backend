@@ -8,6 +8,7 @@ use App\Notifications\Orders\NewSellerOrderNotification;
 use App\Notifications\Orders\SellerOrderCancelledNotification;
 use App\Notifications\Orders\SellerOrderConfirmedNotification;
 use App\Notifications\Orders\SellerOrderNotification;
+use App\Notifications\Orders\SellerParcelStatusNotification;
 use App\Notifications\Orders\SellerPickupReminderNotification;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -21,6 +22,7 @@ use Illuminate\Support\Facades\Log;
  *              (and only while the sub-order is still pending)
  *   confirmed  the admin confirmed it: prepare the package
  *   cancelled  only to sellers who were already told about the order
+ *   parcel_*   the delivery agency: out for delivery, delivered, returned (bell)
  *
  * Safe to call from any code path, as often as you like:
  *   - each (sub-order, event) is claimed once in seller_order_notifications
@@ -78,6 +80,22 @@ class SellerOrderNotifier
                 $this->send($sellerOrder, 'cancelled', new SellerOrderCancelledNotification($sellerOrder));
             }
         }
+    }
+
+    /**
+     * The delivery agency moved the parcel: out_for_delivery | delivered |
+     * returned_to_seller (bell only, once per parcel and step).
+     */
+    public function parcelUpdate(SellerOrder $sellerOrder, string $step): bool
+    {
+        if (!isset(SellerParcelStatusNotification::STEPS[$step]) || $sellerOrder->seller_id === null || $sellerOrder->isPlatformParcel()) {
+            return false;
+        }
+        $sellerOrder->loadMissing('seller');
+        if (!$sellerOrder->seller) {
+            return false;
+        }
+        return $this->send($sellerOrder, SellerParcelStatusNotification::STEPS[$step], new SellerParcelStatusNotification($sellerOrder, $step));
     }
 
     public function pickupReminder(SellerOrder $sellerOrder): bool

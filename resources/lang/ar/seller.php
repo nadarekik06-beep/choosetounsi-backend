@@ -16,6 +16,7 @@ return [
         'cache_cleared' => 'تم مسح الذاكرة المؤقتة.',
     ],
     'product' => [
+        'parcel_size_required' => 'اختر حجم الطرد (S أو L أو XL).',
         'color_images_required' => 'أضف صورة واحدة على الأقل لكل لون: :colors.',
         'price_decrease_discount' => 'لتخفيض سعر منتج معروض، أنشئ تخفيضًا: سيرى العملاء السعر القديم مشطوبًا وشارة « -% ».',
         'created_review' => 'تم إنشاء المنتج! ستراجعه الإدارة.',

@@ -35,9 +35,11 @@ class BuyerOrderNotifier
     public const STEPS = [
         'confirmed'         => 'confirmed',
         'completed'         => 'packed',
-        'handed_to_courier' => 'shipped',
-        'out_for_delivery'  => 'shipped',
-        'delivered'         => 'delivered',
+        'handed_to_courier'  => 'shipped',
+        'out_for_delivery'   => 'out_for_delivery',
+        'delivered'          => 'delivered',
+        // Refused parcel back at the seller: nothing owed
+        'returned_to_seller' => 'returned',
         'cancelled'         => 'cancelled',
     ];
 

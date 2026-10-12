@@ -133,9 +133,13 @@ class ProductOccasionsPackTest extends TestCase
     {
         Sanctum::actingAs($this->seller);
         $this->postJson('/api/seller/products', [
-            'name' => 'X', 'price' => 10, 'stock' => 1, 'category_id' => $this->fashion->id,
+            'name' => 'X', 'price' => 10, 'stock' => 1, 'category_id' => $this->fashion->id, 'parcel_size' => 'S',
             'is_pack' => '1', 'occasions' => ['nope'],
         ])->assertStatus(422)->assertJsonValidationErrors(['pack_quantity', 'occasions.0']);
+        // The parcel size is required (S / L / XL)
+        $this->postJson('/api/seller/products', [
+            'name' => 'X', 'price' => 10, 'stock' => 1, 'category_id' => $this->fashion->id, 'parcel_size' => 'M',
+        ])->assertStatus(422)->assertJsonValidationErrors(['parcel_size']);
     }
 
     public function test_storefront_filters_and_payloads(): void

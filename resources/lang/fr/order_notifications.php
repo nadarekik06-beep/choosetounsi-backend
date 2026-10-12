@@ -86,4 +86,17 @@ return [
         'ref_hint'  => 'Écrivez cette référence sur le colis',
         'next'      => 'Quand le colis est prêt, passez la commande en « Terminée » dans votre tableau de bord.',
     ],
+    // Mises à jour du transporteur (Intigo) : cloche du tableau de bord
+    'parcel_out_for_delivery' => [
+        'title' => 'Colis :ref en cours de livraison',
+        'body'  => 'Le livreur remet aujourd\'hui votre colis (:count article) au client.|Le livreur remet aujourd\'hui votre colis (:count articles) au client.',
+    ],
+    'parcel_delivered' => [
+        'title' => 'Colis :ref livré',
+        'body'  => 'Livré et payé par le client (:count article). Vos gains sont en route.|Livré et payé par le client (:count articles). Vos gains sont en route.',
+    ],
+    'parcel_returned' => [
+        'title' => 'Colis :ref retourné',
+        'body'  => 'Le client n\'a pas pris le colis (:count article) : il est revenu à votre adresse de ramassage et son stock est rétabli.|Le client n\'a pas pris le colis (:count articles) : il est revenu à votre adresse de ramassage et son stock est rétabli.',
+    ],
 ];

@@ -86,4 +86,17 @@ return [
         'ref_hint'  => 'Write this reference on the package',
         'next'      => 'When the package is ready, set the order to “Completed” in your dashboard.',
     ],
+    // Delivery agency (Intigo) updates: dashboard bell
+    'parcel_out_for_delivery' => [
+        'title' => 'Parcel :ref out for delivery',
+        'body'  => 'The courier is delivering your parcel (:count item) to the customer today.|The courier is delivering your parcel (:count items) to the customer today.',
+    ],
+    'parcel_delivered' => [
+        'title' => 'Parcel :ref delivered',
+        'body'  => 'Delivered and paid by the customer (:count item). Your earnings are on their way.|Delivered and paid by the customer (:count items). Your earnings are on their way.',
+    ],
+    'parcel_returned' => [
+        'title' => 'Parcel :ref returned to you',
+        'body'  => 'The customer did not take the parcel (:count item): it is back at your pickup address and its stock is restored.|The customer did not take the parcel (:count items): it is back at your pickup address and its stock is restored.',
+    ],
 ];

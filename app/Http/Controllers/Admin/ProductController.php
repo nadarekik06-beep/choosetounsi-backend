@@ -179,11 +179,12 @@ public function index(Request $request)
             'featured'          => 'sometimes|boolean',
             // No custom fee: 0 = free delivery, null = the admin client fee
             'delivery_fee'      => 'sometimes|nullable|numeric|min:0|max:0',
+            'parcel_size'       => 'sometimes|required|in:' . implode(',', \App\Support\ParcelSize::ALL),
         ]);
 
         $fieldsToUpdate = [];
         foreach (['name', 'description', 'short_description', 'price', 'stock',
-                  'category_id', 'subcategory_id', 'is_approved', 'featured', 'delivery_fee'] as $field) {
+                  'category_id', 'subcategory_id', 'is_approved', 'featured', 'delivery_fee', 'parcel_size'] as $field) {
             if ($request->has($field)) {
                 $fieldsToUpdate[$field] = $request->input($field);
             }

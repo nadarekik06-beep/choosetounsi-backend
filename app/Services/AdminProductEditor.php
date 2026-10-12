@@ -82,6 +82,7 @@ class AdminProductEditor
                 'featured'          => (bool) $product->featured,
                 'occasions'         => $product->occasions,
                 'free_delivery'     => $product->isFreeDelivery(),
+                'parcel_size'       => $product->parcel_size ?? 'S',
                 'admin_note'        => $product->admin_note,
                 'admin_edited_at'   => optional($product->admin_edited_at)->toISOString(),
                 'admin_edited_by'   => $editor ? ['id' => $editor->id, 'name' => $editor->name] : null,
@@ -218,6 +219,7 @@ class AdminProductEditor
             'pack_quantity'     => 'nullable|required_if:is_pack,true|integer|min:2|max:1000',
             'pack_contents'     => 'nullable|string|max:500',
             'free_delivery'     => 'required|boolean',
+            'parcel_size'       => 'nullable|in:' . implode(',', \App\Support\ParcelSize::ALL),
             'occasions'         => 'required|array|min:1',
             'occasions.*'       => 'string|in:' . implode(',', Occasions::keys()),
             'admin_note'        => 'nullable|string|max:5000',
@@ -367,6 +369,7 @@ class AdminProductEditor
             'pack_contents'     => $data['is_pack'] ? (trim((string) ($data['pack_contents'] ?? '')) ?: null) : null,
             // Same mapping as the seller form: free → 0, otherwise platform default (null)
             'delivery_fee'      => $data['free_delivery'] ? 0 : null,
+            'parcel_size'       => $data['parcel_size'] ?? ($product->parcel_size ?? 'S'),
             'admin_note'        => trim((string) ($data['admin_note'] ?? '')) ?: null,
         ]);
         $product->save();
@@ -505,6 +508,7 @@ class AdminProductEditor
                 'pack_contents'     => $product->pack_contents,
                 'occasions'         => implode(', ', $product->occasions),
                 'free_delivery'     => $product->isFreeDelivery(),
+                'parcel_size'       => $product->parcel_size ?? 'S',
                 'admin_note'        => $product->admin_note,
             ],
             'attributes' => $product->attributeValues->filter(fn($v) => $v->attribute)

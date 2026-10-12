@@ -37,8 +37,11 @@ use Illuminate\Support\Facades\Log;
  *   returned_to_seller refused parcel back at the seller: stock and flash units back.
  *   refunded           full return through the return flow (ReturnService).
  *
- * The delivery agency API will call carrierUpdate() with its raw status code,
- * mapped onto these statuses (CARRIER_MAP, to fill in when the API is wired).
+ * The delivery agency (Intigo) moves parcels with source 'api' through
+ * App\Services\Intigo\IntigoStatusSync (its codes mapped in IntigoStatusMap):
+ * forward flow or return branch only, plus CARRIER_TRANSITIONS (a parcel
+ * returning straight from the warehouse). A cancelled parcel that is at Intigo
+ * is cancelled there too (pickup phase) or flagged to the admin.
  */
 class ParcelStatus
 {
@@ -82,8 +85,17 @@ class ParcelStatus
 
     public const SOURCES = ['admin', 'seller', 'courier', 'api', 'system'];
 
-    /** Delivery agency status code → our status. Empty until the API integration. */
+    /** Delivery agency status code → our status, for carrierUpdate(). Intigo: see IntigoStatusMap. */
     public const CARRIER_MAP = [];
+
+    /**
+     * Extra moves only the carrier makes (source 'api'): a parcel refused from
+     * the warehouse (client unreachable on the follow-up call) comes back
+     * without ever being out for delivery.
+     */
+    public const CARRIER_TRANSITIONS = [
+        'handed_to_courier' => ['refused'],
+    ];
 
     public function __construct(
         private DeliverySettings $settings,
@@ -91,14 +103,15 @@ class ParcelStatus
         private PromotionService $promotions,
     ) {}
 
-    public static function canTransition(string $from, string $to): bool
+    public static function canTransition(string $from, string $to, ?string $source = null): bool
     {
-        return in_array($to, self::TRANSITIONS[$from] ?? [], true);
+        return in_array($to, self::TRANSITIONS[$from] ?? [], true)
+            || ($source === 'api' && in_array($to, self::CARRIER_TRANSITIONS[$from] ?? [], true));
     }
 
-    public static function assertTransition(string $from, string $to, ?int $parcelId = null): void
+    public static function assertTransition(string $from, string $to, ?int $parcelId = null, ?string $source = null): void
     {
-        if (!self::canTransition($from, $to)) {
+        if (!self::canTransition($from, $to, $source)) {
             throw IllegalTransition::of($from, $to, $parcelId);
         }
     }
@@ -118,6 +131,10 @@ class ParcelStatus
         $next = self::TRANSITIONS[$parcel->status] ?? [];
         if ($actor === 'seller') {
             $next = $parcel->status === 'cancelled' ? [] : array_intersect($next, self::SELLER_TARGETS);
+            // Handed to Intigo: the carrier reports the pickup, not the seller
+            if ($parcel->getAttribute('intigo_nid') || $parcel->getAttribute('intigo_sync_status') === 'pending') {
+                $next = array_diff($next, ['handed_to_courier']);
+            }
         }
         return array_values($next);
     }
@@ -184,7 +201,7 @@ class ParcelStatus
                     || (in_array($so->status, self::CLOSED, true) && !($so->status === 'cancelled' && $reopen)));
 
             foreach ($parcels as $so) {
-                self::assertTransition($so->status, $to, $so->id);
+                self::assertTransition($so->status, $to, $so->id, $options['source'] ?? null);
             }
             foreach ($parcels as $so) {
                 $this->apply($so, $to, $options);
@@ -264,7 +281,7 @@ class ParcelStatus
     private function apply(SellerOrder $so, string $to, array $options): void
     {
         $from = $so->status;
-        self::assertTransition($from, $to, $so->id);
+        self::assertTransition($from, $to, $so->id, $options['source'] ?? null);
 
         // Money already settled: the status is frozen (a return goes through ReturnService)
         if ($batch = self::moneyCommitted($so)) {
@@ -295,7 +312,8 @@ class ParcelStatus
                 break;
 
             case 'refused':
-                $feeM  = $this->settings->refusedFee();
+                // Intigo's return fee for this parcel's size
+                $feeM  = $this->settings->refusedFee($so->parcel_size);
                 // CHOOSE'Tounsi's own parcel: nobody else to bill
                 $payer = $so->isPlatformParcel() ? 'platform' : $this->settings->refusedFeePayer();
                 $fields += [
@@ -363,6 +381,20 @@ class ParcelStatus
         if ($to === 'delivered') {
             foreach ($parcels as $so) {
                 FinancialSnapshotService::checkParcel($so->id);
+            }
+        }
+
+        // Cancelled here while the parcel is at Intigo: cancel it there (pickup
+        // phase) or flag it to the admin. A carrier cancellation needs nothing.
+        if ($to === 'cancelled' && ($options['source'] ?? 'admin') !== 'api') {
+            foreach ($parcels as $so) {
+                if ($so->getAttribute('intigo_nid')) {
+                    try {
+                        \App\Jobs\Intigo\CancelIntigoParcel::dispatch($so->id, 'Order cancelled');
+                    } catch (\Throwable $e) {
+                        Log::error('[ParcelStatus] Intigo cancel could not be queued: ' . $e->getMessage());
+                    }
+                }
             }
         }
 

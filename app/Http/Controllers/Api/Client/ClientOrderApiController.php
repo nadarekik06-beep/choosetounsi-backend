@@ -92,6 +92,32 @@ class ClientOrderApiController extends Controller
 
     // ── Private helpers ──────────────────────────────────────────────────────
 
+    /**
+     * preparing | awaiting_pickup | in_transit | out_for_delivery | delivered |
+     * returning | returned | cancelled | pending, plus the courier's parcel
+     * reference once it exists. Never anything about the seller.
+     */
+    private static function delivery(\App\Models\SellerOrder $so): array
+    {
+        $sent  = (bool) $so->intigo_nid && $so->intigo_sync_status !== 'cancelled';
+        $stage = match ($so->status) {
+            'pending'            => 'pending',
+            'confirmed'          => $sent ? 'awaiting_pickup' : 'preparing',
+            'handed_to_courier'  => 'in_transit',
+            'out_for_delivery'   => 'out_for_delivery',
+            'delivered', 'completed', 'refunded' => 'delivered',
+            'refused'            => 'returning',
+            'returned_to_seller' => 'returned',
+            'cancelled'          => 'cancelled',
+            default              => $so->status,
+        };
+        return [
+            'stage'        => $stage,
+            'tracking_ref' => $sent ? $so->intigo_nid : null,
+            'updated_at'   => optional($so->intigo_status_at ?? $so->updated_at)->toISOString(),
+        ];
+    }
+
     private function transformOrder(Order $order): array
     {
         $sellerOrderMap = $order->sellerOrders->keyBy('id');
@@ -147,10 +173,15 @@ class ClientOrderApiController extends Controller
                 'discount_amount' => round((float) ($so->discount_amount ?? 0), 3),
                 'items'           => $groupItems,
                 'tracking'        => $tracking,
+                // Delivery step of this shop's parcel (translated by the storefront)
+                'delivery'        => self::delivery($so),
             ];
         })->values();
 
         $arr                  = $order->toArray();
+        // seller_groups carries what the buyer may see of each parcel; the raw rows
+        // hold internal figures (commission, payouts, courier notes)
+        unset($arr['seller_orders']);
         $arr['items']         = $enrichedItems->values();
         $arr['seller_groups'] = $sellerGroups;
         // Returns on this order (tracking lives at /complaints?id=)

@@ -71,6 +71,10 @@
             </td>
             <td>
                 <span class="label">Colis / Packages</span><br><span class="big">{{ $slip['packages'] }}</span>
+                <span class="small"> · Taille / Size {{ $slip['parcel_size'] ?? 'S' }}</span>
+                @if (!empty($slip['intigo_nid']))
+                    <br><span class="label">Intigo</span><br><span class="big">{{ $slip['intigo_nid'] }}</span>
+                @endif
                 <br><span class="label">Imprimé / Printed</span><br><span class="small">{{ now()->format('d/m/Y H:i') }}</span>
             </td>
         </tr>

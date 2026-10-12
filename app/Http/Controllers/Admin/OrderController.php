@@ -122,7 +122,7 @@ class OrderController extends Controller
             'items.variant.images',
             'items.variant.attributeOptions.attribute:id,slug,name,name_fr,name_ar,type',
             'sellerOrders' => fn($q) => $q->orderBy('id'),
-            'sellerOrders.seller:id,name,email,phone,whatsapp_number,preferred_language',
+            'sellerOrders.seller:id,name,email,phone,whatsapp_number,preferred_language,intigo_pickup_index,intigo_pickup_label',
             'sellerOrders.seller.sellerApplication',
             'exports' => fn($q) => $q->latest('created_at'),
             'exports.exporter:id,name',
@@ -194,6 +194,9 @@ class OrderController extends Controller
 
         // Per parcel: the statuses the admin may set next (the UI's buttons)
         $order->sellerOrders->each(fn ($so) => $so->setAttribute('allowed_next', ParcelStatus::allowedNext($so)));
+
+        // Per parcel: Intigo (nid, send status, carrier status, size, retry / cancel)
+        $order->sellerOrders->each(fn ($so) => $so->setAttribute('intigo', \App\Http\Controllers\Admin\IntigoController::parcelPayload($so)));
 
         // Per parcel: WhatsApp notice to send the seller + history (sent when, by whom)
         $order->sellerOrders->load(['reminders.sentBy:id,name', 'items:id,seller_order_id,quantity']);

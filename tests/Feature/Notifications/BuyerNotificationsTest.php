@@ -160,7 +160,7 @@ class BuyerNotificationsTest extends TestCase
         $this->admin()->postJson("/api/admin/seller-orders/{$so->id}/delivered")->assertStatus(422);
 
         $steps = $this->sent($order->user, OrderStatusNotification::class)->pluck('event')->all();
-        $this->assertSame(['confirmed', 'shipped', 'delivered'], $steps);
+        $this->assertSame(['confirmed', 'shipped', 'out_for_delivery', 'delivered'], $steps);
 
         $shipped = $this->sent($order->user, OrderStatusNotification::class)->firstWhere('event', 'shipped');
         $db = $shipped->toDatabase($order->user);

@@ -215,4 +215,18 @@ class AdminComplaintController extends Controller
 
         return response()->json(['success' => true, 'message' => 'Legacy exchange closed.', 'data' => $c]);
     }
+
+    /**
+     * PATCH /api/admin/complaints/{id}/intigo-return-ref
+     * After-sale returns are booked by hand in the Intigo dashboard; the admin
+     * pastes Intigo's reference here so the return file shows it.
+     */
+    public function intigoReturnRef(Request $request, $id)
+    {
+        $data = $request->validate(['intigo_return_ref' => 'nullable|string|max:64']);
+        $complaint = Complaint::findOrFail($id);
+        $complaint->forceFill(['intigo_return_ref' => trim((string) ($data['intigo_return_ref'] ?? '')) ?: null])->save();
+
+        return response()->json(['success' => true, 'message' => 'Intigo return reference saved.', 'data' => ['intigo_return_ref' => $complaint->intigo_return_ref]]);
+    }
 }

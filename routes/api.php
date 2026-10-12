@@ -127,6 +127,14 @@ Route::get('/shop/overview', [\App\Http\Controllers\Api\ShopOverviewController::
 Route::post('/track', [\App\Http\Controllers\Api\TrackingController::class, 'store'])
     ->middleware('throttle:120,1');
 
+// Intigo delivery webhooks: no user auth, no CSRF; HMAC signature checked in the controller
+Route::post('/webhooks/intigo', [\App\Http\Controllers\Webhooks\IntigoWebhookController::class, 'handle'])
+    ->middleware('throttle:600,1');
+
+// Governorates / delegations for the address dropdowns (Intigo place names)
+Route::get('/regions/cities', [\App\Http\Controllers\Api\RegionsController::class, 'cities']);
+Route::get('/regions/cities/{cityId}/districts', [\App\Http\Controllers\Api\RegionsController::class, 'districts'])->whereNumber('cityId');
+
 // This must come BEFORE the auth:sanctum group
 Route::post(
     '/payment/stripe/webhook',
@@ -617,6 +625,16 @@ Route::middleware('auth:sanctum')->group(function () {
         // Delivery & Fees (+ checkout payment-method switches)
         Route::get('/delivery-settings', [\App\Http\Controllers\Admin\DeliverySettingsController::class, 'show']);
         Route::put('/delivery-settings', [\App\Http\Controllers\Admin\DeliverySettingsController::class, 'update']);
+        // Intigo: overview, logs, pickup addresses, per-parcel send / cancel / size
+        Route::get('/intigo',                    [\App\Http\Controllers\Admin\IntigoController::class, 'overview']);
+        Route::get('/intigo/logs/{id}',          [\App\Http\Controllers\Admin\IntigoController::class, 'log'])->whereNumber('id');
+        Route::get('/intigo/pickup-addresses',   [\App\Http\Controllers\Admin\IntigoController::class, 'pickupAddresses']);
+        Route::put('/sellers/{sellerId}/intigo-pickup', [\App\Http\Controllers\Admin\IntigoController::class, 'setSellerPickup'])->whereNumber('sellerId');
+        Route::get('/seller-orders/{id}/intigo',          [\App\Http\Controllers\Admin\IntigoController::class, 'parcel'])->whereNumber('id');
+        Route::post('/seller-orders/{id}/intigo/retry',   [\App\Http\Controllers\Admin\IntigoController::class, 'retry'])->whereNumber('id');
+        Route::post('/seller-orders/{id}/intigo/cancel',  [\App\Http\Controllers\Admin\IntigoController::class, 'cancel'])->whereNumber('id');
+        Route::post('/seller-orders/{id}/intigo/dismiss', [\App\Http\Controllers\Admin\IntigoController::class, 'dismiss'])->whereNumber('id');
+        Route::put('/seller-orders/{id}/parcel-size',     [\App\Http\Controllers\Admin\IntigoController::class, 'setSize'])->whereNumber('id');
 
         // ── Admin Notifications ───────────────────────────────────────────
         Route::prefix('notifications')->group(function () {
@@ -637,6 +655,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/complaints/{id}/schedule-pickup',   [AdminComplaintController::class, 'schedulePickup']);
         Route::patch('/complaints/{id}/picked-up',         [AdminComplaintController::class, 'pickedUp']);
         Route::patch('/complaints/{id}/receive',           [AdminComplaintController::class, 'receive']);
+        Route::patch('/complaints/{id}/intigo-return-ref', [AdminComplaintController::class, 'intigoReturnRef']);
         Route::patch('/complaints/{id}/refund',            [AdminComplaintController::class, 'refund']);
         Route::patch('/complaints/{id}/cancel',            [AdminComplaintController::class, 'cancel']);
         Route::patch('/complaints/{id}/close',             [AdminComplaintController::class, 'close']);

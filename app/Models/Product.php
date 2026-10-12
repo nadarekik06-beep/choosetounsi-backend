@@ -23,7 +23,7 @@ class Product extends Model
     protected $fillable = [
         'seller_id', 'category_id', 'subcategory_id',
         'name', 'slug', 'description', 'short_description',
-        'price', 'delivery_fee', 'stock', 'low_stock_threshold', 'sku',
+        'price', 'delivery_fee', 'parcel_size', 'stock', 'low_stock_threshold', 'sku',
         'is_approved', 'is_active', 'is_platform_product', 'featured', 'views',
         'is_pack', 'pack_quantity', 'pack_contents', 'rejection_reason', 'deleted_by_seller',
         'changes_requested_at',
@@ -293,12 +293,12 @@ class Product extends Model
         return $this->delivery_fee !== null && (float) $this->delivery_fee === 0.0;
     }
 
-    /** The parcel fee the client pays when this product ships alone (admin setting). */
+    /** The parcel fee the client pays when this product ships alone (admin setting for its size). */
     public function getEffectiveDeliveryFee(): float
     {
         return $this->isFreeDelivery()
             ? 0.0
-            : \App\Support\Millimes::toFloat(app(\App\Services\Delivery\DeliverySettings::class)->clientFee());
+            : \App\Support\Millimes::toFloat(app(\App\Services\Delivery\DeliverySettings::class)->clientFee($this->parcel_size));
     }
 
     // ── Accessors (auto-appended to API responses) ─────────────────────────────

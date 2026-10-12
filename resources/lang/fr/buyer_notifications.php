@@ -60,6 +60,18 @@ return [
             'line'         => 'Gardez votre téléphone à portée de main : le livreur vous appellera avant de passer.',
             'line_cod'     => 'Montant à régler à la livraison : :amount.',
         ],
+        'out_for_delivery' => [
+            'title'   => 'Votre colis de :shops arrive aujourd\'hui',
+            'body'    => 'Commande :ref : le livreur est en route vers vous.',
+            'subject' => 'Votre colis de :shops est en cours de livraison',
+            'line'    => 'Gardez votre téléphone à portée de main : le livreur vous appellera avant de passer.',
+        ],
+        'returned' => [
+            'title'   => 'Colis de :shops retourné',
+            'body'    => 'Commande :ref : le colis n\'a pas pu vous être remis et est retourné à la boutique. Aucun montant ne vous est dû.',
+            'subject' => 'Votre colis de :shops a été retourné',
+            'line'    => 'Une erreur ? Contactez notre support : nous pouvons relancer la commande.',
+        ],
         'delivered' => [
             'title'   => 'Colis livré',
             'body'    => 'Votre colis de la boutique :shops (commande :ref) a été livré.',

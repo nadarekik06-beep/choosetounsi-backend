@@ -27,6 +27,11 @@ class AppServiceProvider extends ServiceProvider
             \Illuminate\Notifications\Channels\DatabaseChannel::class,
             \App\Notifications\Channels\ContractDatabaseChannel::class,
         );
+
+        // Intigo: real API only in live mode; fake mode never touches the network.
+        $this->app->bind(\App\Services\Intigo\IntigoClient::class, fn ($app) => config('intigo.mode') === 'live'
+            ? $app->make(\App\Services\Intigo\HttpIntigoClient::class)
+            : $app->make(\App\Services\Intigo\FakeIntigoClient::class));
     }
 
     public function boot(): void

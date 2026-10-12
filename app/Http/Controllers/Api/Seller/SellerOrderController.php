@@ -200,6 +200,8 @@ $netAfterShipping = $totalSellerNet !== null ? round($totalSellerNet - $shipping
                     // Confirmed parcels: "Mark as prepared" stops the WhatsApp reminders
                     'prepared_at'     => $sellerOrder->prepared_at,
                     'can_mark_prepared' => $sellerOrder->status === 'confirmed' && $sellerOrder->prepared_at === null,
+                    // Intigo parcel reference (write it on the package) and request state
+                    'delivery'        => self::deliveryInfo($sellerOrder),
                     'return_status'   => $sellerOrder->return_status,
                     'payment_status'  => $sellerOrder->payment_status,
                     'payment_method'  => $order->payment_method,
@@ -298,8 +300,10 @@ public function updateStatus(Request $request, $id)
     ]);
 }
     /* ── POST /api/seller/orders/{id}/prepared ── */
-    // The parcel is packed and waiting for the courier: WhatsApp reminders stop.
-    // Not a status: the parcel stays 'confirmed' until handed to the courier.
+    // The parcel is packed and waiting for the courier: WhatsApp reminders stop
+    // and the Intigo parcel is requested (a job: Intigo can never fail or slow
+    // this click). Not a status: the parcel stays 'confirmed' until Intigo
+    // reports the pickup.
     public function markPrepared(Request $request, $id)
     {
         $sellerOrder = SellerOrder::where('seller_id', auth()->id())->findOrFail($id);
@@ -309,14 +313,48 @@ public function updateStatus(Request $request, $id)
                 return response()->json(['success' => false, 'message' => __('seller.order_not_preparable')], 422);
             }
             app(\App\Services\Orders\WhatsApp\SellerReminderService::class)->markPrepared($sellerOrder, auth()->id());
+
+            try {
+                if (!$sellerOrder->intigo_nid) {
+                    DB::table('seller_orders')->where('id', $sellerOrder->id)->whereNull('intigo_nid')
+                        ->update(['intigo_sync_status' => 'pending', 'intigo_error' => null]);
+                    \App\Jobs\Intigo\SendIntigoParcel::dispatchSafely($sellerOrder->id);
+                }
+            } catch (\Throwable $e) {
+                // "Prepared" is saved whatever happens; intigo:sync-statuses re-queues pending sends
+                \Illuminate\Support\Facades\Log::error("[SellerOrder::markPrepared] Intigo send not queued for {$sellerOrder->id}: " . $e->getMessage());
+            }
             $sellerOrder->refresh();
         }
 
         return response()->json([
             'success' => true,
             'message' => __('seller.order_prepared'),
-            'data'    => ['id' => $sellerOrder->id, 'prepared_at' => $sellerOrder->prepared_at],
+            'data'    => ['id' => $sellerOrder->id, 'prepared_at' => $sellerOrder->prepared_at, 'delivery' => self::deliveryInfo($sellerOrder)],
         ]);
+    }
+
+    /**
+     * The parcel's delivery request, for the seller: the Intigo reference to
+     * write on the parcel and where the request stands. Never the error
+     * details (the admin handles them).
+     */
+    public static function deliveryInfo(SellerOrder $so): array
+    {
+        $state = match (true) {
+            (bool) $so->intigo_nid && $so->intigo_sync_status !== 'cancelled' => 'sent',
+            $so->intigo_sync_status === 'pending' => 'pending',
+            $so->intigo_sync_status === 'failed'  => 'failed',
+            $so->intigo_sync_status === 'cancelled' => 'cancelled',
+            default => null,
+        };
+        return [
+            'state'        => $state,          // sent | pending | failed | cancelled | null (not requested yet)
+            'nid'          => $state === 'sent' ? $so->intigo_nid : null,
+            'status_code'  => $so->intigo_status_code,
+            'status_label' => $so->intigo_status_label,
+            'parcel_size'  => $so->parcel_size,
+        ];
     }
 
     /* ── PATCH /api/seller/orders/{id}/payment ── */
@@ -385,6 +423,7 @@ public function updatePayment(Request $request, $id)
             'display_status'  => $so->display_status,
             'allowed_next'    => ParcelStatus::allowedNext($so, 'seller'),
             'prepared_at'     => $so->prepared_at,
+            'delivery'        => self::deliveryInfo($so),
             'payment_status'  => $so->payment_status,
             'payment_method'  => $order?->payment_method,
             // Cancelled: 0 due / earned; original_total keeps the history

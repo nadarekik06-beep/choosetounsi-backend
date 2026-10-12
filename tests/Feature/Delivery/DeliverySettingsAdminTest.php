@@ -31,7 +31,9 @@ class DeliverySettingsAdminTest extends TestCase
         $this->assertEquals(6, $data['settings']['seller_free_delivery_contribution']);
         $this->assertEquals(1, $data['margins']['normal']);
         $this->assertEquals(-1, $data['margins']['free_delivery']);
-        $this->assertCount(1, $data['warnings']);   // negative margin: warned, not blocked
+        $this->assertCount(3, $data['warnings']);   // negative margin (S, L, XL alike): warned, not blocked
+        $this->assertEquals(8, $data['sizes']['L']['client_fee']);
+        $this->assertSame(4, $data['sizes']['L']['package_size']);
         $this->assertNotEmpty($data['history']);
     }
 
@@ -52,7 +54,8 @@ class DeliverySettingsAdminTest extends TestCase
             ->assertJsonPath('data.margins.normal', 2.5);
 
         $this->assertSame(9500, app(DeliverySettings::class)->clientFee());
-        $log = DB::table('delivery_setting_changes')->where('field', 'client_delivery_fee')->orderByDesc('id')->first();
+        // The flat fields are size S
+        $log = DB::table('delivery_setting_changes')->where('field', 'S.client_fee')->orderByDesc('id')->first();
         $this->assertSame('8.000', $log->old_value);
         $this->assertSame('9.500', $log->new_value);
         $this->assertSame($this->admin->id, (int) $log->changed_by);
@@ -80,5 +83,29 @@ class DeliverySettingsAdminTest extends TestCase
         $this->assertTrue($product->fresh()->isFreeDelivery());
         $this->assertEquals(0, $product->fresh()->effective_delivery_fee);
         $this->assertEquals(8, $this->product($seller, 10)->effective_delivery_fee);
+    }
+
+    public function test_per_size_prices_are_saved_and_priced_at_checkout(): void
+    {
+        $body = self::VALID + ['intigo_can_open' => true, 'sizes' => [
+            'S'  => ['client_fee' => 7, 'agency_cost' => 6, 'return_fee' => 4, 'seller_contribution' => 5],
+            'L'  => ['client_fee' => '9.500', 'agency_cost' => 8, 'return_fee' => 5, 'seller_contribution' => 7],
+            'XL' => ['client_fee' => 14, 'agency_cost' => 12, 'return_fee' => 9, 'seller_contribution' => 11],
+        ]];
+        $this->as($this->admin)->putJson('/api/admin/delivery-settings', $body)->assertOk()
+            ->assertJsonPath('data.sizes.L.client_fee', 9.5)
+            ->assertJsonPath('data.sizes.XL.margin_normal', 2)
+            ->assertJsonPath('data.settings.client_delivery_fee', 7)   // flat = S
+            ->assertJsonPath('data.settings.intigo_can_open', true);
+
+        $s = app(DeliverySettings::class);
+        $this->assertSame(9500, $s->clientFee('L'));
+        $this->assertSame(9000, $s->refusedFee('XL'));
+        $this->assertTrue($s->canOpen());
+
+        // A missing size is rejected
+        $bad = $body;
+        unset($bad['sizes']['XL']['return_fee']);
+        $this->as($this->admin)->putJson('/api/admin/delivery-settings', $bad)->assertStatus(422);
     }
 }

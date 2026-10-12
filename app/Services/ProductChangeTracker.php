@@ -50,6 +50,7 @@ class ProductChangeTracker
         'pack_contents'     => ['settings', 'Pack contents'],
         'occasions'         => ['settings', 'Season / occasion'],
         'delivery_fee'      => ['settings', 'Delivery fee'],
+        'parcel_size'       => ['settings', 'Parcel size'],
     ];
 
     private const VARIANT_FIELDS = [

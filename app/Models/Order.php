@@ -34,6 +34,11 @@ class Order extends Model
         'phone_secondary',
         'delegation',
         'postal_code',
+        // Intigo place names picked at checkout (NULL on older orders: wilaya / delegation)
+        'intigo_city_id',
+        'intigo_district_id',
+        'city_name',
+        'district_name',
         'woocommerce_order_id',
     ];
 

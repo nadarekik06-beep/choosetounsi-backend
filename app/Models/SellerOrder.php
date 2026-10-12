@@ -50,6 +50,14 @@ class SellerOrder extends Model
         'carrier_status_at'     => 'datetime',
         'prepared_at'           => 'datetime',
         'overdue_at'            => 'datetime',
+        // Intigo parcel (App\Services\Intigo)
+        'intigo_status_code'       => 'integer',
+        'intigo_status_at'         => 'datetime',
+        'intigo_sent_at'           => 'datetime',
+        'intigo_locked_at'         => 'datetime',
+        'intigo_district_fallback' => 'boolean',
+        'intigo_attempts'          => 'integer',
+        'intigo_previous_nids'     => 'array',
     ];
 
     /**
@@ -81,6 +89,9 @@ class SellerOrder extends Model
     }
 
     protected $appends = ['display_status'];
+
+    /** Courier-side internals: the admin reads them through IntigoController::parcelPayload(). */
+    protected $hidden = ['intigo_error', 'intigo_attention', 'intigo_locked_at', 'intigo_previous_nids', 'intigo_attempts'];
 
     /**
      * Status to show: a fully returned seller order is 'refunded' ("Returned

@@ -16,6 +16,7 @@ return [
         'cache_cleared' => 'Cache cleared.',
     ],
     'product' => [
+        'parcel_size_required' => 'Choose the parcel size (S, L or XL).',
         'color_images_required' => 'Add at least one image for each color: :colors.',
         'price_decrease_discount' => 'To lower the price of a live product, create a discount: customers then see the old price crossed out and the "-%" badge.',
         'created_review' => 'Product created! It will be reviewed by an admin.',

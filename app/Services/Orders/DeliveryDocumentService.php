@@ -164,6 +164,9 @@ class DeliveryDocumentService
         return [
             'order_number' => $order->order_number,
             'reference'    => $this->reference($order, $sellerOrder),
+            // Intigo parcel id (once sent) and size: the driver matches the parcel with it
+            'intigo_nid'   => $sellerOrder->intigo_nid && $sellerOrder->intigo_sync_status !== 'cancelled' ? $sellerOrder->intigo_nid : null,
+            'parcel_size'  => $sellerOrder->parcel_size ?? 'S',
             'order_date'   => $order->created_at,
             'pickup'       => $pickup,
             'recipient'    => $this->recipient($order),

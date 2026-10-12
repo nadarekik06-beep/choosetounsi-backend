@@ -61,12 +61,14 @@ class ProductSearchOutageTest extends TestCase
             'price'          => 25,
             'stock'          => 4,
             'category_id'    => $this->category->id,
+            'parcel_size'    => 'L',
             'image_manifest' => json_encode(['gallery' => [['upload' => 'g1']], 'color_groups' => []]),
             'uploads'        => ['g1' => $this->file()],
         ], ['Accept' => 'application/json']);
 
         $res->assertCreated();
         $id = $res->json('data.id');
+        $this->assertSame('L', Product::find($id)->parcel_size);
         $this->assertSame(1, ProductImage::where('product_id', $id)->count());
     }
 

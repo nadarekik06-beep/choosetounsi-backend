@@ -12,8 +12,10 @@ use App\Services\Orders\DeliveryDocumentService;
  *
  *   confirmed  admin confirmed the order (sub-order 'confirmed')
  *   packed     the shop packed it, waiting for the courier ('completed')
- *   shipped    handed to the courier ('out_for_delivery')
+ *   shipped    handed to the courier ('handed_to_courier')
+ *   out_for_delivery  the courier delivers it today ('out_for_delivery')
  *   delivered  'delivered'
+ *   returned   refused parcel back at the shop ('returned_to_seller'): nothing owed
  *   cancelled  'cancelled' — reason: seller | admin | payment
  *
  * Sub-orders of one order that reach the same step in the same action are
@@ -23,7 +25,7 @@ class OrderStatusNotification extends BuyerNotification
 {
     use DescribesOrder;
 
-    public const EVENTS = ['confirmed', 'packed', 'shipped', 'delivered', 'cancelled'];
+    public const EVENTS = ['confirmed', 'packed', 'shipped', 'out_for_delivery', 'delivered', 'returned', 'cancelled'];
 
     /** @param int[] $sellerOrderIds */
     public function __construct(
@@ -47,7 +49,9 @@ class OrderStatusNotification extends BuyerNotification
             'confirmed' => 'check-circle',
             'packed'    => 'package',
             'shipped'   => 'truck',
+            'out_for_delivery' => 'truck',
             'delivered' => 'package-check',
+            'returned'  => 'undo-2',
             'cancelled' => 'x-circle',
             default     => 'shopping-bag',
         };
@@ -121,7 +125,14 @@ class OrderStatusNotification extends BuyerNotification
                     ? __('buyer_notifications.order.shipped.line_cod', ['amount' => self::money($this->codAmount())])
                     : null,
             ])),
+            'out_for_delivery' => array_values(array_filter([
+                __('buyer_notifications.order.out_for_delivery.line'),
+                $this->codAmount() > 0
+                    ? __('buyer_notifications.order.shipped.line_cod', ['amount' => self::money($this->codAmount())])
+                    : null,
+            ])),
             'delivered' => [__('buyer_notifications.order.delivered.line', ['hours' => Complaint::COMPLAINT_WINDOW_HOURS])],
+            'returned'  => [__('buyer_notifications.order.returned.line')],
             'cancelled' => [
                 $this->wasPaid()
                     ? __('buyer_notifications.order.cancelled.line_paid', ['amount' => self::money($this->cancelledAmount())])

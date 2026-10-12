@@ -13,6 +13,7 @@ use App\Services\CouponService;
 use App\Services\Delivery\DeliverySettings;
 use App\Services\PromotionService;
 use App\Support\Millimes;
+use App\Support\ParcelSize;
 use Illuminate\Support\Collection;
 
 /**
@@ -24,7 +25,9 @@ use Illuminate\Support\Collection;
  *   items_subtotal  Σ line totals (post pack price / discount / flash sale)
  *   coupon_discount the seller's coupon (one per seller, never on promoted lines or packs)
  *   is_free         every item of the parcel is free delivery (a pack: all its products)
- *   delivery_fee    0 when free, else the admin client_delivery_fee
+ *   parcel_size     the largest size of its items (S / L / XL, App\Support\ParcelSize);
+ *                   every delivery amount below is the admin's figure for that size
+ *   delivery_fee    0 when free, else the admin client fee for the size
  *   parcel_total    items_subtotal − coupon_discount + delivery_fee
  *   cod_amount      parcel_total for cash on delivery (0 when prepaid)
  *   commission      Σ line commissions, on (line − coupon share) only, never on delivery
@@ -129,6 +132,7 @@ class OrderPricing
             'unit_m'    => $unitM,
             'total_m'   => $unitM * $qty,
             'is_free'   => $product->isFreeDelivery(),
+            'size'      => ParcelSize::normalize($product->parcel_size),
         ];
     }
 
@@ -198,6 +202,7 @@ class OrderPricing
                 'unit_m'         => $shares[$k],          // this seller's share of ONE pack
                 'total_m'        => $shares[$k] * $packQty,
                 'is_free'        => $isFree,
+                'size'           => ParcelSize::largest(array_map(fn ($c) => $c['product']->parcel_size, $s['components'])),
                 'pack_price_m'   => $priceM,
                 'pack_changed'   => $snapshotM !== $priceM,
             ];
@@ -252,11 +257,7 @@ class OrderPricing
 
     private function build(array $lines, array $coupons, int $userId, string $paymentMethod): array
     {
-        $settings     = $this->delivery->all();
-        $clientFee    = $settings['client_delivery_fee'];
-        $agencyCost   = $settings['agency_delivery_cost'];
-        $contribution = $settings['seller_free_delivery_contribution'];
-        $isCod        = $paymentMethod === 'cod';
+        $isCod = $paymentMethod === 'cod';
 
         // Group lines into parcels, in cart order
         $parcels = [];
@@ -310,6 +311,12 @@ class OrderPricing
                 $sellerItemsM += $c['seller_amount_m'];
             }
 
+            // One parcel, one size: the largest of its items, priced by the admin per size
+            $size          = ParcelSize::largest(array_column($lineOut, 'size'));
+            $rates         = $this->delivery->forSize($size);
+            $clientFee     = $rates['client_fee'];
+            $agencyCost    = $rates['agency_cost'];
+            $contribution  = $rates['seller_contribution'];
             $isFree        = collect($lineOut)->every(fn ($l) => $l['is_free']);
             $feeM          = $isFree ? 0 : $clientFee;
             $contributionM = $isFree ? $contribution : 0;
@@ -323,6 +330,7 @@ class OrderPricing
                 'seller_name'        => $sellerId ? (User::whereKey($sellerId)->value('name') ?? '') : "CHOOSE'Tounsi",
                 'lines'              => $lineOut,
                 'coupon'             => $p['coupon'] ?? null,
+                'parcel_size'        => $size,
                 'items_subtotal_m'   => $itemsM,
                 'coupon_discount_m'  => $discountM,
                 'is_free_delivery'   => $isFree,
@@ -374,6 +382,7 @@ class OrderPricing
             'parcels'        => array_values(array_map(fn ($p) => [
                 'seller_id'        => $p['seller_id'],
                 'seller_name'      => $p['seller_name'],
+                'parcel_size'      => $p['parcel_size'],
                 'items_subtotal'   => $f($p['items_subtotal_m']),
                 'coupon_code'      => $p['coupon']?->code,
                 'coupon_discount'  => $f($p['coupon_discount_m']),

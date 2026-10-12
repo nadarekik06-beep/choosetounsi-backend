@@ -54,6 +54,7 @@ return [
         'item_stock' => 'المخزون غير كافٍ لـ «:product».',
     ],
     'checkout' => [
+        'reselect_region' => 'يرجى إعادة اختيار الولاية والمعتمدية من القائمة.',
         'cart_empty' => 'سلتك فارغة.',
         'pack_unavailable' => 'الحزمة «:pack» لم تعد متوفرة.',
         'pack_product_unavailable' => 'أحد منتجات الحزمة «:pack» لم يعد متوفراً.',

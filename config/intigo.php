@@ -1,0 +1,52 @@
+<?php
+
+/*
+|--------------------------------------------------------------------------
+| Intigo delivery API (V3)
+|--------------------------------------------------------------------------
+|
+| mode     fake (default): App\Services\Intigo\FakeIntigoClient answers every
+|          parcel call locally (nid "FAKE-{seller_order_id}"), logs it in
+|          intigo_logs and never touches the network. live: real API calls,
+|          real parcels, real drivers. Switch only once everything is set up.
+| api_key  never commit it; it is redacted from every log.
+|
+| The regions endpoints (/regions/*) are public and read-only: intigo:sync-regions
+| reads them in both modes.
+|
+*/
+
+return [
+    'mode'           => env('INTIGO_MODE', 'fake') === 'live' ? 'live' : 'fake',
+    'api_key'        => env('INTIGO_API_KEY'),
+    'base_url'       => rtrim(env('INTIGO_BASE_URL', 'https://api.intigo.net/api/v3'), '/'),
+    'webhook_secret' => env('INTIGO_WEBHOOK_SECRET'),
+
+    // Default of the admin "customer may open the parcel" switch (Delivery & Fees page)
+    'can_open_default' => filter_var(env('INTIGO_CAN_OPEN_DEFAULT', false), FILTER_VALIDATE_BOOLEAN),
+
+    // Pickup address index of CHOOSE'Tounsi's own products (sellers: set per seller in the admin)
+    'platform_pickup_index' => env('INTIGO_PLATFORM_PICKUP_INDEX'),
+
+    // Identification headers recommended by Intigo on parcel creation
+    'platform'         => 'choosetounsi',
+    'platform_version' => '1.0',
+    'shop'             => 'choosetounsi.tn',
+
+    'timezone' => 'Africa/Tunis',
+
+    'http' => [
+        'timeout'         => (int) env('INTIGO_TIMEOUT', 20),
+        'connect_timeout' => (int) env('INTIGO_CONNECT_TIMEOUT', 8),
+    ],
+
+    // Parcel creation retries: only timeouts / 5xx / connection errors, never 4xx.
+    'send' => [
+        'max_attempts' => 4,
+        'backoff'      => [60, 300, 900],   // seconds between attempts
+        'lock_seconds' => 120,              // a send claimed longer ago than this is considered dead
+    ],
+
+    // Webhook events and logs kept for this many days (intigo:sync-statuses prunes)
+    'retention_days' => 180,
+];

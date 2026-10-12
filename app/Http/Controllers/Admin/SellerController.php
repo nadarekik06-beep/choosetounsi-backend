@@ -87,6 +87,9 @@ $paginated = $query->orderByDesc('created_at')->paginate($request->query('per_pa
             'active_plan'          => $app ? $app->plan         : 'free',
             'preferred_plan'       => $app ? $app->preferred_plan : 'green',
             'pricing_range'        => $app?->pricing_range,
+            // Intigo pickup address (created in the Intigo dashboard, index picked here)
+            'intigo_pickup_index'  => $seller->intigo_pickup_index,
+            'intigo_pickup_label'  => $seller->intigo_pickup_label,
         ]]);
     }
 

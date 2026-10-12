@@ -54,6 +54,7 @@ return [
         'item_stock' => 'Stock insuffisant pour « :product ».',
     ],
     'checkout' => [
+        'reselect_region' => 'Veuillez resélectionner votre gouvernorat et votre délégation dans la liste.',
         'cart_empty' => 'Votre panier est vide.',
         'pack_unavailable' => 'Le pack « :pack » n\'est plus disponible.',
         'pack_product_unavailable' => 'Un produit du pack « :pack » n\'est plus disponible.',

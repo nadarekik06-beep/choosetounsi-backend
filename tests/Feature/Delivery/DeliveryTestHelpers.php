@@ -37,14 +37,35 @@ trait DeliveryTestHelpers
         $this->setFees(8, 7, 6);
     }
 
+    /** Same amounts for every parcel size (S, L, XL), unless setSizeFees() sets them apart. */
     protected function setFees($client, $agency, $contribution, array $extra = []): void
     {
-        $s = app(DeliverySettings::class);
-        $s->update([
-            'client_delivery_fee'               => Millimes::of($client),
-            'agency_delivery_cost'              => Millimes::of($agency),
-            'seller_free_delivery_contribution' => Millimes::of($contribution),
-        ] + $extra, $this->admin->id);
+        $s       = app(DeliverySettings::class);
+        $current = $s->all()['sizes'];
+        $sizes   = [];
+        foreach (['S', 'L', 'XL'] as $size) {
+            $sizes[$size] = [
+                'client_fee'          => Millimes::of($client),
+                'agency_cost'         => Millimes::of($agency),
+                'seller_contribution' => Millimes::of($contribution),
+                'return_fee'          => $extra['refused_parcel_agency_fee'] ?? $current[$size]['return_fee'],
+            ];
+        }
+        unset($extra['refused_parcel_agency_fee']);
+        $s->update(['sizes' => $sizes] + $extra, $this->admin->id);
+    }
+
+    /** @param array<string, array{0:mixed,1:mixed,2:mixed,3:mixed}> $rates size => [client, agency, return, contribution] */
+    protected function setSizeFees(array $rates): void
+    {
+        $sizes = [];
+        foreach ($rates as $size => [$client, $agency, $return, $contribution]) {
+            $sizes[$size] = [
+                'client_fee' => Millimes::of($client), 'agency_cost' => Millimes::of($agency),
+                'return_fee' => Millimes::of($return), 'seller_contribution' => Millimes::of($contribution),
+            ];
+        }
+        app(DeliverySettings::class)->update(['sizes' => $sizes], $this->admin->id);
     }
 
     protected function makeUser(string $role): User

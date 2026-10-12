@@ -267,6 +267,11 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         'stock'       => 'required|integer|min:0',
         'category_id' => 'required|exists:categories,id',
         'low_stock_threshold' => 'nullable|integer|min:1|max:50',
+        // Parcel size for the courier (S = small, L = large, XL = extra large): sets the delivery price
+        'parcel_size' => 'required|in:' . implode(',', \App\Support\ParcelSize::ALL),
+    ], [
+        'parcel_size.required' => __('seller.product.parcel_size_required'),
+        'parcel_size.in'       => __('seller.product.parcel_size_required'),
     ]);
     $merch = $this->validateMerchandising($request, null);
 } catch (\Throwable $e) {
@@ -314,6 +319,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                     'pack_quantity'     => $merch['pack_quantity'],
                     'pack_contents'     => $merch['pack_contents'],
                     'delivery_fee' => $this->parseDeliveryFee($request, null),
+                    'parcel_size'  => $request->input('parcel_size'),
                     'low_stock_threshold' => $request->filled('low_stock_threshold') ? (int) $request->low_stock_threshold : null,
                 ]);
                 $product->syncOccasions($merch['occasions']);
@@ -379,7 +385,13 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
         $merch = $this->validateMerchandising($request, $product);
         // Empty = use the shop default (Paramètres de la boutique)
-        $request->validate(['low_stock_threshold' => 'nullable|integer|min:1|max:50']);
+        $request->validate([
+            'low_stock_threshold' => 'nullable|integer|min:1|max:50',
+            'parcel_size'         => 'sometimes|required|in:' . implode(',', \App\Support\ParcelSize::ALL),
+        ], [
+            'parcel_size.required' => __('seller.product.parcel_size_required'),
+            'parcel_size.in'       => __('seller.product.parcel_size_required'),
+        ]);
 
         $images = $this->readImageManifest($request, $product, $this->requestedGroupKeys($request, $product));
         if ($images instanceof \Illuminate\Http\JsonResponse) return $images;
@@ -428,6 +440,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                 'pack_quantity'     => $merch['pack_quantity'],
                 'pack_contents'     => $merch['pack_contents'],
                 'delivery_fee' => $this->parseDeliveryFee($request, $product->delivery_fee),
+                'parcel_size'  => $request->input('parcel_size', $product->parcel_size ?? 'S'),
             ] + ($request->exists('low_stock_threshold')
                 ? ['low_stock_threshold' => $request->filled('low_stock_threshold') ? (int) $request->low_stock_threshold : null]
                 : []
