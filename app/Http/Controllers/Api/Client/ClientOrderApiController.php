@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\Client;
 
 use App\Http\Controllers\Controller;
+use App\Http\Resources\Buyer\BuyerOrderResource;
 use App\Models\Complaint;
 use App\Models\Order;
 use Illuminate\Http\Request;
@@ -33,6 +34,7 @@ class ClientOrderApiController extends Controller
         $orders = Order::where('user_id', $request->user()->id)
             ->with([
                 'sellerOrders',
+                'sellerOrders.seller:id,name',
                 'sellerOrders.deliveryAssignment.deliveryGuy:id,name',
                 'items.variant.attributeOptions.attribute',
                 'items.variant.images',
@@ -44,7 +46,8 @@ class ClientOrderApiController extends Controller
             ->orderByDesc('created_at')
             ->paginate(20);
 
-        $orders->getCollection()->transform(fn($order) => $this->transformOrder($order));
+        // Explicit allow-list (App\Http\Resources\Buyer): never the raw models
+        $orders->getCollection()->transform(fn($order) => (new BuyerOrderResource($order))->resolve($request));
 
         return response()->json(['success' => true, 'data' => $orders]);
     }
@@ -57,6 +60,7 @@ class ClientOrderApiController extends Controller
         $order = Order::where('user_id', $request->user()->id)
             ->with([
                 'sellerOrders',
+                'sellerOrders.seller:id,name',
                 'sellerOrders.deliveryAssignment.deliveryGuy:id,name',
                 'items.variant.attributeOptions.attribute',
                 'items.variant.images',
@@ -67,7 +71,7 @@ class ClientOrderApiController extends Controller
             ])
             ->findOrFail($id);
 
-        return response()->json(['success' => true, 'data' => $this->transformOrder($order)]);
+        return response()->json(['success' => true, 'data' => (new BuyerOrderResource($order))->resolve($request)]);
     }
 
     /**
@@ -88,132 +92,5 @@ class ClientOrderApiController extends Controller
             'refunded'         => (clone $base)->where('status', 'refunded')->count(),
             'partially_returned' => (clone $base)->where('return_status', 'partial')->whereNotIn('status', ['cancelled', 'refunded'])->count(),
         ]]);
-    }
-
-    // ── Private helpers ──────────────────────────────────────────────────────
-
-    /**
-     * preparing | awaiting_pickup | in_transit | out_for_delivery | delivered |
-     * returning | returned | cancelled | pending, plus the courier's parcel
-     * reference once it exists. Never anything about the seller.
-     */
-    private static function delivery(\App\Models\SellerOrder $so): array
-    {
-        $sent  = (bool) $so->intigo_nid && $so->intigo_sync_status !== 'cancelled';
-        $stage = match ($so->status) {
-            'pending'            => 'pending',
-            'confirmed'          => $sent ? 'awaiting_pickup' : 'preparing',
-            'handed_to_courier'  => 'in_transit',
-            'out_for_delivery'   => 'out_for_delivery',
-            'delivered', 'completed', 'refunded' => 'delivered',
-            'refused'            => 'returning',
-            'returned_to_seller' => 'returned',
-            'cancelled'          => 'cancelled',
-            default              => $so->status,
-        };
-        return [
-            'stage'        => $stage,
-            'tracking_ref' => $sent ? $so->intigo_nid : null,
-            'updated_at'   => optional($so->intigo_status_at ?? $so->updated_at)->toISOString(),
-        ];
-    }
-
-    private function transformOrder(Order $order): array
-    {
-        $sellerOrderMap = $order->sellerOrders->keyBy('id');
-
-        // ── Enrich items ───────────────────────────────────────────────────
-        $enrichedItems = $order->items->map(function ($item) use ($sellerOrderMap, $order) {
-            // As bought: the checkout snapshot first, never another variant's image
-            $item->setAttribute('resolved_image_url', $item->displayImageUrl());
-            $item->setAttribute('variant_label', $item->displayVariantLabel());
-
-            $so = $item->seller_order_id
-                ? ($sellerOrderMap[$item->seller_order_id] ?? null)
-                : null;
-
-            $item->seller_order_id      = $so?->id;
-            $item->seller_order_status  = $so?->status         ?? $order->status;
-            $item->seller_order_payment = $so?->payment_status ?? $order->payment_status;
-
-            // Returned units are taken off the line when the return is refunded:
-            // ordered_quantity / returned_quantity / return_state tell the story.
-            $item->setAttribute('is_returned', $item->return_state === 'returned');
-
-            return $item;
-        });
-
-        // ── Build seller_groups ────────────────────────────────────────────
-        $sellerGroups = $order->sellerOrders->map(function ($so) use ($enrichedItems) {
-            $groupItems = $enrichedItems
-                ->filter(fn($i) => $i->seller_order_id === $so->id)
-                ->values();
-
-            $assignment = $so->relationLoaded('deliveryAssignment')
-                ? $so->deliveryAssignment
-                : null;
-
-            $tracking = [
-                'assigned_at'  => $assignment?->assigned_at?->toISOString(),
-                'picked_up_at' => $assignment?->picked_up_at?->toISOString(),
-                'delivered_at' => $assignment?->delivered_at?->toISOString(),
-                'delivery_guy' => $assignment?->relationLoaded('deliveryGuy')
-                    ? $assignment->deliveryGuy?->name
-                    : null,
-            ];
-
-            return [
-                'seller_order_id' => $so->id,
-                'status'          => $so->status,
-                'display_status'  => $so->display_status,
-                'return_status'   => $so->return_status,
-                'payment_status'  => $so->payment_status,
-                'subtotal'        => (float) $so->subtotal,
-                'coupon_code'     => $so->coupon_code,
-                'discount_amount' => round((float) ($so->discount_amount ?? 0), 3),
-                'items'           => $groupItems,
-                'tracking'        => $tracking,
-                // Delivery step of this shop's parcel (translated by the storefront)
-                'delivery'        => self::delivery($so),
-            ];
-        })->values();
-
-        $arr                  = $order->toArray();
-        // seller_groups carries what the buyer may see of each parcel; the raw rows
-        // hold internal figures (commission, payouts, courier notes)
-        unset($arr['seller_orders']);
-        $arr['items']         = $enrichedItems->values();
-        $arr['seller_groups'] = $sellerGroups;
-        // Returns on this order (tracking lives at /complaints?id=)
-        $arr['returns'] = $order->relationLoaded('complaints')
-            ? $order->complaints->sortByDesc('created_at')->values()->map(fn($c) => [
-                'id'               => $c->id,
-                'reference'        => $c->reference,
-                'status'           => $c->status,
-                'refund_amount'    => (float) $c->refund_amount,
-                'refund_method'    => $c->refund_method,
-                'refund_reference' => $c->status === 'refunded' ? $c->refund_reference : null,
-                'refunded_at'      => $c->refunded_at,
-                'created_at'       => $c->created_at,
-            ])
-            : [];
-        unset($arr['complaints']);
-
-        // Live breakdown from active seller_orders (orders.total_amount may be
-        // stale if a partial return reduced a seller subtotal):
-        //   total = subtotal − discount_amount + shipping_fee
-        // A cancelled order owes 0: is_cancelled + original_amounts let the
-        // storefront strike the checkout amounts through.
-        $money = $order->moneySummary();
-        $arr['subtotal']         = $money['subtotal'];
-        $arr['discount_amount']  = $money['discount_amount'];
-        $arr['coupon_codes']     = $money['coupon_codes'];
-        $arr['shipping_fee']     = $money['shipping_fee'];
-        $arr['total_amount']     = $money['total'];
-        $arr['amount_due']       = $money['total'];
-        $arr['is_cancelled']     = $money['is_cancelled'];
-        $arr['original_amounts'] = $money['original'];
-
-        return $arr;
     }
 }

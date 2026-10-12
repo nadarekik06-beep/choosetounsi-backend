@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Complaint;
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Http\Resources\Buyer\BuyerComplaintResource;
 use App\Services\Returns\ReturnPresenter;
 use App\Services\Returns\ReturnService;
 use Illuminate\Http\Request;
@@ -86,7 +87,7 @@ class ComplaintController extends Controller
             ->paginate((int) $request->query('per_page', 10));
 
         Complaint::withItemSnapshots($complaints);
-        $complaints->getCollection()->each(fn($c) => ReturnPresenter::forClient($c));
+        $complaints->getCollection()->transform(fn($c) => (new BuyerComplaintResource(ReturnPresenter::forClient($c)))->resolve($request));
 
         return response()->json(['success' => true, 'data' => $complaints]);
     }
@@ -103,7 +104,7 @@ class ComplaintController extends Controller
 
         Complaint::withItemSnapshots($complaint);
 
-        return response()->json(['success' => true, 'data' => ReturnPresenter::forClient($complaint)]);
+        return response()->json(['success' => true, 'data' => (new BuyerComplaintResource(ReturnPresenter::forClient($complaint)))->resolve($request)]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -189,8 +190,8 @@ class ComplaintController extends Controller
         return response()->json([
             'success' => true,
             'message' => __('messages.complaint.submitted'),
-            'data'    => $first,
-            'returns' => $complaints->values(),   // one per shop
+            'data'    => (new BuyerComplaintResource($first))->resolve($request),
+            'returns' => $complaints->values()->map(fn($c) => (new BuyerComplaintResource($c))->resolve($request))->all(),   // one per shop
         ], 201);
     }
 
@@ -205,7 +206,7 @@ class ComplaintController extends Controller
 
         $c = $this->returns->escalate($complaint, $request->user(), $request->note);
 
-        return response()->json(['success' => true, 'message' => __('messages.complaint.escalated'), 'data' => $c]);
+        return response()->json(['success' => true, 'message' => __('messages.complaint.escalated'), 'data' => $this->present($c, $request)]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -218,12 +219,20 @@ class ComplaintController extends Controller
 
         $c = $this->returns->clientCancel($complaint, $request->user());
 
-        return response()->json(['success' => true, 'message' => __('messages.complaint.cancelled'), 'data' => $c]);
+        return response()->json(['success' => true, 'message' => __('messages.complaint.cancelled'), 'data' => $this->present($c, $request)]);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────
 
     /** Delivered (whole order, or at least one sub-order) within the return window. */
+    /** The buyer's view of a return (allow-list), as on GET /client/complaints/{id}. */
+    private function present(Complaint $c, Request $request): array
+    {
+        $c->loadMissing('order:id,order_number,total_amount,status,return_status,payment_method,created_at');
+        Complaint::withItemSnapshots($c);
+        return (new BuyerComplaintResource(ReturnPresenter::forClient($c)))->resolve($request);
+    }
+
     private function eligibleQuery(int $userId)
     {
         $hours = Complaint::COMPLAINT_WINDOW_HOURS;
