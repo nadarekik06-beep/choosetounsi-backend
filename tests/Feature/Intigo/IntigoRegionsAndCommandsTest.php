@@ -49,6 +49,37 @@ class IntigoRegionsAndCommandsTest extends TestCase
         $this->assertSame(['Kef', 'Kef Ouest'], [$this->sentPayload($so)['city_name'], $this->sentPayload($so)['district_name']]);
     }
 
+    /**
+     * The storefront checkout, end to end: the city list loads cross-origin
+     * from /api/regions/cities, the address is picked from it (no size in the
+     * checkout payload: it comes from the product), and the parcel reaches
+     * Intigo with Intigo's own city / delegation names and the product's size.
+     */
+    public function test_storefront_checkout_from_the_city_list_to_the_intigo_parcel(): void
+    {
+        $this->seedRegions();
+        $this->get('/api/regions/cities', ['Origin' => 'http://localhost:3000', 'Accept' => 'application/json'])->assertOk()
+            ->assertHeader('Access-Control-Allow-Origin', 'http://localhost:3000')
+            ->assertJsonPath('available', true)->assertJsonFragment(['id' => 11, 'name' => 'Kef']);
+        $this->getJson('/api/regions/cities/11/districts')->assertOk()->assertJsonPath('data.0.id', 901);
+
+        $seller = $this->sellerWithPickup();
+        $lamp   = $this->product($seller, 50);
+        $lamp->update(['parcel_size' => 'L']);
+        $this->addToCart($lamp);
+        $quote = $this->quote();
+
+        $res = $this->as($this->customer)->postJson('/api/checkout', $this->regionAddress(11, 901) + ['payment_method' => 'cod', 'expected_total' => $quote['total']])
+            ->assertCreated()->json();
+        $this->as($this->admin)->patchJson("/api/admin/orders/{$res['order_id']}/confirm-order", ['action' => 'confirmed'])->assertOk();
+        $so = $this->parcel($res['order_id'], $seller);
+        $this->prepare($so, $seller);
+
+        $payload = $this->sentPayload($so);
+        $this->assertSame(['Kef', 'Kef Ouest', 4], [$payload['city_name'], $payload['district_name'], $payload['package_size']]);
+        $this->assertSame("FAKE-{$so->id}", $this->so($so)->intigo_nid, "fake mode: the parcel was created");
+    }
+
     public function test_old_orders_without_intigo_names_fall_back_to_wilaya_and_delegation(): void
     {
         $seller = $this->sellerWithPickup();
