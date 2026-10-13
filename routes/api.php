@@ -135,6 +135,11 @@ Route::post('/webhooks/intigo', [\App\Http\Controllers\Webhooks\IntigoWebhookCon
 Route::get('/regions/cities', [\App\Http\Controllers\Api\RegionsController::class, 'cities']);
 Route::get('/regions/cities/{cityId}/districts', [\App\Http\Controllers\Api\RegionsController::class, 'districts'])->whereNumber('cityId');
 
+// Pickup-address zones (Intigo "Zone (Délégation/Secteur)"): search, one zone, approximate map centre
+Route::get('/intigo-zones', [\App\Http\Controllers\Api\IntigoZonesController::class, 'index'])->middleware('throttle:120,1');
+Route::get('/intigo-zones/{id}', [\App\Http\Controllers\Api\IntigoZonesController::class, 'show'])->whereNumber('id');
+Route::get('/intigo-zones/{id}/center', [\App\Http\Controllers\Api\IntigoZonesController::class, 'center'])->whereNumber('id')->middleware('throttle:30,1');
+
 // This must come BEFORE the auth:sanctum group
 Route::post(
     '/payment/stripe/webhook',
@@ -611,7 +616,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/orders/{id}/export/slips',                     [\App\Http\Controllers\Admin\OrderExportController::class, 'slips'])->whereNumber('id');
         Route::get('/orders/{id}/export/slips/{sellerOrderId}',     [\App\Http\Controllers\Admin\OrderExportController::class, 'slip'])->whereNumber(['id', 'sellerOrderId']);
         Route::get('/orders/{id}/export/summary',                   [\App\Http\Controllers\Admin\OrderExportController::class, 'summary'])->whereNumber('id');
-        Route::put('/sellers/{sellerId}/pickup-address',            [AdminOrderController::class, 'updateSellerPickup'])->whereNumber('sellerId');
+        // Seller pickup address (Intigo form fields): card, edit, "Adresse vérifiée", "Créer dans Intigo"
+        Route::get('/sellers/{sellerId}/pickup',                     [\App\Http\Controllers\Admin\SellerPickupController::class, 'show'])->whereNumber('sellerId');
+        Route::put('/sellers/{sellerId}/pickup',                     [\App\Http\Controllers\Admin\SellerPickupController::class, 'update'])->whereNumber('sellerId');
+        Route::put('/sellers/{sellerId}/pickup-address',             [\App\Http\Controllers\Admin\SellerPickupController::class, 'update'])->whereNumber('sellerId');
+        Route::post('/sellers/{sellerId}/pickup/verify',             [\App\Http\Controllers\Admin\SellerPickupController::class, 'verify'])->whereNumber('sellerId');
+        Route::post('/sellers/{sellerId}/pickup/intigo-create',      [\App\Http\Controllers\Admin\SellerPickupController::class, 'createInIntigo'])->whereNumber('sellerId');
+        Route::post('/sellers/{sellerId}/pickup/intigo-manual',      [\App\Http\Controllers\Admin\SellerPickupController::class, 'markCreated'])->whereNumber('sellerId');
         // Per parcel (seller order): only the admin records delivery (= cash collected) or a refusal
         Route::post('/seller-orders/{id}/delivered', [\App\Http\Controllers\Admin\ParcelController::class, 'delivered'])->whereNumber('id');
         Route::post('/seller-orders/{id}/refused',   [\App\Http\Controllers\Admin\ParcelController::class, 'refused'])->whereNumber('id');

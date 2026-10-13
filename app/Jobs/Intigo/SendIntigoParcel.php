@@ -26,7 +26,8 @@ class SendIntigoParcel implements ShouldQueue
 
     public $timeout = 90;
 
-    public function __construct(public int $sellerOrderId)
+    /** @param bool $manual also re-sends a failed parcel (held parcels, released once the pickup address is created) */
+    public function __construct(public int $sellerOrderId, public bool $manual = false)
     {
         $this->afterCommit();
     }
@@ -36,13 +37,13 @@ class SendIntigoParcel implements ShouldQueue
      * when the queue is "sync", so the seller's click never waits for Intigo.
      * Never throws.
      */
-    public static function dispatchSafely(int $sellerOrderId): void
+    public static function dispatchSafely(int $sellerOrderId, bool $manual = false): void
     {
         try {
             if (config('queue.default') === 'sync' && !app()->runningInConsole()) {
-                self::dispatchAfterResponse($sellerOrderId);
+                self::dispatchAfterResponse($sellerOrderId, $manual);
             } else {
-                self::dispatch($sellerOrderId);
+                self::dispatch($sellerOrderId, $manual);
             }
         } catch (\Throwable $e) {
             // The parcel stays 'pending'; intigo:sync-statuses picks it up again
@@ -52,7 +53,7 @@ class SendIntigoParcel implements ShouldQueue
 
     public function handle(ParcelSender $sender): void
     {
-        $result = $sender->send($this->sellerOrderId);
+        $result = $sender->send($this->sellerOrderId, $this->manual);
 
         if ($result['result'] === 'busy') {
             $this->release(60);

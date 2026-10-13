@@ -197,6 +197,7 @@ abstract class SellerOrderNotification extends Notification implements ShouldQue
         }
         if (in_array('valid phone', $pickup['missing'], true))       $missing[] = 'phone';
         if (in_array('valid postal code', $pickup['missing'], true)) $missing[] = 'postal_code';
+        if (in_array('map pin', $pickup['missing'], true))           $missing[] = 'gps';
 
         return [
             'shop'         => $pickup['shop_name'],

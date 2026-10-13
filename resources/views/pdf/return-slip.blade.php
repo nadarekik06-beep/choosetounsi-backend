@@ -115,7 +115,7 @@
                             <tr><td class="k"><span class="label">Tél</span></td><td><b>{{ $s['phone'] ?? '—' }}</b></td></tr>
                         </table>
                         <div style="margin-top: 4pt;" dir="{{ $dir($s['address']) }}">{{ $s['address'] ?? '—' }}</div>
-                        <div dir="{{ $dir($s['city']) }}">{{ $s['city'] }}</div>
+                        <div dir="{{ $dir($s['zone'] ?? $s['city']) }}">{{ $s['zone'] ?? $s['city'] }}</div>
                         <div><b>{{ trim(($s['postal_code'] ?? '') . ' ' . ($s['wilaya'] ?? '')) }}</b></div>
                         @if ($s['notes'])<div class="small muted">{{ $s['notes'] }}</div>@endif
                     </td></tr>

@@ -52,4 +52,21 @@ interface IntigoClient
      * @return array<int, array{index:int, label:string, raw:array}>
      */
     public function pickupAddresses(): array;
+
+    /**
+     * POST /pickup-addresses/: {street_address, city_id, district_id?,
+     * neighborhood_id?, latitude?, longitude?, is_primary?}. Intigo has no
+     * contact name / phone field. Creates a REAL address in live mode.
+     *
+     * @return array{index:int, label:string, raw:array}
+     */
+    public function createPickupAddress(array $body): array;
+
+    /**
+     * PATCH /pickup-addresses/{index}: partial update, the index stays.
+     * (Intigo has no delete.)
+     *
+     * @return array{index:int, label:string, raw:array}
+     */
+    public function updatePickupAddress(int $index, array $body): array;
 }

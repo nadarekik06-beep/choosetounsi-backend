@@ -109,6 +109,26 @@ class HttpIntigoClient implements IntigoClient
         return Shapes::pickupAddresses($body);
     }
 
+    public function createPickupAddress(array $body): array
+    {
+        return $this->pickupAnswer($this->request('POST', '/pickup-addresses/', $body, null));
+    }
+
+    public function updatePickupAddress(int $index, array $body): array
+    {
+        return $this->pickupAnswer($this->request('PATCH', '/pickup-addresses/' . $index, $body, null), $index);
+    }
+
+    private function pickupAnswer(mixed $body, ?int $index = null): array
+    {
+        $item = Shapes::pickupAddress($body);
+        if ($item === null || ($item['index'] === null && $index === null)) {
+            throw new IntigoException('Intigo answered without a pickup address index', 200, false, 'server', $body);
+        }
+        $item['index'] ??= $index;
+        return $item;
+    }
+
     // ── Internals ──────────────────────────────────────────────────────────
 
     /** @throws IntigoException */

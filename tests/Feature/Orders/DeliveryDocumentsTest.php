@@ -12,6 +12,7 @@ use App\Services\Orders\DeliveryDocumentService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Tests\Support\MakesPickupAddresses;
 use Tests\TestCase;
 
 /**
@@ -22,7 +23,7 @@ use Tests\TestCase;
  */
 class DeliveryDocumentsTest extends TestCase
 {
-    use DatabaseTransactions;
+    use DatabaseTransactions, MakesPickupAddresses;
 
     private const ADDRESS = [
         'recipient_name'  => 'سارة بن علي',          // Arabic names must survive end to end
@@ -83,6 +84,13 @@ class DeliveryDocumentsTest extends TestCase
             'pickup_postal_code'   => $completePickup ? '3021' : null,
             'status'               => 'approved',
         ]);
+        $zone = $this->pickupZone(\App\Models\IntigoZone::DELEGATION, '', 'Sakiet Ezzit', 'Sfax');
+        if ($completePickup) {
+            $this->givePickup($seller, true, ['zone' => $zone, 'contact_name' => 'Mohamed Trabelsi']);
+        } else {
+            // Legacy seller: nothing structured yet
+            \App\Models\SellerPickupAddress::create(['user_id' => $seller->id, 'contact_name' => 'Mohamed Trabelsi', 'phone' => '55111222', 'needs_review' => true]);
+        }
         return $seller;
     }
 
@@ -201,15 +209,18 @@ class DeliveryDocumentsTest extends TestCase
 
         $pickups = collect($res->json('data.seller_orders'))->keyBy(fn($so) => $so['pickup']['shop_name']);
         $this->assertTrue($pickups['Atelier Complet']['pickup']['complete']);
-        $this->assertSame('Route de Tunis km 5, Sakiet Ezzit, 3021 Sfax', $pickups['Atelier Complet']['pickup']['formatted']);
+        $this->assertSame('Route de Tunis km 5, Sakiet Ezzit (Sfax), 3021', $pickups['Atelier Complet']['pickup']['formatted']);
+        $this->assertSame('Sakiet Ezzit (Sfax)', $pickups['Atelier Complet']['pickup']['zone']);
         $this->assertFalse($pickups['Boutique Incomplète']['pickup']['complete']);
         $this->assertContains('postal code', $pickups['Boutique Incomplète']['pickup']['missing']);
+        $this->assertContains('map pin', $pickups['Boutique Incomplète']['pickup']['missing']);
 
-        // The admin fixes the pickup address from the drawer → order becomes exportable.
+        // The admin fixes the pickup address (seller page) → order becomes exportable.
+        $zone = $this->pickupZone(\App\Models\IntigoZone::SECTEUR, 'El Menzah 6', 'Ariana Ville', 'Ariana');
         $this->as($this->makeUser('admin'))->putJson("/api/admin/sellers/{$incomplete->id}/pickup-address", [
-            'full_name' => 'Leila Gharbi', 'phone_number' => '29 000 111', 'pickup_address' => 'Rue Ibn Khaldoun 4',
-            'city' => 'Menzah 6', 'pickup_postal_code' => '2091', 'wilaya' => 'Ariana',
-        ])->assertOk()->assertJsonPath('data.complete', true);
+            'contact_name' => 'Leila Gharbi', 'phone' => '29 000 111', 'adresse_complete' => 'Rue Ibn Khaldoun 4',
+            'intigo_zone_id' => $zone->id, 'code_postal' => '2091', 'latitude' => 36.84, 'longitude' => 10.17,
+        ])->assertOk()->assertJsonPath('data.pickup.complete', true);
 
         $this->as($this->makeUser('admin'))->getJson('/api/admin/orders/' . $order->id)
             ->assertJsonPath('data.export_readiness.ready', true);
@@ -361,15 +372,18 @@ class DeliveryDocumentsTest extends TestCase
 
         $this->as($seller)->getJson('/api/seller/pickup-address')->assertOk()->assertJsonPath('data.complete', false);
 
-        $this->as($seller)->putJson('/api/seller/pickup-address', [
-            'full_name' => 'Mohamed Trabelsi', 'phone_number' => '55111222', 'pickup_address' => 'Zone industrielle, lot 12',
-            'city' => 'Sakiet Ezzit', 'pickup_postal_code' => '30', 'wilaya' => 'Sfax',
-        ])->assertStatus(422)->assertJsonValidationErrors('pickup_postal_code');
+        $zone = $this->pickupZone(\App\Models\IntigoZone::DELEGATION, '', 'Sakiet Ezzit', 'Sfax');
+        $body = [
+            'contact_name' => 'Mohamed Trabelsi', 'phone' => '55111222', 'adresse_complete' => 'Zone industrielle, lot 12',
+            'intigo_zone_id' => $zone->id, 'code_postal' => '30', 'latitude' => 34.80, 'longitude' => 10.75,
+        ];
+        $this->as($seller)->putJson('/api/seller/pickup-address', $body)->assertStatus(422)->assertJsonValidationErrors('code_postal');
 
-        $this->as($seller)->putJson('/api/seller/pickup-address', [
-            'full_name' => 'Mohamed Trabelsi', 'phone_number' => '55111222', 'pickup_address' => 'Zone industrielle, lot 12',
-            'city' => 'Sakiet Ezzit', 'pickup_postal_code' => '3021', 'wilaya' => 'sfax',
-        ])->assertOk()->assertJsonPath('data.complete', true)->assertJsonPath('data.wilaya', 'Sfax');
+        $this->as($seller)->putJson('/api/seller/pickup-address', ['code_postal' => '3021'] + $body)
+            ->assertOk()->assertJsonPath('data.complete', true)->assertJsonPath('data.gouvernorat', 'Sfax')
+            ->assertJsonPath('data.zone.display_label', 'Sakiet Ezzit (Sfax)');
+        // wilaya / city mirrored on the application, derived from the zone
+        $this->assertSame(['Sfax', 'Sakiet Ezzit'], array_values(SellerApplication::where('user_id', $seller->id)->first(['wilaya', 'city'])->only('wilaya', 'city')));
 
         $this->assertSame('approved', SellerApplication::where('user_id', $seller->id)->value('status'));
     }

@@ -38,6 +38,8 @@ return [
         'city'        => 'city / delegation',
         'postal_code' => 'postal code',
         'wilaya'      => 'governorate',
+        'zone'        => 'zone (delegation / sector)',
+        'gps'         => 'map position',
     ],
 
     'tips' => [

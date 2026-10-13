@@ -94,8 +94,9 @@
                             <tr><td class="k"><span class="label">Tél</span></td><td><b>{{ $p['phone'] ?? '—' }}</b></td></tr>
                         </table>
                         <div style="margin-top: 4pt;" dir="{{ $dir($p['address']) }}">{{ $p['address'] ?? '—' }}</div>
-                        <div dir="{{ $dir($p['city']) }}">{{ $p['city'] }}</div>
+                        <div dir="{{ $dir($p['zone'] ?? $p['city']) }}">{{ $p['zone'] ?? $p['city'] }}</div>
                         <div><b>{{ trim(($p['postal_code'] ?? '') . ' ' . ($p['wilaya'] ?? '')) }}</b></div>
+                        @if (($p['latitude'] ?? null) !== null)<div class="small muted">GPS {{ number_format($p['latitude'], 6, '.', '') }}, {{ number_format($p['longitude'], 6, '.', '') }}</div>@endif
                         @if ($p['notes'])<div class="small muted">{{ $p['notes'] }}</div>@endif
                         @unless ($p['complete'])<div class="warn">Adresse incomplète : {{ implode(', ', $p['missing']) }}</div>@endunless
                     </td></tr>

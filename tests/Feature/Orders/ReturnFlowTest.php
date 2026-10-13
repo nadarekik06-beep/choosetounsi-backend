@@ -24,6 +24,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Tests\Support\MakesPickupAddresses;
 use Tests\TestCase;
 
 /**
@@ -36,7 +37,7 @@ use Tests\TestCase;
  */
 class ReturnFlowTest extends TestCase
 {
-    use DatabaseTransactions;
+    use DatabaseTransactions, MakesPickupAddresses;
 
     private const ADDRESS = [
         'recipient_name' => 'Sami Ben Salah',
@@ -77,6 +78,7 @@ class ReturnFlowTest extends TestCase
             'wilaya' => 'Sfax', 'city' => 'Sakiet Ezzit', 'pickup_address' => 'Route de Tunis km 5',
             'pickup_postal_code' => '3021', 'status' => 'approved',
         ]);
+        $this->givePickup($this->seller, true, ['contact_name' => 'Mohamed Trabelsi']);
         $this->admin = $this->makeUser('admin');
     }
 

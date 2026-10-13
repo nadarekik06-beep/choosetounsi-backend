@@ -60,6 +60,18 @@ class ScriptedIntigoClient implements IntigoClient
         return [['index' => 0, 'label' => 'Main', 'raw' => []], ['index' => 3, 'label' => 'Shop X', 'raw' => []]];
     }
 
+    public function createPickupAddress(array $body): array
+    {
+        $this->calls['createPickupAddress'][] = $body;
+        return ['index' => 40 + count($this->calls['createPickupAddress']), 'label' => $body['street_address'], 'raw' => $body];
+    }
+
+    public function updatePickupAddress(int $index, array $body): array
+    {
+        $this->calls['updatePickupAddress'][] = [$index, $body];
+        return ['index' => $index, 'label' => $body['street_address'] ?? '', 'raw' => $body];
+    }
+
     /** "Created at Intigo, but the answer was lost" */
     public static function timeoutAfterCreating(string $nid = 'LOST-1'): \Closure
     {

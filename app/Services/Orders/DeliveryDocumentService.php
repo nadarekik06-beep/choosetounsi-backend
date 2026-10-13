@@ -45,7 +45,7 @@ class DeliveryDocumentService
             'sellerOrders' => fn($q) => $q->orderBy('id'),
             'sellerOrders.items' => fn($q) => $q->orderBy('id'),
             'sellerOrders.seller:id,name,email',
-            'sellerOrders.seller.sellerApplication',
+            'sellerOrders.seller.sellerApplication', 'sellerOrders.seller.pickupAddress.zone',
         ]);
     }
 
@@ -237,7 +237,7 @@ class DeliveryDocumentService
      */
     public function returnSlip(\App\Models\Complaint $complaint): array
     {
-        $complaint->loadMissing(['order.user:id,name,email', 'seller.sellerApplication', 'user:id,name,email']);
+        $complaint->loadMissing(['order.user:id,name,email', 'seller.sellerApplication', 'seller.pickupAddress.zone', 'user:id,name,email']);
         \App\Models\Complaint::withItemSnapshots($complaint);
         $order  = $complaint->order;
         $pickup = SellerPickup::for($complaint->seller, $complaint->seller_id);

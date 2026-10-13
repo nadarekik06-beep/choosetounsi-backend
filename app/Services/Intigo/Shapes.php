@@ -71,6 +71,30 @@ class Shapes
     }
 
     /** @return array<int, array{index:int, label:string, raw:array}> */
+    /**
+     * One pickup address answer ({pickup_address: {...}}).
+     *
+     * @return array{index:?int, label:string, raw:array}|null
+     */
+    public static function pickupAddress(mixed $body): ?array
+    {
+        $item = is_array($body) ? ($body['pickup_address'] ?? $body['data'] ?? $body) : null;
+        if (!is_array($item)) {
+            return null;
+        }
+        $index = $item['index'] ?? $item['pickup_index'] ?? null;
+        $parts = array_filter([
+            $item['street_address'] ?? $item['address'] ?? null,
+            $item['district_name'] ?? null,
+            $item['city_name'] ?? null,
+        ], fn ($v) => is_string($v) && trim($v) !== '');
+        return [
+            'index' => is_numeric($index) ? (int) $index : null,
+            'label' => $parts ? implode(' — ', array_map('trim', $parts)) : 'Pickup address #' . $index,
+            'raw'   => $item,
+        ];
+    }
+
     public static function pickupAddresses(mixed $body): array
     {
         $out = [];
@@ -79,7 +103,7 @@ class Shapes
             $index = $item['index'] ?? $item['pickup_index'] ?? $item['idx'] ?? $i;
             $parts = array_filter([
                 $item['name'] ?? $item['label'] ?? null,
-                $item['address'] ?? $item['full_address'] ?? $item['adresse'] ?? null,
+                $item['street_address'] ?? $item['address'] ?? $item['full_address'] ?? $item['adresse'] ?? null,
                 $item['district_name'] ?? $item['district'] ?? null,
                 $item['city_name'] ?? $item['city'] ?? null,
                 $item['phone'] ?? null,

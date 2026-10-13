@@ -68,4 +68,11 @@ return [
 'openrouter' => [
     'key' => env('OPENROUTER_API_KEY'),
 ],
+
+// Approximate zone centres for the pickup-address map (App\Services\Intigo\ZoneGeocoder).
+// Nominatim's usage policy: identify the app, max 1 request per second.
+'nominatim' => [
+    'url'        => env('NOMINATIM_URL', 'https://nominatim.openstreetmap.org/search'),
+    'user_agent' => env('NOMINATIM_USER_AGENT', "ChooseTounsi/1.0 (pickup address map; contact@choosetounsi.com)"),
+],
 ];

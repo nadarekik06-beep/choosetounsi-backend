@@ -22,6 +22,12 @@ class SellerPickupResource extends JsonResource
             'city'        => $p['city'],
             'postal_code' => $p['postal_code'],
             'wilaya'      => $p['wilaya'],
+            'zone'        => $p['zone'] ?? null,
+            'zone_type'   => $p['zone_type'] ?? null,
+            'latitude'    => $p['latitude'] ?? null,
+            'longitude'   => $p['longitude'] ?? null,
+            'status'      => $p['status'] ?? null,        // seller_pickup_addresses status (null: platform)
+            'intigo_ready'=> $p['intigo_ready'] ?? false,
             'notes'       => $p['notes'],
             'formatted'   => SellerPickup::formatAddress($p),
             'is_platform' => $p['is_platform'],

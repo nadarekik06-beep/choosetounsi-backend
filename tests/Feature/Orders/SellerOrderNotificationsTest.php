@@ -24,6 +24,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Str;
+use Tests\Support\MakesPickupAddresses;
 use Tests\TestCase;
 
 /**
@@ -34,7 +35,7 @@ use Tests\TestCase;
  */
 class SellerOrderNotificationsTest extends TestCase
 {
-    use DatabaseTransactions;
+    use DatabaseTransactions, MakesPickupAddresses;
 
     private const ADDRESS = [
         'recipient_name' => 'سارة بن علي',
@@ -140,6 +141,12 @@ class SellerOrderNotificationsTest extends TestCase
             'pickup_postal_code'   => $completePickup ? '3021' : null,
             'status'               => 'approved',
         ]);
+        if ($completePickup) {
+            $this->givePickup($seller, true, [
+                'zone' => $this->pickupZone(\App\Models\IntigoZone::DELEGATION, '', 'Sakiet Ezzit', 'Sfax'),
+                'contact_name' => 'Mohamed Trabelsi',
+            ]);
+        }
         return $seller;
     }
 

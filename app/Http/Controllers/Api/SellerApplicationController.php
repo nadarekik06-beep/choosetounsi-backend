@@ -10,11 +10,11 @@ use App\Models\User;
 use App\Models\SellerApplication;
 use App\Notifications\NewSellerApplicationNotification;
 use App\Notifications\SellerApplicationReviewedNotification;
-use App\Support\SellerPickup;
+use App\Models\IntigoZone;
+use App\Models\SellerPickupAddress;
+use App\Services\Sellers\PickupAddressService;
 use App\Support\TunisianPhone;
-use App\Support\Wilayas;
 use Illuminate\Http\Request;
-use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
@@ -22,6 +22,8 @@ use Illuminate\Support\Facades\Storage;
 
 class SellerApplicationController extends Controller
 {
+    public function __construct(private PickupAddressService $pickups) {}
+
     // ── Shared validation rules ────────────────────────────────────────────
 
     private function validationRules(bool $isUpdate = false): array
@@ -38,12 +40,8 @@ class SellerApplicationController extends Controller
             'business_subcategories'     => 'nullable|array',           // ← NEW
             'business_subcategories.*'   => 'string|max:255',           // ← NEW
             'business_description'       => 'nullable|string|max:2000', // ← NOW OPTIONAL
-            'wilaya'                     => [...explode('|', $required), 'string', Rule::in(Wilayas::ALL)],
-            'city'                       => "{$required}|string|max:100",
-            // Pickup point for the courier (2026-10): required for new sellers
-            'pickup_address'             => "{$required}|string|min:5|max:500",
-            'pickup_postal_code'         => "{$required}|digits:4",
-            'pickup_notes'               => 'nullable|string|max:500',
+            // Pickup address (Intigo "Nouvelle adresse"): wilaya / city are derived from the zone
+            ...PickupAddressService::rules(!$isUpdate),
             'profile_picture'            => 'nullable|image|mimes:jpg,jpeg,png,webp|max:4096',
             'sample_images'              => 'nullable|array|max:5',
             'sample_images.*'            => 'image|mimes:jpg,jpeg,png,webp|max:4096',
@@ -174,9 +172,11 @@ class SellerApplicationController extends Controller
             ], 422);
         }
 
-        SellerPickup::prepare($request);
-        $validated = $request->validate($this->validationRules(false));
+        PickupAddressService::prepare($request);
+        $request->merge(['phone_number' => TunisianPhone::normalize($request->input('phone_number'))]);
+        $validated = $request->validate($this->validationRules(false), PickupAddressService::messages());
         $cats      = $this->resolveCategories($validated);
+        $zone      = IntigoZone::findOrFail($validated['intigo_zone_id']);
 
         $profilePicturePath = $this->handleProfilePicture($request);
         $sampleImagePaths   = $this->handleSampleImages($request);
@@ -190,11 +190,8 @@ class SellerApplicationController extends Controller
             'business_categories'    => $cats['all'],
             'business_subcategories' => $cats['subcats'],           // ← NEW
             'business_description'   => $validated['business_description'] ?? null,
-            'wilaya'                 => $validated['wilaya'],
-            'city'                   => $validated['city'],
-            'pickup_address'         => $validated['pickup_address'],
-            'pickup_postal_code'     => $validated['pickup_postal_code'],
-            'pickup_notes'           => $validated['pickup_notes'] ?? null,
+            'wilaya'                 => $zone->wilaya ?: $zone->gouvernorat,
+            'city'                   => $zone->delegation,
             'profile_picture'        => $profilePicturePath,
             'sample_images'          => $sampleImagePaths ?: null,
             'sample_captions'        => $validated['sample_captions'] ?? null,
@@ -206,6 +203,8 @@ class SellerApplicationController extends Controller
             'plan'                   => 'free',
             'pricing_range'          => $validated['pricing_range'] ?? null,
         ]);
+
+        $this->pickups->save($user, $validated, $user, 'application');
 
         Notification::send(
             User::getAllAdmins(),
@@ -249,8 +248,11 @@ class SellerApplicationController extends Controller
             ], 422);
         }
 
-        SellerPickup::prepare($request);
-        $validated = $request->validate($this->validationRules(true));
+        PickupAddressService::prepare($request);
+        if ($request->has('phone_number')) {
+            $request->merge(['phone_number' => TunisianPhone::normalize($request->input('phone_number'))]);
+        }
+        $validated = $request->validate($this->validationRules(true), PickupAddressService::messages());
         $cats      = $this->resolveCategories($validated);
 
         $profilePicturePath = $this->handleProfilePicture(
@@ -272,11 +274,6 @@ class SellerApplicationController extends Controller
             'business_categories'    => $cats['all']                   ?: $application->business_categories,
             'business_subcategories' => $cats['subcats'],
             'business_description'   => $validated['business_description'] ?? $application->business_description,
-            'wilaya'                 => $validated['wilaya']            ?? $application->wilaya,
-            'city'                   => $validated['city']              ?? $application->city,
-            'pickup_address'         => $validated['pickup_address']     ?? $application->pickup_address,
-            'pickup_postal_code'     => $validated['pickup_postal_code'] ?? $application->pickup_postal_code,
-            'pickup_notes'           => array_key_exists('pickup_notes', $validated) ? $validated['pickup_notes'] : $application->pickup_notes,
             'profile_picture'        => $profilePicturePath,
             'sample_images'          => $sampleImagePaths ?: $application->sample_images,
             'sample_captions'        => $validated['sample_captions']  ?? $application->sample_captions,
@@ -290,6 +287,13 @@ class SellerApplicationController extends Controller
             'rejection_reason'       => null,
             'reviewed_at'            => null,
         ]);
+
+        // Address fields sent: merged over the saved address (wilaya / city follow the zone)
+        $address = array_intersect_key($validated, array_flip(SellerPickupAddress::FIELDS));
+        if ($address) {
+            $current = SellerPickupAddress::where('user_id', $user->id)->first();
+            $this->pickups->save($user, $address + ($current ? $current->only(SellerPickupAddress::FIELDS) : []), $user, 'application');
+        }
 
         return response()->json([
             'success' => true,
@@ -326,14 +330,28 @@ class SellerApplicationController extends Controller
         ]);
     }
 
-    public function show(SellerApplication $application)
+    public function show(int $id)
     {
-        $application->load('user');
+        // Route parameter is {id}: resolve it here (implicit binding needs {application})
+        $application = SellerApplication::with('user')->findOrFail($id);
+        $record = SellerPickupAddress::with('zone')->where('user_id', $application->user_id)->first();
+        $application->setAttribute('pickup', $this->pickups->present($record, true));
+        $application->setAttribute('pickup_history', $this->pickups->history($application->user_id, 20));
         return response()->json(['success' => true, 'data' => $application]);
     }
 
     public function approve(Request $request, SellerApplication $application)
     {
+        // The courier must find the shop: no approval without a zone and a map pin
+        $pickup = SellerPickupAddress::where('user_id', $application->user_id)->first();
+        if (!$pickup || !$pickup->isLocated()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Cannot approve: the pickup address has no Intigo zone and/or map pin. Ask the seller to complete it.',
+                'missing' => $this->pickups->missing($pickup),
+            ], 422);
+        }
+
         $application->update([
             'status'      => 'approved',
             'plan'        => \App\Models\SubscriptionPlan::defaultPlan()->slug,
@@ -412,12 +430,10 @@ class SellerApplicationController extends Controller
             'business_categories'    => $app->business_categories    ?? [],
             'business_subcategories' => $app->business_subcategories ?? [],
             'pricing_range'          => $app->pricing_range,
-            // Step 2
+            // Step 2: the pickup address (Intigo form fields)
             'wilaya'                 => $app->wilaya,
             'city'                   => $app->city,
-            'pickup_address'         => $app->pickup_address,
-            'pickup_postal_code'     => $app->pickup_postal_code,
-            'pickup_notes'           => $app->pickup_notes,
+            'pickup'                 => $this->pickups->present(SellerPickupAddress::with('zone')->where('user_id', $app->user_id)->first()),
             // Step 3
             'business_description'   => $app->business_description,
             'profile_picture_url'    => $app->profile_picture

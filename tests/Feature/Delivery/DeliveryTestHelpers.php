@@ -16,6 +16,7 @@ use App\Services\FinancialSnapshotService;
 use App\Support\Millimes;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Tests\Support\MakesPickupAddresses;
 
 /**
  * Shared fixtures for the delivery-fee / COD finance tests.
@@ -24,6 +25,8 @@ use Illuminate\Support\Str;
  */
 trait DeliveryTestHelpers
 {
+    use MakesPickupAddresses;
+
     protected User $admin;
     protected User $customer;
 
@@ -88,6 +91,7 @@ trait DeliveryTestHelpers
             'wilaya' => 'Sfax', 'city' => 'Sakiet Ezzit', 'pickup_address' => 'Route de Tunis km 5',
             'pickup_postal_code' => '3021', 'status' => 'approved', 'plan' => $plan,
         ]);
+        $this->givePickup($seller);
         return $seller;
     }
 

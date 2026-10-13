@@ -34,7 +34,7 @@ class OrderController extends Controller
             'user:id,name,email',
             'sellerOrders:id,order_id,seller_id,status,subtotal,coupon_code,discount_amount',
             'sellerOrders.seller:id,name',
-            'sellerOrders.seller.sellerApplication', // pickup completeness → export readiness
+            'sellerOrders.seller.sellerApplication', 'sellerOrders.seller.pickupAddress.zone', // pickup completeness → export readiness
         ])
             ->withMax(['exports as slips_exported_at' => fn($q) => $q->whereIn('type', OrderExport::SLIP_TYPES)], 'created_at');
 
@@ -123,7 +123,7 @@ class OrderController extends Controller
             'items.variant.attributeOptions.attribute:id,slug,name,name_fr,name_ar,type',
             'sellerOrders' => fn($q) => $q->orderBy('id'),
             'sellerOrders.seller:id,name,email,phone,whatsapp_number,preferred_language,intigo_pickup_index,intigo_pickup_label',
-            'sellerOrders.seller.sellerApplication',
+            'sellerOrders.seller.sellerApplication', 'sellerOrders.seller.pickupAddress.zone',
             'exports' => fn($q) => $q->latest('created_at'),
             'exports.exporter:id,name',
         ])->findOrFail($id);
@@ -237,37 +237,6 @@ class OrderController extends Controller
         $order->setAttribute('export_history', OrderExportResource::collection($order->exports)->resolve());
         $order->setAttribute('slips_exported_at', optional($order->exports->whereIn('type', OrderExport::SLIP_TYPES)->first()?->created_at)->toIso8601String());
         $order->unsetRelation('exports');
-    }
-
-    /**
-     * PUT /api/admin/sellers/{sellerId}/pickup-address
-     *
-     * Lets the admin complete a seller's pickup address (typically after a
-     * phone call) so slips can be exported. Touches only the pickup fields of
-     * the seller's latest application — never its review status.
-     */
-    public function updateSellerPickup(Request $request, int $sellerId)
-    {
-        $application = SellerApplication::where('user_id', $sellerId)->latest()->first();
-        if (!$application) {
-            return response()->json([
-                'success' => false,
-                'message' => $sellerId === PlatformUser::id()
-                    ? "CHOOSE'Tounsi's own pickup address is set in the server .env (PLATFORM_PICKUP_*)."
-                    : 'This seller has no seller profile to update.',
-            ], 422);
-        }
-
-        SellerPickup::prepare($request);
-        $application->update($request->validate(SellerPickup::rules()));
-
-        Log::info('[AdminOrder::updateSellerPickup] seller ' . $sellerId . ' pickup updated by admin ' . $request->user()->id);
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Pickup address saved.',
-            'data'    => SellerPickupResource::make(SellerPickup::for(null, $sellerId))->resolve(),
-        ]);
     }
 
     /**

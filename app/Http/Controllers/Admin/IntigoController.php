@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\SellerOrder;
+use App\Models\SellerPickupAddress;
+use App\Services\Sellers\PickupAddressService;
 use App\Models\User;
 use App\Services\Delivery\DeliverySettings;
 use App\Services\Intigo\IntigoClient;
@@ -119,11 +121,15 @@ class IntigoController extends Controller
         $seller = User::findOrFail($sellerId);
         abort_unless(in_array($seller->role, ['seller', 'admin'], true) || $seller->sellerApplication, 422, 'Not a seller.');
 
-        $seller->forceFill([
-            'intigo_pickup_index' => $data['index'] ?? null,
-            'intigo_pickup_label' => ($data['index'] ?? null) === null ? null : ($data['label'] ?? null),
-        ])->save();
-        Log::info("[Intigo] seller {$sellerId} pickup index → " . ($data['index'] ?? 'none') . ' by admin ' . $request->user()->id);
+        if (($data['index'] ?? null) !== null) {
+            // Same rule as the seller page: only a verified address gets an Intigo index
+            app(PickupAddressService::class)->markCreatedManually($seller, $request->user(), (int) $data['index'], $data['label'] ?? null);
+        } else {
+            $seller->forceFill(['intigo_pickup_index' => null, 'intigo_pickup_label' => null])->save();
+            SellerPickupAddress::where('user_id', $seller->id)->update(['intigo_pickup_created' => false, 'intigo_pickup_created_at' => null, 'intigo_pickup_created_via' => null]);
+            Log::info("[Intigo] seller {$sellerId} pickup index → none by admin " . $request->user()->id);
+        }
+        $seller->refresh();
 
         return response()->json(['success' => true, 'message' => 'Intigo pickup address saved.', 'data' => [
             'intigo_pickup_index' => $seller->intigo_pickup_index,

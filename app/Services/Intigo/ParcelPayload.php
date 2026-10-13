@@ -7,7 +7,9 @@ use App\Models\SellerOrder;
 use App\Services\Delivery\DeliverySettings;
 use App\Services\Orders\DeliveryDocumentService;
 use App\Support\Millimes;
+use App\Services\Sellers\PickupAddressService;
 use App\Support\ParcelSize;
+use App\Support\SellerPickup;
 use App\Support\TunisianPhone;
 
 /**
@@ -47,6 +49,9 @@ class ParcelPayload
         $pickup = self::pickupIndex($so);
         if ($pickup === null) {
             $problems[] = 'seller has no Intigo pickup address';
+        } elseif (!$so->isPlatformParcel() && !SellerPickup::intigoReady($so->seller_id)) {
+            // Changed / unverified address: never send the driver to the old one
+            $problems[] = PickupAddressService::HOLD . ' (verify it and create it in Intigo from the seller page; the parcel is re-sent automatically)';
         }
 
         if (($order->payment_method ?? 'cod') !== 'cod') {

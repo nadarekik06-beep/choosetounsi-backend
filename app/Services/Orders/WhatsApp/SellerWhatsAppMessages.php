@@ -60,7 +60,7 @@ class SellerWhatsAppMessages
 
     public function build(SellerOrder $parcel, int $attempt): string
     {
-        $parcel->loadMissing(['order:id,order_number', 'seller.sellerApplication', 'items:id,seller_order_id,quantity']);
+        $parcel->loadMissing(['order:id,order_number', 'seller.sellerApplication', 'seller.pickupAddress.zone', 'items:id,seller_order_id,quantity']);
         $seller = $parcel->seller;
 
         $language = in_array($seller?->preferred_language, self::LANGUAGES, true) ? $seller->preferred_language : 'fr';

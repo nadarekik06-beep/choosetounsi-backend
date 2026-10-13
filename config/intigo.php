@@ -28,6 +28,10 @@ return [
     // Pickup address index of CHOOSE'Tounsi's own products (sellers: set per seller in the admin)
     'platform_pickup_index' => env('INTIGO_PLATFORM_PICKUP_INDEX'),
 
+    // Intigo's pickup addresses have no contact field: append "— Contact : name phone"
+    // to street_address so the driver calls the seller, not the CHOOSE'Tounsi account.
+    'pickup_contact_in_address' => filter_var(env('INTIGO_PICKUP_CONTACT_IN_ADDRESS', true), FILTER_VALIDATE_BOOLEAN),
+
     // Identification headers recommended by Intigo on parcel creation
     'platform'         => 'choosetounsi',
     'platform_version' => '1.0',

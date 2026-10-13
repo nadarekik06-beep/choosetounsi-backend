@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Models\Product;
 use App\Models\SellerApplication;
+use App\Models\SellerPickupAddress;
 use App\Notifications\ProductReviewedNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -15,7 +16,19 @@ class SellerController extends Controller
 {
     public function index(Request $request)
     {
-    $query = User::sellers()->withCount('products')->with('sellerApplication');
+    $query = User::sellers()->withCount('products')->with(['sellerApplication', 'pickupAddress']);
+
+        // Pickup address status: changed | needs_review | unverified | verified | created | to_update (changed + needs_review + unverified)
+        if ($pickup = $request->query('pickup_status')) {
+            if ($pickup === 'to_update') {
+                $query->where(fn ($q) => $q->whereDoesntHave('pickupAddress')
+                    ->orWhereHas('pickupAddress', fn ($a) => $a->where(fn ($w) => $w->where('intigo_pickup_created', false)->orWhere('address_verified_by_admin', false)->orWhere('change_pending', true))));
+            } elseif ($pickup === SellerPickupAddress::STATUS_NEEDS_REVIEW) {
+                $query->where(fn ($q) => $q->whereDoesntHave('pickupAddress')->orWhereHas('pickupAddress', fn ($a) => $a->whereStatus($pickup)));
+            } else {
+                $query->whereHas('pickupAddress', fn ($a) => $a->whereStatus($pickup));
+            }
+        }
 
         if ($status = $request->query('status')) {
             if ($status === 'approved')       $query->where('is_approved', true)->where('is_active', true);
@@ -43,12 +56,18 @@ $paginated = $query->orderByDesc('created_at')->paginate($request->query('per_pa
             $app = $seller->sellerApplication;
             $seller->active_plan    = $app?->plan           ?? 'free';
             $seller->preferred_plan = $app?->preferred_plan ?? 'green';
+            $seller->pickup_status  = $seller->pickupAddress?->status() ?? SellerPickupAddress::STATUS_NEEDS_REVIEW;
+            $seller->unsetRelation('pickupAddress');
             return $seller;
         });
+
+        $counts = SellerPickupAddress::query()->whereIn('user_id', User::sellers()->select('id'))->get()
+            ->countBy(fn (SellerPickupAddress $a) => $a->status());
 
         return response()->json([
             'success' => true,
             'data'    => $paginated,
+            'pickup_counts' => $counts,
         ]);
     }
 
@@ -87,9 +106,10 @@ $paginated = $query->orderByDesc('created_at')->paginate($request->query('per_pa
             'active_plan'          => $app ? $app->plan         : 'free',
             'preferred_plan'       => $app ? $app->preferred_plan : 'green',
             'pricing_range'        => $app?->pricing_range,
-            // Intigo pickup address (created in the Intigo dashboard, index picked here)
+            // Intigo pickup address: full card at GET /admin/sellers/{id}/pickup
             'intigo_pickup_index'  => $seller->intigo_pickup_index,
             'intigo_pickup_label'  => $seller->intigo_pickup_label,
+            'pickup_status'        => SellerPickupAddress::where('user_id', $seller->id)->first()?->status() ?? SellerPickupAddress::STATUS_NEEDS_REVIEW,
         ]]);
     }
 

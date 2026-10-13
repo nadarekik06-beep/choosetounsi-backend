@@ -595,4 +595,12 @@ return [
     ],
     'order_prepared'     => 'Order marked as prepared.',
     'order_not_preparable' => 'Only a confirmed order, not yet handed to the courier, can be marked as prepared.',
+    'pickup' => [
+        'zone_invalid' => 'Pick a zone from the list (Intigo delegation or sector).',
+        'pin_required' => 'Place the marker on the map (or use “My position”).',
+        'pin_outside'  => 'The marker must be in Tunisia.',
+        'saved'        => 'Pickup address saved.',
+        'unchanged'    => 'Nothing changed.',
+        'pending_validation' => "Address saved. The CHOOSE'Tounsi team must validate it before your next pickups.",
+    ],
 ];

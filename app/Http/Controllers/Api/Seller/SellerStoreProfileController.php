@@ -4,7 +4,8 @@ namespace App\Http\Controllers\Api\Seller;
 
 use App\Http\Controllers\Controller;
 use App\Models\SellerApplication;
-use App\Support\SellerPickup;
+use App\Models\SellerPickupAddress;
+use App\Services\Sellers\PickupAddressService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -81,47 +82,41 @@ class SellerStoreProfileController extends Controller
     /**
      * GET /api/seller/pickup-address
      *
-     * Where the courier collects this seller's parcels, plus which fields are
-     * still missing (delivery slips can't be printed until it's complete).
+     * The pickup address (Intigo form fields), its status (verified by the
+     * admin, created at Intigo) and what is still missing.
      */
-    public function pickupAddress(Request $request): JsonResponse
+    public function pickupAddress(Request $request, PickupAddressService $pickups): JsonResponse
     {
-        $seller = $request->user();
-        $pickup = SellerPickup::for($seller);
+        $record = SellerPickupAddress::with('zone')->where('user_id', $request->user()->id)->first();
 
-        return response()->json(['success' => true, 'data' => [
-            'full_name'          => $pickup['contact'],
-            'phone_number'       => $pickup['phone'],
-            'pickup_address'     => $pickup['address'],
-            'city'               => $pickup['city'],
-            'pickup_postal_code' => $pickup['postal_code'],
-            'wilaya'             => $pickup['wilaya'],
-            'pickup_notes'       => $pickup['notes'],
-            'complete'           => $pickup['complete'],
-            'missing'            => $pickup['missing'],
-        ]]);
+        return response()->json(['success' => true, 'data' => $pickups->present($record)]);
     }
 
     /**
      * PUT /api/seller/pickup-address
      *
-     * Updates only the pickup fields of the seller's latest application —
-     * no re-review, unlike SellerApplicationController::update().
+     * Saves the address (no re-review of the application). Any change resets
+     * the admin verification and the Intigo flag, is logged, and notifies the
+     * admins: new parcels wait until the admin updated Intigo.
      */
-    public function updatePickupAddress(Request $request): JsonResponse
+    public function updatePickupAddress(Request $request, PickupAddressService $pickups): JsonResponse
     {
-        $application = SellerApplication::where('user_id', $request->user()->id)->latest()->first();
-
-        if (!$application) {
+        $seller = $request->user();
+        if (!SellerApplication::where('user_id', $seller->id)->exists()) {
             return response()->json([
                 'success' => false,
                 'message' => __('seller.store.no_application'),
             ], 422);
         }
 
-        SellerPickup::prepare($request);
-        $application->update($request->validate(SellerPickup::rules()));
+        $result = $pickups->save($seller, PickupAddressService::validated($request), $seller, 'settings');
+        $record = $result['record']->load('zone');
 
-        return $this->pickupAddress($request);
+        return response()->json([
+            'success' => true,
+            'changed' => $result['changed'],
+            'message' => $result['changed'] ? __('seller.pickup.pending_validation') : __('seller.pickup.unchanged'),
+            'data'    => $pickups->present($record),
+        ]);
     }
 }

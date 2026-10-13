@@ -146,8 +146,8 @@ class IntigoRegions
         return ['cities' => count($cityRows), 'districts' => $districtCount, 'neighborhoods' => $neighborhoodCount];
     }
 
-    /** Public endpoint (no key). */
-    private function get(string $path): mixed
+    /** Public endpoint (no key). Also used by IntigoZones. */
+    public function get(string $path): mixed
     {
         $started = microtime(true);
         try {

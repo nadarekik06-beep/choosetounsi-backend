@@ -38,6 +38,8 @@ return [
         'city'        => 'ville / délégation',
         'postal_code' => 'code postal',
         'wilaya'      => 'gouvernorat',
+        'zone'        => 'zone (délégation / secteur)',
+        'gps'         => 'position sur la carte',
     ],
 
     'tips' => [

@@ -595,4 +595,12 @@ return [
     ],
     'order_prepared'     => 'Commande marquée comme préparée.',
     'order_not_preparable' => 'Seule une commande confirmée, pas encore remise au livreur, peut être marquée comme préparée.',
+    'pickup' => [
+        'zone_invalid' => 'Choisissez une zone dans la liste (délégation ou secteur Intigo).',
+        'pin_required' => 'Placez le marqueur sur la carte (ou utilisez « Ma Position »).',
+        'pin_outside'  => 'Le marqueur doit être placé en Tunisie.',
+        'saved'        => "Adresse d'enlèvement enregistrée.",
+        'unchanged'    => 'Aucune modification.',
+        'pending_validation' => "Adresse enregistrée. Elle doit être validée par l'équipe CHOOSE'Tounsi avant vos prochains enlèvements.",
+    ],
 ];

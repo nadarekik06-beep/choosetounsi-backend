@@ -81,6 +81,7 @@ class User extends Authenticatable implements HasLocalePreference
     public function orders()             { return $this->hasMany(Order::class); }
     public function sellerApplication()  { return $this->hasOne(SellerApplication::class)->latest(); }
     public function sellerApplications() { return $this->hasMany(SellerApplication::class); }
+    public function pickupAddress()      { return $this->hasOne(SellerPickupAddress::class); }
 
     public function preferences()
     {
