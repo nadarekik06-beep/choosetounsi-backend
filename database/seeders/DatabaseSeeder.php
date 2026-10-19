@@ -17,6 +17,13 @@ class DatabaseSeeder extends Seeder
         $this->call(AdminSeeder::class);
         $this->call([
         CategorySeeder::class,]);
+
+        // Everything below is demo data (password "password"): never in production.
+        if (app()->environment('production')) {
+            $this->command->warn('Production: demo sellers, clients, products and orders skipped.');
+            return;
+        }
+
         // ── Sellers ───────────────────────────────────────────────
         $approvedSeller = User::updateOrCreate(
             ['email' => 'seller1@example.com'],
@@ -212,10 +219,6 @@ class DatabaseSeeder extends Seeder
 
         echo "\n==============================================\n";
         echo "✅ Database seeded successfully!\n";
-        echo "==============================================\n";
-        echo "Admin Login:\n";
-        echo "  Email:    admin@choosetounsi.com\n";
-        echo "  Password: Admin@1234!\n";
         echo "==============================================\n";
     }
 }

@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use Database\Seeders\Concerns\DevelopmentOnly;
 use App\Services\VisitorInsights\FunnelAggregator;
 use App\Services\VisitorInsights\FunnelBenchmarks;
 use App\Services\VisitorInsights\TrafficSource;
@@ -31,6 +32,8 @@ use Illuminate\Support\Str;
  */
 class FunnelDemoSeeder extends Seeder
 {
+    use DevelopmentOnly;
+
     public const DOMAIN        = '@choosetounsi.test';
     public const EMAIL_LIKE    = 'funnel-demo-%@choosetounsi.test';
     public const CATEGORY_LIKE = 'demo-funnel-%';
@@ -48,6 +51,8 @@ class FunnelDemoSeeder extends Seeder
 
     public function run(): void
     {
+        $this->refuseInProduction();
+
         mt_srand(4242);
         $this->today = CarbonImmutable::now(config('funnel.timezone'))->startOfDay();
         if (DB::table('users')->where('email', 'funnel-demo-black' . self::DOMAIN)->exists()) {

@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use Database\Seeders\Concerns\DevelopmentOnly;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
@@ -19,8 +20,12 @@ use Carbon\Carbon;
  */
 class AlertTestSeeder extends Seeder
 {
+    use DevelopmentOnly;
+
     public function run(int $sellerId = 1): void
     {
+        $this->refuseInProduction();
+
         $categoryId = DB::table('categories')->value('id') ?? 1;
 
         $scenarios = [

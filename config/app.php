@@ -60,6 +60,10 @@ return [
     // Admin panel (separate Next.js app): links in admin e-mails.
     'admin_url' => env('ADMIN_URL', 'http://localhost:3001'),
 
+    // First admin account, created by database/seeders/AdminSeeder.php.
+    // The password is required in production; change it after the first login.
+    'admin_initial_password' => env('ADMIN_INITIAL_PASSWORD'),
+
     'asset_url' => env('ASSET_URL', null),
 
     /*

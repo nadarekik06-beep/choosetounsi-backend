@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use Database\Seeders\Concerns\DevelopmentOnly;
 use App\Models\CalendarEvent;
 use App\Services\Forecast\Calendar;
 use App\Services\Forecast\EventEffectMeasurer;
@@ -27,6 +28,8 @@ use Illuminate\Support\Str;
  */
 class ForecastDemoSeeder extends Seeder
 {
+    use DevelopmentOnly;
+
     public const DOMAIN   = '@choosetounsi.test';
     /** Every account this seeder creates matches this LIKE pattern — and nothing else
      *  (the older DemoCatalog accounts share the @choosetounsi.test domain). */
@@ -39,6 +42,8 @@ class ForecastDemoSeeder extends Seeder
 
     public function run(): void
     {
+        $this->refuseInProduction();
+
         mt_srand(2026);
         $this->today = CarbonImmutable::now(config('forecast.timezone'))->startOfDay();
         if (DB::table('users')->where('email', 'forecast-demo' . self::DOMAIN)->exists()) {

@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use Database\Seeders\Concerns\DevelopmentOnly;
 use App\Services\GrowthRadar\GrowthRadar;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Seeder;
@@ -24,6 +25,8 @@ use Illuminate\Support\Str;
  */
 class GrowthDemoSeeder extends Seeder
 {
+    use DevelopmentOnly;
+
     public const DOMAIN     = '@choosetounsi.test';
     public const EMAIL_LIKE = 'growth-%@choosetounsi.test';
     public const CATEGORY_LIKE = 'demo-growth-%';
@@ -37,6 +40,8 @@ class GrowthDemoSeeder extends Seeder
 
     public function run(): void
     {
+        $this->refuseInProduction();
+
         mt_srand(2027);
         $this->today = GrowthRadar::today();
         if (DB::table('users')->where('email', 'growth-demo' . self::DOMAIN)->exists()) {
