@@ -14,3 +14,9 @@ yarn-error.log
 /.idea
 /.vscode
 .env.testing
+
+# JVM crash dumps and one-off scratch files
+hs_err_pid*.log
+replay_pid*.log
+/fix.py
+/route_error.txt
