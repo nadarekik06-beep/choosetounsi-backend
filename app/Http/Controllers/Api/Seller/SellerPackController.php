@@ -223,7 +223,7 @@ public function show(Request $request, int $id)
                 'variants.attributeOptions.attribute:id,slug,name,name_fr,name_ar',
             ])
             ->orderBy('name')
-            ->limit(50)
+            ->limit(500)
             ->get()
             ->map(fn($p) => [
                 'id'                => $p->id,
@@ -231,6 +231,9 @@ public function show(Request $request, int $id)
                 'price'             => (float) $p->price,
                 'primary_image_url' => $p->primary_image_url,
                 'has_variants'      => $p->variants->isNotEmpty(),
+                'stock'             => $p->variants->isNotEmpty()
+                    ? (int) $p->variants->sum('stock')
+                    : (int) $p->stock,
                 'variants'          => $p->variants->map(fn($v) => [
                     'id'             => $v->id,
                     'label'          => $v->label,
