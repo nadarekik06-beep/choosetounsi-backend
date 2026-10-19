@@ -492,6 +492,8 @@ class SubcategoryAndAttributeSeeder extends Seeder
             }
         }
 
+        $this->call(CatalogTranslationsSeeder::class);
+
         $this->command->info('✅ SubcategoryAndAttributeSeeder completed.');
         $this->command->info('   Subcategories seeded: ' . count($subcategoryIds));
         $this->command->info('   Attributes seeded:    ' . count($attrIds));

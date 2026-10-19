@@ -42,5 +42,7 @@ class CategorySeeder extends Seeder
                 ]
             );
         }
+
+        $this->call(CatalogTranslationsSeeder::class);
     }
 }

@@ -1,7 +1,7 @@
 <?php
 
 // Catalog translations keyed by the English base name: 'English' => [French, Arabic].
-// Used by the 2026_09_25_100002 migration to pre-fill name_fr / name_ar / value_fr / value_ar.
+// Used by CatalogTranslationsSeeder (catalog seeders + the 2026_09_25_100002 migration) to fill name_fr / name_ar / value_fr / value_ar.
 
 return [
 
