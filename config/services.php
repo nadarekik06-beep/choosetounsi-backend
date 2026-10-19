@@ -65,9 +65,6 @@ return [
 'serper' => [
     'key' => env('SERPER_API_KEY', ''),
 ],
-'openrouter' => [
-    'key' => env('OPENROUTER_API_KEY'),
-],
 
 // Approximate zone centres for the pickup-address map (App\Services\Intigo\ZoneGeocoder).
 // Nominatim's usage policy: identify the app, max 1 request per second.
