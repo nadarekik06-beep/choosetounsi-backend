@@ -52,8 +52,7 @@ Route::get('/home', function () {
 
 })->middleware('auth')->name('home');
 
-// Include role-specific routes
-require __DIR__.'/admin.php';   // Admin routes
+// Admin routes (routes/admin.php) are mounted once, under /api/admin, by RouteServiceProvider.
 
 /*
 | Local only: preview the seller order e-mails without sending anything.
