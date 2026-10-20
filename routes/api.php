@@ -194,6 +194,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/profile/email',          [ProfileApiController::class, 'requestEmailChange'])->middleware('throttle:5,1');
     Route::post('/profile/email/verify',   [ProfileApiController::class, 'confirmEmailChange'])->middleware('throttle:10,1');
     Route::put('/profile/notifications',   [ProfileApiController::class, 'updateNotifications']);
+    Route::post('/profile/skip-prompt',    [ProfileApiController::class, 'skipPrompt'])->middleware('throttle:10,1');
     Route::get('/profile/overview',        [\App\Http\Controllers\Api\Client\ProfileOverviewController::class, 'overview']);
     Route::get('/profile/reviews',         [\App\Http\Controllers\Api\Client\ProfileOverviewController::class, 'reviews']);
     Route::get('/profile/followed-sellers',[\App\Http\Controllers\Api\Client\ProfileOverviewController::class, 'followedSellers']);
@@ -238,10 +239,10 @@ Route::middleware('auth:sanctum')->group(function () {
     // What the order will cost, per parcel (the storefront only displays this)
     Route::post('/checkout/quote',   [CheckoutController::class, 'quote']);
 
-    Route::middleware('profile.complete')->group(function () {
-        Route::post('/checkout',         [CheckoutController::class, 'store']);
-        Route::post('/checkout/buy-now', [CheckoutController::class, 'buyNow']);
-    });
+    // No profile.complete gate: checkout validates its own full delivery address
+    // and saves it to an incomplete profile (ProfileFromCheckout).
+    Route::post('/checkout',         [CheckoutController::class, 'store']);
+    Route::post('/checkout/buy-now', [CheckoutController::class, 'buyNow']);
 
     // Client notifications
     Route::prefix('notifications')->group(function () {

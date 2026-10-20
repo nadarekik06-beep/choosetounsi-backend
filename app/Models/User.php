@@ -58,6 +58,7 @@ class User extends Authenticatable implements HasLocalePreference
         'is_active'           => 'boolean',
         'is_approved'         => 'boolean',
         'onboarding_completed' => 'boolean',
+        'profile_prompt_skipped_at' => 'datetime',
         'has_password'         => 'boolean',
         'date_of_birth'        => 'date:Y-m-d',
         'notification_preferences' => 'array',

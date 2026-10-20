@@ -27,6 +27,7 @@ use App\Services\StockAlertService;
 use App\Services\PromotionService;
 use App\Services\Recommendation\InteractionTracker;
 use App\Support\Millimes;
+use App\Support\ProfileFromCheckout;
 use App\Support\ShippingAddress;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -505,6 +506,13 @@ class CheckoutController extends Controller
         }
         // Credit lines bought after clicking an ad to that campaign (never throws).
         app(AttributionService::class)->recordOrder($order, InteractionTracker::sessionIdFrom($request));
+
+        // A shopper who skipped /complete-profile: the delivery details fill the empty profile fields.
+        try {
+            ProfileFromCheckout::fill($request->user(), ShippingAddress::columns($request));
+        } catch (\Throwable $e) {
+            Log::warning('[Checkout] profile fill failed: ' . $e->getMessage());
+        }
     }
 
     private function variantLabel(?ProductVariant $variant): ?string

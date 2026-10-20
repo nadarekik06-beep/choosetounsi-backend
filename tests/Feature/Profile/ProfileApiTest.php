@@ -114,20 +114,33 @@ class ProfileApiTest extends TestCase
             ->assertStatus(422)->assertJsonValidationErrors('date_of_birth');
     }
 
-    public function test_profile_completion_and_checkout_gate(): void
+    public function test_profile_completion_and_checkout_is_not_gated(): void
     {
         $user = $this->makeUser();
         Sanctum::actingAs($user);
 
-        $this->postJson('/api/checkout', [])->assertStatus(403)->assertJsonPath('code', 'profile_incomplete');
+        // Incomplete profile: checkout asks for the address itself (validation), no 403.
+        $this->postJson('/api/checkout', [])->assertStatus(422);
 
         $user->update(['first_name' => 'Sami', 'last_name' => 'Trabelsi', 'phone' => '55123456']);
         $this->addAddress($user);
         $this->assertTrue($user->fresh()->profileCompletion()->isComplete());
         $this->assertSame(80, $user->fresh()->profileCompletion()->percent());
+    }
 
-        // Past the gate: now it is ordinary checkout validation.
-        $this->postJson('/api/checkout', [])->assertStatus(422);
+    public function test_skip_prompt_is_remembered_and_exposed(): void
+    {
+        $user = $this->makeUser();
+        $this->postJson('/api/profile/skip-prompt')->assertStatus(401);
+
+        Sanctum::actingAs($user);
+        $this->postJson('/api/profile/skip-prompt')->assertOk();
+        $this->assertNotNull($user->fresh()->profile_prompt_skipped_at);
+
+        $this->getJson('/api/auth/user')->assertOk()
+            ->assertJsonPath('user.profile_completed', false)
+            ->assertJson(['user' => ['profile_prompt_skipped_at' => $user->fresh()->profile_prompt_skipped_at->toISOString()]]);
+        $this->assertNotNull($this->getJson('/api/profile')->json('data.profile_prompt_skipped_at'));
     }
 
     public function test_sellers_and_admins_are_not_gated(): void

@@ -47,6 +47,7 @@ class AuthController extends Controller
             'avatar'               => $user->avatar ?? null,
             'onboarding_completed' => (bool) $user->onboarding_completed,
             'profile_completed'    => $user->profileCompletion()->isComplete(),
+            'profile_prompt_skipped_at' => $user->profile_prompt_skipped_at?->toISOString(),
         ];
     }
 
@@ -416,6 +417,7 @@ class AuthController extends Controller
                 'active_plan'          => $application?->plan ?? 'free',
                 'onboarding_completed' => (bool) $user->onboarding_completed,
                 'profile_completed'    => $user->profileCompletion()->isComplete(),
+                'profile_prompt_skipped_at' => $user->profile_prompt_skipped_at?->toISOString(),
             ],
         ]);
     }

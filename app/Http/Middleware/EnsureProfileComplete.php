@@ -8,6 +8,10 @@ use Illuminate\Http\Request;
 /**
  * Shoppers must complete their profile (name, phone, one delivery address)
  * before placing an order. Other roles pass through — see ProfileCompletion.
+ *
+ * Not applied to any route at the moment: shoppers may skip /complete-profile
+ * and checkout fills the profile instead (ProfileFromCheckout). Kept, with its
+ * 'profile.complete' alias, in case the gate is needed again.
  */
 class EnsureProfileComplete
 {

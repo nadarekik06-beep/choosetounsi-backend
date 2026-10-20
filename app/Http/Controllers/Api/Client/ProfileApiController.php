@@ -293,6 +293,21 @@ class ProfileApiController extends Controller
     }
 
     /**
+     * POST /api/profile/skip-prompt — "Skip for now" on /complete-profile.
+     * The storefront asks again at most once every 7 days after this.
+     */
+    public function skipPrompt(Request $request)
+    {
+        $user = $request->user();
+        $user->forceFill(['profile_prompt_skipped_at' => now()])->save();
+
+        return response()->json([
+            'success' => true,
+            'data'    => ['profile_prompt_skipped_at' => $user->profile_prompt_skipped_at->toISOString()],
+        ]);
+    }
+
+    /**
      * Request seller role
      */
     public function requestSellerRole(Request $request)
@@ -351,6 +366,7 @@ class ProfileApiController extends Controller
             'notification_settings' => \App\Notifications\Support\NotificationPreferences::settings($user),
             'marketing_emails_opt_in' => (bool) $user->marketing_emails_opt_in,
             'completion'        => $user->profileCompletion()->toArray(),
+            'profile_prompt_skipped_at' => $user->profile_prompt_skipped_at?->toISOString(),
         ];
     }
 
