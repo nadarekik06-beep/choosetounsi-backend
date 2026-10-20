@@ -54,7 +54,7 @@ class PublicPackController extends Controller
             ->with([
                 'seller:id,name',
                 'items' => fn($q) => $q->orderBy('order')->with([
-                    'product:id,name,slug,price,stock',
+                    'product:id,name,slug,price,stock,delivery_fee',
                     'product.primaryImage',
                     'product.variants' => fn($q) => $q
                         ->where('is_active', true)
@@ -122,6 +122,9 @@ class PublicPackController extends Controller
             'savings'           => (float) $pack->savings,
             'is_active'         => $pack->is_active,
             'items_count'       => $pack->items->count(),
+            // Same rule as checkout (OrderPricing): a pack ships free only if all its products do
+            'is_free_delivery'  => $pack->items->isNotEmpty()
+                && $pack->items->every(fn($item) => $item->product && $item->product->isFreeDelivery()),
             'seller'            => $pack->seller ? [
                 'id'   => $pack->seller->id,
                 'name' => $pack->seller->name,
