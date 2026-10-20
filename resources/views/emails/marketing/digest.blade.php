@@ -34,7 +34,7 @@
   </tr>
   <tr>
     <td style="padding:8px 32px 28px;text-align:center;">
-      <a class="btn-cta" href="{{ rtrim(config('app.frontend_url'), '/') }}?utm_source=email&utm_medium=digest"
+      <a class="btn-cta" href="{{ frontend_url('/') }}?utm_source=email&utm_medium=digest"
          style="display:inline-block;background:#db142e;color:#ffffff;font-family:'Barlow',Arial,sans-serif;font-size:14px;font-weight:800;text-decoration:none;padding:13px 26px;border-radius:8px;">
         {{ __('emails.marketing.see_more') }}
       </a>

@@ -182,7 +182,7 @@ abstract class SellerOrderNotification extends Notification implements ShouldQue
             'shipping'       => $shipping > 0 ? $this->money($shipping) : null,
             'net_label'      => $this->money($net),
             'dashboard_path' => $path,
-            'dashboard_url'  => rtrim(config('app.frontend_url'), '/') . $path,
+            'dashboard_url'  => frontend_url() . $path,
         ];
     }
 
@@ -205,7 +205,7 @@ abstract class SellerOrderNotification extends Notification implements ShouldQue
             'phone'        => $pickup['phone'],
             'complete'     => $pickup['complete'],
             'missing'      => array_map(fn($k) => __("order_notifications.pickup_fields.{$k}"), array_unique($missing)),
-            'settings_url' => rtrim(config('app.frontend_url'), '/') . '/seller/settings#pickup',
+            'settings_url' => frontend_url() . '/seller/settings#pickup',
         ];
     }
 

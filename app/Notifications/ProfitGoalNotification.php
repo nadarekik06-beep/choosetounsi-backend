@@ -63,7 +63,7 @@ class ProfitGoalNotification extends Notification implements ShouldQueue
             'title'   => $this->title(),
             'body'    => $this->body(),
             'cta'     => __('profit.notify.cta'),
-            'url'     => rtrim((string) config('app.frontend_url'), '/') . '/seller/black/profit',
+            'url'     => frontend_url() . '/seller/black/profit',
             'footer'  => __('profit.notify.footer'),
             'rtl'     => app()->getLocale() === 'ar',
             'logoUrl' => config('seller_notifications.logo_url'),

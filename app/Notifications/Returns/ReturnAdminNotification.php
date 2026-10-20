@@ -57,7 +57,7 @@ class ReturnAdminNotification extends Notification
     public function toMail($notifiable): MailMessage
     {
         [$title] = self::TEXT[$this->event];
-        $url = rtrim((string) config('app.admin_url'), '/') . '/complaints?id=' . $this->complaint->id;
+        $url = admin_url() . '/complaints?id=' . $this->complaint->id;
 
         $mail = (new MailMessage)
             ->subject("{$title} — {$this->complaint->reference}")

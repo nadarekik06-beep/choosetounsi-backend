@@ -61,7 +61,7 @@ abstract class StockAlertNotification extends Notification implements ShouldQueu
             'intro'   => __("seller.notif.{$this->kind()}.mail_intro"),
             'items'   => array_map(fn($i) => ['name' => $this->itemName($i), 'line' => $this->itemLine($i)], $this->items),
             'cta'     => __('seller.notif.stock_mail.cta'),
-            'url'     => rtrim(config('app.frontend_url'), '/') . $this->path(),
+            'url'     => frontend_url() . $this->path(),
             'footer'  => __('seller.notif.stock_mail.footer'),
             'rtl'     => app()->getLocale() === 'ar',
             'logoUrl' => config('seller_notifications.logo_url'),

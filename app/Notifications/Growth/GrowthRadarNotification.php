@@ -51,7 +51,7 @@ class GrowthRadarNotification extends Notification implements ShouldQueue
             'title'   => $this->title(),
             'body'    => $this->body(),
             'cta'     => __('growth.notify.cta'),
-            'url'     => rtrim((string) config('app.frontend_url'), '/') . '/seller/growth-radar',
+            'url'     => frontend_url() . '/seller/growth-radar',
             'footer'  => __('growth.notify.footer'),
             'rtl'     => app()->getLocale() === 'ar',
             'logoUrl' => config('seller_notifications.logo_url'),

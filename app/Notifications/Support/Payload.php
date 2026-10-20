@@ -142,7 +142,7 @@ final class Payload
     {
         if (!is_string($link) || trim($link) === '') return null;
 
-        $front = rtrim((string) config('app.frontend_url'), '/');
+        $front = frontend_url();
         if ($front !== '' && str_starts_with($link, $front)) {
             $link = substr($link, strlen($front)) ?: '/';
         }

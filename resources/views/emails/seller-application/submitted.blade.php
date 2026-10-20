@@ -283,7 +283,7 @@
             <p style="margin:0 0 20px;font-family:'Barlow',Arial,sans-serif;font-size:13px;color:#6b7280;">
               📧 <a href="mailto:sellers@choosetounsi.tn" style="color:#db142e;text-decoration:none;font-weight:600;">sellers@choosetounsi.tn</a>
               &nbsp;&nbsp;|&nbsp;&nbsp;
-              📚 <a href="{{ config('app.url') }}/seller-faq" style="color:#198f41;text-decoration:none;font-weight:600;">{!! __('seller.mail.submitted.faq') !!}</a>
+              📚 <a href="{{ frontend_url('/become-a-vendor') }}" style="color:#198f41;text-decoration:none;font-weight:600;">{!! __('seller.mail.submitted.faq') !!}</a>
             </p>
             <p style="margin:0;font-family:'Barlow',Arial,sans-serif;font-size:12px;color:#9ca3af;">{!! __('seller.mail.submitted.reference') !!} <strong>#APP-{{ str_pad($application->id ?? 0, 6, '0', STR_PAD_LEFT) }}</strong></p>
           </td>

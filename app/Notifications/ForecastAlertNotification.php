@@ -54,7 +54,7 @@ class ForecastAlertNotification extends Notification implements ShouldQueue
             'title'    => $this->line('title'),
             'body'     => $this->line('body'),
             'cta'      => __('forecast.notif.cta'),
-            'url'      => rtrim(config('app.frontend_url'), '/') . $this->path(),
+            'url'      => frontend_url() . $this->path(),
             'footer'   => __('forecast.notif.footer'),
             'rtl'      => app()->getLocale() === 'ar',
             'logoUrl'  => config('seller_notifications.logo_url'),

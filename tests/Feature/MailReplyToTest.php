@@ -52,4 +52,23 @@ class MailReplyToTest extends TestCase
 
         $this->artisan('mail:test', ['to' => 'not-an-address'])->assertExitCode(1);
     }
+
+    public function test_mail_test_can_send_the_seller_approved_email_to_another_address(): void
+    {
+        \Illuminate\Support\Facades\DB::beginTransaction();
+        try {
+            $user = \App\Models\User::create(['name' => 'Approved Seller', 'email' => 'approved_' . uniqid() . '@test.local', 'password' => bcrypt('x'), 'role' => 'seller', 'is_active' => true]);
+            \App\Models\SellerApplication::create([
+                'user_id' => $user->id, 'full_name' => 'Approved Seller', 'phone_number' => '55111222', 'business_name' => 'Shop A',
+                'business_category' => 'crafts', 'business_description' => 'x', 'wilaya' => 'Sfax', 'city' => 'Sfax',
+                'pickup_address' => 'Route', 'pickup_postal_code' => '3021', 'status' => 'approved',
+            ]);
+            Mail::fake();
+            $this->artisan('mail:test', ['to' => 'someone@example.com', '--seller-approved' => true])->assertExitCode(0);
+            Mail::assertQueued(\App\Mail\SellerApplicationApprovedMail::class,
+                fn ($m) => $m->hasTo('someone@example.com') && !$m->hasTo($user->email) && $m->queue === 'emails');
+        } finally {
+            \Illuminate\Support\Facades\DB::rollBack();
+        }
+    }
 }

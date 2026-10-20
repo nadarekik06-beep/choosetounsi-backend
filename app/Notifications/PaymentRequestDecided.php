@@ -50,7 +50,7 @@ class PaymentRequestDecided extends Notification implements ShouldQueue
         return (new MailMessage)
             ->subject($this->title())
             ->line($this->body())
-            ->action(__('payments.notif.view'), rtrim((string) config('app.frontend_url'), '/') . $this->link());
+            ->action(__('payments.notif.view'), frontend_url() . $this->link());
     }
 
     private function key(): string

@@ -98,8 +98,8 @@ class ComplaintCreatedNotification extends Notification
             ->action(
                 $isAdmin ? __('seller.notif.complaint_created.action_admin') : __('seller.notif.complaint_created.action_seller'),
                 $isAdmin
-                    ? url("/admin/complaints/{$this->complaint->id}")
-                    : rtrim((string) config('app.frontend_url'), '/') . '/seller/complaints?id=' . $this->complaint->id
+                    ? admin_url("/complaints?id={$this->complaint->id}")
+                    : frontend_url() . '/seller/complaints?id=' . $this->complaint->id
             )
             ->line(__('seller.notif.complaint_created.outro'));
     }

@@ -81,7 +81,7 @@ class SellerRejectedComplaintNotification extends Notification
             ->line('**Item(s):** ' . (implode(' · ', $this->complaint->itemSummaries()) ?: '—'))
             ->line("**Seller's Reason:** {$this->complaint->rejection_reason}")
             ->line("**Seller's Note:** {$this->complaint->seller_note}")
-            ->action('Review & Decide', url("/admin/complaints/{$this->complaint->id}"))
+            ->action('Review & Decide', admin_url("/complaints?id={$this->complaint->id}"))
             ->line('Please review the complaint and make the final decision (confirm rejection or override to approved).');
     }
 }

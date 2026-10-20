@@ -75,13 +75,13 @@
             <table role="presentation" cellspacing="0" cellpadding="0" border="0">
               <tr>
                 <td style="border-radius:3px;background:#198f41;" align="center">
-                  <a href="{{ config('app.url') }}/seller/dashboard" class="btn-cta" style="font-family:'Barlow',Arial,sans-serif;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;padding:15px 32px;display:inline-block;letter-spacing:1.5px;text-transform:uppercase;border-radius:3px;">
+                  <a href="{{ frontend_url('/seller') }}" class="btn-cta" style="font-family:'Barlow',Arial,sans-serif;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;padding:15px 32px;display:inline-block;letter-spacing:1.5px;text-transform:uppercase;border-radius:3px;">
                     🚀 {!! __('seller.mail.approved.start') !!}
                   </a>
                 </td>
                 <td width="16">&nbsp;</td>
                 <td style="border-radius:3px;background:transparent;border:2px solid #c9963a;" align="center">
-                  <a href="{{ config('app.url') }}/seller/products/create" class="btn-cta" style="font-family:'Barlow',Arial,sans-serif;font-size:14px;font-weight:700;color:#c9963a;text-decoration:none;padding:13px 28px;display:inline-block;letter-spacing:1.5px;text-transform:uppercase;border-radius:3px;">
+                  <a href="{{ frontend_url('/seller/products?create=1') }}" class="btn-cta" style="font-family:'Barlow',Arial,sans-serif;font-size:14px;font-weight:700;color:#c9963a;text-decoration:none;padding:13px 28px;display:inline-block;letter-spacing:1.5px;text-transform:uppercase;border-radius:3px;">
                     + {!! __('seller.mail.approved.add_first') !!}
                   </a>
                 </td>
@@ -163,7 +163,7 @@
                 <td style="vertical-align:top;padding-top:6px;">
                   <p style="margin:0 0 4px;font-family:'Barlow',Arial,sans-serif;font-size:15px;font-weight:700;color:#0f1117;">{!! __('seller.mail.approved.step1_title') !!}</p>
                   <p style="margin:0;font-family:'Barlow',Arial,sans-serif;font-size:13px;color:#6b7280;line-height:1.6;">{!! __('seller.mail.approved.step1_text') !!}</p>
-                  <a href="{{ config('app.url') }}/seller/profile" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:700;color:#db142e;text-decoration:none;">{!! __('seller.mail.approved.step1_link') !!}</a>
+                  <a href="{{ frontend_url('/seller/settings') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:700;color:#db142e;text-decoration:none;">{!! __('seller.mail.approved.step1_link') !!}</a>
                 </td>
               </tr>
             </table>
@@ -181,7 +181,7 @@
                 <td style="vertical-align:top;padding-top:6px;">
                   <p style="margin:0 0 4px;font-family:'Barlow',Arial,sans-serif;font-size:15px;font-weight:700;color:#0f1117;">{!! __('seller.mail.approved.step2_title') !!}</p>
                   <p style="margin:0;font-family:'Barlow',Arial,sans-serif;font-size:13px;color:#6b7280;line-height:1.6;">{!! __('seller.mail.approved.step2_text') !!}</p>
-                  <a href="{{ config('app.url') }}/seller/products/create" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:700;color:#198f41;text-decoration:none;">{!! __('seller.mail.approved.step2_link') !!}</a>
+                  <a href="{{ frontend_url('/seller/products?create=1') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:700;color:#198f41;text-decoration:none;">{!! __('seller.mail.approved.step2_link') !!}</a>
                 </td>
               </tr>
             </table>
@@ -199,7 +199,7 @@
                 <td style="vertical-align:top;padding-top:6px;">
                   <p style="margin:0 0 4px;font-family:'Barlow',Arial,sans-serif;font-size:15px;font-weight:700;color:#0f1117;">{!! __('seller.mail.approved.step3_title') !!}</p>
                   <p style="margin:0;font-family:'Barlow',Arial,sans-serif;font-size:13px;color:#6b7280;line-height:1.6;">{!! __('seller.mail.approved.step3_text') !!}</p>
-                  <a href="{{ config('app.url') }}/seller/dashboard" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:700;color:#c9963a;text-decoration:none;">{!! __('seller.mail.approved.step3_link') !!}</a>
+                  <a href="{{ frontend_url('/seller') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:700;color:#c9963a;text-decoration:none;">{!! __('seller.mail.approved.step3_link') !!}</a>
                 </td>
               </tr>
             </table>
@@ -260,7 +260,7 @@
                       <li style="font-family:'Barlow',Arial,sans-serif;font-size:12px;color:#e5e7eb;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.06);">✅ {!! __('seller.mail.approved.f_sponsored') !!}</li>
                       <li style="font-family:'Barlow',Arial,sans-serif;font-size:12px;color:#e5e7eb;padding:4px 0;">✅ {!! __('seller.mail.approved.f_analytics') !!}</li>
                     </ul>
-                    <a href="{{ config('app.url') }}/seller/plans?upgrade=red" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:700;color:#ffffff;text-decoration:none;padding:10px 20px;display:block;letter-spacing:1px;text-transform:uppercase;background:#db142e;border-radius:3px;">
+                    <a href="{{ frontend_url('/seller/subscription') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:700;color:#ffffff;text-decoration:none;padding:10px 20px;display:block;letter-spacing:1px;text-transform:uppercase;background:#db142e;border-radius:3px;">
                       {!! __('seller.mail.approved.upgrade_red') !!}
                     </a>
                   </div>
@@ -282,7 +282,7 @@
                       <li style="font-family:'Barlow',Arial,sans-serif;font-size:12px;color:#e5e7eb;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.06);">✅ {!! __('seller.mail.approved.f_priority') !!}</li>
                       <li style="font-family:'Barlow',Arial,sans-serif;font-size:12px;color:#e5e7eb;padding:4px 0;">✅ {!! __('seller.mail.approved.f_vip') !!}</li>
                     </ul>
-                    <a href="{{ config('app.url') }}/seller/plans?upgrade=black" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:700;color:#0f1117;text-decoration:none;padding:10px 20px;display:block;letter-spacing:1px;text-transform:uppercase;background:#c9963a;border-radius:3px;">
+                    <a href="{{ frontend_url('/seller/subscription') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:700;color:#0f1117;text-decoration:none;padding:10px 20px;display:block;letter-spacing:1px;text-transform:uppercase;background:#c9963a;border-radius:3px;">
                       {!! __('seller.mail.approved.upgrade_black') !!}
                     </a>
                   </div>
@@ -294,7 +294,7 @@
 
         <tr>
           <td align="center" style="padding-top:24px;">
-            <a href="{{ config('app.url') }}/seller/plans" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;color:#6b7280;text-decoration:underline;">{!! __('seller.mail.approved.compare') !!}</a>
+            <a href="{{ frontend_url('/seller/subscription') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;color:#6b7280;text-decoration:underline;">{!! __('seller.mail.approved.compare') !!}</a>
           </td>
         </tr>
 
@@ -351,7 +351,7 @@
         <!-- Dashboard CTA -->
         <tr>
           <td align="center" style="padding-top:24px;">
-            <a href="{{ config('app.url') }}/seller/dashboard" style="font-family:'Barlow',Arial,sans-serif;font-size:13px;font-weight:700;color:#ffffff;text-decoration:none;padding:14px 40px;display:inline-block;letter-spacing:2px;text-transform:uppercase;background:#0f1117;border-radius:3px;">
+            <a href="{{ frontend_url('/seller') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:13px;font-weight:700;color:#ffffff;text-decoration:none;padding:14px 40px;display:inline-block;letter-spacing:2px;text-transform:uppercase;background:#0f1117;border-radius:3px;">
               {!! __('seller.mail.approved.open_dashboard') !!}
             </a>
           </td>

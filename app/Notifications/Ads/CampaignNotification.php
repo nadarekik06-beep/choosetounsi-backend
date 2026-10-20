@@ -58,7 +58,7 @@ abstract class CampaignNotification extends Notification implements ShouldQueue
         return (new MailMessage)
             ->subject($this->title())
             ->line($this->body())
-            ->action(__('ads.notif.view'), rtrim((string) config('app.frontend_url'), '/') . $this->link());
+            ->action(__('ads.notif.view'), frontend_url() . $this->link());
     }
 
     protected function link(): string

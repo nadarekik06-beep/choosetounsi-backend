@@ -52,13 +52,13 @@
             <table role="presentation" cellspacing="0" cellpadding="0" border="0">
               <tr>
                 <td style="border-radius:3px;background:#db142e;" align="center">
-                  <a href="{{ config('app.url') }}/shop" class="btn-cta" style="font-family:'Barlow',Arial,sans-serif;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;padding:14px 32px;display:inline-block;letter-spacing:1.5px;text-transform:uppercase;border-radius:3px;">
+                  <a href="{{ frontend_url('/shop') }}" class="btn-cta" style="font-family:'Barlow',Arial,sans-serif;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;padding:14px 32px;display:inline-block;letter-spacing:1.5px;text-transform:uppercase;border-radius:3px;">
                     {!! __('emails.welcome.shop_now') !!}
                   </a>
                 </td>
                 <td width="16">&nbsp;</td>
                 <td style="border-radius:3px;background:transparent;border:2px solid #198f41;" align="center">
-                  <a href="{{ config('app.url') }}/deals" class="btn-cta" style="font-family:'Barlow',Arial,sans-serif;font-size:14px;font-weight:700;color:#198f41;text-decoration:none;padding:12px 32px;display:inline-block;letter-spacing:1.5px;text-transform:uppercase;border-radius:3px;">
+                  <a href="{{ frontend_url('/deals') }}" class="btn-cta" style="font-family:'Barlow',Arial,sans-serif;font-size:14px;font-weight:700;color:#198f41;text-decoration:none;padding:12px 32px;display:inline-block;letter-spacing:1.5px;text-transform:uppercase;border-radius:3px;">
                     {!! __('emails.welcome.deals') !!}
                   </a>
                 </td>
@@ -215,11 +215,14 @@
                 @foreach($featuredProducts ?? [] as $product)
                 <!-- Product Card -->
                 <td class="product-col" width="25%" style="padding:0 6px;vertical-align:top;">
-                  <a href="{{ config('app.url') }}/products/{{ $product['slug'] ?? '#' }}" style="text-decoration:none;display:block;">
+                  <a href="{{ !empty($product['slug']) ? frontend_url('/products/' . $product['slug']) : frontend_url('/shop') }}" style="text-decoration:none;display:block;">
                     <div style="background:#1a1d27;border-radius:4px;overflow:hidden;">
-                      <img src="{{ $product['image'] ?? config('app.url') . '/images/placeholder.jpg' }}"
+                      {{-- No placeholder file exists (it was a 404): no photo, no image --}}
+                      @if(!empty($product['image']))
+                      <img src="{{ $product['image'] }}"
                            alt="{{ $product['name'] ?? __('emails.welcome.product') }}"
                            width="130" style="width:100%;display:block;max-height:130px;object-fit:cover;">
+                      @endif
                       <div style="padding:12px;">
                         <p style="margin:0 0 4px;font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#e5e7eb;line-height:1.3;">{{ Str::limit($product['name'] ?? __('emails.welcome.product'), 30) }}</p>
                         <p style="margin:0;font-family:'Barlow Condensed',Arial,sans-serif;font-size:16px;font-weight:800;color:#db142e;">{{ number_format($product['price'] ?? 0, 2) }} <span style="font-size:11px;">DT</span></p>
@@ -257,7 +260,7 @@
         <!-- Shop All CTA -->
         <tr>
           <td align="center" style="padding-top:32px;">
-            <a href="{{ config('app.url') }}/shop" style="font-family:'Barlow',Arial,sans-serif;font-size:13px;font-weight:700;color:#ffffff;text-decoration:none;padding:14px 40px;display:inline-block;letter-spacing:2px;text-transform:uppercase;border:2px solid #db142e;border-radius:3px;">
+            <a href="{{ frontend_url('/shop') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:13px;font-weight:700;color:#ffffff;text-decoration:none;padding:14px 40px;display:inline-block;letter-spacing:2px;text-transform:uppercase;border:2px solid #db142e;border-radius:3px;">
               {!! __('emails.welcome.browse_all') !!}
             </a>
           </td>
@@ -307,7 +310,7 @@
         </tr>
         <tr>
           <td align="center">
-            <a href="{{ config('app.url') }}/become-seller" style="font-family:'Barlow',Arial,sans-serif;font-size:13px;font-weight:700;color:#ffffff;text-decoration:none;padding:14px 36px;display:inline-block;letter-spacing:1.5px;text-transform:uppercase;background:#198f41;border-radius:3px;">
+            <a href="{{ frontend_url('/become-a-vendor') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:13px;font-weight:700;color:#ffffff;text-decoration:none;padding:14px 36px;display:inline-block;letter-spacing:1.5px;text-transform:uppercase;background:#198f41;border-radius:3px;">
               {!! __('emails.welcome.become_seller') !!}
             </a>
           </td>

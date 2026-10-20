@@ -117,7 +117,7 @@ abstract class BuyerNotification extends Notification implements ShouldQueue
                 'lines'   => $this->mailLines(),
                 'table'   => $this->mailTable(),
                 'button'  => $link ? $this->mailButton() : null,
-                'url'     => $link ? rtrim((string) config('app.frontend_url'), '/') . $link : null,
+                'url'     => $link ? frontend_url() . $link : null,
                 'footer'  => __("buyer_notifications.mail.footer.{$this->category()}"),
             ]);
     }

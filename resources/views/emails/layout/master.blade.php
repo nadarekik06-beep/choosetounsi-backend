@@ -112,10 +112,10 @@
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
                 <tr>
                   <td align="center">
-                    <a href="{{ config('app.url') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#9ca3af;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">{!! __('emails.layout.shop') !!}</a>
-                    <a href="{{ config('app.url') }}/sellers" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#9ca3af;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">{!! __('emails.layout.sellers') !!}</a>
-                    <a href="{{ config('app.url') }}/deals" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#db142e;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">{!! __('emails.layout.deals') !!}</a>
-                    <a href="{{ config('app.url') }}/categories" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#9ca3af;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">{!! __('emails.layout.categories') !!}</a>
+                    <a href="{{ frontend_url('/') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#9ca3af;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">{!! __('emails.layout.shop') !!}</a>
+                    <a href="{{ frontend_url('/become-a-vendor') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#9ca3af;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">{!! __('emails.layout.sellers') !!}</a>
+                    <a href="{{ frontend_url('/deals') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#db142e;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">{!! __('emails.layout.deals') !!}</a>
+                    <a href="{{ frontend_url('/shop') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:12px;font-weight:600;color:#9ca3af;text-decoration:none;letter-spacing:1px;margin:0 12px;text-transform:uppercase;">{!! __('emails.layout.categories') !!}</a>
                   </td>
                 </tr>
               </table>
@@ -144,14 +144,8 @@
                   </td>
                 </tr>
 
-                <!-- Social Icons -->
-                <tr>
-                  <td align="center" style="padding-bottom:28px;">
-                    <a href="#" style="display:inline-block;margin:0 8px;width:36px;height:36px;background:#1a1d27;border-radius:50%;line-height:36px;text-align:center;text-decoration:none;font-size:16px;">📘</a>
-                    <a href="#" style="display:inline-block;margin:0 8px;width:36px;height:36px;background:#1a1d27;border-radius:50%;line-height:36px;text-align:center;text-decoration:none;font-size:16px;">📷</a>
-                    <a href="#" style="display:inline-block;margin:0 8px;width:36px;height:36px;background:#1a1d27;border-radius:50%;line-height:36px;text-align:center;text-decoration:none;font-size:16px;">🐦</a>
-                  </td>
-                </tr>
+                {{-- Social icons removed: no Facebook / Instagram / X account URL yet (they linked to "#").
+                     Put them back here with the real profile URLs once they exist. --}}
 
                 <!-- Divider -->
                 <tr>
@@ -159,11 +153,14 @@
                     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
                       <tr>
                         <td align="center" style="padding-bottom:8px;">
-                          <a href="{{ $unsubscribeUrl ?? '#' }}" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">{!! __('emails.layout.unsubscribe') !!}</a>
+                          {{-- Unsubscribe only on marketing e-mails (they pass $unsubscribeUrl: the one-click
+                               endpoint, RFC 8058). Transactional mail has nothing to unsubscribe from. --}}
+                          @if(!empty($unsubscribeUrl))
+                          <a href="{{ $unsubscribeUrl }}" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">{!! __('emails.layout.unsubscribe') !!}</a>
                           <span style="color:#4b5563;font-size:11px;">|</span>
-                          <a href="{{ config('app.url') }}/privacy" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">{!! __('emails.layout.privacy') !!}</a>
-                          <span style="color:#4b5563;font-size:11px;">|</span>
-                          <a href="{{ config('app.url') }}/contact" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">{!! __('emails.layout.contact') !!}</a>
+                          @endif
+                          {{-- No privacy-policy page on the storefront yet: link removed until /privacy exists. --}}
+                          <a href="mailto:{{ config('mail.from.address') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">{!! __('emails.layout.contact') !!}</a>
                         </td>
                       </tr>
                       <tr>

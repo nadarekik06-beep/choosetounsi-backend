@@ -85,7 +85,7 @@ class SellerPickupChangedNotification extends Notification
     {
         $new = $this->change->new_values ?? [];
         $old = $this->change->old_values ?? [];
-        $url = rtrim((string) config('app.admin_url'), '/') . $this->link();
+        $url = admin_url() . $this->link();
 
         $mail = (new MailMessage)
             ->subject("Adresse de pickup modifiée : mettre à jour dans Intigo ({$this->shop()})")
