@@ -195,6 +195,10 @@ class ChatEndpointTest extends TestCase
             ['/products/robe-rouge-ete', true],
             ['/auth/login?redirect=/orders', true],
             ['#cart', true],
+            ['/contact', true],
+            ['/privacy', true],
+            ['/terms', true],
+            ['https://wa.me/21657252576', false],   // outside links never become buttons (number is in the text)
             ['https://evil.example/phish', false],
             ['//evil.example', false],
             ['javascript:alert(1)', false],
@@ -205,6 +209,21 @@ class ChatEndpointTest extends TestCase
             ['/cart', false],
             ['/orders?x=<script>', false],
         ];
+    }
+
+    /** choosetounsi.tn has no mailbox (no MX): the bot sends people to the contact page and WhatsApp instead. */
+    public function test_knowledge_base_has_no_domain_email_and_points_to_contact(): void
+    {
+        $this->assertDoesNotMatchRegularExpression('/[\w.+-]+@choosetounsi\.(tn|com)/i', json_encode(config('chatbot_kb'), JSON_UNESCAPED_UNICODE));
+
+        $kb = app(\App\Services\Chat\KnowledgeBase::class);
+        foreach (['fr', 'en', 'ar'] as $lang) {
+            $answer = $kb->answer('account_help', 'wallet', $lang);
+            $text   = json_encode($answer, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $this->assertStringContainsString('https://choosetounsi.tn/contact', $text, $lang);
+            $this->assertStringContainsString('+216 57 252 576', $text, $lang);
+            $this->assertContains('/contact', array_column(array_filter($answer['actions'], fn ($a) => $a && $a['type'] === 'link'), 'url'), $lang);
+        }
     }
 
     public function test_public_platform_endpoints_match_the_code(): void

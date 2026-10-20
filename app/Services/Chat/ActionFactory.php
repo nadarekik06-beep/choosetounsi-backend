@@ -23,6 +23,7 @@ class ActionFactory
         '/complaints', '/complaints/new', '/become-a-vendor', '/profile', '/account/addresses',
         '/auth/login', '/auth/register', '/auth/forgot-password',
         '/seller', '/seller/products', '/seller/subscription', '/seller/orders',
+        '/contact', '/privacy', '/terms',
         '#cart',
     ];
 
