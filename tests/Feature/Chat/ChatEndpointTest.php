@@ -226,6 +226,34 @@ class ChatEndpointTest extends TestCase
         }
     }
 
+    /**
+     * Arabic / darija wallet questions (المحفظة, محفظة, رصيد, نشحن…) get the wallet answer
+     * from the rules alone (Groq is stubbed to fail here), with the contact page + WhatsApp.
+     *
+     * @dataProvider arabicWalletQuestions
+     */
+    public function test_arabic_wallet_questions_get_the_wallet_answer(string $message): void
+    {
+        $res = $this->chat($message, null, null, 'ar')->assertOk()->assertJsonPath('intent', 'account_help')->assertJsonPath('language', 'ar');
+        $body = json_encode($res->json(), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $this->assertStringContainsString('محفظة', $res->json('reply'), $message);
+        $this->assertStringContainsString('https://choosetounsi.tn/contact', $body, $message);
+        $this->assertStringContainsString('+216 57 252 576', $body, $message);
+        $this->assertContains('/contact', array_column($res->json('actions'), 'url'), $message);
+    }
+
+    public function arabicWalletQuestions(): array
+    {
+        return [
+            'المحفظة + نزيد فلوس' => ['كيفاش نزيد فلوس في المحفظة؟'],
+            'نشحن المحفظة'       => ['كيفاش نشحن المحفظة'],
+            'نشحن محفظة'         => ['نحب نشحن محفظة'],
+            'رصيد'               => ['قداش رصيدي؟'],
+            'شحن الرصيد'         => ['كيفاش نشحن الرصيد متاعي'],
+            'MSA'                => ['كيف أضيف رصيدًا إلى محفظتي؟'],
+        ];
+    }
+
     public function test_public_platform_endpoints_match_the_code(): void
     {
         config(['services.d17.account_number' => '']);
