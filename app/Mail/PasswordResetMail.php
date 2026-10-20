@@ -22,7 +22,7 @@ class PasswordResetMail extends Mailable
 
         // Build the full frontend reset URL with token + email as query params.
         // The Next.js page at /auth/reset-password will read these from the URL.
-        $frontendUrl    = env('FRONTEND_URL', 'http://localhost:3000');
+        $frontendUrl    = rtrim((string) config('app.frontend_url'), '/');
         $this->resetUrl = $frontendUrl
             . '/auth/reset-password?token='
             . urlencode($token)

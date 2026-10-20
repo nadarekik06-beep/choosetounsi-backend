@@ -447,7 +447,7 @@ class AuthController extends Controller
         try {
             $googleUser = Socialite::driver('google')->stateless()->user();
         } catch (\Exception $e) {
-            return redirect(env('FRONTEND_URL', 'http://localhost:3000') . '/auth/login?error=google_failed');
+            return redirect(rtrim((string) config('app.frontend_url'), '/') . '/auth/login?error=google_failed');
         }
 
         $user = User::where('google_id', $googleUser->getId())
@@ -466,7 +466,7 @@ class AuthController extends Controller
             ]);
 
             if (!$user->is_active) {
-                return redirect(env('FRONTEND_URL', 'http://localhost:3000') . '/auth/login?error=account_deactivated');
+                return redirect(rtrim((string) config('app.frontend_url'), '/') . '/auth/login?error=account_deactivated');
             }
         } else {
             $user = User::create([
@@ -500,7 +500,7 @@ class AuthController extends Controller
         $token = $user->createToken('api-token')->plainTextToken;
 
         $userData    = base64_encode(json_encode($this->userResponse($user)));
-        $frontendUrl = env('FRONTEND_URL', 'http://localhost:3000');
+        $frontendUrl = rtrim((string) config('app.frontend_url'), '/');
 
         return redirect("{$frontendUrl}/auth/google/callback?token={$token}&user={$userData}");
     }

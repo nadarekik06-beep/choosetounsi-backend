@@ -13,9 +13,9 @@ use Illuminate\Support\Facades\Auth;
 Route::match(['get', 'post'], '/unsubscribe/{token}', [\App\Http\Controllers\MarketingConsentController::class, 'unsubscribe'])
     ->where('token', '[A-Za-z0-9]{40}')->middleware('throttle:30,1')->name('marketing.unsubscribe');
 
-// Public homepage
+// API root (there is no welcome view: the storefront is a separate app)
 Route::get('/', function () {
-    return view('welcome');
+    return response()->json(['name' => config('app.name'), 'status' => 'ok']);
 });
 
 // Authentication routes (login, register, logout)
