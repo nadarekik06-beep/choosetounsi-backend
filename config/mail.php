@@ -26,11 +26,13 @@ return [
             'password'   => env('MAIL_PASSWORD'),
             'timeout'    => 30,
             'auth_mode'  => null,
+            // TLS certificate checked (Brevo has a valid one): the SMTP key is sent over this link.
+            // Only for a local test server with a self-signed cert: MAIL_VERIFY_PEER=false
             'stream'     => [
                 'ssl' => [
-                    'allow_self_signed' => true,
-                    'verify_peer'       => false,
-                    'verify_peer_name'  => false,
+                    'allow_self_signed' => !filter_var(env('MAIL_VERIFY_PEER', true), FILTER_VALIDATE_BOOLEAN),
+                    'verify_peer'       => filter_var(env('MAIL_VERIFY_PEER', true), FILTER_VALIDATE_BOOLEAN),
+                    'verify_peer_name'  => filter_var(env('MAIL_VERIFY_PEER', true), FILTER_VALIDATE_BOOLEAN),
                 ],
             ],
         ],
@@ -79,6 +81,19 @@ return [
     'from' => [
         'address' => env('MAIL_FROM_ADDRESS', 'hello@example.com'),
         'name'    => env('MAIL_FROM_NAME', 'Example'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Global "Reply-To" Address
+    |--------------------------------------------------------------------------
+    | Added to every e-mail (mailables and notifications): replies to
+    | contact@choosetounsi.tn go to this inbox. Empty = no Reply-To header.
+    */
+
+    'reply_to' => [
+        'address' => env('MAIL_REPLY_TO_ADDRESS') ?: null,
+        'name'    => env('MAIL_REPLY_TO_NAME', env('MAIL_FROM_NAME', "Choose'Tounsi")),
     ],
 
     /*

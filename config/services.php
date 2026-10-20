@@ -76,6 +76,6 @@ return [
 // Nominatim's usage policy: identify the app, max 1 request per second.
 'nominatim' => [
     'url'        => env('NOMINATIM_URL', 'https://nominatim.openstreetmap.org/search'),
-    'user_agent' => env('NOMINATIM_USER_AGENT', "ChooseTounsi/1.0 (pickup address map; contact@choosetounsi.com)"),
+    'user_agent' => env('NOMINATIM_USER_AGENT', "ChooseTounsi/1.0 (pickup address map; contact@choosetounsi.tn)"),
 ],
 ];
