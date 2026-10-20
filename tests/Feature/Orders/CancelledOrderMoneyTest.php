@@ -183,6 +183,24 @@ class CancelledOrderMoneyTest extends TestCase
         $this->assertEquals(0, $earn['commission_amount']);
     }
 
+    /** List screens load only some seller_orders columns: delivery_fee must be one of them. */
+    public function test_lists_show_the_total_with_the_per_parcel_delivery_fee(): void
+    {
+        $order = $this->checkout([[$this->makeProduct($this->makeSeller()), null, 1]]);
+        $total = (float) $order->total_amount;
+        $this->assertTrue((bool) $order->shipping_per_parcel);
+        $this->assertGreaterThan((float) $order->subtotal, $total);
+
+        $row = collect($this->admin()->getJson('/api/admin/orders?search=' . $order->order_number)->assertOk()->json('data.data'))->firstWhere('id', $order->id);
+        $this->assertEquals($total, (float) $row['total_amount'], 'admin order list');
+
+        $recent = collect($this->admin()->getJson('/api/admin/dashboard')->assertOk()->json('data.recent_orders'))->firstWhere('id', $order->id);
+        $this->assertEquals($total, (float) $recent['total_amount'], 'admin dashboard');
+
+        $mine = collect($this->as($order->user)->getJson('/api/profile/overview')->assertOk()->json('data.recent_orders'))->firstWhere('id', $order->id);
+        $this->assertEquals($total, (float) $mine['total_amount'], 'buyer profile overview');
+    }
+
     public function test_partial_cancel_drops_the_cancelled_parcels_delivery_fee(): void
     {
         $sellerA = $this->makeSeller();

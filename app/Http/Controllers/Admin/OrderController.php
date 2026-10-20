@@ -32,7 +32,7 @@ class OrderController extends Controller
     {
         $query = Order::with([
             'user:id,name,email',
-            'sellerOrders:id,order_id,seller_id,status,subtotal,coupon_code,discount_amount',
+            'sellerOrders:id,order_id,seller_id,status,subtotal,coupon_code,discount_amount,delivery_fee',
             'sellerOrders.seller:id,name',
             'sellerOrders.seller.sellerApplication', 'sellerOrders.seller.pickupAddress.zone', // pickup completeness → export readiness
         ])

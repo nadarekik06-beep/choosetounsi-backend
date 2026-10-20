@@ -99,7 +99,7 @@ $totalRevenue = round((float) ($revenueRow->platform_profit ?? 0), 3);        } 
 
         // ── Recent orders ──────────────────────────────────────────────
         try {
-            $recentOrders = Order::with(['user:id,name,email', 'sellerOrders:id,order_id,status,subtotal,discount_amount,coupon_code'])
+            $recentOrders = Order::with(['user:id,name,email', 'sellerOrders:id,order_id,status,subtotal,discount_amount,coupon_code,delivery_fee'])
                 ->latest()
                 ->limit(5)
                 ->get()
