@@ -281,7 +281,8 @@
           <td align="center">
             <p style="margin:0 0 8px;font-family:'Barlow',Arial,sans-serif;font-size:14px;font-weight:600;color:#374151;">{!! __('seller.mail.submitted.questions') !!}</p>
             <p style="margin:0 0 20px;font-family:'Barlow',Arial,sans-serif;font-size:13px;color:#6b7280;">
-              📧 <a href="mailto:sellers@choosetounsi.tn" style="color:#db142e;text-decoration:none;font-weight:600;">sellers@choosetounsi.tn</a>
+              {{-- sellers@choosetounsi.tn removed: the domain has no MX record, mail to it bounced --}}
+              📧 <a href="{{ frontend_url('/contact') }}" style="color:#db142e;text-decoration:none;font-weight:600;">{!! __('emails.layout.contact') !!}</a>
               &nbsp;&nbsp;|&nbsp;&nbsp;
               📚 <a href="{{ frontend_url('/become-a-vendor') }}" style="color:#198f41;text-decoration:none;font-weight:600;">{!! __('seller.mail.submitted.faq') !!}</a>
             </p>

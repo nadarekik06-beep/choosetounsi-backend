@@ -91,6 +91,10 @@ return [
     | contact@choosetounsi.tn go to this inbox. Empty = no Reply-To header.
     */
 
+    // Inbox of the storefront contact form (/contact). Default: the Reply-To inbox.
+    // Not contact@choosetounsi.tn: the domain has no MX record (sending only, via Brevo).
+    'contact_to' => env('MAIL_CONTACT_TO') ?: (env('MAIL_REPLY_TO_ADDRESS') ?: env('MAIL_FROM_ADDRESS')),
+
     'reply_to' => [
         'address' => env('MAIL_REPLY_TO_ADDRESS') ?: null,
         'name'    => env('MAIL_REPLY_TO_NAME', env('MAIL_FROM_NAME', "Choose'Tounsi")),

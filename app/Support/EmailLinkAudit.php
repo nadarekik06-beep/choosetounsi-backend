@@ -21,11 +21,12 @@ final class EmailLinkAudit
 {
     /**
      * Backend endpoints an e-mail may link to:
-     *   /unsubscribe/{token}  one-click unsubscribe (also the RFC 8058 List-Unsubscribe POST target)
      *   /api/ads/r/{token}    sponsored-product click tracking, 302 to the product page
      *   /storage/…            images (src, not pages)
+     * (Unsubscribe: the body links to the storefront page; only the List-Unsubscribe
+     * header, not an href, points at the backend one-click endpoint.)
      */
-    public const ALLOWED_API_PATHS = ['/unsubscribe/', '/api/ads/r/', '/storage/'];
+    public const ALLOWED_API_PATHS = ['/api/ads/r/', '/storage/'];
 
     /** @var array<string, \Illuminate\Database\Eloquent\Model|null> */
     private array $samples = [];
@@ -122,7 +123,8 @@ final class EmailLinkAudit
             $user = $to();
             return $n && $user ? (string) $n->toMail($user)->render() : null;
         };
-        $unsubscribe = fn () => url('/unsubscribe/' . str_repeat('x', 40));   // sample token, nothing written
+        // Same link as MarketingConsent::unsubscribeUrl(), with a sample token (nothing written)
+        $unsubscribe = fn () => frontend_url('/unsubscribe/' . str_repeat('x', 40));
 
         $sampleItem = function () use ($prod) {
             $p = $prod();
@@ -136,6 +138,10 @@ final class EmailLinkAudit
         $list = [
             // ── Mailables ──
             'MailTestMail'                    => $mailable(fn () => new Mail\MailTestMail(now()->toIso8601String())),
+            'ContactMessageMail'              => $mailable(fn () => new Mail\ContactMessageMail([
+                'name' => 'Visiteur Test', 'email' => 'visitor@example.com', 'phone' => '+216 22 123 456', 'topic' => 'order',
+                'message' => 'Bonjour, une question sur ma commande.', 'locale' => 'fr', 'user_id' => null, 'ip' => '127.0.0.1',
+            ])),
             'PasswordResetMail'               => $mailable(fn () => ($u = $buyer()) ? new Mail\PasswordResetMail($u, str_repeat('t', 64)) : null),
             'VerificationCodeMail'            => $mailable(fn () => ($u = $buyer()) ? new Mail\VerificationCodeMail($u, '123456') : null),
             'WelcomeUserMail'                 => $mailable(fn () => ($u = $buyer()) ? new Mail\WelcomeUserMail($u, ($p = $prod()) ? [['name' => $p->name, 'slug' => $p->slug, 'price' => 40, 'image' => null]] : []) : null),

@@ -67,6 +67,11 @@
           <tr>
             <td class="ct-pad" style="background:#f9fafb;border-top:1px solid #e5e7eb;padding:20px 32px;font-size:12px;line-height:18px;color:#6b7280;">
               @yield('footer')
+              <div style="margin-top:8px;">
+                <a href="{{ frontend_url('/privacy') }}" style="color:#6b7280;text-decoration:underline;">{{ __('emails.layout.privacy') }}</a> ·
+                <a href="{{ frontend_url('/terms') }}" style="color:#6b7280;text-decoration:underline;">{{ __('emails.layout.terms') }}</a> ·
+                <a href="{{ frontend_url('/contact') }}" style="color:#6b7280;text-decoration:underline;">{{ __('emails.layout.contact') }}</a>
+              </div>
               <div style="margin-top:8px;">&copy; {{ date('Y') }} Choose'Tounsi</div>
             </td>
           </tr>

@@ -93,6 +93,11 @@ return [
         'percent_off' => '-:value %',
         'amount_off' => '-:value DT',
     ],
+    'contact' => [
+        'sent'     => 'Merci ! Votre message a bien été envoyé. Nous vous répondons par e-mail au plus vite.',
+        'too_many' => 'Trop de messages envoyés. Réessayez dans quelques minutes ou écrivez-nous sur WhatsApp.',
+        'subject'  => '[Contact] :subject — :name',
+    ],
     'complaint' => [
         'order_not_found' => 'Commande introuvable.',
         'only_delivered' => 'Vous ne pouvez déposer une réclamation que sur une commande livrée.',

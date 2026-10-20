@@ -10,8 +10,10 @@ use Illuminate\Http\Response;
 /**
  *   GET  /api/account/marketing-consent        (auth) current choice
  *   POST /api/account/marketing-consent        (auth) {opt_in: bool}
- *   GET  /unsubscribe/{token}                  (web)  one-click unsubscribe link in every marketing e-mail
- *   POST /unsubscribe/{token}                  (web)  RFC 8058 List-Unsubscribe-Post
+ *   GET  /unsubscribe/{token}                  (web)  redirect to the storefront page (changes nothing)
+ *   POST /unsubscribe/{token}                  (web)  RFC 8058 List-Unsubscribe-Post one-click
+ *   GET  /api/unsubscribe/{token}              link valid? (storefront page)
+ *   POST /api/unsubscribe/{token}              confirm button of the storefront page
  */
 class MarketingConsentController extends Controller
 {
@@ -37,20 +39,30 @@ class MarketingConsentController extends Controller
         ]]);
     }
 
-    public function unsubscribe(Request $request, string $token): Response
+    /**
+     * Web /unsubscribe/{token}. POST = RFC 8058 one-click (List-Unsubscribe header):
+     * opts out, 204 / 404. GET (old e-mails, a header URL opened by hand) changes
+     * nothing: it redirects to the storefront confirmation page.
+     */
+    public function unsubscribe(Request $request, string $token)
+    {
+        if (!$request->isMethod('post')) {
+            return redirect()->away(frontend_url('/unsubscribe/' . $token));
+        }
+        return response('', $this->consent->unsubscribe($token) ? 204 : 404);
+    }
+
+    /** GET /api/unsubscribe/{token}: is the link valid? Read-only, reveals nothing about the account. */
+    public function check(string $token): JsonResponse
+    {
+        $found = $this->consent->tokenExists($token);
+        return response()->json(['success' => $found, 'found' => $found], $found ? 200 : 404);
+    }
+
+    /** POST /api/unsubscribe/{token}: the storefront page's confirm button. */
+    public function confirm(string $token): JsonResponse
     {
         $user = $this->consent->unsubscribe($token);
-        if ($user) {
-            app()->setLocale(in_array($user->locale, ['en', 'fr', 'ar'], true) ? $user->locale : config('app.locale'));
-        }
-
-        if ($request->isMethod('post')) {
-            return response('', $user ? 204 : 404);
-        }
-
-        return response()->view('marketing.unsubscribed', [
-            'found' => (bool) $user,
-            'shopUrl' => rtrim((string) config('app.frontend_url'), '/'),
-        ], $user ? 200 : 404);
+        return response()->json(['success' => (bool) $user, 'found' => (bool) $user], $user ? 200 : 404);
     }
 }

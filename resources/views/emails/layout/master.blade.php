@@ -153,14 +153,17 @@
                     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
                       <tr>
                         <td align="center" style="padding-bottom:8px;">
-                          {{-- Unsubscribe only on marketing e-mails (they pass $unsubscribeUrl: the one-click
-                               endpoint, RFC 8058). Transactional mail has nothing to unsubscribe from. --}}
+                          {{-- Unsubscribe only on marketing e-mails: $unsubscribeUrl = the storefront
+                               confirmation page (/unsubscribe/{token}). Transactional mail has nothing to unsubscribe from. --}}
                           @if(!empty($unsubscribeUrl))
                           <a href="{{ $unsubscribeUrl }}" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">{!! __('emails.layout.unsubscribe') !!}</a>
                           <span style="color:#4b5563;font-size:11px;">|</span>
                           @endif
-                          {{-- No privacy-policy page on the storefront yet: link removed until /privacy exists. --}}
-                          <a href="mailto:{{ config('mail.from.address') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">{!! __('emails.layout.contact') !!}</a>
+                          <a href="{{ frontend_url('/privacy') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">{!! __('emails.layout.privacy') !!}</a>
+                          <span style="color:#4b5563;font-size:11px;">|</span>
+                          <a href="{{ frontend_url('/terms') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">{!! __('emails.layout.terms') !!}</a>
+                          <span style="color:#4b5563;font-size:11px;">|</span>
+                          <a href="{{ frontend_url('/contact') }}" style="font-family:'Barlow',Arial,sans-serif;font-size:11px;color:#4b5563;text-decoration:underline;margin:0 8px;">{!! __('emails.layout.contact') !!}</a>
                         </td>
                       </tr>
                       <tr>

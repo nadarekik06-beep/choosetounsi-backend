@@ -55,6 +55,17 @@ class RouteServiceProvider extends ServiceProvider
             return Limit::perMinute(60)->by(optional($request->user())->id ?: $request->ip());
         });
 
+        // Contact form: 5 messages per 10 minutes and 20 per day per IP
+        RateLimiter::for('contact', function (Request $request) {
+            $tooMany = fn () => response()->json([
+                'success' => false, 'code' => 'rate_limited', 'message' => __('messages.contact.too_many'),
+            ], 429);
+            return [
+                Limit::perMinutes(10, 5)->by('contact10:' . $request->ip())->response($tooMany),
+                Limit::perDay(20)->by('contactday:' . $request->ip())->response($tooMany),
+            ];
+        });
+
         // Search by photo: each search runs the image model (config search.image.per_minute).
         RateLimiter::for('image-search', function (Request $request) {
             $user = $request->user('sanctum');

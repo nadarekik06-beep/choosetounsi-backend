@@ -93,6 +93,11 @@ return [
         'percent_off' => '-:value%',
         'amount_off' => '-:value د.ت',
     ],
+    'contact' => [
+        'sent'     => 'شكرًا! تم إرسال رسالتك. سنرد عليك عبر البريد الإلكتروني في أقرب وقت.',
+        'too_many' => 'أرسلت رسائل كثيرة. أعد المحاولة بعد بضع دقائق أو راسلنا على واتساب.',
+        'subject'  => '[Contact] :subject — :name',
+    ],
     'complaint' => [
         'order_not_found' => 'الطلب غير موجود.',
         'only_delivered' => 'يمكنك تقديم شكوى على طلب تم توصيله فقط.',

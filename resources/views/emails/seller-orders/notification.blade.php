@@ -149,5 +149,5 @@
 
 @section('footer')
   {{ __('order_notifications.common.reason') }}<br>
-  {{ __('order_notifications.common.help', ['email' => config('mail.from.address')]) }}
+  {{ __('order_notifications.common.help', ['email' => config('mail.contact_to')]) }}
 @endsection

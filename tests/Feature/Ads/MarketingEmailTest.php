@@ -85,15 +85,42 @@ class MarketingEmailTest extends TestCase
         $this->assertNotNull($user->fresh()->marketing_opt_in_at);
 
         $token = $user->fresh()->unsubscribe_token;
-        // The page speaks the user's language (SetLocale keeps users.locale in sync with API calls).
-        $locale = $user->fresh()->locale ?: config('app.locale');
-        $this->get("/unsubscribe/{$token}")->assertOk()->assertSee(__('emails.marketing.unsubscribed.title', [], $locale), false);
+        $consent = app(MarketingConsent::class);
+        $this->assertSame(frontend_url("/unsubscribe/{$token}"), $consent->unsubscribeUrl($user->fresh()), 'e-mail body → storefront page');
+        $this->assertSame(url("/unsubscribe/{$token}"), $consent->oneClickUrl($user->fresh()), 'List-Unsubscribe header → backend');
+
+        // Opening a link (mail scanners, link previews) never unsubscribes
+        $this->get("/unsubscribe/{$token}")->assertRedirect(frontend_url("/unsubscribe/{$token}"));
+        $this->getJson("/api/unsubscribe/{$token}")->assertOk()->assertJsonPath('found', true);
+        $this->assertTrue((bool) $user->fresh()->marketing_emails_opt_in, 'GET changes nothing');
+
+        // The storefront page's confirm button
+        $this->postJson("/api/unsubscribe/{$token}")->assertOk()->assertJsonPath('success', true);
         $this->assertFalse((bool) $user->fresh()->marketing_emails_opt_in);
 
-        app(MarketingConsent::class)->set($user->fresh(), true);
-        $this->post("/unsubscribe/{$token}")->assertNoContent();
+        // RFC 8058 one-click from the List-Unsubscribe header
+        $consent->set($user->fresh(), true);
+        $this->post("/unsubscribe/{$token}", ['List-Unsubscribe' => 'One-Click'])->assertNoContent();
         $this->assertFalse((bool) $user->fresh()->marketing_emails_opt_in);
-        $this->get('/unsubscribe/' . str_repeat('x', 40))->assertNotFound();
+
+        $bad = str_repeat('x', 40);
+        $this->getJson("/api/unsubscribe/{$bad}")->assertNotFound()->assertJsonPath('found', false);
+        $this->postJson("/api/unsubscribe/{$bad}")->assertNotFound();
+        $this->post("/unsubscribe/{$bad}")->assertNotFound();
+    }
+
+    public function test_marketing_mail_headers_point_at_the_one_click_endpoint(): void
+    {
+        $user = $this->makeUser('client');
+        $consent = app(MarketingConsent::class);
+        // A real mailer (setUp fakes Mail): the headers only exist on a built message
+        $mailer = (new \Illuminate\Mail\MailManager(app()))->mailer('array');
+        (new PickedForYouMail($user, [], $consent->unsubscribeUrl($user)))->to($user)->send($mailer);   // built now, not queued
+        $message = $mailer->getSwiftMailer()->getTransport()->messages()->last();
+
+        $this->assertSame('<' . $consent->oneClickUrl($user) . '>', $message->getHeaders()->get('List-Unsubscribe')->getFieldBody());
+        $this->assertSame('List-Unsubscribe=One-Click', $message->getHeaders()->get('List-Unsubscribe-Post')->getFieldBody());
+        $this->assertStringContainsString('href="' . e($consent->unsubscribeUrl($user)) . '"', $message->getBody());
     }
 
     public function test_weekly_digest_mixes_organic_and_labelled_ads_and_respects_the_gap(): void

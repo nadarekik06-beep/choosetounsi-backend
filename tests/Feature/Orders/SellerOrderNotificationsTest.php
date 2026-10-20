@@ -429,7 +429,7 @@ class SellerOrderNotificationsTest extends TestCase
      */
     public function test_confirmed_email_is_unchanged(): void
     {
-        config(['app.frontend_url' => 'https://choosetounsi.test', 'mail.from.address' => 'hello@choosetounsi.test']);
+        config(['app.frontend_url' => 'https://choosetounsi.test', 'mail.from.address' => 'hello@choosetounsi.test', 'mail.contact_to' => 'hello@choosetounsi.test']);
         $seller  = $this->makeSeller('en');
         $seller->sellerApplication()->update(['business_name' => 'Atelier Snapshot']);
         $product = $this->makeProduct($seller, 25);

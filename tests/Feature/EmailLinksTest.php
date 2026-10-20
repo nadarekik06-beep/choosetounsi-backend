@@ -81,6 +81,22 @@ class EmailLinksTest extends TestCase
         $this->assertContains('https://choosetounsi.tn/seller/products?create=1', $approved);
         $this->assertSame([], array_values(array_filter($approved, fn ($l) => str_contains($l, 'api.choosetounsi.tn'))));
 
+        // Footer: privacy, terms and contact pages on every e-mail layout (custom, transactional, Laravel's)
+        $footer = ['https://choosetounsi.tn/privacy', 'https://choosetounsi.tn/terms', 'https://choosetounsi.tn/contact'];
+        foreach (['SellerApplicationApprovedMail', 'WelcomeUserMail', 'NewSellerOrderNotification', 'LowStockNotification',
+                  'OrderPlacedNotification', 'SellerRejectedComplaintNotification', 'PickedForYouMail'] as $name) {
+            $links = EmailLinkAudit::links($rendered[$name]['html']);
+            foreach ($footer as $page) {
+                $this->assertContains($page, $links, "{$name}: footer link {$page}");
+            }
+        }
+
+        // Unsubscribe: storefront confirmation page on marketing mail only, never on transactional mail
+        $this->assertNotEmpty(array_filter(EmailLinkAudit::links($rendered['PickedForYouMail']['html']),
+            fn ($l) => str_starts_with($l, 'https://choosetounsi.tn/unsubscribe/')));
+        $this->assertEmpty(array_filter(EmailLinkAudit::links($rendered['SellerApplicationApprovedMail']['html']),
+            fn ($l) => str_contains($l, '/unsubscribe/')));
+
         // Admin e-mails open the admin panel
         $this->assertContains('https://admin.choosetounsi.tn/complaints?id=' . Complaint::latest('id')->value('id'),
             EmailLinkAudit::links($rendered['ComplaintCreatedNotification (admin)']['html']));
@@ -94,7 +110,10 @@ class EmailLinksTest extends TestCase
         $this->assertNotNull(EmailLinkAudit::problem('#'));
         $this->assertNull(EmailLinkAudit::problem('https://choosetounsi.tn/seller'));
         $this->assertNull(EmailLinkAudit::problem('https://admin.choosetounsi.tn/complaints?id=1'));
-        $this->assertNull(EmailLinkAudit::problem('https://api.choosetounsi.tn/unsubscribe/' . str_repeat('a', 40)));
+        // Unsubscribe body links go to the storefront page now: the backend URL is only the List-Unsubscribe header
+        $this->assertNotNull(EmailLinkAudit::problem('https://api.choosetounsi.tn/unsubscribe/' . str_repeat('a', 40)));
+        $this->assertNull(EmailLinkAudit::problem('https://choosetounsi.tn/unsubscribe/' . str_repeat('a', 40)));
+        $this->assertNull(EmailLinkAudit::problem('https://api.choosetounsi.tn/api/ads/r/abc.def'));
         $this->assertNull(EmailLinkAudit::problem('https://api.choosetounsi.tn/storage/products/a.jpg'));
         $this->assertNull(EmailLinkAudit::problem('mailto:contact@choosetounsi.tn'));
     }

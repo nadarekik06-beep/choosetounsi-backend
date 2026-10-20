@@ -10,8 +10,9 @@ use Illuminate\Queue\SerializesModels;
 
 /**
  * Base for consent-based marketing e-mails: queued, in the user's locale (set by
- * Mail::to($user)), with the one-click unsubscribe link in the footer and the
- * List-Unsubscribe / List-Unsubscribe-Post headers mail clients use.
+ * Mail::to($user)), with the unsubscribe link in the footer ($unsubscribeUrl:
+ * storefront confirmation page) and the List-Unsubscribe / List-Unsubscribe-Post
+ * headers mail clients use (backend one-click POST endpoint).
  */
 abstract class MarketingMail extends Mailable implements ShouldQueue
 {
@@ -21,7 +22,8 @@ abstract class MarketingMail extends Mailable implements ShouldQueue
 
     protected function withUnsubscribeHeaders(): static
     {
-        $url = $this->unsubscribeUrl;
+        // Header → backend one-click endpoint (POST); the body link → storefront page
+        $url = app(\App\Services\Ads\MarketingConsent::class)->oneClickUrl($this->user);
         return $this->withSwiftMessage(function ($message) use ($url) {
             $headers = $message->getHeaders();
             $headers->addTextHeader('List-Unsubscribe', "<{$url}>");

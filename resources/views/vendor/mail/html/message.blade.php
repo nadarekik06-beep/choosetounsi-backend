@@ -21,6 +21,8 @@
 {{-- Footer --}}
 @slot('footer')
 @component('mail::footer')
+[{{ __('emails.layout.privacy') }}]({{ frontend_url('/privacy') }}) · [{{ __('emails.layout.terms') }}]({{ frontend_url('/terms') }}) · [{{ __('emails.layout.contact') }}]({{ frontend_url('/contact') }})
+
 © {{ date('Y') }} {{ config('app.name') }}. @lang('All rights reserved.')
 @endcomponent
 @endslot

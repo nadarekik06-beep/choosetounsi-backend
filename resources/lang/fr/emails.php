@@ -97,6 +97,7 @@ return [
         'tagline' => 'La marketplace de Tunisie — au service du commerce local',
         'unsubscribe' => 'Se désabonner',
         'privacy' => 'Politique de confidentialité',
+        'terms' => 'Conditions d’utilisation',
         'contact' => 'Contact',
         'rights' => '© :year ChooseTounsi — Sfax, Tunisie. Tous droits réservés.',
     ],

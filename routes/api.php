@@ -127,6 +127,16 @@ Route::get('/shop/overview', [\App\Http\Controllers\Api\ShopOverviewController::
 Route::post('/track', [\App\Http\Controllers\Api\TrackingController::class, 'store'])
     ->middleware('throttle:120,1');
 
+// Storefront /unsubscribe/{token} page: check the link, then the confirm button opts out
+Route::get('/unsubscribe/{token}', [\App\Http\Controllers\MarketingConsentController::class, 'check'])
+    ->where('token', '[A-Za-z0-9]{40}')->middleware('throttle:30,1');
+Route::post('/unsubscribe/{token}', [\App\Http\Controllers\MarketingConsentController::class, 'confirm'])
+    ->where('token', '[A-Za-z0-9]{40}')->middleware('throttle:30,1');
+
+// Storefront /contact form → e-mail to the team (honeypot + 5 messages / 10 min per IP)
+Route::post('/contact', [\App\Http\Controllers\Api\ContactController::class, 'store'])
+    ->middleware('throttle:contact');
+
 // Intigo delivery webhooks: no user auth (outside auth:sanctum), no CSRF (api/* excluded
 // in VerifyCsrfToken); HMAC signature checked in the controller. All calls come from
 // Intigo's IP: own limit of 600/min instead of the api group's 60/min, so a burst of
