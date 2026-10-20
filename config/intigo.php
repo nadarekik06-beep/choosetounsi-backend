@@ -10,6 +10,7 @@
 |          intigo_logs and never touches the network. live: real API calls,
 |          real parcels, real drivers. Switch only once everything is set up.
 | api_key  never commit it; it is redacted from every log.
+| The webhook secret is in config/services.php (services.intigo.webhook_secret).
 |
 | The regions endpoints (/regions/*) are public and read-only: intigo:sync-regions
 | reads them in both modes.
@@ -20,7 +21,6 @@ return [
     'mode'           => env('INTIGO_MODE', 'fake') === 'live' ? 'live' : 'fake',
     'api_key'        => env('INTIGO_API_KEY'),
     'base_url'       => rtrim(env('INTIGO_BASE_URL', 'https://api.intigo.net/api/v3'), '/'),
-    'webhook_secret' => env('INTIGO_WEBHOOK_SECRET'),
 
     // Default of the admin "customer may open the parcel" switch (Delivery & Fees page)
     'can_open_default' => filter_var(env('INTIGO_CAN_OPEN_DEFAULT', false), FILTER_VALIDATE_BOOLEAN),

@@ -28,7 +28,7 @@ trait IntigoTestHelpers
         config([
             'intigo.mode'                  => 'fake',
             'intigo.api_key'               => null,
-            'intigo.webhook_secret'        => self::SECRET,
+            'services.intigo.webhook_secret'        => self::SECRET,
             'intigo.platform_pickup_index' => 0,
             'mail.default'                 => 'array',
         ]);

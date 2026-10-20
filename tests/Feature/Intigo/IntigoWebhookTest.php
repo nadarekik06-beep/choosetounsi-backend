@@ -58,7 +58,7 @@ class IntigoWebhookTest extends TestCase
         $this->call('POST', '/api/webhooks/intigo', [], [], [], ['CONTENT_TYPE' => 'application/json', 'HTTP_X_WEBHOOK_SIGNATURE' => $sig], $body)->assertOk();
         $this->assertSame('handed_to_courier', $this->so($so)->status);
 
-        config(['intigo.webhook_secret' => null]);
+        config(['services.intigo.webhook_secret' => null]);
         $this->webhook($so->intigo_nid, 4000)->assertStatus(401);   // no secret configured: refuse everything
     }
 

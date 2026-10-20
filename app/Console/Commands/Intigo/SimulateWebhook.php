@@ -32,7 +32,7 @@ class SimulateWebhook extends Command
 
     public function handle(): int
     {
-        $secret = config('intigo.webhook_secret');
+        $secret = config('services.intigo.webhook_secret');
         if (!filled($secret)) {
             $this->error('Set INTIGO_WEBHOOK_SECRET in .env first (any random string for local tests), then php artisan config:clear.');
             return self::FAILURE;
@@ -61,7 +61,7 @@ class SimulateWebhook extends Command
         $headers = [
             'Content-Type'        => 'application/json',
             'X-Webhook-Event'     => 'parcel.status_changed',
-            'X-Webhook-Timestamp' => (string) now()->timestamp,
+            'X-Webhook-Timestamp' => now()->timezone(config('intigo.timezone'))->toIso8601String(),
             'X-Webhook-Signature' => $signature,
             'X-Intigo-Simulated'  => '1',
         ];

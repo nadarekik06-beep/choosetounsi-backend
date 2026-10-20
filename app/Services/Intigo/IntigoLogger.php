@@ -48,7 +48,7 @@ class IntigoLogger
 
     private function redactString(string $value): string
     {
-        foreach ([config('intigo.api_key'), config('intigo.webhook_secret')] as $secret) {
+        foreach ([config('intigo.api_key'), config('services.intigo.webhook_secret')] as $secret) {
             if (is_string($secret) && strlen($secret) >= 6) {
                 $value = str_replace($secret, '[redacted]', $value);
             }

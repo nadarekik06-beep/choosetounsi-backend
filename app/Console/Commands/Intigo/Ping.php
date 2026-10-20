@@ -23,7 +23,7 @@ class Ping extends Command
         $this->line('Mode: <info>' . config('intigo.mode') . '</info>' . (config('intigo.mode') === 'fake' ? ' (parcels are faked; this check still calls the real API, read-only)' : ''));
         $this->line('Base URL: ' . config('intigo.base_url'));
         $this->line('API key: ' . (filled(config('intigo.api_key')) ? 'set' : '<error>missing</error>'));
-        $this->line('Webhook secret: ' . (filled(config('intigo.webhook_secret')) ? 'set' : '<comment>missing (webhooks will be refused with 401)</comment>'));
+        $this->line('Webhook secret: ' . (filled(config('services.intigo.webhook_secret')) ? 'set' : '<comment>missing (webhooks will be refused with 401)</comment>'));
         $ok = true;
 
         // 1. Public regions

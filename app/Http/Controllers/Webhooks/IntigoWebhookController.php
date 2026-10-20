@@ -17,18 +17,24 @@ use Illuminate\Support\Facades\Log;
  *   body {"event":"parcel.status_changed","event_type":"delivered","timestamp":"…",
  *         "data":{"nid":"…","old_status":4000,"new_status":5000,"status_label":"Livré"}}
  *
- * Answers within milliseconds (Intigo waits 10 s, then retries at +1, +5, +15 min):
- * the event is stored (deduplicated on nid + new_status + timestamp) and
- * processed after the response is sent.
+ * Answers within milliseconds (Intigo waits 10 s, then retries at +1, +5, +15 min
+ * on any non-2xx): the event is stored (deduplicated on nid + new_status + timestamp)
+ * and applied by a queued ProcessIntigoEvent job, forward only (IntigoStatusSync).
  */
 class IntigoWebhookController extends Controller
 {
     public function handle(Request $request, IntigoStatusSync $sync): JsonResponse
     {
-        $raw = $request->getContent();
+        // Raw bytes as sent: the signature is over these, before any JSON parsing
+        $raw    = $request->getContent();
+        $header = (string) $request->header('X-Webhook-Signature');
 
-        if (!self::validSignature($raw, (string) $request->header('X-Webhook-Signature'), config('intigo.webhook_secret'))) {
-            Log::warning('[Intigo webhook] invalid signature', ['ip' => $request->ip()]);
+        if (!self::validSignature($raw, $header, config('services.intigo.webhook_secret'))) {
+            // No body details in the log: an unsigned request is untrusted input
+            Log::warning('[Intigo webhook] ' . ($header === '' ? 'missing signature' : 'invalid signature') . ': refused', [
+                'ip'    => $request->ip(),
+                'event' => mb_substr((string) $request->header('X-Webhook-Event'), 0, 40),
+            ]);
             return response()->json(['success' => false, 'message' => 'Invalid signature.'], 401);
         }
 
@@ -58,7 +64,8 @@ class IntigoWebhookController extends Controller
         );
 
         if ($eventId !== null) {
-            ProcessIntigoEvent::dispatchAfterResponse($eventId);
+            // Queue worker applies it (choosetounsi-queue); intigo:sync-statuses picks up any left behind
+            ProcessIntigoEvent::dispatch($eventId)->onQueue(ProcessIntigoEvent::QUEUE);
         }
 
         return response()->json(['success' => true, 'duplicate' => $eventId === null]);

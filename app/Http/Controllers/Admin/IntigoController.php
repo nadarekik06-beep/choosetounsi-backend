@@ -295,7 +295,7 @@ class IntigoController extends Controller
         $activeSellers    = User::where('role', 'seller')->where('is_active', true)->count();
         return [
             'api_key_set'           => filled(config('intigo.api_key')),
-            'webhook_secret_set'    => filled(config('intigo.webhook_secret')),
+            'webhook_secret_set'    => filled(config('services.intigo.webhook_secret')),
             'webhook_url'           => rtrim(config('app.url'), '/') . '/api/webhooks/intigo',
             'regions_synced'        => IntigoRegions::available(),
             'cities'                => DB::table('intigo_cities')->count(),

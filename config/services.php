@@ -48,6 +48,12 @@ return [
     'secret'         => env('STRIPE_SECRET'),
     'webhook_secret' => env('STRIPE_WEBHOOK_SECRET'),
 ],
+
+// Intigo webhook (POST /api/webhooks/intigo): X-Webhook-Signature = "sha256=" + HMAC-SHA256(raw body, secret).
+// Empty = every webhook is refused with 401. The other Intigo settings are in config/intigo.php.
+'intigo' => [
+    'webhook_secret' => env('INTIGO_WEBHOOK_SECRET'),
+],
 'groq' => [
     'key'              => env('GROQ_API_KEY'),
     'model'            => env('GROQ_MODEL', 'openai/gpt-oss-120b'),

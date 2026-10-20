@@ -127,8 +127,12 @@ Route::get('/shop/overview', [\App\Http\Controllers\Api\ShopOverviewController::
 Route::post('/track', [\App\Http\Controllers\Api\TrackingController::class, 'store'])
     ->middleware('throttle:120,1');
 
-// Intigo delivery webhooks: no user auth, no CSRF; HMAC signature checked in the controller
+// Intigo delivery webhooks: no user auth (outside auth:sanctum), no CSRF (api/* excluded
+// in VerifyCsrfToken); HMAC signature checked in the controller. All calls come from
+// Intigo's IP: own limit of 600/min instead of the api group's 60/min, so a burst of
+// status changes is not answered 429 (Intigo only retries 3 times).
 Route::post('/webhooks/intigo', [\App\Http\Controllers\Webhooks\IntigoWebhookController::class, 'handle'])
+    ->withoutMiddleware(['throttle:api', \Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class])
     ->middleware('throttle:600,1');
 
 // Governorates / delegations for the address dropdowns (Intigo place names)

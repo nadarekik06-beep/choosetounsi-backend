@@ -11,14 +11,18 @@ use Illuminate\Support\Facades\Log;
 
 /**
  * Applies one stored Intigo status event (App\Services\Intigo\IntigoStatusSync).
- * The webhook runs it right after its 200 response; an event left unprocessed
- * (crash, lock) is picked up again by intigo:sync-statuses.
+ * The webhook queues it on the "default" queue (the worker listens to
+ * notifications,emails,default) and answers 200 at once; an event left
+ * unprocessed (crash, lock) is picked up again by intigo:sync-statuses.
  */
 class ProcessIntigoEvent implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable;
 
+    public const QUEUE = 'default';
+
     public $tries = 3;
+    public $timeout = 60;
 
     public function __construct(public int $eventId) {}
 
