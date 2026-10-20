@@ -57,6 +57,10 @@ return [
     // Storefront (Next.js) base URL — used to build "View on storefront" links.
     'frontend_url' => env('FRONTEND_URL', 'http://localhost:3000'),
 
+    // "api" rate limiter, per user or IP (App\Providers\RouteServiceProvider)
+    'api_reads_per_minute'  => (int) env('API_READS_PER_MINUTE', 300),
+    'api_writes_per_minute' => (int) env('API_WRITES_PER_MINUTE', 60),
+
     // Admin panel (separate Next.js app): links in admin e-mails.
     'admin_url' => env('ADMIN_URL', 'http://localhost:3001'),
 

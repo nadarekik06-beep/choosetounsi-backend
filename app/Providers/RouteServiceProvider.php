@@ -51,8 +51,14 @@ class RouteServiceProvider extends ServiceProvider
      */
     protected function configureRateLimiting()
     {
+        // Reads (GET/HEAD) and writes have separate budgets per user (or IP when logged out).
+        // One storefront page view makes ~10 API reads, and many Tunisian mobile users share
+        // one IP, so reads get 300/min. Writes (login, register, checkout, forms) stay at 60/min.
         RateLimiter::for('api', function (Request $request) {
-            return Limit::perMinute(60)->by(optional($request->user())->id ?: $request->ip());
+            $who = optional($request->user())->id ?: $request->ip();
+            return $request->isMethodSafe()
+                ? Limit::perMinute((int) config('app.api_reads_per_minute', 300))->by('read:' . $who)
+                : Limit::perMinute((int) config('app.api_writes_per_minute', 60))->by('write:' . $who);
         });
 
         // Contact form: 5 messages per 10 minutes and 20 per day per IP
