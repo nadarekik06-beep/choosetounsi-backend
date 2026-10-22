@@ -422,17 +422,48 @@ class PickupAddressService
     /** Intigo's street_address: the address, then who to ask for (Intigo has no contact field). */
     public function intigoStreetAddress(SellerPickupAddress $r): string
     {
+        $max    = 255;   // Intigo street_address maxLength
         $street = trim((string) $r->adresse_complete);
-        if (!config('intigo.pickup_contact_in_address', true)) {
-            return mb_substr($street, 0, 255);
+
+        // Google Maps link of the exact pin: the driver finds the shop even if Intigo's map
+        // shows the point elsewhere (incident 2026-10-22: pin shown near Gabès for a Sfax shop)
+        $map = config('intigo.pickup_map_link_in_address', true) ? self::mapLink($r->latitude, $r->longitude) : null;
+
+        $tail = [];
+        if (config('intigo.pickup_contact_in_address', true)) {
+            $phone   = $r->phone ? TunisianPhone::format($r->phone) : null;
+            $contact = trim(implode(' ', array_filter([$r->contact_name, $phone])));
+            if ($contact !== '') {
+                $tail['contact'] = "Contact : {$contact}";
+            }
         }
-        $phone   = $r->phone ? TunisianPhone::format($r->phone) : null;
-        $contact = trim(implode(' ', array_filter([$r->contact_name, $phone])));
-        $full    = $contact !== '' ? "{$street} — Contact : {$contact}" : $street;
-        if (mb_strlen($full) > 255 && $phone) {
-            $full = "{$street} — Tél : {$phone}";
+        if ($map) {
+            $tail['map'] = "Carte : {$map}";
         }
-        return mb_substr($full, 0, 255);
+
+        $join = fn (string $s, array $t) => implode(' — ', array_filter([$s, ...array_values($t)], fn ($x) => $x !== ''));
+        $full = $join($street, $tail);
+        if (mb_strlen($full) > $max && isset($tail['contact'], $phone) && $phone) {
+            $tail['contact'] = "Tél : {$phone}";       // too long: drop the name, keep the phone
+            $full = $join($street, $tail);
+        }
+        if (mb_strlen($full) > $max) {
+            // Still too long: shorten the street text, never the phone or the map link
+            $room   = $max - mb_strlen($join('', $tail)) - mb_strlen(' — ') - 1;
+            $street = $room > 0 ? rtrim(mb_substr($street, 0, $room)) . '…' : '';
+            $full   = $join($street, $tail);
+        }
+        return mb_substr($full, 0, $max);
+    }
+
+    /** https://maps.google.com/?q=lat,lng of the pin as saved (7 decimals, trailing zeros dropped), null without a pin. */
+    public static function mapLink(mixed $lat, mixed $lng): ?string
+    {
+        if (!is_numeric($lat) || !is_numeric($lng)) {
+            return null;
+        }
+        $fmt = fn ($v) => rtrim(rtrim(number_format(round((float) $v, 7), 7, '.', ''), '0'), '.');
+        return 'https://maps.google.com/?q=' . $fmt($lat) . ',' . $fmt($lng);
     }
 
     /** @return string[] labels of what Intigo / the courier still needs */

@@ -72,7 +72,7 @@ class PickupCoordinatesTest extends TestCase
                     'street_address' => $r['street_address'], 'city_name' => 'Sfax', 'district_name' => 'Sfax Medina', 'has_gps' => true]], 201);
             }
             return Http::response(['success' => true, 'pickup_addresses' => $pickupList ?? [[
-                'id' => 23378, 'index' => 1, 'street_address' => 'Route kaied mohamed km 2 — Contact : Vendeuse Test +216 28 522 353',
+                'id' => 23378, 'index' => 1, 'street_address' => 'Route kaied mohamed km 2 — Contact : Vendeuse Test +216 28 522 353 — Carte : https://maps.google.com/?q=34.7564733,10.7508552',
                 'city_name' => 'Sfax', 'district_name' => 'Sfax Medina', 'has_gps' => true]]]);
         });
         return $user;
@@ -184,7 +184,7 @@ class PickupCoordinatesTest extends TestCase
     {
         Mail::fake();
         $user = $this->appliedAndVerified([[
-            'id' => 23378, 'index' => 1, 'street_address' => 'Route kaied mohamed km 2 — Contact : Vendeuse Test +216 28 522 353',
+            'id' => 23378, 'index' => 1, 'street_address' => 'Route kaied mohamed km 2 — Contact : Vendeuse Test +216 28 522 353 — Carte : https://maps.google.com/?q=34.7564733,10.7508552',
             'city_name' => 'Sfax', 'district_name' => 'Sakiet Ezzit', 'has_gps' => false,
         ]]);
 
@@ -197,6 +197,47 @@ class PickupCoordinatesTest extends TestCase
 
         Mail::assertQueued(IntigoAlertMail::class, fn (IntigoAlertMail $m) => $m->hasTo('alerts@example.com') && str_contains($m->reason, 'has_gps false'));
         $this->assertTrue($this->admin->fresh()->notifications()->where('type', IntigoAdminNotification::class)->exists());
+    }
+
+    public function test_the_address_sent_to_intigo_carries_a_map_link_of_the_exact_pin(): void
+    {
+        Mail::fake();
+        $user = $this->appliedAndVerified();
+        $preview = $this->as($this->admin)->getJson("/api/admin/sellers/{$user->id}/pickup")->assertOk()->json('data.pickup');
+
+        $expected = 'Route kaied mohamed km 2 — Contact : Vendeuse Test +216 28 522 353 — Carte : https://maps.google.com/?q=34.7564733,10.7508552';
+        $this->assertSame($expected, $preview['intigo_street_address'], 'admin card shows the full text');
+        $this->assertSame($expected, $preview['intigo_payload']['street_address']);
+
+        $this->as($this->admin)->postJson("/api/admin/sellers/{$user->id}/pickup/intigo-create")->assertOk();
+        $this->assertSame($expected, $this->sentPickupBody()['street_address']);
+    }
+
+    public function test_a_long_address_is_shortened_but_never_the_phone_or_the_map_link(): void
+    {
+        $user = $this->makeUser('client');
+        $long = 'Immeuble ' . str_repeat('Les Jasmins, ', 14) . 'fin';   // < 200 chars, too long with contact + link
+        $this->as($user)->postJson('/api/seller-applications', $this->application(['adresse_complete' => $long]))->assertCreated();
+
+        $text = app(\App\Services\Sellers\PickupAddressService::class)
+            ->intigoStreetAddress(SellerPickupAddress::where('user_id', $user->id)->firstOrFail());
+
+        $this->assertLessThanOrEqual(255, mb_strlen($text));
+        $this->assertStringEndsWith('Carte : https://maps.google.com/?q=34.7564733,10.7508552', $text);
+        $this->assertStringContainsString('+216 28 522 353', $text);
+        $this->assertStringStartsWith('Immeuble Les Jasmins', $text);
+    }
+
+    public function test_the_map_link_can_be_switched_off(): void
+    {
+        config(['intigo.pickup_map_link_in_address' => false]);
+        $user = $this->makeUser('client');
+        $this->as($user)->postJson('/api/seller-applications', $this->application())->assertCreated();
+        $text = app(\App\Services\Sellers\PickupAddressService::class)
+            ->intigoStreetAddress(SellerPickupAddress::where('user_id', $user->id)->firstOrFail());
+        $this->assertSame('Route kaied mohamed km 2 — Contact : Vendeuse Test +216 28 522 353', $text);
+        $this->assertSame('https://maps.google.com/?q=36.8,10.18', \App\Services\Sellers\PickupAddressService::mapLink('36.8000000', 10.18));
+        $this->assertNull(\App\Services\Sellers\PickupAddressService::mapLink(null, 10.18));
     }
 
     public function test_fake_mode_does_not_read_back(): void

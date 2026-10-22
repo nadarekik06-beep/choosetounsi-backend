@@ -122,7 +122,7 @@ class PickupAddressFlowTest extends TestCase
             ->assertJsonPath('data.pickup.intigo_pickup_index', 41);
 
         $body = $intigo->calls['createPickupAddress'][0];
-        $this->assertSame('12 Rue des Fleurs, Imm. Jasmin, Apt 4 — Contact : Amel Ben Ali +216 22 123 456', $body['street_address']);
+        $this->assertSame('12 Rue des Fleurs, Imm. Jasmin, Apt 4 — Contact : Amel Ben Ali +216 22 123 456 — Carte : https://maps.google.com/?q=36.8741,10.2391', $body['street_address']);
         $this->assertSame([$this->secteur->gouvernorat_id, $this->secteur->delegation_id, $this->secteur->intigo_id],
             [$body['city_id'], $body['district_id'], $body['neighborhood_id']]);
         $this->assertSame([36.8741, 10.2391], [$body['latitude'], $body['longitude']]);

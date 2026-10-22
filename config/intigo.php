@@ -32,6 +32,10 @@ return [
     // to street_address so the driver calls the seller, not the CHOOSE'Tounsi account.
     'pickup_contact_in_address' => filter_var(env('INTIGO_PICKUP_CONTACT_IN_ADDRESS', true), FILTER_VALIDATE_BOOLEAN),
 
+    // Also append "— Carte : https://maps.google.com/?q=lat,lng" (the seller's exact pin): Intigo's map
+    // has shown pickups far from the coordinates we sent, the link always points the driver to the right spot.
+    'pickup_map_link_in_address' => filter_var(env('INTIGO_PICKUP_MAP_LINK_IN_ADDRESS', true), FILTER_VALIDATE_BOOLEAN),
+
     // Identification headers recommended by Intigo on parcel creation
     'platform'         => 'choosetounsi',
     'platform_version' => '1.0',
