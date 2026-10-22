@@ -86,14 +86,29 @@ class IntigoRegionsAndCommandsTest extends TestCase
         $this->addToCart($this->product($seller, 40));
         [, $orderId] = $this->placeAndConfirm();   // regions not synced: free-text address
         $this->seedRegions();
-        DB::table('orders')->where('id', $orderId)->update(['wilaya' => 'Le Kef', 'delegation' => 'Sakiet Sidi Youssef']);
+        DB::table('orders')->where('id', $orderId)->update(['wilaya' => 'Le Kef', 'delegation' => 'kef ouest']);
 
         $so = $this->parcel($orderId, $seller);
         $this->prepare($so, $seller);
         $payload = $this->sentPayload($so);
         $this->assertSame('Kef', $payload['city_name'], "our 'Le Kef' sent as Intigo's 'Kef'");
-        $this->assertSame('Sakiet Sidi Youssef', $payload['district_name']);
-        $this->assertTrue($this->so($so)->intigo_district_fallback, 'unknown delegation: Intigo guesses');
+        $this->assertSame('Kef Ouest', $payload['district_name'], "Intigo's exact spelling");
+    }
+
+    public function test_a_delegation_intigo_does_not_know_is_refused_instead_of_guessed(): void
+    {
+        $client = $this->scripted();
+        $seller = $this->sellerWithPickup();
+        $this->addToCart($this->product($seller, 40));
+        [, $orderId] = $this->placeAndConfirm();
+        $this->seedRegions();
+        DB::table('orders')->where('id', $orderId)->update(['wilaya' => 'Le Kef', 'delegation' => 'Sakiet Sidi Youssef']);
+
+        $so = $this->parcel($orderId, $seller);
+        $this->prepare($so, $seller);
+        $this->assertCount(0, $client->calls['create'], 'never sent: Intigo would guess the delegation');
+        $this->assertSame('failed', $this->so($so)->intigo_sync_status);
+        $this->assertStringContainsString('client delegation "Sakiet Sidi Youssef" is not one of Intigo\'s delegations of Kef', $this->so($so)->intigo_error);
     }
 
     public function test_the_address_book_stores_the_picked_region(): void

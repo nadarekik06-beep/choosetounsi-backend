@@ -17,6 +17,7 @@ use App\Services\Intigo\ParcelPayload;
 use App\Services\Intigo\ParcelSender;
 use App\Support\Millimes;
 use App\Support\ParcelSize;
+use App\Support\SellerPickup;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -277,6 +278,24 @@ class IntigoController extends Controller
                 && IntigoStatusMap::isPickupPhase($so->intigo_status_code),
             'mode'                     => config('intigo.mode'),
         ];
+
+        // What goes (or went) to Intigo: the seller's pickup, the client's checkout address, the COD
+        $pickup = SellerPickup::for($so->seller, $so->seller_id);
+        $out['pickup'] = [
+            'index'        => $out['pickup_index'],
+            'intigo_label' => $so->isPlatformParcel() ? null : $so->seller?->intigo_pickup_label,
+            'address'      => SellerPickup::formatAddress($pickup) ?: null,
+            'phone'        => $pickup['phone'],
+            'status'       => $pickup['status'],
+            'intigo_ready' => $pickup['intigo_ready'],
+            'is_platform'  => $pickup['is_platform'],
+        ];
+        $preview = app(ParcelPayload::class)->preview($so);
+        $sent    = $so->intigo_nid ? self::sentPayload($so->id) : null;
+        $out['payload']          = $sent ?? $preview['payload'];
+        $out['payload_is_sent']  = $sent !== null;
+        $out['payload_problems'] = $so->intigo_nid ? [] : $preview['problems'];
+
         if ($full) {
             $nids = array_values(array_filter([...($so->intigo_previous_nids ?? []), $so->intigo_nid]));
             $out['history'] = DB::table('intigo_webhook_events')
@@ -284,9 +303,18 @@ class IntigoController extends Controller
                 ->orderBy('id')->get(['id', 'nid', 'new_status', 'old_status', 'status_label', 'source', 'result', 'event_timestamp', 'created_at']);
             $out['logs'] = DB::table('intigo_logs')->where('seller_order_id', $so->id)->orderByDesc('id')->limit(30)
                 ->get(['id', 'mode', 'method', 'endpoint', 'http_status', 'duration_ms', 'error', 'created_at']);
-            $out['payload_problems'] = $so->intigo_nid ? [] : app(ParcelPayload::class)->build($so)['problems'];
         }
         return $out;
+    }
+
+    /** The body of the parcel creation Intigo accepted for this seller_order (intigo_logs). */
+    private static function sentPayload(int $sellerOrderId): ?array
+    {
+        $raw = DB::table('intigo_logs')->where('seller_order_id', $sellerOrderId)->where('method', 'POST')
+            ->whereIn('endpoint', ['/parcels/by-name', '/parcels/'])->whereBetween('http_status', [200, 299])
+            ->orderByDesc('id')->value('request');
+        $body = $raw ? json_decode((string) $raw, true) : null;
+        return is_array($body) ? $body : null;
     }
 
     private function setup(): array

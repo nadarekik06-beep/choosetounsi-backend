@@ -30,6 +30,8 @@ class ScriptedIntigoClient implements IntigoClient
         $answer = $script ? $script($payload, $this) : ['nid' => 'SCR-' . count($this->calls['create'])];
         // A created parcel can be found again by its cid
         $this->atIntigo[$payload['cid']][] = ['nid' => $answer['nid'], 'cid' => $payload['cid'], 'status' => 1000, 'status_label' => null];
+        // Logged like the real client (the admin shows the body Intigo accepted)
+        app(\App\Services\Intigo\IntigoLogger::class)->log('fake', 'POST', '/parcels/by-name', $payload, 201, $answer, 0, $sellerOrderId);
         return $answer + ['district_name' => $payload['district_name'], 'district_fallback' => false, 'raw' => $answer];
     }
 
@@ -55,9 +57,17 @@ class ScriptedIntigoClient implements IntigoClient
         return $this->onCancel ? ($this->onCancel)($nid) : ['success' => true];
     }
 
+    /** What GET /pickup-addresses/ lists: index => governorate (city_name) */
+    public array $pickups = [0 => 'Ben Arous', 3 => 'Sfax'];
+
     public function pickupAddresses(): array
     {
-        return [['index' => 0, 'label' => 'Main', 'raw' => []], ['index' => 3, 'label' => 'Shop X', 'raw' => []]];
+        $this->calls['pickupAddresses'][] = true;
+        $out = [];
+        foreach ($this->pickups as $index => $city) {
+            $out[] = ['index' => $index, 'label' => "Shop {$index}", 'raw' => ['index' => $index, 'street_address' => "Shop {$index}", 'city_name' => $city, 'district_name' => null, 'has_gps' => true]];
+        }
+        return $out;
     }
 
     public function createPickupAddress(array $body): array

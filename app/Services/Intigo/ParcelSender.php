@@ -4,6 +4,7 @@ namespace App\Services\Intigo;
 
 use App\Jobs\Intigo\CancelIntigoParcel;
 use App\Models\SellerOrder;
+use App\Services\Sellers\PickupAddressService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -35,6 +36,7 @@ class ParcelSender
         private IntigoClient  $client,
         private ParcelPayload $payloads,
         private IntigoAlerts  $alerts,
+        private PickupVerifier $pickups,
     ) {}
 
     /**
@@ -55,6 +57,19 @@ class ParcelSender
             // An earlier attempt may have created it although we never got the answer
             if ($attempt > 1 && ($found = $this->lookup($sellerOrderId, $previous))) {
                 return $this->markSent($sellerOrderId, $found['nid'], null, null, 'found by cid before re-sending');
+            }
+
+            // Live: the index must exist in Intigo's own list, in the seller's governorate
+            if (config('intigo.mode') === 'live') {
+                try {
+                    $problem = $this->pickups->problem(SellerOrder::findOrFail($sellerOrderId), (int) $payload['pickup_index']);
+                } catch (IntigoException $e) {
+                    if ($e->retryable) throw $e;
+                    $problem = 'could not read Intigo\'s pickup addresses to check the index: ' . $e->getMessage();
+                }
+                if ($problem !== null) {
+                    return $this->fail($sellerOrderId, "Not sent: {$problem}.", false);
+                }
             }
 
             $created = $this->client->createParcel($payload, $sellerOrderId);
@@ -232,7 +247,15 @@ class ParcelSender
             'intigo_locked_at'   => null,
             'updated_at'         => now(),
         ]);
-        $this->alerts->flag($id, $reachedIntigo ? 'Intigo rejected a parcel' : 'Parcel not sent to Intigo', $message, 'send_failed', false);
+        $reason = $message;
+        if (!$reachedIntigo) {
+            $seller = DB::table('seller_orders as so')->leftJoin('users as u', 'u.id', '=', 'so.seller_id')
+                ->where('so.id', $id)->first(['so.seller_id', 'u.name']);
+            $reason = ($seller?->seller_id ? "Seller #{$seller->seller_id} ({$seller->name}). " : '') . $message
+                . ' Nothing was created at Intigo and the order is kept as it is: fix this, then click "Retry send" on the order'
+                . (str_contains($message, PickupAddressService::HOLD) ? ' (or it is re-sent automatically once the pickup is created in Intigo).' : '.');
+        }
+        $this->alerts->flag($id, $reachedIntigo ? 'Intigo rejected a parcel' : 'Parcel not sent to Intigo', $reason, 'send_failed', false);
         return ['result' => self::FAILED, 'message' => $message, 'nid' => null];
     }
 

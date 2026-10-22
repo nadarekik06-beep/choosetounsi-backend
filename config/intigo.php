@@ -36,6 +36,17 @@ return [
     // has shown pickups far from the coordinates we sent, the link always points the driver to the right spot.
     'pickup_map_link_in_address' => filter_var(env('INTIGO_PICKUP_MAP_LINK_IN_ADDRESS', true), FILTER_VALIDATE_BOOLEAN),
 
+    // TEST accounts (production smoke tests): their orders are never sent to Intigo in live mode.
+    // A seller or a buyer matching the pattern (or listed in INTIGO_TEST_USER_IDS) blocks the parcel.
+    'test_accounts' => [
+        'email_pattern' => env('INTIGO_TEST_EMAIL_PATTERN', '/^choosetounsi\+test[^@]*@gmail\.com$/i'),
+        'user_ids'      => env('INTIGO_TEST_USER_IDS', ''),
+    ],
+
+    // Before each creation (live mode), the seller's pickup index is checked in GET /pickup-addresses/
+    // (list cached this many seconds; re-read once when the index is missing from the cached copy).
+    'pickup_check_cache_seconds' => 300,
+
     // Identification headers recommended by Intigo on parcel creation
     'platform'         => 'choosetounsi',
     'platform_version' => '1.0',

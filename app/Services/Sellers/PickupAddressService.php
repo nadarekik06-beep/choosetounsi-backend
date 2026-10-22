@@ -387,6 +387,7 @@ class PickupAddressService
             ])->save();
         });
         Log::info("[Pickup] seller {$seller->id} pickup index → {$index} ({$via}) by admin {$admin->id}");
+        \App\Services\Intigo\PickupVerifier::forget();   // the pre-send check reads Intigo's list again
         $this->releaseHeldParcels($seller->id);
     }
 

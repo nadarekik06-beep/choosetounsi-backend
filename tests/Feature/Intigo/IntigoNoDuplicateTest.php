@@ -26,9 +26,11 @@ class IntigoNoDuplicateTest extends TestCase
     }
 
     /** @return array{0: object, 1: \App\Models\User} a confirmed parcel and its seller */
+    private int $nextIndex = 100;
+
     private function confirmedParcel(): array
     {
-        $seller = $this->sellerWithPickup();
+        $seller = $this->sellerWithPickup($this->nextIndex++);   // one Intigo index per seller
         $this->addToCart($this->product($seller, 40));
         [, $orderId] = $this->placeAndConfirm();
         return [$this->parcel($orderId, $seller), $seller];
