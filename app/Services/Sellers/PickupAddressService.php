@@ -429,13 +429,10 @@ class PickupAddressService
         // shows the point elsewhere (incident 2026-10-22: pin shown near Gabès for a Sfax shop)
         $map = config('intigo.pickup_map_link_in_address', true) ? self::mapLink($r->latitude, $r->longitude) : null;
 
+        // Phone only, never the seller's name: Intigo prints this text on the bordereau the client sees
         $tail = [];
-        if (config('intigo.pickup_contact_in_address', true)) {
-            $phone   = $r->phone ? TunisianPhone::format($r->phone) : null;
-            $contact = trim(implode(' ', array_filter([$r->contact_name, $phone])));
-            if ($contact !== '') {
-                $tail['contact'] = "Contact : {$contact}";
-            }
+        if (config('intigo.pickup_contact_in_address', true) && $r->phone) {
+            $tail['phone'] = 'Tél : ' . TunisianPhone::format($r->phone);
         }
         if ($map) {
             $tail['map'] = "Carte : {$map}";
@@ -443,10 +440,6 @@ class PickupAddressService
 
         $join = fn (string $s, array $t) => implode(' — ', array_filter([$s, ...array_values($t)], fn ($x) => $x !== ''));
         $full = $join($street, $tail);
-        if (mb_strlen($full) > $max && isset($tail['contact'], $phone) && $phone) {
-            $tail['contact'] = "Tél : {$phone}";       // too long: drop the name, keep the phone
-            $full = $join($street, $tail);
-        }
         if (mb_strlen($full) > $max) {
             // Still too long: shorten the street text, never the phone or the map link
             $room   = $max - mb_strlen($join('', $tail)) - mb_strlen(' — ') - 1;

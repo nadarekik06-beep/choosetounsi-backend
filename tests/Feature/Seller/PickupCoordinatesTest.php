@@ -72,7 +72,7 @@ class PickupCoordinatesTest extends TestCase
                     'street_address' => $r['street_address'], 'city_name' => 'Sfax', 'district_name' => 'Sfax Medina', 'has_gps' => true]], 201);
             }
             return Http::response(['success' => true, 'pickup_addresses' => $pickupList ?? [[
-                'id' => 23378, 'index' => 1, 'street_address' => 'Route kaied mohamed km 2 — Contact : Vendeuse Test +216 28 522 353 — Carte : https://maps.google.com/?q=34.7564733,10.7508552',
+                'id' => 23378, 'index' => 1, 'street_address' => 'Route kaied mohamed km 2 — Tél : +216 28 522 353 — Carte : https://maps.google.com/?q=34.7564733,10.7508552',
                 'city_name' => 'Sfax', 'district_name' => 'Sfax Medina', 'has_gps' => true]]]);
         });
         return $user;
@@ -184,7 +184,7 @@ class PickupCoordinatesTest extends TestCase
     {
         Mail::fake();
         $user = $this->appliedAndVerified([[
-            'id' => 23378, 'index' => 1, 'street_address' => 'Route kaied mohamed km 2 — Contact : Vendeuse Test +216 28 522 353 — Carte : https://maps.google.com/?q=34.7564733,10.7508552',
+            'id' => 23378, 'index' => 1, 'street_address' => 'Route kaied mohamed km 2 — Tél : +216 28 522 353 — Carte : https://maps.google.com/?q=34.7564733,10.7508552',
             'city_name' => 'Sfax', 'district_name' => 'Sakiet Ezzit', 'has_gps' => false,
         ]]);
 
@@ -205,12 +205,16 @@ class PickupCoordinatesTest extends TestCase
         $user = $this->appliedAndVerified();
         $preview = $this->as($this->admin)->getJson("/api/admin/sellers/{$user->id}/pickup")->assertOk()->json('data.pickup');
 
-        $expected = 'Route kaied mohamed km 2 — Contact : Vendeuse Test +216 28 522 353 — Carte : https://maps.google.com/?q=34.7564733,10.7508552';
+        $expected = 'Route kaied mohamed km 2 — Tél : +216 28 522 353 — Carte : https://maps.google.com/?q=34.7564733,10.7508552';
         $this->assertSame($expected, $preview['intigo_street_address'], 'admin card shows the full text');
         $this->assertSame($expected, $preview['intigo_payload']['street_address']);
 
         $this->as($this->admin)->postJson("/api/admin/sellers/{$user->id}/pickup/intigo-create")->assertOk();
-        $this->assertSame($expected, $this->sentPickupBody()['street_address']);
+        $sent = $this->sentPickupBody()['street_address'];
+        $this->assertSame($expected, $sent);
+        // Intigo prints this text on the bordereau the client sees: never the seller's name
+        $this->assertStringNotContainsString('Vendeuse Test', $sent);
+        $this->assertStringNotContainsString('Contact', $sent);
     }
 
     public function test_a_long_address_is_shortened_but_never_the_phone_or_the_map_link(): void
@@ -235,7 +239,7 @@ class PickupCoordinatesTest extends TestCase
         $this->as($user)->postJson('/api/seller-applications', $this->application())->assertCreated();
         $text = app(\App\Services\Sellers\PickupAddressService::class)
             ->intigoStreetAddress(SellerPickupAddress::where('user_id', $user->id)->firstOrFail());
-        $this->assertSame('Route kaied mohamed km 2 — Contact : Vendeuse Test +216 28 522 353', $text);
+        $this->assertSame('Route kaied mohamed km 2 — Tél : +216 28 522 353', $text);
         $this->assertSame('https://maps.google.com/?q=36.8,10.18', \App\Services\Sellers\PickupAddressService::mapLink('36.8000000', 10.18));
         $this->assertNull(\App\Services\Sellers\PickupAddressService::mapLink(null, 10.18));
     }
