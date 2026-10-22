@@ -272,9 +272,13 @@ Route::middleware('auth:sanctum')->group(function () {
     | SELLER ROUTES
     |----------------------------------------------------------------------
     */
-    Route::prefix('seller')->group(function () {
+    // Any signed-in user: /become-a-vendor reads is_approved_seller from it.
+    Route::get('/seller/subscription', [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'show']);
+
+    // Active sellers only, read from the database on every request, never from the
+    // token: works right after approval, stops at role removal (SellerApiMiddleware).
+    Route::prefix('seller')->middleware('seller.api')->group(function () {
  // ── Subscription (full lifecycle) ─────────────────────────────────────
-    Route::get('/subscription',                [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'show']);
     Route::post('/subscription/upgrade',       [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'upgrade']);
     Route::post('/subscription/downgrade',     [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'downgrade']);    // NEW
     Route::delete('/subscription/downgrade',   [\App\Http\Controllers\Api\Seller\SellerSubscriptionController::class, 'cancelDowngrade']); // NEW

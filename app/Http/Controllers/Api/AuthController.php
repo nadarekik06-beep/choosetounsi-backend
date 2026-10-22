@@ -419,7 +419,8 @@ class AuthController extends Controller
                 'profile_completed'    => $user->profileCompletion()->isComplete(),
                 'profile_prompt_skipped_at' => $user->profile_prompt_skipped_at?->toISOString(),
             ],
-        ]);
+        // Always the current database row (role, approval): never cached anywhere.
+        ])->header('Cache-Control', 'no-store, private');
     }
 
     // ─────────────────────────────────────────────────────────────────────

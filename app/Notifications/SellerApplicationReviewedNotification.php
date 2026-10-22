@@ -6,8 +6,10 @@ use App\Notifications\Buyer\BuyerNotification;
 
 /**
  * The user's seller application was reviewed (account category, always on).
- *   approved  shown in the seller dashboard bell (the user is a seller now);
- *             the welcome e-mail is SellerApplicationApprovedMail
+ *   approved  shown in the storefront bell, where the applicant is when it
+ *             arrives: the storefront re-reads the user from /api/auth/user on
+ *             it and its link opens /seller at once (no re-login); the welcome
+ *             e-mail is SellerApplicationApprovedMail
  *   rejected  shown in the storefront bell, with an e-mail and the reason
  */
 class SellerApplicationReviewedNotification extends BuyerNotification
@@ -23,11 +25,6 @@ class SellerApplicationReviewedNotification extends BuyerNotification
     }
 
     public function category(): string { return 'account'; }
-
-    public function audience($notifiable = null): string
-    {
-        return $this->action === 'approved' ? 'seller' : 'buyer';
-    }
 
     protected function hasMail(): bool { return $this->action === 'rejected'; }
 

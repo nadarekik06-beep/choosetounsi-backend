@@ -68,6 +68,7 @@ class Kernel extends HttpKernel
         // Custom middleware
         'admin' => \App\Http\Middleware\AdminMiddleware::class,
         'seller' => \App\Http\Middleware\SellerMiddleware::class,
+        'seller.api' => \App\Http\Middleware\SellerApiMiddleware::class,
         'client' => \App\Http\Middleware\ClientMiddleware::class,
         'role' => \App\Http\Middleware\RoleMiddleware::class,
         'active.user' => \App\Http\Middleware\ActiveUserMiddleware::class,
