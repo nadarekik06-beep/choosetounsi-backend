@@ -56,10 +56,19 @@ class SellerPickupController extends Controller
         } catch (IntigoException $e) {
             return response()->json(['success' => false, 'message' => 'Intigo: ' . $e->getMessage()], 502);
         }
+        $index = $seller->fresh()->intigo_pickup_index;
+        $check = $this->pickups->lastReadback;
         $message = $intigo->mode() === 'fake'
-            ? 'Simulated (fake mode): nothing was created at Intigo. Pickup index ' . $seller->fresh()->intigo_pickup_index . ' saved.'
-            : 'Pickup address saved at Intigo (index ' . $seller->fresh()->intigo_pickup_index . ').';
-        return $this->ok($seller, $message);
+            ? "Simulated (fake mode): nothing was created at Intigo. Pickup index {$index} saved."
+            : "Pickup address saved at Intigo (index {$index})."
+              . ($check === [] ? ' Read back from Intigo: address, délégation and GPS match (Intigo does not return the coordinates: check the pin in its dashboard if in doubt).' : '')
+              . ($check ? ' WARNING, Intigo differs: ' . implode('; ', $check) . '. The admins were alerted.' : '');
+        return response()->json([
+            'success'  => true,
+            'message'  => $message,
+            'readback' => $check,
+            'data'     => $this->card($seller->fresh()),
+        ]);
     }
 
     public function markCreated(Request $request, int $sellerId): JsonResponse

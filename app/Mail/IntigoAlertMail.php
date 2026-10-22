@@ -21,7 +21,8 @@ class IntigoAlertMail extends Mailable implements ShouldQueue
         public string $reason,
         public ?string $orderNumber,
         public ?int $orderId,
-        public int $sellerOrderId,
+        public ?int $sellerOrderId,
+        public ?string $refLabel = null,   // e.g. "vendeur #4 (pickup 1)" for a pickup address alert
     ) {
         $this->queue  = 'emails';
         $this->locale = 'fr';
@@ -29,7 +30,8 @@ class IntigoAlertMail extends Mailable implements ShouldQueue
 
     public function build(): self
     {
-        $ref = $this->orderNumber ? "{$this->orderNumber}-S{$this->sellerOrderId}" : "colis #{$this->sellerOrderId}";
+        $ref = $this->refLabel
+            ?? ($this->orderNumber ? "colis {$this->orderNumber}-S{$this->sellerOrderId}" : "colis #{$this->sellerOrderId}");
 
         return $this
             ->subject("[Intigo] {$this->title} — {$ref}")

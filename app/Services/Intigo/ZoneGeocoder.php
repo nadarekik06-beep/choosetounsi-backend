@@ -18,17 +18,45 @@ use Illuminate\Support\Facades\Log;
  */
 class ZoneGeocoder
 {
-    /** Tunisia's bounding box (a pin outside is refused). */
-    public const BOUNDS = ['lat_min' => 30.2, 'lat_max' => 37.6, 'lng_min' => 7.5, 'lng_max' => 11.7];
+    /** Tunisia's bounding box (first, cheap check; a swapped lat/lng always falls outside). */
+    public const BOUNDS = ['lat_min' => 30.0, 'lat_max' => 37.6, 'lng_min' => 7.3, 'lng_max' => 11.8];
+
+    /**
+     * Tunisia's outline, simplified, [lat, lng] clockwise from the Algerian border on the north coast,
+     * drawn ~15-25 km OUTSIDE the real border and coast: border towns (Tabarka, Ghardimaou, Sakiet,
+     * Tamerza, Hazoua, Ben Guerdane, Dehiba, Borj el Khadra) and the islands (Djerba, Kerkennah) are in;
+     * Algeria, Libya and the open sea are out. Same polygon in the storefront (lib/pickupAddress.ts).
+     */
+    public const TUNISIA_POLYGON = [
+        [37.10, 8.58], [37.60, 8.80], [37.65, 9.90], [37.45, 10.55], [37.25, 11.25], [36.70, 11.35],
+        [36.40, 10.95], [36.05, 10.80], [35.75, 11.05], [35.55, 11.35], [35.05, 11.45], [34.55, 11.60],
+        [34.15, 10.75], [33.95, 11.15], [33.55, 11.40], [33.20, 11.75], [32.60, 11.75], [31.90, 11.20],
+        [31.30, 10.60], [30.60, 10.25], [30.18, 9.70], [30.18, 9.35], [30.60, 9.05], [31.40, 8.55],
+        [32.30, 8.05], [33.10, 7.65], [33.75, 7.30], [34.30, 7.75], [34.60, 7.98], [34.90, 8.25],
+        [35.40, 8.18], [35.95, 8.22], [36.50, 8.32], [36.85, 8.52],
+    ];
 
     /** Beyond this distance from the zone centre the pin is flagged (km), per geocode precision. */
-    public const WARN_KM = ['secteur' => 4, 'delegation' => 8, 'gouvernorat' => 40];
+    public const WARN_KM = ['secteur' => 4, 'delegation' => 5, 'gouvernorat' => 40];
 
     public static function inTunisia(?float $lat, ?float $lng): bool
     {
         $b = self::BOUNDS;
-        return $lat !== null && $lng !== null
-            && $lat >= $b['lat_min'] && $lat <= $b['lat_max'] && $lng >= $b['lng_min'] && $lng <= $b['lng_max'];
+        if ($lat === null || $lng === null
+            || $lat < $b['lat_min'] || $lat > $b['lat_max'] || $lng < $b['lng_min'] || $lng > $b['lng_max']) {
+            return false;
+        }
+        // Ray casting on the outline (lat = y, lng = x)
+        $inside = false;
+        $poly = self::TUNISIA_POLYGON;
+        for ($i = 0, $j = count($poly) - 1; $i < count($poly); $j = $i++) {
+            [$yi, $xi] = $poly[$i];
+            [$yj, $xj] = $poly[$j];
+            if (($yi > $lat) !== ($yj > $lat) && $lng < ($xj - $xi) * ($lat - $yi) / ($yj - $yi) + $xi) {
+                $inside = !$inside;
+            }
+        }
+        return $inside;
     }
 
     public static function distanceKm(float $lat1, float $lng1, float $lat2, float $lng2): float

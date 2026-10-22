@@ -76,7 +76,15 @@ class PickupAddressService
             'adresse_complete' => "{$r}|string|min:5|max:200",
             'intigo_zone_id'   => [...explode('|', $r), 'integer', Rule::exists('intigo_zones', 'id')->where('active', true)],
             'code_postal'      => "{$r}|digits:4",
-            'latitude'         => "{$r}|numeric|between:{$b['lat_min']},{$b['lat_max']}",
+            // The pin, exactly as placed on the map: [latitude, longitude], inside Tunisia's outline
+            // (a swapped pair or a point in Algeria / Libya / the open sea is refused)
+            'latitude'         => [...explode('|', $r), 'numeric', "between:{$b['lat_min']},{$b['lat_max']}",
+                function (string $attribute, mixed $value, \Closure $fail) {
+                    $lng = request()->input('longitude');
+                    if (is_numeric($value) && is_numeric($lng) && !ZoneGeocoder::inTunisia((float) $value, (float) $lng)) {
+                        $fail(__('seller.pickup.pin_outside'));
+                    }
+                }],
             'longitude'        => "{$r}|numeric|between:{$b['lng_min']},{$b['lng_max']}",
             'indications'      => 'nullable|string|max:500',
         ];
@@ -254,15 +262,7 @@ class PickupAddressService
     public function createInIntigo(User $seller, User $admin): SellerPickupAddress
     {
         $record = $this->requireVerified($seller);
-        $zone   = $record->zone;
-        $body   = [
-            'street_address'  => $this->intigoStreetAddress($record),
-            'city_id'         => $zone->gouvernorat_id,
-            'district_id'     => $zone->delegation_id,
-            'neighborhood_id' => $zone->isSecteur() ? $zone->intigo_id : null,
-            'latitude'        => round((float) $record->latitude, 7),
-            'longitude'       => round((float) $record->longitude, 7),
-        ];
+        $body   = $this->intigoPickupBody($record);
 
         $ownIndex = $seller->intigo_pickup_index !== null
             && $record->intigo_pickup_created_via === 'api'
@@ -273,8 +273,97 @@ class PickupAddressService
             : $this->intigo->createPickupAddress($body + ['is_primary' => false]);
 
         $this->markCreated($seller, $record, $admin, $result['index'], $result['label'], 'api');
-        Log::info("[Pickup] seller {$seller->id} " . ($ownIndex ? 'updated' : 'created') . " at Intigo ({$this->intigo->mode()}): index {$result['index']} by admin {$admin->id}");
+        Log::info("[Pickup] seller {$seller->id} " . ($ownIndex ? 'updated' : 'created') . " at Intigo ({$this->intigo->mode()}): index {$result['index']} by admin {$admin->id}"
+            . " at {$body['latitude']},{$body['longitude']}");
+
+        // Live: read it back (GET /pickup-addresses/) and tell the admins if Intigo holds something else
+        $this->lastReadback = $this->intigo->mode() === 'live'
+            ? $this->readBack($seller, (int) $result['index'], $body)
+            : null;
         return $record->fresh();
+    }
+
+    /** Problems found by the last read-back (null = not checked, [] = Intigo matches). */
+    public ?array $lastReadback = null;
+
+    /**
+     * POST/PATCH /pickup-addresses body, field names and order of the official spec
+     * (PickupAddressCreateRequest: street_address, city_id, district_id, neighborhood_id, latitude,
+     * longitude; is_primary added on creation). latitude / longitude = the seller's pin, exactly as
+     * saved from the map (7 decimals): never a zone centre, never geocoded from the text.
+     */
+    public function intigoPickupBody(SellerPickupAddress $record): array
+    {
+        $zone = $record->zone;
+        return [
+            'street_address'  => $this->intigoStreetAddress($record),
+            'city_id'         => (int) $zone->gouvernorat_id,
+            'district_id'     => (int) $zone->delegation_id,
+            'neighborhood_id' => $zone->isSecteur() ? (int) $zone->intigo_id : null,
+            'latitude'        => round((float) $record->latitude, 7),
+            'longitude'       => round((float) $record->longitude, 7),
+        ];
+    }
+
+    /**
+     * Compare what Intigo now holds with what we sent. Intigo's API never returns the coordinates
+     * (PickupAddressItem: index, street_address, city_name, district_name, has_gps): the point is
+     * checked as "has GPS"; the exact position can only be seen in the Intigo dashboard.
+     *
+     * @return string[] problems (empty = matches)
+     */
+    private function readBack(User $seller, int $index, array $sent): array
+    {
+        $zone = SellerPickupAddress::where('user_id', $seller->id)->first()?->zone;
+        try {
+            $item = collect($this->intigo->pickupAddresses())->firstWhere('index', $index);
+        } catch (\Throwable $e) {
+            $problems = ['could not read the pickup back from Intigo: ' . mb_substr($e->getMessage(), 0, 160)];
+            $this->alertPickup($seller, $index, $problems);
+            return $problems;
+        }
+
+        $fold = fn (?string $s) => \App\Services\Intigo\IntigoZones::fold((string) $s);
+        $raw  = $item['raw'] ?? [];
+        $problems = [];
+        if (!$item) {
+            $problems[] = "index {$index} is not in Intigo's pickup list";
+        } else {
+            if (array_key_exists('has_gps', $raw) && $raw['has_gps'] !== true) {
+                $problems[] = 'Intigo has no GPS point for it (has_gps false): it will place it from the text';
+            }
+            if (isset($raw['street_address']) && trim((string) $raw['street_address']) !== trim($sent['street_address'])) {
+                $problems[] = "address at Intigo \"{$raw['street_address']}\" differs from the one sent";
+            }
+            if ($zone && isset($raw['district_name']) && $fold($raw['district_name']) !== $fold($zone->delegation)) {
+                $problems[] = "délégation at Intigo \"{$raw['district_name']}\" ≠ ours \"{$zone->delegation}\"";
+            }
+            if ($zone && isset($raw['city_name']) && $fold($raw['city_name']) !== $fold($zone->gouvernorat)) {
+                $problems[] = "governorate at Intigo \"{$raw['city_name']}\" ≠ ours \"{$zone->gouvernorat}\"";
+            }
+        }
+        if ($problems) {
+            $this->alertPickup($seller, $index, $problems);
+        }
+        Log::info("[Pickup] seller {$seller->id} read back index {$index}: " . ($problems ? implode('; ', $problems) : 'matches'));
+        return $problems;
+    }
+
+    /** Bell + e-mail (config intigo.alert_email) for a pickup that does not match at Intigo. */
+    private function alertPickup(User $seller, int $index, array $problems): void
+    {
+        $title  = 'Intigo pickup differs from ours';
+        $reason = "Seller #{$seller->id} {$seller->name}, Intigo pickup index {$index}: " . implode('; ', $problems)
+            . '. Check the point in the Intigo dashboard (the API does not return coordinates).';
+        try {
+            Notification::send(User::getAllAdmins(), new \App\Notifications\Delivery\IntigoAdminNotification($title, $reason, null, null, 'pickup_mismatch'));
+            $to = config('intigo.alert_email');
+            if (is_string($to) && filter_var($to, FILTER_VALIDATE_EMAIL)) {
+                \Illuminate\Support\Facades\Mail::to($to)->queue(new \App\Mail\IntigoAlertMail($title, $reason, null, null, null, "vendeur #{$seller->id} (pickup {$index})"));
+            }
+        } catch (\Throwable $e) {
+            Log::warning('[Pickup] read-back alert failed: ' . $e->getMessage());
+        }
     }
 
     /** "Pickup créé dans Intigo": the admin typed it in the Intigo dashboard and gives its index. */
@@ -402,6 +491,10 @@ class PickupAddressService
                 'intigo_street_address'     => $r->adresse_complete ? $this->intigoStreetAddress($r) : null,
                 'google_maps_url'           => $r->latitude !== null ? "https://www.google.com/maps/search/?api=1&query={$r->latitude},{$r->longitude}" : null,
                 'pending_pickups'           => $this->pendingPickups($r->user_id),
+                // Exactly what "Créer / Mettre à jour dans Intigo" sends (preview before the click)
+                'intigo_payload'            => $zone && $r->adresse_complete && $r->latitude !== null && $r->longitude !== null
+                    ? $this->intigoPickupBody($r) : null,
+                'in_tunisia'                => ZoneGeocoder::inTunisia($r->latitude !== null ? (float) $r->latitude : null, $r->longitude !== null ? (float) $r->longitude : null),
             ];
         }
         return $out;
