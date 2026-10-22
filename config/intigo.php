@@ -51,6 +51,17 @@ return [
         'lock_seconds' => 120,              // a send claimed longer ago than this is considered dead
     ],
 
+    // Parcel lookup by our cid (before any re-send): GET /parcels/ has no cid filter, so the
+    // newest parcels are read page by page and matched here (page_size max 100 at Intigo).
+    'cid_lookup' => [
+        'page_size' => 100,
+        'max_pages' => 10,
+    ],
+
+    // E-mail for parcels that need a human (creation failed, possible duplicate); bell for all.
+    // Empty = bell only. Defaults to the team inbox (MAIL_CONTACT_TO).
+    'alert_email' => env('INTIGO_ALERT_EMAIL', env('MAIL_CONTACT_TO')),
+
     // Webhook events and logs kept for this many days (intigo:sync-statuses prunes)
     'retention_days' => 180,
 ];

@@ -45,9 +45,12 @@ class HttpIntigoClient implements IntigoClient
     public function findByCid(string $cid, ?int $sellerOrderId = null): array
     {
         $found = [];
-        // The list may be paginated: read a few pages at most (our parcel is recent)
-        for ($page = 1; $page <= 5; $page++) {
-            $body  = $this->request('GET', '/parcels/', null, $sellerOrderId, [], ['cid' => $cid, 'page' => $page]);
+        // GET /parcels/ has no cid filter (only status, dates, search, page, page_size):
+        // read the newest parcels page by page and match the cid here. Our parcel is recent.
+        $pageSize = (int) config('intigo.cid_lookup.page_size', 100);
+        $maxPages = (int) config('intigo.cid_lookup.max_pages', 10);
+        for ($page = 1; $page <= $maxPages; $page++) {
+            $body  = $this->request('GET', '/parcels/', null, $sellerOrderId, [], ['page' => $page, 'page_size' => $pageSize]);
             $items = Shapes::list($body, ['parcels', 'data', 'results', 'items']);
             foreach ($items as $item) {
                 $p = Shapes::parcel($item);

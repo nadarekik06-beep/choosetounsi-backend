@@ -5,7 +5,7 @@ namespace App\Services\Intigo;
 /**
  * A failed Intigo call, with a message an admin can act on.
  *
- * retryable: no answer, timeout, connection error, 5xx / 503. The parcel may
+ * retryable: no answer, timeout, connection error, 429, 5xx / 503. The parcel may
  * or may not exist at Intigo (ambiguous): look it up by cid before any retry.
  * Never retryable: 400 validation, 401 bad key, 402 balance, 404, 409 conflict.
  */
@@ -30,6 +30,7 @@ class IntigoException extends \RuntimeException
             $status === 402 => ['balance', 'Intigo: insufficient account balance', false],
             $status === 404 => ['not_found', 'Not found at Intigo', false],
             $status === 409 => ['conflict', 'Intigo: status conflict', false],
+            $status === 429 => ['rate_limited', 'Intigo: too many requests', true],
             $status === 503 => ['unavailable', 'Intigo is temporarily unavailable', true],
             $status >= 500  => ['server', 'Intigo server error', true],
             default         => ['error', "Unexpected Intigo answer (HTTP {$status})", false],

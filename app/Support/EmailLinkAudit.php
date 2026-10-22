@@ -138,6 +138,7 @@ final class EmailLinkAudit
         $list = [
             // ── Mailables ──
             'MailTestMail'                    => $mailable(fn () => new Mail\MailTestMail(now()->toIso8601String())),
+            'IntigoAlertMail'                 => $mailable(fn () => new Mail\IntigoAlertMail('Intigo rejected a parcel', 'Rejected by Intigo: Ville inconnue', 'ORD-TEST1234', ($o = $order()) ? $o->id : 1, 1)),
             'ContactMessageMail'              => $mailable(fn () => new Mail\ContactMessageMail([
                 'name' => 'Visiteur Test', 'email' => 'visitor@example.com', 'phone' => '+216 22 123 456', 'topic' => 'order',
                 'message' => 'Bonjour, une question sur ma commande.', 'locale' => 'fr', 'user_id' => null, 'ip' => '127.0.0.1',

@@ -66,7 +66,8 @@ class Shapes
         if (!empty($body['next']) || !empty($body['has_more']) || !empty($body['next_page_url'])) {
             return true;
         }
-        $last = $body['total_pages'] ?? $body['last_page'] ?? $body['pages'] ?? $body['meta']['last_page'] ?? null;
+        // Intigo v3: {"parcels": [...], "pagination": {"total", "page", "page_size", "total_pages"}}
+        $last = $body['pagination']['total_pages'] ?? $body['total_pages'] ?? $body['last_page'] ?? $body['pages'] ?? $body['meta']['last_page'] ?? null;
         return is_numeric($last) && $page < (int) $last;
     }
 

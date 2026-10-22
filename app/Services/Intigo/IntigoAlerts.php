@@ -4,13 +4,15 @@ namespace App\Services\Intigo;
 
 use App\Models\SellerOrder;
 use App\Models\User;
+use App\Mail\IntigoAlertMail;
 use App\Notifications\Delivery\IntigoAdminNotification;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Notification;
 
 /**
- * Tells the admins (bell) about a parcel that needs a human, and keeps the
+ * Tells the admins (bell; e-mail for EMAIL_KINDS) about a parcel that needs a human, and keeps the
  * reason on seller_orders.intigo_attention for the admin panel. The same
  * reason is notified once per parcel.
  */
@@ -33,10 +35,21 @@ class IntigoAlerts
             ]) === 1;
             if (!$claimed) return;
 
+            $ref = DB::table('orders')->where('id', $so->order_id)->value('order_number');
+
+            // Parcel creation problems also go by e-mail (the bell is easy to miss)
+            $to = config('intigo.alert_email');
+            if (in_array($kind, self::EMAIL_KINDS, true) && is_string($to) && filter_var($to, FILTER_VALIDATE_EMAIL)) {
+                try {
+                    Mail::to($to)->queue(new IntigoAlertMail($title, $reason, $ref, $so->order_id ? (int) $so->order_id : null, $so->id));
+                } catch (\Throwable $e) {
+                    Log::warning('[Intigo] alert e-mail failed: ' . $e->getMessage());
+                }
+            }
+
             $admins = User::where('role', 'admin')->where('is_active', true)->get();
             if ($admins->isEmpty()) return;
 
-            $ref = DB::table('orders')->where('id', $so->order_id)->value('order_number');
             Notification::send($admins, new IntigoAdminNotification(
                 $title,
                 ($ref ? "{$ref}-S{$so->id}: " : "Parcel #{$so->id}: ") . $reason,
@@ -48,4 +61,7 @@ class IntigoAlerts
             Log::warning('[Intigo] admin alert failed: ' . $e->getMessage());
         }
     }
+
+    /** Kinds that are also e-mailed to config intigo.alert_email: the parcel was not created (or twice). */
+    public const EMAIL_KINDS = ['send_failed', 'duplicate'];
 }
