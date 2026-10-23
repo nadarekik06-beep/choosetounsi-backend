@@ -368,6 +368,10 @@ Route::middleware('auth:sanctum')->group(function () {
         // ── Store profile (branding) ─────────────────────────────────────────
         Route::get('/store-profile',              [SellerStoreProfileController::class, 'show']);
         Route::post('/store-profile/cover-photo', [SellerStoreProfileController::class, 'updateCoverPhoto']);
+        // Logo / description / activity categories: live at once, logged, admins notified (5 changes / hour each)
+        Route::post('/store-profile/logo',        [SellerStoreProfileController::class, 'updateLogo'])->middleware('throttle:20,1');
+        Route::put('/store-profile/description',  [SellerStoreProfileController::class, 'updateDescription'])->middleware('throttle:20,1');
+        Route::put('/store-profile/categories',   [SellerStoreProfileController::class, 'updateCategories'])->middleware('throttle:20,1');
         Route::get('/pickup-address',             [SellerStoreProfileController::class, 'pickupAddress']);
         Route::put('/pickup-address',             [SellerStoreProfileController::class, 'updatePickupAddress']);
         Route::get('/stock-alerts',               [\App\Http\Controllers\Api\Seller\SellerStockAlertController::class, 'show']);
@@ -636,6 +640,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/orders/{id}/export/slips/{sellerOrderId}',     [\App\Http\Controllers\Admin\OrderExportController::class, 'slip'])->whereNumber(['id', 'sellerOrderId']);
         Route::get('/orders/{id}/export/summary',                   [\App\Http\Controllers\Admin\OrderExportController::class, 'summary'])->whereNumber('id');
         // Seller pickup address (Intigo form fields): card, edit, "Adresse vérifiée", "Créer dans Intigo"
+        Route::get('/sellers/{sellerId}/store-profile',              [\App\Http\Controllers\Admin\SellerStoreProfileController::class, 'show'])->whereNumber('sellerId');
+        Route::post('/sellers/{sellerId}/store-profile/restore/{changeId}', [\App\Http\Controllers\Admin\SellerStoreProfileController::class, 'restore'])->whereNumber('sellerId')->whereNumber('changeId');
         Route::get('/sellers/{sellerId}/pickup',                     [\App\Http\Controllers\Admin\SellerPickupController::class, 'show'])->whereNumber('sellerId');
         Route::put('/sellers/{sellerId}/pickup',                     [\App\Http\Controllers\Admin\SellerPickupController::class, 'update'])->whereNumber('sellerId');
         Route::put('/sellers/{sellerId}/pickup-address',             [\App\Http\Controllers\Admin\SellerPickupController::class, 'update'])->whereNumber('sellerId');
