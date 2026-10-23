@@ -678,10 +678,6 @@ public function forceDestroy($id)
     /** Products waiting for a first (or renewed) review. */
     private function scopePendingQueue($query)
     {
-        return $query->where('is_approved', false)
-            ->whereNull('rejection_reason')
-            ->whereNull('changes_requested_at')
-            ->where(fn($q) => $q->where('deleted_by_seller', false)
-                                ->orWhereNull('deleted_by_seller'));
+        return $query->awaitingReview();
     }
 }

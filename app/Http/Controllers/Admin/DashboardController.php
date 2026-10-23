@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Models\Order;
 use App\Models\Product;
+use App\Models\SellerApplication;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 
@@ -22,14 +23,13 @@ class DashboardController extends Controller
         $totalProducts = Product::withoutGlobalScopes()->count();
         $totalOrders  = Order::count();
 
-        $pendingSellerApprovals = User::where('role', 'seller')
-            ->where('is_approved', false)
-            ->where('is_active', true)
-            ->count();
+        // Same list as Applications > Pending: an applicant stays role=client
+        // until approval, so pending sellers live in seller_applications.
+        $pendingSellerApprovals = SellerApplication::pending()->count();
 
-        $pendingProductApprovals = Product::withoutGlobalScopes()
-            ->where('is_approved', false)
-            ->count();
+        // Same list as Products > Pending (excludes rejected, changes requested,
+        // and seller-deleted products).
+        $pendingProductApprovals = Product::awaitingReview()->count();
 
         // ── Total Revenue ──────────────────────────────────────────────
         //

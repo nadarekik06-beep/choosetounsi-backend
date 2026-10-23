@@ -202,6 +202,16 @@ class Product extends Model
     public function scopeApproved($query)      { return $query->where('is_approved', true); }
     public function scopePending($query)        { return $query->where('is_approved', false); }
     public function scopeActive($query)         { return $query->where('is_active', true); }
+
+    /** Admin moderation queue: never reviewed (or sent back to review), not rejected, not deleted by the seller. */
+    public function scopeAwaitingReview($query)
+    {
+        return $query->where('is_approved', false)
+            ->whereNull('rejection_reason')
+            ->whereNull('changes_requested_at')
+            ->where(fn($q) => $q->where('deleted_by_seller', false)
+                                ->orWhereNull('deleted_by_seller'));
+    }
     public function scopeAvailable($query)      { return $query->where('is_approved', true)->where('is_active', true); }
     public function scopeFeatured($query)       { return $query->where('featured', true); }
     public function scopeInStock($query)        { return $query->where('stock', '>', 0); }
