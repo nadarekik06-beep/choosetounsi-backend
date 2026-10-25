@@ -72,6 +72,8 @@ class ProductController extends Controller
         if ($sellerId = $request->query('seller_id')) {
             $query->where('seller_id', $sellerId);
         }
+        // ?gender=women|men → that gender + unisex; no-gender products only show without it
+        $query->forGender($request->query('gender'));
         // Price filters and sorts use the price paid (after promotion)
         if ($priceMin = $request->query('price_min')) {
             $query->whereFinalPrice('>=', (float) $priceMin);
@@ -196,7 +198,7 @@ class ProductController extends Controller
     /** Any filter the shopper chose (category/subcategory are the page context, not filters). */
     private function hasExplicitFilters(Request $request): bool
     {
-        foreach (['search', 'seller_id', 'price_min', 'price_max', 'attrs', 'is_pack', 'min_rating'] as $key) {
+        foreach (['search', 'seller_id', 'price_min', 'price_max', 'attrs', 'is_pack', 'min_rating', 'gender'] as $key) {
             if ($request->filled($key)) return true;
         }
         return $this->occasionsParam($request) !== []

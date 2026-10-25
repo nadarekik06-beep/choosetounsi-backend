@@ -21,6 +21,9 @@ class AppServiceProvider extends ServiceProvider
         // One settings snapshot per request (it memoizes the cached settings).
         $this->app->singleton(\App\Services\Ads\AdSettings::class);
 
+        // Browsing gender: one resolver per request (it memoizes the gender option map).
+        $this->app->singleton(\App\Services\Gender\GenderResolver::class);
+
         // Every database notification is stored in the payload contract
         // (type, category, audience, title, body, link, icon, action, data).
         $this->app->bind(
@@ -44,6 +47,15 @@ class AppServiceProvider extends ServiceProvider
         // Stock alert observers — handles seller dashboard edits.
         // Checkout decrement path is handled directly in CheckoutController.
         Product::observe(ProductObserver::class);
+        // Browsing gender (products.gender) follows seller / admin saves
+        Product::observe(\App\Observers\ProductGenderObserver::class);
+        \App\Models\ProductAttributeValue::observe(\App\Observers\ProductAttributeGenderObserver::class);
+        // Mega-menu / subcategory bar caches: rebuilt right after any admin category edit
+        foreach ([\App\Models\Category::class, \App\Models\Subcategory::class, \App\Models\GenderMenuGroup::class,
+                  \App\Models\GenderMenuItem::class, \App\Models\SubcategoryGenderImage::class] as $model) {
+            $model::saved(fn () => app(\App\Services\Gender\GenderMenu::class)->flush());
+            $model::deleted(fn () => app(\App\Services\Gender\GenderMenu::class)->flush());
+        }
         Order::observe(OrderObserver::class);
         // Cancelled seller orders give their flash-sale units back
         SellerOrder::observe(SellerOrderObserver::class);

@@ -215,6 +215,13 @@ class Product extends Model
     public function scopeAvailable($query)      { return $query->where('is_approved', true)->where('is_active', true); }
     public function scopeFeatured($query)       { return $query->where('featured', true); }
     public function scopeInStock($query)        { return $query->where('stock', '>', 0); }
+    // ?gender=women|men: that gender plus unisex (rule lives in GenderResolver); anything else is ignored
+    public function scopeForGender($query, ?string $gender)
+    {
+        $resolver = app(\App\Services\Gender\GenderResolver::class);
+        if (!$resolver->isBrowsable($gender)) return $query;
+        return $query->whereIn($query->getModel()->getTable() . '.gender', $resolver->matchingValues($gender));
+    }
 
     /** Filter on the price the customer pays (after promotion), in SQL so pagination stays exact. */
     public function scopeWhereFinalPrice($query, string $operator, float $value)

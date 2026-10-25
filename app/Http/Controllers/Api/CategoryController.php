@@ -16,7 +16,7 @@ class CategoryController extends Controller
     public function index()
     {
         $categories = Category::active()->ordered()
-            ->select(['id', 'name', 'name_ar', 'name_fr', 'slug', 'icon', 'image'])
+            ->select(['id', 'name', 'name_ar', 'name_fr', 'slug', 'icon', 'image', 'is_gendered'])
             ->get();
 
         return response()->json(['success' => true, 'data' => $categories]);
@@ -111,6 +111,9 @@ class CategoryController extends Controller
         } elseif ($subId) {
             $query->where('subcategory_id', (int) $subId);
         }
+
+        // ─── Gender (?gender=women|men → that gender + unisex) ─────────────
+        $query->forGender($request->query('gender'));
 
         // ─── Text search ──────────────────────────────────────────────────
         if ($search = $request->query('search')) {

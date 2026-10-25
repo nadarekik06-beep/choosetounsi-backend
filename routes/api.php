@@ -95,6 +95,9 @@ Route::get('/products/{slug}',   [ProductController::class, 'show']);
 
 Route::get('/categories',                 [CategoryController::class, 'index']);
 Route::get('/categories/with-products',   [CategoryController::class, 'withProducts']);
+// Gendered categories (Femme / Homme): mega-menu columns and the round subcategory bar
+Route::get('/categories/mega-menu',       [\App\Http\Controllers\Api\GenderMenuController::class, 'megaMenu']);
+Route::get('/categories/{slug}/gender-bar', [\App\Http\Controllers\Api\GenderMenuController::class, 'bar']);
 Route::get('/categories/{slug}',          [CategoryController::class, 'show']);
 Route::get('/categories/{slug}/products', [CategoryController::class, 'products']);
 
@@ -543,6 +546,20 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/subcategories',       [AdminSubcategoryController::class, 'store']);
         Route::put('/subcategories/{id}',   [AdminSubcategoryController::class, 'update']);
         Route::delete('/subcategories/{id}',[AdminSubcategoryController::class, 'destroy']);
+
+        // ── Gender menu (Femme / Homme columns, images) & product genders ──
+        Route::get('/gender-menu/{categoryId}',                 [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'show'])->whereNumber('categoryId');
+        Route::post('/gender-menu/{categoryId}/groups',         [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'storeGroup'])->whereNumber('categoryId');
+        Route::put('/gender-menu/{categoryId}/order',           [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'reorder'])->whereNumber('categoryId');
+        Route::put('/gender-menu/{categoryId}/subcategories/{subId}/genders', [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'setSubcategoryGenders'])->whereNumber(['categoryId', 'subId']);
+        Route::put('/gender-menu/groups/{id}',                  [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'updateGroup'])->whereNumber('id');
+        Route::delete('/gender-menu/groups/{id}',               [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'destroyGroup'])->whereNumber('id');
+        Route::post('/gender-menu/groups/{id}/items',           [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'storeItem'])->whereNumber('id');
+        Route::delete('/gender-menu/items/{id}',                [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'destroyItem'])->whereNumber('id');
+        Route::post('/subcategories/{subId}/gender-image',      [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'uploadImage'])->whereNumber('subId');
+        Route::delete('/subcategories/{subId}/gender-image',    [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'destroyImage'])->whereNumber('subId');
+        Route::get('/product-genders',                          [\App\Http\Controllers\Admin\AdminProductGenderController::class, 'index']);
+        Route::put('/products/{id}/gender',                     [\App\Http\Controllers\Admin\AdminProductGenderController::class, 'update'])->whereNumber('id');
 
         // ── Global Attributes ─────────────────────────────────────────────
         Route::get('/attributes',                         [AdminAttributeController::class, 'index']);
