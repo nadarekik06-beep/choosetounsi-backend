@@ -31,39 +31,84 @@ class GenderMenu
         return 'gender_menu:v' . (int) Cache::get(self::VERSION_KEY, 0) . ':' . $suffix;
     }
 
-    /** Gendered categories with their Femme / Homme columns. */
+    /**
+     * Mega-menu of every active category, in rail order.
+     *   gendered:     genders.women / genders.men → columns → subcategories
+     *   not gendered: groups → subcategories
+     * Only subcategories with available products are listed (gender-aware for Femme / Homme),
+     * columns left empty are dropped, and has_products says whether the category has any.
+     * Admin edits rebuild it at once (flush); product counts refresh every few minutes.
+     */
     public function megaMenu(): array
     {
-        return Cache::rememberForever($this->key('mega'), fn () => $this->buildMegaMenu());
+        return Cache::remember($this->key('mega'), self::MENU_TTL, fn () => $this->buildMegaMenu());
     }
+
+    private const MENU_TTL = 300;
 
     private function buildMegaMenu(): array
     {
         $categories = DB::table('categories')
-            ->where('is_gendered', true)->where('is_active', true)
+            ->where('is_active', true)
             ->orderBy('order')->orderBy('id')
-            ->get(['id', 'slug', 'name', 'name_fr', 'name_ar']);
+            ->get(['id', 'slug', 'name', 'name_fr', 'name_ar', 'is_gendered']);
+
+        [$catCounts, $subCounts] = $this->availability();
 
         $out = [];
         foreach ($categories as $cat) {
-            $genders = [];
-            foreach (GenderResolver::BROWSABLE as $gender) {
-                $genders[$gender] = $this->groups($cat->id, $gender);
-            }
-            $out[] = [
-                'id'      => $cat->id,
-                'slug'    => $cat->slug,
-                'name'    => $cat->name,
-                'name_fr' => $cat->name_fr,
-                'name_ar' => $cat->name_ar,
-                'genders' => $genders,
+            $row = [
+                'id'            => $cat->id,
+                'slug'          => $cat->slug,
+                'name'          => $cat->name,
+                'name_fr'       => $cat->name_fr,
+                'name_ar'       => $cat->name_ar,
+                'is_gendered'   => (bool) $cat->is_gendered,
+                'product_count' => (int) ($catCounts[$cat->id] ?? 0),
+                'has_products'  => ($catCounts[$cat->id] ?? 0) > 0,
             ];
+            if ($cat->is_gendered) {
+                foreach (GenderResolver::BROWSABLE as $gender) {
+                    $row['genders'][$gender] = $this->groups($cat->id, $gender, $subCounts);
+                }
+            } else {
+                $row['groups'] = $this->groups($cat->id, GenderResolver::MENU_ALL, $subCounts);
+            }
+            $out[] = $row;
         }
         return $out;
     }
 
-    /** Columns of one category × gender, each with its active subcategories. */
-    private function groups(int $categoryId, string $gender): array
+    /** Available products per category, and per subcategory × gender. */
+    private function availability(): array
+    {
+        $rows = DB::table('products')
+            ->whereNull('deleted_at')->where('is_approved', true)->where('is_active', true)
+            ->select('category_id', 'subcategory_id', 'gender', DB::raw('COUNT(*) as n'))
+            ->groupBy('category_id', 'subcategory_id', 'gender')
+            ->get();
+
+        $cat = $sub = [];
+        foreach ($rows as $r) {
+            if ($r->category_id) $cat[$r->category_id] = ($cat[$r->category_id] ?? 0) + $r->n;
+            if ($r->subcategory_id) {
+                $g = $r->gender ?? 'none';
+                $sub[$r->subcategory_id][$g] = ($sub[$r->subcategory_id][$g] ?? 0) + $r->n;
+            }
+        }
+        return [$cat, $sub];
+    }
+
+    /** Products a menu item leads to: all of them, or that gender + unisex. */
+    private function itemCount(array $subCounts, int $subId, string $menuGender): int
+    {
+        $c = $subCounts[$subId] ?? [];
+        if ($menuGender === GenderResolver::MENU_ALL) return (int) array_sum($c);
+        return (int) (($c[$menuGender] ?? 0) + ($c[GenderResolver::UNISEX] ?? 0));
+    }
+
+    /** Columns of one category × menu gender (women | men | all), each with its non-empty subcategories. */
+    private function groups(int $categoryId, string $gender, array $subCounts): array
     {
         $groups = DB::table('gender_menu_groups')
             ->where('category_id', $categoryId)->where('gender', $gender)
@@ -85,14 +130,18 @@ class GenderMenu
             'name'    => $g->name,
             'name_fr' => $g->name_fr,
             'name_ar' => $g->name_ar,
-            'items'   => ($items[$g->id] ?? collect())->map(fn ($s) => [
-                'id'            => (int) $s->id,
-                'slug'          => $s->slug,
-                'name'          => $s->name,
-                'name_fr'       => $s->name_fr,
-                'name_ar'       => $s->name_ar,
-                'category_slug' => $s->category_slug,
-            ])->values()->all(),
+            'items'   => ($items[$g->id] ?? collect())
+                ->map(fn ($s) => [
+                    'id'            => (int) $s->id,
+                    'slug'          => $s->slug,
+                    'name'          => $s->name,
+                    'name_fr'       => $s->name_fr,
+                    'name_ar'       => $s->name_ar,
+                    'category_slug' => $s->category_slug,
+                    'count'         => $this->itemCount($subCounts, (int) $s->id, $gender),
+                ])
+                ->filter(fn ($s) => $s['count'] > 0)
+                ->values()->all(),
         ])->filter(fn ($g) => count($g['items']) > 0)->values()->all();
     }
 

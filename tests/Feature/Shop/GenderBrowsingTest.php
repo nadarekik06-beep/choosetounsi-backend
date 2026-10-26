@@ -189,7 +189,10 @@ class GenderBrowsingTest extends TestCase
         $this->sellerProduct($this->robes, 'Women');
 
         $menu = collect($this->getJson('/api/categories/mega-menu')->assertOk()->json('data'))->firstWhere('slug', $this->cat->slug);
-        $this->assertSame([$this->robes->slug, $this->tshirts->slug], array_column($menu['genders']['women'][0]['items'], 'slug'));
+        // T-shirts has no product yet: hidden from the storefront menu
+        $this->assertSame([$this->robes->slug], array_column($menu['genders']['women'][0]['items'], 'slug'));
+        $this->assertTrue($menu['is_gendered']);
+        $this->assertTrue($menu['has_products']);
 
         // Bar hides empty subcategories (t-shirts has no product yet) and falls back to null image
         $bar = $this->getJson("/api/categories/{$this->cat->slug}/gender-bar?gender=women")->assertOk()->json('data');

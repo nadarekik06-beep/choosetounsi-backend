@@ -49,6 +49,7 @@ class AdminGenderMenuController extends Controller
         $genders = DB::table('gender_menu_items as i')
             ->join('gender_menu_groups as g', 'g.id', '=', 'i.group_id')
             ->where('g.category_id', $categoryId)
+            ->whereIn('g.gender', GenderResolver::BROWSABLE)
             ->select('i.subcategory_id', 'g.gender')->distinct()->get()
             ->groupBy('subcategory_id')->map(fn ($r) => $r->pluck('gender')->values());
 
@@ -68,6 +69,7 @@ class AdminGenderMenuController extends Controller
             'groups'   => [
                 'women' => $groups->where('gender', 'women')->values(),
                 'men'   => $groups->where('gender', 'men')->values(),
+                'all'   => $groups->where('gender', GenderResolver::MENU_ALL)->values(),
             ],
             'subcategories' => $subs->map(fn ($s) => [
                 'id'            => $s->id,
@@ -88,9 +90,10 @@ class AdminGenderMenuController extends Controller
     /** POST /admin/gender-menu/{categoryId}/groups  { gender, name, name_fr?, name_ar? } */
     public function storeGroup(Request $request, int $categoryId)
     {
-        Category::findOrFail($categoryId);
+        $category = Category::findOrFail($categoryId);
         $data = $request->validate([
-            'gender'  => ['required', Rule::in(GenderResolver::BROWSABLE)],
+            // Femme / Homme columns on a gendered category, 'all' columns on the others
+            'gender'  => ['required', Rule::in($this->menuGenders($category))],
             'name'    => 'required|string|max:120',
             'name_fr' => 'nullable|string|max:120',
             'name_ar' => 'nullable|string|max:120',
@@ -173,7 +176,7 @@ class AdminGenderMenuController extends Controller
     public function reorder(Request $request, int $categoryId)
     {
         $data = $request->validate([
-            'gender'          => ['required', Rule::in(GenderResolver::BROWSABLE)],
+            'gender'          => ['required', Rule::in($this->menuGenders(Category::findOrFail($categoryId)))],
             'groups'          => 'required|array',
             'groups.*.id'     => 'required|integer',
             'groups.*.items'  => 'sometimes|array',
@@ -269,6 +272,11 @@ class AdminGenderMenuController extends Controller
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
+
+    private function menuGenders(Category $category): array
+    {
+        return $category->is_gendered ? GenderResolver::BROWSABLE : [GenderResolver::MENU_ALL];
+    }
 
     private function targetGroup(int $categoryId, int $subId, string $gender): GenderMenuGroup
     {

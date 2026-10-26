@@ -35,6 +35,9 @@ class GenderResolver
     /** Genders the storefront can browse by (?gender=). */
     public const BROWSABLE = [self::WOMEN, self::MEN];
 
+    /** Menu columns of a non-gendered category (gender_menu_groups.gender); never a product gender. */
+    public const MENU_ALL = 'all';
+
     /** Every value products.gender may hold. */
     public const ALL = [self::WOMEN, self::MEN, self::UNISEX, self::KIDS];
 
@@ -147,6 +150,7 @@ class GenderResolver
         $genders = DB::table('gender_menu_items as i')
             ->join('gender_menu_groups as g', 'g.id', '=', 'i.group_id')
             ->where('i.subcategory_id', $subcategoryId)
+            ->whereIn('g.gender', self::BROWSABLE)
             ->distinct()
             ->pluck('g.gender')
             ->all();
@@ -159,6 +163,7 @@ class GenderResolver
     {
         return DB::table('gender_menu_items as i')
             ->join('gender_menu_groups as g', 'g.id', '=', 'i.group_id')
+            ->whereIn('g.gender', self::BROWSABLE)
             ->select('i.subcategory_id', 'g.gender')
             ->distinct()
             ->get()
