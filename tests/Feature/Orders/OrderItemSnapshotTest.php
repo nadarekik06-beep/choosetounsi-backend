@@ -168,6 +168,36 @@ class OrderItemSnapshotTest extends TestCase
 
     // ── Complaint selector ────────────────────────────────────────────────────
 
+    public function test_multicolor_line_keeps_the_sellers_description(): void
+    {
+        $color = Attribute::where('slug', 'color')->firstOrFail();
+        $mc = AttributeOption::firstOrCreate(
+            ['attribute_id' => $color->id, 'value' => \App\Support\Multicolor::VALUE],
+            ['color_hex' => \App\Support\Multicolor::HEX]
+        );
+        Attribute::firstOrCreate(['slug' => \App\Support\Multicolor::LABEL_ATTRIBUTE],
+            ['name' => 'Multicolor description', 'name_ar' => 'x', 'type' => 'text', 'is_filterable' => false, 'is_visible' => false]);
+        \App\Support\Multicolor::flush();
+
+        $name = 'Basket ' . Str::random(6);
+        $p = Product::create([
+            'seller_id' => $this->seller->id, 'name' => $name, 'slug' => Str::slug($name),
+            'price' => 30, 'stock' => 5, 'is_approved' => true, 'is_active' => true,
+        ]);
+        $v = ProductVariant::create(['product_id' => $p->id, 'stock' => 5, 'is_active' => true]);
+        $v->attributeOptions()->sync([$mc->id, $this->opt['M']]);
+        \App\Support\Multicolor::saveLabel($p, 'Noir / Blanc');
+
+        $line = $this->line($this->deliveredOrder([[$p, $v, 1]]), $v);
+
+        // The stored label (order lists, invoices) and the snapshot both show the description
+        $this->assertStringContainsString('Noir / Blanc', $line->getAttributes()['variant_label']);
+        $this->assertStringNotContainsString('Multicolor', $line->getAttributes()['variant_label']);
+        $color = collect($line->variant_attributes)->firstWhere('slug', 'color');
+        $this->assertSame('Noir / Blanc', $color['value']);
+        $this->assertTrue($color['is_multicolor']);
+    }
+
     public function test_two_variants_of_one_product_are_two_choices_each_with_its_own_image(): void
     {
         [$p, $red, $blue] = $this->tshirt();

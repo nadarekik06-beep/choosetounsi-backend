@@ -517,7 +517,8 @@ class CheckoutController extends Controller
 
     private function variantLabel(?ProductVariant $variant): ?string
     {
-        return $variant ? $variant->attributeOptions->map(fn ($o) => $o->getAttributes()['value'])->join(' / ') : null;
+        // Same text as the line's snapshot (Multicolore → the seller's description)
+        return $variant ? \App\Services\Orders\OrderItemSnapshot::labelOf(\App\Services\Orders\OrderItemSnapshot::attributesOf($variant)) : null;
     }
 
     /** "Name" or "Name" (Variant) — same label as the pre-flight stock messages. */

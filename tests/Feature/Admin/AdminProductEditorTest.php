@@ -357,6 +357,32 @@ class AdminProductEditorTest extends TestCase
         $this->assertFalse($d['product']->fresh()->is_approved);
     }
 
+    public function test_legacy_variant_without_size_saves_but_new_ones_need_a_size(): void
+    {
+        $d = $this->makePendingProduct();
+        // Saved by the old builder: a color only, no size
+        $legacy = ProductVariant::create(['product_id' => $d['product']->id, 'stock' => 2, 'is_active' => true]);
+        $legacy->attributeOptions()->sync([$this->opt['black']->id]);
+
+        Sanctum::actingAs($this->admin);
+        $doc = $this->documentFrom($this->load($d['product']));
+        $i = collect($doc['variants'])->search(fn($v) => $v['id'] === $legacy->id);
+        $doc['variants'][$i]['stock'] = 7;
+
+        // The existing set passes as it is
+        $this->saveDoc($d['product'], $doc)->assertOk();
+        $this->assertSame(7, (int) $legacy->fresh()->stock);
+        $this->assertSame([$this->opt['black']->id], $legacy->fresh()->attributeOptions->pluck('id')->all());
+
+        // A new combination still needs every axis
+        $doc = $this->documentFrom($this->load($d['product']));
+        $doc['variants'][] = ['id' => null, 'key' => 'new-1', 'option_ids' => [$this->opt['red']->id],
+            'stock' => 1, 'price_override' => '', 'sku' => '', 'is_active' => true];
+        $n = count($doc['variants']) - 1;
+        $res = $this->saveDoc($d['product'], $doc)->assertStatus(422)->assertJsonValidationErrors(["variants.$n.option_ids"]);
+        $this->assertStringContainsString('Choose a Size', implode(' ', $res->json("errors")["variants.$n.option_ids"]));
+    }
+
     public function test_conflict_when_product_changed_after_loading(): void
     {
         $d = $this->makePendingProduct();

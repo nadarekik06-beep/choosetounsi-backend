@@ -5,6 +5,7 @@ namespace App\Services\Orders;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Services\ProductImages;
+use App\Support\Multicolor;
 use Illuminate\Support\Facades\Storage;
 
 /**
@@ -52,16 +53,20 @@ class OrderItemSnapshot
     /** [{option_id, slug, type, label, value, color_hex}] — the seller's original text, like product_name. */
     public static function attributesOf(ProductVariant $variant): array
     {
-        return self::withOptions($variant)->attributeOptions
+        $options = self::withOptions($variant)->attributeOptions;
+        $mcLabel = $options->contains(fn($o) => Multicolor::isOption($o)) ? Multicolor::labelFor($variant->product_id) : null;
+
+        return $options
             ->filter(fn($o) => $o->attribute)
             ->map(fn($o) => [
                 'option_id' => (int) $o->id,
                 'slug'      => $o->attribute->slug,
                 'type'      => $o->attribute->type,
                 'label'     => $o->attribute->getAttributes()['name'] ?? $o->attribute->name,
-                'value'     => $o->getAttributes()['value'] ?? $o->value,
+                // Multicolore: the seller's description ("Noir / Blanc") when given
+                'value'     => (Multicolor::isOption($o) ? $mcLabel : null) ?? ($o->getAttributes()['value'] ?? $o->value),
                 'color_hex' => $o->color_hex,
-            ])->values()->all();
+            ] + (Multicolor::isOption($o) ? ['is_multicolor' => true] : []))->values()->all();
     }
 
     /** "Rouge / M" */

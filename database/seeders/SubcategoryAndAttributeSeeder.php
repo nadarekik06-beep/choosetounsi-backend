@@ -299,6 +299,8 @@ class SubcategoryAndAttributeSeeder extends Seeder
             ['Brown',  '#92400E'], ['Grey',   '#6B7280'], ['Navy',   '#1E3A5F'],
             ['Beige',  '#D4A574'], ['Gold',   '#D4AF37'], ['Silver', '#C0C0C0'],
             ['Camel',  '#C19A6B'], ['Khaki',  '#C3B091'],
+            // Last in the palette; the storefront shows it as a gradient (App\Support\Multicolor)
+            ['Multicolor', '#9CA3AF'],
         ];
 
         foreach ($colors as $order => [$value, $hex]) {

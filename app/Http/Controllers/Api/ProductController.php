@@ -314,6 +314,9 @@ class ProductController extends Controller
             return response()->json(['success' => false, 'message' => __('messages.not_found.product')], 404);
         }
 
+        // Multicolore variants show the seller's description ("Noir / Blanc")
+        \App\Support\Multicolor::applyToProduct($product);
+
         if ($product->seller) {
             $branding = $product->seller->storefrontBranding();
             $product->seller->business_name = $branding['business_name'];
@@ -329,7 +332,9 @@ class ProductController extends Controller
         }
 
         // ── Attribute data (non-variant informational attributes) ──────────
-        $product->attribute_data = $product->attributeValues->map(function ($pav) {
+        $product->attribute_data = $product->attributeValues
+            ->reject(fn($pav) => optional($pav->attribute)->slug === \App\Support\Multicolor::LABEL_ATTRIBUTE)
+            ->values()->map(function ($pav) {
             $attr  = $pav->attribute;
             $value = $attr->decodeValue($pav->value);
             $label = $value;

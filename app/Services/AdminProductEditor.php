@@ -14,6 +14,7 @@ use App\Models\ProductVariant;
 use App\Models\Subcategory;
 use App\Models\User;
 use App\Notifications\ProductReviewedNotification;
+use App\Support\Multicolor;
 use App\Support\Occasions;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Collection;
@@ -94,9 +95,11 @@ class AdminProductEditor
                 'created_at'        => optional($product->created_at)->toISOString(),
                 'updated_at'        => optional($product->updated_at)->toISOString(),
                 'storefront_url'    => rtrim(config('app.frontend_url'), '/') . '/products/' . $product->slug,
+                // Seller's Multicolore description, shown read-only next to its swatch
+                'multicolor_label'  => Multicolor::labelFor($product),
             ],
             'attributes' => (object) $product->attributeValues
-                ->filter(fn($v) => $v->attribute)
+                ->filter(fn($v) => $v->attribute && $v->attribute->slug !== Multicolor::LABEL_ATTRIBUTE)
                 ->mapWithKeys(fn($v) => [$v->attribute->slug => $v->attribute->decodeValue($v->value)])
                 ->all(),
             'variants' => $product->variants->map(fn(ProductVariant $v) => [
@@ -257,7 +260,7 @@ class AdminProductEditor
         $validator->after(function ($v) use ($product, $data, $uploads) {
             if ($v->errors()->isNotEmpty()) return;
             $this->validateCatalog($v, $data);
-            $this->validateVariants($v, $data);
+            $this->validateVariants($v, $data, $product);
             ProductImages::validate($v, $product, $data['images'], $uploads,
                 ProductImages::groupKeysFor(array_column($data['variants'], 'option_ids')));
 
@@ -292,10 +295,19 @@ class AdminProductEditor
         }
     }
 
-    private function validateVariants($v, array $data): void
+    private function validateVariants($v, array $data, ?Product $product = null): void
     {
         $rows = $data['variants'];
         if (empty($rows)) return;
+
+        // Option sets the product already has: legacy variants (e.g. no size, saved by the
+        // old builder) stay as they are; only new combinations need every axis.
+        $existingSets = [];
+        if ($product && $product->exists) {
+            foreach ($product->variants()->with('attributeOptions:id')->get() as $ev) {
+                $existingSets[$ev->attributeOptions->pluck('id')->map(fn($i) => (int) $i)->sort()->implode('-')] = true;
+            }
+        }
 
         $axes = !empty($data['subcategory_id'])
             ? $this->variantAxes(Subcategory::find($data['subcategory_id']))
@@ -322,10 +334,15 @@ class AdminProductEditor
                 }
                 $byAxis[$optionAttr[$oid]->slug][] = $oid;
             }
+            $sorted = $ids;
+            sort($sorted);
+            $isExisting = isset($existingSets[implode('-', $sorted)]);
             foreach ($axes as $axis) {
                 $picked = $byAxis[$axis->slug] ?? [];
                 $isColor = $this->isColorAxis($axis);
-                if (!$picked) {
+                if (!$picked && $isExisting) {
+                    continue;
+                } elseif (!$picked) {
                     $v->errors()->add("variants.$i.option_ids", "Choose a {$axis->name}.");
                 } elseif (!$isColor && count($picked) > 1) {
                     $v->errors()->add("variants.$i.option_ids", "Only one {$axis->name} per variant.");
@@ -403,8 +420,9 @@ class AdminProductEditor
         }
 
         // The form sends every info attribute of the subcategory: anything else is stale
+        // (the seller's Multicolore description is not part of the form: kept)
         ProductAttributeValue::where('product_id', $product->id)
-            ->whereNotIn('attribute_id', array_merge($keptIds, $axisIds))
+            ->whereNotIn('attribute_id', array_filter(array_merge($keptIds, $axisIds, [Multicolor::labelAttributeId()])))
             ->delete();
     }
 

@@ -120,7 +120,7 @@ return [
             'Green' => ['Vert', 'أخضر'], 'Yellow' => ['Jaune', 'أصفر'], 'Pink' => ['Rose', 'وردي'], 'Purple' => ['Violet', 'بنفسجي'],
             'Orange' => ['Orange', 'برتقالي'], 'Brown' => ['Marron', 'بني'], 'Grey' => ['Gris', 'رمادي'], 'Navy' => ['Bleu marine', 'كحلي'],
             'Beige' => ['Beige', 'بيج'], 'Gold' => ['Doré', 'ذهبي'], 'Silver' => ['Argenté', 'فضي'], 'Camel' => ['Camel', 'جملي'],
-            'Khaki' => ['Kaki', 'كاكي'],
+            'Khaki' => ['Kaki', 'كاكي'], 'Multicolor' => ['Multicolore', 'متعدد الألوان'],
         ],
     ],
 ];

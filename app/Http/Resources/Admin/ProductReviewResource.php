@@ -45,6 +45,8 @@ class ProductReviewResource extends JsonResource
     {
         $p         = $this->resource;
         $threshold = StockLevels::threshold($p);
+        // Variants tab: "Multicolore · Noir / Blanc"
+        \App\Support\Multicolor::applyToProduct($p, true);
 
         $images   = $this->images($p);
         $variants = $this->variants($p, $threshold);
@@ -322,7 +324,7 @@ class ProductReviewResource extends JsonResource
     private function specifications(Product $p): array
     {
         return $p->attributeValues
-            ->filter(fn($av) => $av->attribute)
+            ->filter(fn($av) => $av->attribute && $av->attribute->slug !== \App\Support\Multicolor::LABEL_ATTRIBUTE)
             ->sortBy(fn($av) => $av->attribute->order ?? 0)
             ->map(function ($av) {
                 $attr    = $av->attribute;

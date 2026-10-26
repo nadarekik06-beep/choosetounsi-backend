@@ -16,6 +16,13 @@ return [
         'cache_cleared' => 'تم مسح الذاكرة المؤقتة.',
     ],
     'product' => [
+        'variant_color_required' => 'اختر لونًا لكل متغيّر.',
+        'variant_one_color' => 'لون واحد لكل متغيّر. إذا كان المنتج بعدة ألوان، اختر « متعدد الألوان ».',
+        'variant_axis_required' => 'اختر خيارًا واحدًا على الأقل لـ: :axis.',
+        'variant_duplicate' => 'متغيّران لهما نفس الخيارات تمامًا.',
+        'multicolor_once' => 'يمكنك إضافة لون « متعدد الألوان » واحد فقط لكل منتج.',
+        'variant_stock_required' => 'أدخل مخزون متغيّر واحد على الأقل.',
+        'multicolor_label_max' => 'يجب ألا يتجاوز وصف الألوان :max حرفًا.',
         'parcel_size_required' => 'اختر حجم الطرد (S أو L أو XL).',
         'color_images_required' => 'أضف صورة واحدة على الأقل لكل لون: :colors.',
         'price_decrease_discount' => 'لتخفيض سعر منتج معروض، أنشئ تخفيضًا: سيرى العملاء السعر القديم مشطوبًا وشارة « -% ».',

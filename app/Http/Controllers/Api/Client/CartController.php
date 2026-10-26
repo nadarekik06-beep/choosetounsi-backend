@@ -342,6 +342,7 @@ private function safeSessionId(Request $request): ?string
         $variantOptions = [];
  
         if ($variant && $variant->relationLoaded('attributeOptions')) {
+            \App\Support\Multicolor::applyToVariant($variant);
             $variantLabel = $variant->attributeOptions->pluck('value')->join(' / ');
             foreach ($variant->attributeOptions as $opt) {
                 $variantOptions[$opt->attribute->slug] = [

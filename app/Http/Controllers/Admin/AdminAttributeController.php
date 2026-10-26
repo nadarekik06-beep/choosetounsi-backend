@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Support\Multicolor;
 use App\Http\Controllers\Controller;
 use App\Models\Attribute;
 use App\Models\AttributeOption;
@@ -177,6 +178,9 @@ class AdminAttributeController extends Controller
             'order'     => 'sometimes|integer|min:0',
         ]);
 
+        // Multicolore is found by its base value and keeps a plain hex: only translations / order change
+        if (Multicolor::isOption($option)) unset($validated['value'], $validated['color_hex']);
+
         $option->update($validated);
 
         return response()->json([
@@ -240,6 +244,9 @@ class AdminAttributeController extends Controller
                     'value_ar'  => $o->value_ar,
                     'value_fr'  => $o->value_fr,
                     'color_hex' => $o->color_hex,
+                    // The column value (Multicolore serves a gradient in color_hex)
+                    'color_hex_raw' => $o->getRawOriginal('color_hex'),
+                    'is_multicolor' => Multicolor::isOption($o),
                     'order'     => $o->order,
                 ])->values(),
             ]);

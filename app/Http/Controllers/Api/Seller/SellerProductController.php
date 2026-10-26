@@ -11,6 +11,7 @@ use App\Models\ProductVariant;
 use App\Services\PriceHistory;
 use App\Services\ProductImages;
 use App\Services\ProductChangeTracker;
+use App\Support\Multicolor;
 use App\Support\Occasions;
 use App\Support\StockLevels;
 use Illuminate\Http\Request;
@@ -104,7 +105,11 @@ class SellerProductController extends Controller
     : null;
 
 $product->images->each(fn($img) => $img->url = $appUrl . Storage::url($img->image_path));
+        // The Multicolore description has its own field (not an info attribute of the form)
+        $product->multicolor_label = Multicolor::labelFor($product);
+        Multicolor::applyToProduct($product);
         $product->existing_attributes = $product->attributeValues
+            ->reject(fn($v) => optional($v->attribute)->slug === Multicolor::LABEL_ATTRIBUTE)
             ->mapWithKeys(fn($v) => [
                 $v->attribute->slug => $v->attribute->decodeValue($v->value),
             ]);
@@ -274,6 +279,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         'parcel_size.in'       => __('seller.product.parcel_size_required'),
     ]);
     $merch = $this->validateMerchandising($request, null);
+    $this->validateVariantRules($request, null);
 } catch (\Throwable $e) {
     Log::error('[SellerProduct::store] VALIDATION FAILED', ['error' => $e->getMessage()]);
     throw $e;
@@ -342,6 +348,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                 if (!empty($request->input('variants', []))) {
                     $product->fresh()->syncActiveStatusFromVariants();
                 }
+                $this->saveMulticolorLabel($product, $request);
                 Log::info('[SellerProduct::store] Variants saved');
             } catch (\Throwable $e) {
                 Log::error('[SellerProduct::store] VARIANTS FAILED', ['error' => $e->getMessage()]);
@@ -384,6 +391,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         Log::info('[SellerProduct::update] START', ['id' => $id]);
 
         $merch = $this->validateMerchandising($request, $product);
+        $this->validateVariantRules($request, $product);
         // Empty = use the shop default (Paramètres de la boutique)
         $request->validate([
             'low_stock_threshold' => 'nullable|integer|min:1|max:50',
@@ -465,6 +473,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
             if (!empty($request->input('variants', []))) {
                 $product->fresh()->syncActiveStatusFromVariants();
             }
+            $this->saveMulticolorLabel($product, $request);
             Log::info('[SellerProduct::update] Variants saved');
         } catch (\Throwable $e) {
             Log::error('[SellerProduct::update] VARIANTS FAILED', ['error' => $e->getMessage()]);
@@ -802,7 +811,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
         foreach ($attrs as $slug => $value) {
             $attr = \App\Models\Attribute::where('slug', $slug)->first();
-            if (!$attr) continue;
+            if (!$attr || $slug === Multicolor::LABEL_ATTRIBUTE) continue;
 
             $raw = in_array($attr->type, ['select', 'multiselect', 'color'])
                 ? json_encode((array) $value)
@@ -812,6 +821,104 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                 ['attribute_id' => $attr->id],
                 ['value'        => $raw]
             );
+        }
+    }
+
+    /**
+     * Variant rules: one color per variant, an option for every other axis (size /
+     * pointure…), one Multicolore per product, and some stock on creation.
+     * Combinations (and color sets) the product already has are accepted as they are,
+     * so legacy products — several colors in one variant, no size — stay editable.
+     */
+    private function validateVariantRules(Request $request, ?Product $product): void
+    {
+        $request->validate(
+            ['multicolor_label' => 'nullable|string|max:' . Multicolor::LABEL_MAX],
+            ['multicolor_label.max' => __('seller.product.multicolor_label_max', ['max' => Multicolor::LABEL_MAX])]
+        );
+
+        $subId = (int) ($request->input('subcategory_id') ?: $product?->subcategory_id);
+        $sub   = $subId ? \App\Models\Subcategory::find($subId) : null;
+        $axes  = $sub ? $sub->variantAttributes()->get()->filter(fn($a) => $a->options->isNotEmpty())->values() : collect();
+        if ($axes->isEmpty()) return;
+
+        $optionAxis = [];   // option id => axis (attribute) id
+        foreach ($axes as $axis) foreach ($axis->options as $o) $optionAxis[(int) $o->id] = (int) $axis->id;
+        $colorAxis  = $axes->first(fn($a) => $a->slug === 'color' || $a->type === 'color');
+        $colorsOf   = fn(array $ids) => array_values(array_filter($ids, fn($i) => $colorAxis && ($optionAxis[$i] ?? null) === (int) $colorAxis->id));
+
+        $rows = array_values(array_filter((array) $request->input('variants', []), 'is_array'));
+        if (!$rows) {
+            // New product in a subcategory with variants: the combinations are required
+            if (!$product) {
+                throw ValidationException::withMessages(['variants' => [$colorAxis
+                    ? __('seller.product.variant_color_required')
+                    : __('seller.product.variant_axis_required', ['axis' => $axes->pluck('name')->implode(', ')])]]);
+            }
+            return;
+        }
+
+        $existingSets = [];
+        $existingColorSets = [];
+        if ($product) {
+            foreach ($product->variants()->with('attributeOptions:id')->get() as $v) {
+                $ids = $v->attributeOptions->pluck('id')->map(fn($i) => (int) $i)->sort()->values()->all();
+                $existingSets[implode('-', $ids)] = true;
+                $existingColorSets[implode('-', $colorsOf($ids))] = true;
+            }
+        }
+
+        $errors = [];
+        $seen   = [];
+        $total  = 0;
+        foreach ($rows as $row) {
+            $ids = array_values(array_unique(array_filter(array_map('intval', (array) ($row['option_ids'] ?? [])), fn($i) => $i > 0)));
+            if (!$ids) continue;
+            sort($ids);
+            $key = implode('-', $ids);
+            if (filter_var($row['is_active'] ?? true, FILTER_VALIDATE_BOOLEAN)) $total += max(0, (int) ($row['stock'] ?? 0));
+
+            if (isset($seen[$key])) {
+                $errors[] = Multicolor::inOptionIds($ids) ? __('seller.product.multicolor_once') : __('seller.product.variant_duplicate');
+                continue;
+            }
+            $seen[$key] = true;
+            if (isset($existingSets[$key])) continue;
+
+            if ($colorAxis) {
+                $colors = $colorsOf($ids);
+                if (!$colors) {
+                    $errors[] = __('seller.product.variant_color_required');
+                } elseif (count($colors) > 1 && !isset($existingColorSets[implode('-', $colors)])) {
+                    $errors[] = __('seller.product.variant_one_color');
+                }
+            }
+            foreach ($axes as $axis) {
+                if ($colorAxis && $axis->id === $colorAxis->id) continue;
+                if (!collect($ids)->contains(fn($i) => ($optionAxis[$i] ?? null) === (int) $axis->id)) {
+                    $errors[] = __('seller.product.variant_axis_required', ['axis' => $axis->name]);
+                }
+            }
+        }
+
+        if (!$product && $total <= 0) $errors[] = __('seller.product.variant_stock_required');
+
+        if ($errors) throw ValidationException::withMessages(['variants' => array_values(array_unique($errors))]);
+    }
+
+    /** Keeps the Multicolore description only while the product has a Multicolore variant. */
+    private function saveMulticolorLabel(Product $product, Request $request): void
+    {
+        if (!$request->has('variants') && !$request->has('multicolor_label')) return;
+
+        $mcId  = Multicolor::optionId();
+        $hasMc = $mcId && $product->variants()
+            ->whereHas('attributeOptions', fn($q) => $q->where('attribute_options.id', $mcId))->exists();
+
+        if (!$hasMc) {
+            Multicolor::saveLabel($product, null);
+        } elseif ($request->has('multicolor_label')) {
+            Multicolor::saveLabel($product, $request->input('multicolor_label'));
         }
     }
 

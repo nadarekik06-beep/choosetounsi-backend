@@ -82,6 +82,7 @@ class SubcategoryController extends Controller
                     'value'     => $opt->value,
                     'value_ar'  => $opt->value_ar,
                     'color_hex' => $opt->color_hex,
+                    'is_multicolor' => \App\Support\Multicolor::isOption($opt),
                     'order'     => $opt->order,
                 ])->values(),
             ];

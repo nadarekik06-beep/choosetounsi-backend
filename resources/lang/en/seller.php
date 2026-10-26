@@ -16,6 +16,13 @@ return [
         'cache_cleared' => 'Cache cleared.',
     ],
     'product' => [
+        'variant_color_required' => 'Choose a color for each variant.',
+        'variant_one_color' => 'One color per variant. If the item has several colors, choose "Multicolor".',
+        'variant_axis_required' => 'Select at least one option for: :axis.',
+        'variant_duplicate' => 'Two variants have exactly the same options.',
+        'multicolor_once' => 'You can only add one "Multicolor" color per product.',
+        'variant_stock_required' => 'Enter the stock of at least one variant.',
+        'multicolor_label_max' => 'The color description may not exceed :max characters.',
         'parcel_size_required' => 'Choose the parcel size (S, L or XL).',
         'color_images_required' => 'Add at least one image for each color: :colors.',
         'price_decrease_discount' => 'To lower the price of a live product, create a discount: customers then see the old price crossed out and the "-%" badge.',
