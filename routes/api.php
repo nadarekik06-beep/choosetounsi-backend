@@ -548,6 +548,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/subcategories/{id}',[AdminSubcategoryController::class, 'destroy']);
 
         // ── Gender menu (Femme / Homme columns, images) & product genders ──
+        Route::get('/gender-menu/settings',                     [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'settings']);
+        Route::put('/gender-menu/settings',                     [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'updateSettings']);
         Route::get('/gender-menu/{categoryId}',                 [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'show'])->whereNumber('categoryId');
         Route::post('/gender-menu/{categoryId}/groups',         [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'storeGroup'])->whereNumber('categoryId');
         Route::put('/gender-menu/{categoryId}/order',           [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'reorder'])->whereNumber('categoryId');

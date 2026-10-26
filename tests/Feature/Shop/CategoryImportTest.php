@@ -31,6 +31,7 @@ class CategoryImportTest extends TestCase
         parent::setUp();
         $this->fakeTranslator();
         Cache::flush();
+        \App\Models\PlatformSetting::flushCache(); // per-process setting cache (mega-menu "hide empty")
         $this->r = strtolower(Str::random(6));
         $this->dir = sys_get_temp_dir() . '/catimport-' . $this->r;
         @mkdir($this->dir);
@@ -223,8 +224,36 @@ class CategoryImportTest extends TestCase
         $this->assertSame('unisex', $p2->fresh()->gender);
     }
 
-    public function test_storefront_menu_hides_empty_subcategories_and_categories(): void
+    public function test_storefront_menu_shows_everything_by_default(): void
     {
+        $r = $this->r;
+        $csvPath = $this->csv([
+            ["zz-$r-pets", "Animo$r", "Animo$r", '', 'Jardin', 1, "zz-$r-dogs", "Chienz$r", "Dogz$r", '', ''],
+            ["zz-$r-pets", "Animo$r", "Animo$r", '', 'Jardin', 2, "zz-$r-cats", "Chatz$r", "Catz$r", '', ''],
+        ]);
+        $this->assertSame(0, $this->import($csvPath));
+
+        $e = collect($this->getJson('/api/categories/mega-menu')->assertOk()->json('data'))->firstWhere('slug', "zz-$r-pets");
+        $this->assertFalse($e['has_products']);
+        $this->assertTrue($e['show_in_menu']);
+        $this->assertSame(["zz-$r-dogs", "zz-$r-cats"], array_column($e['groups'][0]['items'], 'slug'));
+    }
+
+    public function test_admin_setting_toggles_hiding_and_is_admin_only(): void
+    {
+        \Laravel\Sanctum\Sanctum::actingAs($this->makeUser('client'));
+        $this->putJson('/api/admin/gender-menu/settings', ['hide_empty' => true])->assertStatus(403);
+
+        \Laravel\Sanctum\Sanctum::actingAs($this->makeUser('admin'));
+        $this->getJson('/api/admin/gender-menu/settings')->assertOk()->assertJsonPath('data.hide_empty', false);
+        $this->putJson('/api/admin/gender-menu/settings', ['hide_empty' => true])->assertOk()->assertJsonPath('data.hide_empty', true);
+        $this->assertTrue(app(\App\Services\Gender\GenderMenu::class)->hideEmpty());
+        $this->putJson('/api/admin/gender-menu/settings', ['hide_empty' => false])->assertOk()->assertJsonPath('data.hide_empty', false);
+    }
+
+    public function test_storefront_menu_hides_empty_subcategories_and_categories_when_the_setting_is_on(): void
+    {
+        app(\App\Services\Gender\GenderMenu::class)->setHideEmpty(true);
         $r = $this->r;
         $csvPath = $this->csv([
             ["zz-$r-pets", "Animo$r", "Animo$r", '', 'Jardin', 1, "zz-$r-dogs", "Chienz$r", "Dogz$r", '', ''],
@@ -236,6 +265,7 @@ class CategoryImportTest extends TestCase
 
         $entry = fn () => collect($this->getJson('/api/categories/mega-menu')->assertOk()->json('data'))->firstWhere('slug', $cat->slug);
         $this->assertFalse($entry()['has_products']);
+        $this->assertFalse($entry()['show_in_menu']);
         $this->assertSame([], $entry()['groups']);
 
         // Seller form still sees every subcategory

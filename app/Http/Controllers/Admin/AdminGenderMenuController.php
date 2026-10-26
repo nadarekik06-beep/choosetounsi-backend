@@ -87,6 +87,20 @@ class AdminGenderMenuController extends Controller
         ]]);
     }
 
+    /** GET /admin/gender-menu/settings */
+    public function settings()
+    {
+        return response()->json(['success' => true, 'data' => ['hide_empty' => $this->menu->hideEmpty()]]);
+    }
+
+    /** PUT /admin/gender-menu/settings  { hide_empty: bool } — "Masquer les sous-catégories vides dans le mega-menu" */
+    public function updateSettings(Request $request)
+    {
+        $data = $request->validate(['hide_empty' => 'required|boolean']);
+        $this->menu->setHideEmpty((bool) $data['hide_empty'], $request->user()?->id);
+        return response()->json(['success' => true, 'data' => ['hide_empty' => $this->menu->hideEmpty()]]);
+    }
+
     /** POST /admin/gender-menu/{categoryId}/groups  { gender, name, name_fr?, name_ar? } */
     public function storeGroup(Request $request, int $categoryId)
     {

@@ -35,18 +35,35 @@ class GenderMenu
      * Mega-menu of every active category, in rail order.
      *   gendered:     genders.women / genders.men → columns → subcategories
      *   not gendered: groups → subcategories
-     * Only subcategories with available products are listed (gender-aware for Femme / Homme),
-     * columns left empty are dropped, and has_products says whether the category has any.
+     * Every active category, column and subcategory is listed, products or not. With the admin
+     * setting "hide empty" (off by default) only subcategories with available products are
+     * listed (gender-aware for Femme / Homme) and show_in_menu is false for empty categories.
+     * Each item carries its product count; has_products says whether the category has any.
      * Admin edits rebuild it at once (flush); product counts refresh every few minutes.
      */
     public function megaMenu(): array
     {
-        return Cache::remember($this->key('mega'), self::MENU_TTL, fn () => $this->buildMegaMenu());
+        $hide = $this->hideEmpty();
+        return Cache::remember($this->key('mega:' . (int) $hide), self::MENU_TTL, fn () => $this->buildMegaMenu($hide));
     }
 
     private const MENU_TTL = 300;
 
-    private function buildMegaMenu(): array
+    /** PlatformSetting key of "Masquer les sous-catégories vides dans le mega-menu" (off by default). */
+    public const HIDE_EMPTY_SETTING = 'mega_menu_hide_empty';
+
+    public function hideEmpty(): bool
+    {
+        return (bool) \App\Models\PlatformSetting::getValue(self::HIDE_EMPTY_SETTING, false);
+    }
+
+    public function setHideEmpty(bool $on, ?int $userId = null): void
+    {
+        \App\Models\PlatformSetting::setValue(self::HIDE_EMPTY_SETTING, $on, $userId);
+        $this->flush();
+    }
+
+    private function buildMegaMenu(bool $hide): array
     {
         $categories = DB::table('categories')
             ->where('is_active', true)
@@ -66,13 +83,14 @@ class GenderMenu
                 'is_gendered'   => (bool) $cat->is_gendered,
                 'product_count' => (int) ($catCounts[$cat->id] ?? 0),
                 'has_products'  => ($catCounts[$cat->id] ?? 0) > 0,
+                'show_in_menu'  => !$hide || ($catCounts[$cat->id] ?? 0) > 0,
             ];
             if ($cat->is_gendered) {
                 foreach (GenderResolver::BROWSABLE as $gender) {
-                    $row['genders'][$gender] = $this->groups($cat->id, $gender, $subCounts);
+                    $row['genders'][$gender] = $this->groups($cat->id, $gender, $subCounts, $hide);
                 }
             } else {
-                $row['groups'] = $this->groups($cat->id, GenderResolver::MENU_ALL, $subCounts);
+                $row['groups'] = $this->groups($cat->id, GenderResolver::MENU_ALL, $subCounts, $hide);
             }
             $out[] = $row;
         }
@@ -107,8 +125,8 @@ class GenderMenu
         return (int) (($c[$menuGender] ?? 0) + ($c[GenderResolver::UNISEX] ?? 0));
     }
 
-    /** Columns of one category × menu gender (women | men | all), each with its non-empty subcategories. */
-    private function groups(int $categoryId, string $gender, array $subCounts): array
+    /** Columns of one category × menu gender (women | men | all) with their active subcategories (non-empty only when hiding). */
+    private function groups(int $categoryId, string $gender, array $subCounts, bool $hideEmpty = false): array
     {
         $groups = DB::table('gender_menu_groups')
             ->where('category_id', $categoryId)->where('gender', $gender)
@@ -140,7 +158,7 @@ class GenderMenu
                     'category_slug' => $s->category_slug,
                     'count'         => $this->itemCount($subCounts, (int) $s->id, $gender),
                 ])
-                ->filter(fn ($s) => $s['count'] > 0)
+                ->filter(fn ($s) => !$hideEmpty || $s['count'] > 0)
                 ->values()->all(),
         ])->filter(fn ($g) => count($g['items']) > 0)->values()->all();
     }

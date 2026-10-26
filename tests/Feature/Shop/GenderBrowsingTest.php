@@ -39,6 +39,7 @@ class GenderBrowsingTest extends TestCase
         parent::setUp();
         $this->fakeTranslator();
         Cache::flush();
+        \App\Models\PlatformSetting::flushCache(); // per-process setting cache (mega-menu "hide empty")
         app(GenderResolver::class)->flush();
 
         $attr = Attribute::firstOrCreate(['slug' => 'gender'], ['name' => 'Gender', 'type' => 'select']);
@@ -189,10 +190,17 @@ class GenderBrowsingTest extends TestCase
         $this->sellerProduct($this->robes, 'Women');
 
         $menu = collect($this->getJson('/api/categories/mega-menu')->assertOk()->json('data'))->firstWhere('slug', $this->cat->slug);
-        // T-shirts has no product yet: hidden from the storefront menu
-        $this->assertSame([$this->robes->slug], array_column($menu['genders']['women'][0]['items'], 'slug'));
+        // Default: every subcategory is listed, products or not (T-shirts has none yet)
+        $this->assertSame([$this->robes->slug, $this->tshirts->slug], array_column($menu['genders']['women'][0]['items'], 'slug'));
         $this->assertTrue($menu['is_gendered']);
         $this->assertTrue($menu['has_products']);
+        $this->assertTrue($menu['show_in_menu']);
+
+        // Admin setting on: empty subcategories leave the mega-menu
+        app(\App\Services\Gender\GenderMenu::class)->setHideEmpty(true);
+        $menu = collect($this->getJson('/api/categories/mega-menu')->json('data'))->firstWhere('slug', $this->cat->slug);
+        $this->assertSame([$this->robes->slug], array_column($menu['genders']['women'][0]['items'], 'slug'));
+        app(\App\Services\Gender\GenderMenu::class)->setHideEmpty(false);
 
         // Bar hides empty subcategories (t-shirts has no product yet) and falls back to null image
         $bar = $this->getJson("/api/categories/{$this->cat->slug}/gender-bar?gender=women")->assertOk()->json('data');
