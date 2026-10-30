@@ -741,7 +741,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         foreach ($product->variants()->get() as $v) {
             $row      = $rows->get($v->id);
             $override = $row ? ($row['price_override'] ?? null) : $v->price_override;
-            $follows  = $override === null || $override === '';
+            $follows  = $override === null || $override === '' || abs((float) $override - $newBase) < 0.0005;
             $curEff   = round((float) ($v->price_override ?? $curBase), 3);
             $newEff   = round((float) ($follows ? $newBase : $override), 3);
             $ref      = PriceHistory::lowest($product->id, $v->id, $curEff);
@@ -976,6 +976,11 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
             $priceOverride = isset($row['price_override']) && $row['price_override'] !== '' && $row['price_override'] !== null
                 ? (float) $row['price_override']
                 : null;
+            // Same as the base price = no custom price: the variant follows the base price
+            // (a later base price change then applies to it too)
+            if ($priceOverride !== null && abs($priceOverride - (float) $product->price) < 0.0005) {
+                $priceOverride = null;
+            }
 
             $existingId = isset($row['id']) && $row['id'] ? (int) $row['id'] : null;
             $variant    = $existingId
