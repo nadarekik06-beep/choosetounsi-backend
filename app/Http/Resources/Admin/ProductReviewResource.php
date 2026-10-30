@@ -111,6 +111,9 @@ class ProductReviewResource extends JsonResource
             'performance'    => $this->context['performance'] ?? null,
             'history'        => $this->history($p),
             'checks'         => $this->checks($p, $images, $variants, $inventory),
+            // Listing problems for the "quality warnings" box; prefill "Request changes"
+            'quality_warnings' => \App\Support\ProductListingRules::warnings($p),
+            'created_by_admin_id' => $p->created_by_admin_id,
             'queue'          => $this->context['queue'] ?? null,
             'moderation_reasons' => collect(ProductModerationLog::REASONS)
                 ->map(fn($label, $code) => ['code' => $code, 'label' => $label])->values(),
@@ -432,7 +435,8 @@ class ProductReviewResource extends JsonResource
 
         // Products created before moderation logging existed have no "submitted"
         // entry — synthesize it from created_at so the timeline has a start.
-        if (!$p->moderationLogs->contains('action', 'submitted')) {
+        // (Products an admin created have their own "created_by_admin" entry.)
+        if (!$p->moderationLogs->contains('action', 'submitted') && !$p->created_by_admin_id) {
             $events->push([
                 'id'          => null,
                 'action'      => 'submitted',

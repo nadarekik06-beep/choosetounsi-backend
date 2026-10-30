@@ -598,6 +598,11 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // ── Products ──────────────────────────────────────────────────────
         Route::get('/products',                [AdminProductController::class, 'index']);
+        // Add product on behalf of a seller (before /products/{id})
+        Route::get('/products/seller-options', [\App\Http\Controllers\Admin\ProductEditorController::class, 'sellerOptions']);
+        Route::get('/products/blank-editor',   [\App\Http\Controllers\Admin\ProductEditorController::class, 'blank']);
+        Route::post('/products',               [\App\Http\Controllers\Admin\ProductEditorController::class, 'create']);
+        Route::post('/products/{id}/split',    [\App\Http\Controllers\Admin\ProductEditorController::class, 'split'])->whereNumber('id');
         Route::get('/products/{id}',           [AdminProductController::class, 'show']);
         Route::get('/products/{id}/review',    [AdminProductController::class, 'review']);
         Route::get('/products/{id}/editor',    [\App\Http\Controllers\Admin\ProductEditorController::class, 'show']);

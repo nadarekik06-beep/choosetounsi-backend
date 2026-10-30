@@ -58,6 +58,7 @@ class ProductSearchOutageTest extends TestCase
         Sanctum::actingAs($this->seller);
         $res = $this->post('/api/seller/products', [
             'name'           => 'Outage product',
+            'short_description' => 'Lampe de bureau en bois, lumière chaude',
             'price'          => 25,
             'stock'          => 4,
             'category_id'    => $this->category->id,

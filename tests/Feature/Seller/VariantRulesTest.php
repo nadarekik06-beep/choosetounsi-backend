@@ -112,6 +112,7 @@ class VariantRulesTest extends TestCase
         Sanctum::actingAs($this->seller);
         return $this->post('/api/seller/products', $extra + [
             'name'           => 'Crocs ' . Str::random(5),
+            'short_description' => 'Sabots légers en caoutchouc, confortables',
             'price'          => 60,
             'stock'          => 0,
             'category_id'    => $this->category->id,

@@ -16,6 +16,22 @@ return [
         'cache_cleared' => 'Cache cleared.',
     ],
     'product' => [
+        'rules' => [
+            'subcategory_required' => 'Choose a subcategory: it helps buyers find your product.',
+            'short_description_required' => 'Add a short description (at least :min characters).',
+            'short_description_min' => 'The short description needs at least :min characters. Describe the item: material, color, use.',
+            'short_description_generic' => 'Describe the item itself (material, color, use). Avoid "best price" or "promo".',
+            'short_description_phone' => 'No phone numbers in the description: buyers order on Choose\'Tounsi.',
+            'stock_min' => 'Enter the quantity you really have (at least 1). With 0 stock, nobody can buy the product.',
+            'image_required' => 'Add at least one product photo.',
+            'variant_stock_integer' => 'Each variant\'s stock must be a whole number (0 or more).',
+        ],
+        'quality' => [
+            'missing_subcategory' => 'Choose a subcategory for this product.',
+            'zero_stock' => 'Stock is 0: enter the quantity you really have available.',
+            'many_photos_no_variants' => 'This product has :count photos and no variants. If these are different models, create one product per model. Variants are only for the color or size of the SAME model.',
+            'short_description' => 'Rewrite the short description (at least :min characters) to describe the item: material, color, use. No "best price", "promo" or phone numbers.',
+        ],
         'variant_color_required' => 'Choose a color for each variant.',
         'variant_one_color' => 'One color per variant. If the item has several colors, choose "Multicolor".',
         'variant_axis_required' => 'Select at least one option for: :axis.',
@@ -383,6 +399,14 @@ return [
             'action_admin' => 'Review Complaint (Admin Panel)',
             'action_seller' => 'View Complaint',
             'outro' => 'Please review and respond to this complaint as soon as possible.',
+        ],
+        'product_added_by_admin' => [
+            'title' => 'New product in your shop',
+            'body' => 'Choose\'Tounsi added a product to your shop: :name',
+            'body_pending' => 'Choose\'Tounsi added a product to your shop: :name. It will go live after review.',
+            'subject' => 'Choose\'Tounsi added a product to your shop: :name',
+            'mail_edit' => 'You can view and edit it at any time from your dashboard.',
+            'mail_action' => 'View the product',
         ],
         'product_reviewed' => [
             'approved' => [

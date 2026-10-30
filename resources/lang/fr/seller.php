@@ -16,6 +16,22 @@ return [
         'cache_cleared' => 'Cache vidé.',
     ],
     'product' => [
+        'rules' => [
+            'subcategory_required' => 'Choisissez une sous-catégorie : elle aide les clients à trouver votre produit.',
+            'short_description_required' => 'Ajoutez une description courte (au moins :min caractères).',
+            'short_description_min' => 'La description courte doit faire au moins :min caractères. Décrivez l\'article : matière, couleur, usage.',
+            'short_description_generic' => 'Décrivez l\'article lui-même (matière, couleur, usage). Évitez « meilleur prix » ou « promo ».',
+            'short_description_phone' => 'Pas de numéro de téléphone dans la description : les clients commandent sur Choose\'Tounsi.',
+            'stock_min' => 'Indiquez la quantité que vous avez réellement (au moins 1). Avec un stock à 0, personne ne peut acheter le produit.',
+            'image_required' => 'Ajoutez au moins une photo du produit.',
+            'variant_stock_integer' => 'Le stock de chaque variante doit être un nombre entier (0 ou plus).',
+        ],
+        'quality' => [
+            'missing_subcategory' => 'Choisissez une sous-catégorie pour ce produit.',
+            'zero_stock' => 'Le stock est à 0 : indiquez la quantité réellement disponible.',
+            'many_photos_no_variants' => 'Ce produit a :count photos sans variantes. S\'il s\'agit de modèles différents, créez un produit par modèle. Les variantes servent seulement pour la couleur ou la taille du MÊME modèle.',
+            'short_description' => 'Réécrivez la description courte (au moins :min caractères) en décrivant l\'article : matière, couleur, usage. Pas de « meilleur prix », de « promo » ni de numéro de téléphone.',
+        ],
         'variant_color_required' => 'Choisissez une couleur pour chaque variante.',
         'variant_one_color' => "Une seule couleur par variante. Si l'article a plusieurs couleurs, choisissez « Multicolore ».",
         'variant_axis_required' => 'Sélectionnez au moins une option pour : :axis.',
@@ -383,6 +399,14 @@ return [
             'action_admin' => 'Examiner la réclamation (administration)',
             'action_seller' => 'Voir la réclamation',
             'outro' => 'Merci d\'examiner et de répondre à cette réclamation dès que possible.',
+        ],
+        'product_added_by_admin' => [
+            'title' => 'Nouveau produit dans votre boutique',
+            'body' => 'Choose\'Tounsi a ajouté un produit à votre boutique : :name',
+            'body_pending' => 'Choose\'Tounsi a ajouté un produit à votre boutique : :name. Il sera publié après vérification.',
+            'subject' => 'Choose\'Tounsi a ajouté un produit à votre boutique : :name',
+            'mail_edit' => 'Vous pouvez le consulter et le modifier à tout moment depuis votre tableau de bord.',
+            'mail_action' => 'Voir le produit',
         ],
         'product_reviewed' => [
             'approved' => [

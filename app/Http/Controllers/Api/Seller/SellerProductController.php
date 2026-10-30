@@ -13,6 +13,7 @@ use App\Services\ProductImages;
 use App\Services\ProductChangeTracker;
 use App\Support\Multicolor;
 use App\Support\Occasions;
+use App\Support\ProductListingRules;
 use App\Support\StockLevels;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -274,9 +275,11 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         'low_stock_threshold' => 'nullable|integer|min:1|max:50',
         // Parcel size for the courier (S = small, L = large, XL = extra large): sets the delivery price
         'parcel_size' => 'required|in:' . implode(',', \App\Support\ParcelSize::ALL),
-    ], [
+        'short_description' => 'nullable|string|max:500',
+    ] + ProductListingRules::variantStockRules(), [
         'parcel_size.required' => __('seller.product.parcel_size_required'),
         'parcel_size.in'       => __('seller.product.parcel_size_required'),
+        'variants.*.stock.*'   => __('seller.product.rules.variant_stock_integer'),
     ]);
     $merch = $this->validateMerchandising($request, null);
     $this->validateVariantRules($request, null);
@@ -301,6 +304,24 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
 
         $imageCount = $images ? ProductImages::countAfter($images['manifest']) : $this->imageCountAfterSave(null, $request);
         if ($deny = $gate->imagesWithinLimit($seller->id, $imageCount)) return $deny;
+
+        // Listing quality rules shared with the admin "Add product" page (ProductListingRules)
+        $variantRows = array_values(array_filter((array) $request->input('variants', []), fn($r) => is_array($r) && !empty($r['option_ids'])));
+        $totalStock  = $variantRows
+            ? (int) collect($variantRows)->filter(fn($r) => filter_var($r['is_active'] ?? true, FILTER_VALIDATE_BOOLEAN))->sum(fn($r) => max(0, (int) ($r['stock'] ?? 0)))
+            : (int) $request->input('stock');
+        $ruleErrors = ProductListingRules::creationErrors([
+            'category_id'       => (int) $request->input('category_id'),
+            'subcategory_id'    => $request->filled('subcategory_id') ? (int) $request->input('subcategory_id') : null,
+            'short_description' => $request->input('short_description'),
+            'total_stock'       => $totalStock,
+            'image_count'       => $imageCount,
+        ]);
+        if ($variantRows && isset($ruleErrors['stock'])) {
+            $ruleErrors['variants'] = $ruleErrors['stock'];
+            unset($ruleErrors['stock']);
+        }
+        ProductListingRules::throwIfAny($ruleErrors);
 
         // One transaction for every row (product, attributes, variants, images): a failure part-way
         // leaves no half-created product behind. Search indexing runs after the commit.
@@ -396,10 +417,17 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         $request->validate([
             'low_stock_threshold' => 'nullable|integer|min:1|max:50',
             'parcel_size'         => 'sometimes|required|in:' . implode(',', \App\Support\ParcelSize::ALL),
-        ], [
+            'stock'               => 'sometimes|nullable|integer|min:0',
+            'short_description'   => 'nullable|string|max:500',
+        ] + ProductListingRules::variantStockRules(), [
             'parcel_size.required' => __('seller.product.parcel_size_required'),
             'parcel_size.in'       => __('seller.product.parcel_size_required'),
+            'variants.*.stock.*'   => __('seller.product.rules.variant_stock_integer'),
         ]);
+        // Edits stay lenient (stock 0 = sold out is fine): only what the edit changes is checked
+        ProductListingRules::throwIfAny(ProductListingRules::updateErrors(
+            $product, $request->only(['category_id', 'subcategory_id', 'short_description'])
+        ));
 
         $images = $this->readImageManifest($request, $product, $this->requestedGroupKeys($request, $product));
         if ($images instanceof \Illuminate\Http\JsonResponse) return $images;

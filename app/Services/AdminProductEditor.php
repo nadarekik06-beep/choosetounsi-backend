@@ -14,8 +14,10 @@ use App\Models\ProductVariant;
 use App\Models\Subcategory;
 use App\Models\User;
 use App\Notifications\ProductReviewedNotification;
+use App\Notifications\ProductAddedByAdminNotification;
 use App\Support\Multicolor;
 use App\Support\Occasions;
+use App\Support\ProductListingRules;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -62,6 +64,7 @@ class AdminProductEditor
             ->whereIn('variant_id', $product->variants->pluck('id'))
             ->select('variant_id')->distinct()->pluck('variant_id')->flip();
         $editor  = $product->admin_edited_by ? User::select('id', 'name')->find($product->admin_edited_by) : null;
+        $creator = $product->created_by_admin_id ? User::select('id', 'name')->find($product->created_by_admin_id) : null;
 
         return [
             'product' => [
@@ -97,7 +100,10 @@ class AdminProductEditor
                 'storefront_url'    => rtrim(config('app.frontend_url'), '/') . '/products/' . $product->slug,
                 // Seller's Multicolore description, shown read-only next to its swatch
                 'multicolor_label'  => Multicolor::labelFor($product),
+                'created_by_admin'  => $creator ? ['id' => $creator->id, 'name' => $creator->name] : null,
             ],
+            // Listing problems (missing subcategory, stock 0, …): shown on edit, never blocking
+            'quality_warnings' => ProductListingRules::warnings($product),
             'attributes' => (object) $product->attributeValues
                 ->filter(fn($v) => $v->attribute && $v->attribute->slug !== Multicolor::LABEL_ATTRIBUTE)
                 ->mapWithKeys(fn($v) => [$v->attribute->slug => $v->attribute->decodeValue($v->value)])
@@ -139,6 +145,279 @@ class AdminProductEditor
                 'category_slugs' => Occasions::CATEGORY_SLUGS,
             ],
         ];
+    }
+
+    /** Empty editor document for the admin "Add product" page (same shape as payload()). */
+    public function blank(User $seller): array
+    {
+        $shop = optional($seller->sellerApplication)->business_name;
+
+        return [
+            'product' => [
+                'id' => null, 'name' => '', 'slug' => '', 'sku' => null, 'description' => null, 'short_description' => null,
+                // No defaults: the admin enters the real price and quantity
+                'price' => null, 'stock' => null, 'category_id' => null, 'subcategory_id' => null,
+                'is_active' => true, 'is_approved' => false, 'is_pack' => false, 'pack_quantity' => null, 'pack_contents' => null,
+                'featured' => false, 'occasions' => [Occasions::DEFAULT], 'free_delivery' => false, 'parcel_size' => 'S',
+                'admin_note' => null, 'admin_edited_at' => null, 'admin_edited_by' => null, 'status' => 'new',
+                'rejection_reason' => null, 'created_at' => null, 'updated_at' => null, 'storefront_url' => null,
+                'multicolor_label' => null, 'created_by_admin' => null,
+                'seller'   => ['id' => $seller->id, 'name' => $seller->name, 'email' => $seller->email, 'shop_name' => $shop],
+                'category' => null, 'subcategory' => null,
+            ],
+            'quality_warnings' => [],
+            'attributes' => (object) [],
+            'variants'   => [],
+            'images'     => ['gallery' => [], 'color_groups' => []],
+            'history'    => [],
+            'moderation' => [],
+            'limits' => [
+                'gallery_max'          => self::GALLERY_MAX,
+                'set_max'              => self::SET_MAX,
+                'max_colors_per_group' => self::MAX_COLORS_PER_GROUP,
+                'max_file_kb'          => 5120,
+            ],
+            'occasions' => [
+                'values'         => Occasions::VALUES,
+                'category_slugs' => Occasions::CATEGORY_SLUGS,
+            ],
+        ];
+    }
+
+    // ── Create on behalf of a seller ─────────────────────────────────────────
+
+    /**
+     * Admin "Add product": the same document as the editor, saved as a new product of
+     * $seller. Same field / attribute / variant / image / slug code as an edit, plus the
+     * creation rules every new product follows (ProductListingRules) and the seller's
+     * plan limits. Commission is resolved from seller_id at order time, as for any product.
+     *
+     * $publish: live right away (approved), else saved as a draft waiting in the review queue.
+     */
+    public function create(User $seller, array $data, array $uploads, User $admin, bool $publish): Product
+    {
+        $product = new Product();
+        $this->validate($product, $data, $uploads, true);
+
+        $gate = app(PlanGate::class);
+        foreach ([
+            'seller'         => $gate->canAddProduct($seller->id),
+            'images.gallery' => $gate->imagesWithinLimit($seller->id, ProductImages::countAfter($data['images'])),
+        ] as $field => $deny) {
+            if ($deny) throw ValidationException::withMessages([$field => [$deny->getData(true)['message'] ?? 'Plan limit reached.']]);
+        }
+
+        $stored = ProductImages::storeUploads($data['images'], $uploads);
+        try {
+            DB::transaction(function () use ($product, $seller, $admin, $data, $stored, $publish) {
+                $product->forceFill([
+                    'seller_id'           => $seller->id,
+                    'created_by_admin_id' => $admin->id,
+                    'is_approved'         => false,
+                    'featured'            => false,
+                    'views'               => 0,
+                ]);
+                $this->saveFields($product, $data);
+                $this->saveAttributes($product, $data['attributes'] ?? []);
+                $this->saveVariants($product, $data['variants'] ?? []);
+                ProductImages::apply($product, $data['images'], $stored);
+
+                $product->refresh();
+                $variants = $product->variants()->get();
+                if ($variants->isNotEmpty()) {
+                    $product->stock = (int) $variants->sum('stock');
+                    if (!$variants->contains('is_active', true)) $product->is_active = false;
+                }
+                $product->forceFill(['admin_edited_at' => now(), 'admin_edited_by' => $admin->id]);
+                if ($publish) $product->is_approved = true;
+                $product->save();
+
+                $this->recordCreation($product, $seller, $admin, $publish, 'Created by admin on behalf of the seller');
+            });
+        } catch (\Throwable $e) {
+            foreach ($stored as $path) Storage::disk('public')->delete($path);
+            throw $e;
+        }
+
+        $this->notifyCreated($product->fresh(), $seller);
+
+        return $product->fresh();
+    }
+
+    /** History tab entry + moderation log for a product an admin created. */
+    private function recordCreation(Product $product, User $seller, User $admin, bool $publish, string $what, array $extra = []): void
+    {
+        $shop = optional($seller->sellerApplication)->business_name ?: $seller->name;
+
+        ProductEditLog::create([
+            'product_id' => $product->id,
+            'admin_id'   => $admin->id,
+            'summary'    => Str::limit("{$what} \"{$shop}\" · " . ($publish ? 'published' : 'saved as draft'), 497),
+            'changes'    => ['created' => array_merge([
+                'seller_id' => $seller->id,
+                'seller'    => $shop,
+                'status'    => $publish ? 'approved' : 'pending',
+            ], $extra)],
+        ]);
+
+        ProductModerationLog::record($product, 'created_by_admin', [
+            'admin_id'    => $admin->id,
+            'from_status' => null,
+            'to_status'   => 'pending',
+            'note'        => "Created by admin for {$shop}",
+        ]);
+        if ($publish) {
+            ProductModerationLog::record($product, 'approved', [
+                'admin_id'    => $admin->id,
+                'from_status' => 'pending',
+                'to_status'   => 'approved',
+                'note'        => 'Published by admin on creation',
+            ]);
+        }
+    }
+
+    private function notifyCreated(Product $product, User $seller): void
+    {
+        try {
+            $seller->notify(new ProductAddedByAdminNotification(
+                $product->id, (string) $product->getRawOriginal('name'), (bool) $product->is_approved
+            ));
+        } catch (\Throwable $e) {
+            Log::warning('[AdminProductEditor] seller notification failed: ' . $e->getMessage());
+        }
+        if (method_exists(\App\Http\Controllers\Api\Seller\BlackPepperController::class, 'clearSellerCache')) {
+            \App\Http\Controllers\Api\Seller\BlackPepperController::clearSellerCache($seller->id);
+        }
+    }
+
+    // ── Split into separate products ─────────────────────────────────────────
+
+    /**
+     * "Split into separate products": one new product of the same seller per group of
+     * gallery photos, copying the shared fields (category, subcategory, descriptions,
+     * price, parcel size, delivery, occasions, info attributes). Variants are not copied.
+     * With $move the photos leave the original product (its files stay: the new products use them).
+     *
+     * @param array<int, array{name: string, stock: int, price?: ?float, image_ids: int[]}> $groups
+     * @return Product[]
+     */
+    public function split(Product $source, array $groups, bool $move, bool $publish, User $admin): array
+    {
+        $source->loadMissing(['seller.sellerApplication', 'images', 'attributeValues.attribute']);
+        $seller = $source->seller;
+
+        $validator = validator(['groups' => $groups], [
+            'groups'               => 'required|array|min:1|max:10',
+            'groups.*.name'        => 'required|string|min:3|max:255',
+            'groups.*.stock'       => 'required|integer|min:1|max:1000000',
+            'groups.*.price'       => 'nullable|numeric|gt:0|max:9999999',
+            'groups.*.image_ids'   => 'required|array|min:1|max:' . self::GALLERY_MAX,
+            'groups.*.image_ids.*' => 'integer|distinct',
+        ], [
+            'groups.*.stock.min'        => 'Each new product needs at least 1 in stock.',
+            'groups.*.image_ids.required' => 'Pick at least one photo for each new product.',
+        ]);
+
+        $pathOf = $source->images->keyBy('id')->map(fn($i) => $i->image_path);
+        $validator->after(function ($v) use ($groups, $pathOf, $move, $source, $seller) {
+            if ($v->errors()->isNotEmpty()) return;
+            if (!$seller) { $v->errors()->add('groups', 'This product has no seller.'); return; }
+            $used = [];
+            foreach ($groups as $i => $g) {
+                foreach ($g['image_ids'] as $id) {
+                    if (!isset($pathOf[$id])) { $v->errors()->add("groups.$i.image_ids", 'A selected photo does not belong to this product.'); return; }
+                    if (isset($used[$pathOf[$id]])) { $v->errors()->add("groups.$i.image_ids", 'A photo can only go to one new product.'); return; }
+                    $used[$pathOf[$id]] = true;
+                }
+            }
+            if ($move && $source->images->pluck('image_path')->unique()->diff(array_keys($used))->isEmpty()) {
+                $v->errors()->add('groups', 'Keep at least one photo on the original product (or uncheck "Move the photos").');
+            }
+        });
+        $validator->validate();
+
+        $gate = app(PlanGate::class);
+        $plan = $gate->planFor($seller->id);
+        if ($plan->max_products !== null) {
+            $count = Product::where('seller_id', $seller->id)->count();
+            if ($count + count($groups) > $plan->max_products) {
+                throw ValidationException::withMessages(['groups' => [
+                    "The seller's plan ({$plan->name}) allows {$plan->max_products} products; they have {$count}.",
+                ]]);
+            }
+        }
+
+        $infoAttrs = $source->attributeValues->filter(fn($v) => $v->attribute && $v->attribute->slug !== Multicolor::LABEL_ATTRIBUTE);
+        if ($source->subcategory_id) {
+            $axisIds   = $this->variantAxes(Subcategory::find($source->subcategory_id))->pluck('id')->all();
+            $infoAttrs = $infoAttrs->reject(fn($v) => in_array($v->attribute_id, $axisIds, true));
+        }
+
+        $created = [];
+        DB::transaction(function () use ($source, $seller, $groups, $move, $publish, $admin, $pathOf, $infoAttrs, &$created) {
+            foreach ($groups as $g) {
+                $product = new Product();
+                $product->forceFill([
+                    'seller_id'           => $seller->id,
+                    'created_by_admin_id' => $admin->id,
+                    'category_id'         => $source->category_id,
+                    'subcategory_id'      => $source->subcategory_id,
+                    'name'                => trim($g['name']),
+                    'slug'                => $this->uniqueSlug($g['name'], null),
+                    'description'         => $source->getRawOriginal('description'),
+                    'short_description'   => $source->getRawOriginal('short_description'),
+                    'price'               => isset($g['price']) && $g['price'] !== '' && $g['price'] !== null ? round((float) $g['price'], 3) : $source->price,
+                    'stock'               => (int) $g['stock'],
+                    'delivery_fee'        => $source->delivery_fee,
+                    'parcel_size'         => $source->parcel_size ?? 'S',
+                    'low_stock_threshold' => $source->low_stock_threshold,
+                    'is_pack'             => (bool) $source->is_pack,
+                    'pack_quantity'       => $source->pack_quantity,
+                    'pack_contents'       => $source->pack_contents,
+                    'is_active'           => true,
+                    'is_approved'         => $publish,
+                    'featured'            => false,
+                    'views'               => 0,
+                    'admin_edited_at'     => now(),
+                    'admin_edited_by'     => $admin->id,
+                ])->save();
+                $product->syncOccasions($source->occasions);
+
+                foreach ($infoAttrs as $av) {
+                    ProductAttributeValue::create(['product_id' => $product->id, 'attribute_id' => $av->attribute_id, 'value' => $av->value]);
+                }
+                foreach (array_values($g['image_ids']) as $n => $id) {
+                    ProductImage::create([
+                        'product_id' => $product->id, 'image_path' => $pathOf[$id],
+                        'order' => $n, 'is_primary' => $n === 0,
+                    ]);
+                }
+
+                $this->recordCreation($product, $seller, $admin, $publish, "Split from #{$source->id} by admin for", ['split_from' => $source->id]);
+                $created[] = $product;
+            }
+
+            $paths = collect($groups)->pluck('image_ids')->flatten()->map(fn($id) => $pathOf[$id])->unique()->values();
+            if ($move) {
+                ProductImage::where('product_id', $source->id)->whereIn('image_path', $paths)->delete();
+                if (!ProductImage::where('product_id', $source->id)->where('is_primary', true)->exists()) {
+                    ProductImage::where('product_id', $source->id)->orderBy('order')->orderBy('id')->first()?->update(['is_primary' => true]);
+                }
+            }
+
+            $ids = collect($created)->map(fn($p) => '#' . $p->id)->implode(', ');
+            ProductEditLog::create([
+                'product_id' => $source->id,
+                'admin_id'   => $admin->id,
+                'summary'    => Str::limit("Split into {$ids}" . ($move ? ' · ' . $paths->count() . ' photo(s) moved' : ''), 497),
+                'changes'    => ['split' => ['into' => collect($created)->pluck('id')->all(), 'moved_photos' => $move ? $paths->count() : 0]],
+            ]);
+            $source->forceFill(['admin_edited_at' => now(), 'admin_edited_by' => $admin->id])->saveQuietly();
+        });
+
+        foreach ($created as $p) $this->notifyCreated($p->fresh(), $seller);
+
+        return array_map(fn($p) => $p->fresh(), $created);
     }
 
     /** Gallery + color group images (see ProductImages — there are no per-size images). */
@@ -205,7 +484,8 @@ class AdminProductEditor
 
     // ── Validation ───────────────────────────────────────────────────────────
 
-    private function validate(Product $product, array $data, array $uploads): void
+    /** $creating: admin "Add product" — the shared creation rules (ProductListingRules) apply too. */
+    private function validate(Product $product, array $data, array $uploads, bool $creating = false): void
     {
         $validator = validator($data, [
             'name'              => 'required|string|max:255',
@@ -257,15 +537,33 @@ class AdminProductEditor
             'variants.*.sku'   => 'variant SKU',
         ]);
 
-        $validator->after(function ($v) use ($product, $data, $uploads) {
+        $validator->after(function ($v) use ($product, $data, $uploads, $creating) {
             if ($v->errors()->isNotEmpty()) return;
             $this->validateCatalog($v, $data);
             $this->validateVariants($v, $data, $product);
             ProductImages::validate($v, $product, $data['images'], $uploads,
                 ProductImages::groupKeysFor(array_column($data['variants'], 'option_ids')));
 
-            if (!empty($data['slug']) && Product::withTrashed()->where('slug', $data['slug'])->where('id', '!=', $product->id)->exists()) {
+            if (!empty($data['slug']) && Product::withTrashed()->where('slug', $data['slug'])
+                ->when($product->exists, fn($q) => $q->where('id', '!=', $product->id))->exists()) {
                 $v->errors()->add('slug', 'This slug is already used by another product.');
+            }
+
+            if ($creating) {
+                $variants   = collect($data['variants']);
+                $totalStock = $variants->isNotEmpty()
+                    ? (int) $variants->filter(fn($r) => !empty($r['is_active']))->sum(fn($r) => (int) $r['stock'])
+                    : (int) $data['stock'];
+                $rules = ProductListingRules::creationErrors([
+                    'category_id'       => (int) $data['category_id'],
+                    'subcategory_id'    => !empty($data['subcategory_id']) ? (int) $data['subcategory_id'] : null,
+                    'short_description' => $data['short_description'] ?? null,
+                    'total_stock'       => $totalStock,
+                    'image_count'       => ProductImages::countAfter($data['images']),
+                ]);
+                // Same keys the editor UI renders (variant stock lives in the Variants tab)
+                $keys = ['images' => 'images.gallery', 'stock' => $variants->isNotEmpty() ? 'variants' : 'stock'];
+                foreach ($rules as $field => $message) $v->errors()->add($keys[$field] ?? $field, $message);
             }
             $hasImage = !empty($data['images']['gallery'])
                 || array_filter(array_column($data['images']['color_groups'], 'items'));
@@ -659,12 +957,12 @@ class AdminProductEditor
         return $value === null || $value === '' || (is_array($value) && count($value) === 0);
     }
 
-    private function uniqueSlug(string $base, int $excludeId): string
+    private function uniqueSlug(string $base, ?int $excludeId): string
     {
         $slug = Str::slug($base) ?: 'product';
         $original = $slug;
         $n = 2;
-        while (Product::withTrashed()->where('slug', $slug)->where('id', '!=', $excludeId)->exists()) {
+        while (Product::withTrashed()->where('slug', $slug)->when($excludeId, fn($q) => $q->where('id', '!=', $excludeId))->exists()) {
             $slug = $original . '-' . $n++;
         }
         return $slug;
