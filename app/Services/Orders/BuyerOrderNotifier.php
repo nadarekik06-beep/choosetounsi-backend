@@ -11,6 +11,7 @@ use App\Services\Notifications\BuyerNotifier;
 use App\Services\ReviewPromptService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
 
 /**
  * Tells the buyer (whoever placed the order — client or seller account) about
@@ -54,6 +55,17 @@ class BuyerOrderNotifier
 
     public function orderPlaced(Order $order): void
     {
+        // Guest order (no account): the confirmation e-mail, only if an address was given.
+        if (!$order->user_id) {
+            $this->safely(function () use ($order) {
+                if ($order->guest_email && $order->status !== 'cancelled') {
+                    Notification::route('mail', $order->guest_email)
+                        ->notify((new OrderPlacedNotification($order))->locale(app()->getLocale()));
+                }
+            });
+            return;
+        }
+
         $this->safely(function () use ($order) {
             $online = in_array($order->payment_method, SellerOrderNotifier::ONLINE_METHODS, true);
 

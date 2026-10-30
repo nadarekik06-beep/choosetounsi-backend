@@ -377,7 +377,8 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
                 'coupon_code'    => $so->coupon_code,
                 'items_count'    => $items->count(),
                 'customer' => [
-                    'name'   => optional(optional($order)->user)->name,
+                    'name'     => $order?->buyerName(),
+                    'is_guest' => (bool) $order?->is_guest,
                     'wilaya' => $order ? ($order->wilaya ?? $order->shipping_address ?? null) : null,
                 ],
                 'items'    => $items,

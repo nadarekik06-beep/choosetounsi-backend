@@ -56,7 +56,11 @@
     <tr>
         <td><span class="label">Status</span><br>{{ $order->status }}</td>
         <td><span class="label">Payment</span><br>{{ strtoupper($order->payment_method ?? 'cod') }} · {{ $order->payment_status }}</td>
-        <td><span class="label">Customer account</span><br>{{ $order->user?->name }}<br><span class="muted">{{ $order->user?->email }}</span></td>
+        @if ($order->user)
+        <td><span class="label">Customer account</span><br>{{ $order->user->name }}<br><span class="muted">{{ $order->user->email }}</span>@if ($order->is_guest)<br><span class="muted">(placed as guest)</span>@endif</td>
+        @else
+        <td><span class="label">Customer</span><br><b>GUEST</b> (no account) · {{ $order->guest_name ?: $order->recipient_name }}<br><span class="muted">{{ $order->guest_email ?: 'no e-mail' }}</span></td>
+        @endif
         <td><span class="label">COD to collect (all slips)</span><br><b>{{ $dt($codTotal) }}</b></td>
     </tr>
     <tr>

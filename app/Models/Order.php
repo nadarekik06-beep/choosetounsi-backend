@@ -12,6 +12,12 @@ class Order extends Model
 
     protected $fillable = [
         'user_id',
+        // Guest checkout (no account): user_id NULL
+        'is_guest',
+        'guest_name',
+        'guest_phone',
+        'guest_email',
+        'tracking_token',
         'order_number',
         'subtotal',
         'discount_amount',
@@ -50,10 +56,13 @@ class Order extends Model
         'shipping_fee'    => 'decimal:3',  // ← ADDED
         'shipping_cost'   => 'decimal:3',
         'shipping_per_parcel' => 'boolean',
+        'is_guest'        => 'boolean',
     ];
 
     // Internal cost split — the customer only ever sees shipping_fee.
-    protected $hidden = ['shipping_cost', 'shipping_paid_by'];
+    // Guest: the tracking link is the buyer's key and the e-mail is private
+    // (sellers never see buyer e-mails) — the admin API shows them explicitly.
+    protected $hidden = ['shipping_cost', 'shipping_paid_by', 'tracking_token', 'guest_email'];
 
     protected $appends = ['display_status'];
 
@@ -147,7 +156,19 @@ public function complaints()
     /** Recipient name, falling back to the account name on legacy orders. */
     public function recipientName(): ?string
     {
-        return $this->recipient_name ?: $this->user?->name;
+        return $this->recipient_name ?: ($this->guest_name ?: $this->user?->name);
+    }
+
+    /** Name to show for the buyer: the account's, or the guest's (no account). */
+    public function buyerName(): ?string
+    {
+        return $this->user?->name ?: ($this->guest_name ?: $this->recipient_name);
+    }
+
+    /** Public tracking page of a guest order (storefront path), null for account orders. */
+    public function trackingPath(): ?string
+    {
+        return $this->tracking_token ? '/order/track/' . $this->tracking_token : null;
     }
 
     /** "12 rue X, El Menzah, 1004 Tunis" — one line, empty parts skipped. */
@@ -287,6 +308,7 @@ public function complaints()
     public function scopePending($query)    { return $query->where('status', 'pending'); }
     public function scopeDelivered($query)  { return $query->where('status', 'delivered'); }
     public function scopePaid($query)       { return $query->where('payment_status', 'paid'); }
+    public function scopeGuest($query)      { return $query->where('is_guest', true); }
 
     public function scopeFromPeriod($query, $startDate, $endDate = null)
     {

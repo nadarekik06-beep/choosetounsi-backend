@@ -53,6 +53,15 @@ return [
         'item_select_variant' => 'Please select a variant for ":product".',
         'item_stock' => 'Not enough stock for ":product".',
     ],
+    'guest' => [
+        'cart_token_missing' => 'Your cart could not be found. Please reload the page and try again.',
+        'cod_only' => 'Without an account, only cash on delivery is available.',
+        'too_many_pending' => 'You already have :max orders waiting for confirmation on this phone number. Our team will call you to confirm them first.',
+        'too_many_orders' => 'Too many orders in a short time. Please try again later or contact us on WhatsApp.',
+        'too_many_lookups' => 'Too many searches. Please try again in a while.',
+        'order_not_found' => 'No order found. Check the order number and the phone number used for the order.',
+        'claim_mismatch' => 'This order was placed with another e-mail or phone number than your account\'s.',
+    ],
     'checkout' => [
         'reselect_region' => 'Please select your governorate and delegation again from the list.',
         'cart_empty' => 'Your cart is empty.',

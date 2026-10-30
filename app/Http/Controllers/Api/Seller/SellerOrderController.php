@@ -186,7 +186,8 @@ $shippingCharge  = round((float) ($sellerOrder->seller_shipping_charge ?? 0), 3)
 $netAfterShipping = $totalSellerNet !== null ? round($totalSellerNet - $shippingCharge, 3) : null;
 
         $order       = $sellerOrder->order;
-        $customer    = $order->user ? ['name' => $order->user->name] : null;
+        // Guest orders (no account): the name typed at checkout
+        $customer    = ($order->user || $order->is_guest) ? ['name' => $order->buyerName(), 'is_guest' => (bool) $order->is_guest] : null;
         $isCancelled = $sellerOrder->status === 'cancelled';
 
         return response()->json([
@@ -442,6 +443,9 @@ public function updatePayment(Request $request, $id)
                 'name' => $order->user->name,
                 // 'email' => INTENTIONALLY OMITTED — privacy policy
             ] : null,
+            // Guest checkout (no account): badge + the name typed at checkout
+            'is_guest'        => (bool) $order?->is_guest,
+            'customer_name'   => $order?->buyerName(),
             'parent_order_id' => $order?->id,
             'items_count'     => $so->items->count(),   // this seller's items only (already loaded)
         ];

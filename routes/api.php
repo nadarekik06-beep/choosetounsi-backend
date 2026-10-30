@@ -189,6 +189,42 @@ Route::post('/auth/reset-password',  [AuthController::class, 'resetPassword']);
 
 /*
 |--------------------------------------------------------------------------
+| SIGNED IN OR GUEST (guest checkout)
+|--------------------------------------------------------------------------
+| auth.optional: a Bearer token → exactly auth:sanctum (bad token = 401).
+| No token → guest, identified by the X-Cart-Token header — only while
+| guest checkout is on (config/guest_checkout.php); off → 401 as before.
+*/
+
+Route::middleware('auth.optional')->group(function () {
+    Route::prefix('cart')->group(function () {
+        Route::get('/',        [CartController::class, 'index']);
+        Route::post('/',       [CartController::class, 'store']);
+        Route::put('/{id}',    [CartController::class, 'update']);
+        Route::delete('/',     [CartController::class, 'clear']);
+        Route::delete('/{id}', [CartController::class, 'destroy']);
+    });
+
+    Route::post('/coupons/validate', [\App\Http\Controllers\Api\Client\CouponController::class, 'preview']);
+
+    // What the order will cost, per parcel (the storefront only displays this)
+    Route::post('/checkout/quote',   [CheckoutController::class, 'quote']);
+
+    // No profile.complete gate: checkout validates its own full delivery address
+    // and saves it to an incomplete profile (ProfileFromCheckout).
+    // throttle:guest-checkout only counts guests (no extra limit when signed in).
+    Route::post('/checkout',         [CheckoutController::class, 'store'])->middleware('throttle:guest-checkout');
+    Route::post('/checkout/buy-now', [CheckoutController::class, 'buyNow'])->middleware('throttle:guest-checkout');
+});
+
+// Public order tracking (guest orders): by the link's token, or order number + phone
+Route::get('/orders/track/{token}', [\App\Http\Controllers\Api\Client\OrderTrackingController::class, 'show'])
+    ->where('token', '[A-Za-z0-9]{32,64}')->middleware('throttle:60,1');
+Route::post('/orders/track', [\App\Http\Controllers\Api\Client\OrderTrackingController::class, 'lookup'])
+    ->middleware('throttle:guest-order-lookup');
+
+/*
+|--------------------------------------------------------------------------
 | AUTHENTICATED ROUTES
 |--------------------------------------------------------------------------
 */
@@ -231,15 +267,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/',                [UserPreferenceController::class, 'update']);
     });
 
-    Route::prefix('cart')->group(function () {
-        Route::get('/',        [CartController::class, 'index']);
-        Route::post('/',       [CartController::class, 'store']);
-        Route::put('/{id}',    [CartController::class, 'update']);
-        Route::delete('/',     [CartController::class, 'clear']);
-        Route::delete('/{id}', [CartController::class, 'destroy']);
-    });
-
-    Route::post('/coupons/validate', [\App\Http\Controllers\Api\Client\CouponController::class, 'preview']);
+    // Cart, coupon check and checkout live in the auth.optional group above
+    // (same controllers; a signed-in request behaves exactly as before).
+    // A guest cart becomes this account's cart after login:
+    Route::post('/cart/merge', [CartController::class, 'merge'])->middleware('throttle:30,1');
+    // A guest order placed with this account's e-mail / phone: added on the buyer's request (tracking link = proof)
+    Route::post('/orders/track/{token}/claim', [\App\Http\Controllers\Api\Client\OrderTrackingController::class, 'claim'])
+        ->where('token', '[A-Za-z0-9]{32,64}')->middleware('throttle:10,1');
 
     Route::prefix('favorites')->group(function () {
         Route::get('/',                  [FavoriteController::class, 'index']);
@@ -253,13 +287,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/check/{sellerId}',  [SellerFollowController::class, 'check']);
     });
 
-    // What the order will cost, per parcel (the storefront only displays this)
-    Route::post('/checkout/quote',   [CheckoutController::class, 'quote']);
-
-    // No profile.complete gate: checkout validates its own full delivery address
-    // and saves it to an incomplete profile (ProfileFromCheckout).
-    Route::post('/checkout',         [CheckoutController::class, 'store']);
-    Route::post('/checkout/buy-now', [CheckoutController::class, 'buyNow']);
 
     // Client notifications
     Route::prefix('notifications')->group(function () {

@@ -336,7 +336,11 @@ if ($sellerOrder->status !== 'completed') {
                 'id'    => $order->user->id,
                 'name'  => $order->user->name,
                 'email' => $order->user->email,
-            ] : null,
+            ] : ($order?->is_guest ? [
+                'id'    => null,                // guest checkout: no account
+                'name'  => $order->guest_name,
+                'email' => null,
+            ] : null),
             'seller'         => $seller ? [
                 'id'            => $seller->id,
                 'name'          => $seller->name,

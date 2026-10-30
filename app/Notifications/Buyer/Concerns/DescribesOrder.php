@@ -16,10 +16,10 @@ trait DescribesOrder
         return (string) ($order->order_number ?: '#' . $order->id);
     }
 
-    /** /orders?order=ID opens and scrolls to the order (storefront). */
+    /** /orders?order=ID opens and scrolls to the order (storefront); guest orders: their tracking page. */
     protected function orderLink(Order $order): string
     {
-        return '/orders?order=' . $order->id;
+        return $order->trackingPath() ?? '/orders?order=' . $order->id;
     }
 
     /** Shop names of these sub-orders ("ChooseTounsi" for the platform's own products). */

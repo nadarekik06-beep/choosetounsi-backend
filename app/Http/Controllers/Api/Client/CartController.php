@@ -11,6 +11,7 @@ use App\Models\ProductVariant;
 use App\Services\UserPreferenceService;
 use App\Services\Recommendation\InteractionTracker;
 use App\Services\PromotionService;          // ← already imported, just moved up
+use App\Support\GuestCheckout;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -33,8 +34,7 @@ class CartController extends Controller
      */
     public function index(Request $request)
     {
-        $user  = $request->user();
-        $items = Cart::where('user_id', $user->id)
+        $items = $this->cartQuery($request)
             ->with([
                 // Product row relations (only loaded when product_id is set)
                 'product.images',
@@ -87,7 +87,9 @@ class CartController extends Controller
             'quantity'   => 'integer|min:1|max:100',
         ]);
 
-        $user      = $request->user();
+        if ($denied = $this->guestWithoutToken($request)) {
+            return $denied;
+        }
         $productId = $request->product_id;
         $variantId = $request->variant_id ?? null;
         $qty       = $request->quantity   ?? 1;
@@ -103,7 +105,7 @@ class CartController extends Controller
             ], 422);
         }
 
-        $query = Cart::where('user_id', $user->id)
+        $query = $this->cartQuery($request)
                      ->where('product_id', $productId)
                      ->whereNull('pack_id');   // ← don't match pack rows
         $query = $variantId
@@ -159,8 +161,7 @@ class CartController extends Controller
         if ($cartItem) {
             $cartItem->increment('quantity', $qty);
         } else {
-            Cart::create([
-                'user_id'    => $user->id,
+            Cart::create($this->owner($request) + [
                 'product_id' => $productId,
                 'variant_id' => $variantId,
                 'quantity'   => $qty,
@@ -179,7 +180,7 @@ class CartController extends Controller
     {
         $request->validate(['quantity' => 'required|integer|min:1|max:100']);
 
-        $item = Cart::where('user_id', $request->user()->id)
+        $item = $this->cartQuery($request)
             ->with(['variant', 'product'])
             ->findOrFail($id);
 
@@ -214,7 +215,7 @@ class CartController extends Controller
      */
     public function destroy(Request $request, $id)
     {
-        Cart::where('user_id', $request->user()->id)->findOrFail($id)->delete();
+        $this->cartQuery($request)->findOrFail($id)->delete();
         return $this->index($request);
     }
 
@@ -223,7 +224,9 @@ class CartController extends Controller
      */
     public function clear(Request $request)
     {
-        Cart::where('user_id', $request->user()->id)->delete();
+        if ($request->user() || GuestCheckout::cartToken($request)) {
+            $this->cartQuery($request)->delete();
+        }
         return response()->json([
             'success' => true,
             'data'    => ['items' => [], 'count' => 0, 'subtotal' => 0],
@@ -245,7 +248,9 @@ class CartController extends Controller
             'pack_selections.*.variant_id'      => 'nullable|integer',
         ]);
 
-        $user = $request->user();
+        if ($denied = $this->guestWithoutToken($request)) {
+            return $denied;
+        }
 
         $pack = Pack::with(['items.product', 'items.product.variants'])
             ->where('is_active', true)
@@ -295,7 +300,7 @@ class CartController extends Controller
 
         // ── Upsert: one pack = one cart row ───────────────────────────────────
         // Adding it again refreshes the price and selections, keeps the quantity
-        $row = Cart::firstOrNew(['user_id' => $user->id, 'pack_id' => $pack->id]);
+        $row = Cart::firstOrNew($this->owner($request) + ['pack_id' => $pack->id]);
         $row->fill([
             'product_id'           => null,
             'variant_id'           => null,
@@ -306,6 +311,90 @@ class CartController extends Controller
         ])->save();
 
         return $this->index($request);
+    }
+
+    // ── Guest cart ─────────────────────────────────────────────────────────────
+
+    /**
+     * POST /api/cart/merge (signed in, header X-Cart-Token)
+     *
+     * Right after login: the guest cart of this browser becomes the account's
+     * cart. Same product/variant or pack in both → quantities added (product
+     * rows capped at the stock); the seller's own products are dropped.
+     */
+    public function merge(Request $request)
+    {
+        $user  = $request->user();
+        $token = GuestCheckout::cartToken($request);
+
+        if ($token) {
+            DB::transaction(function () use ($user, $token) {
+                $guestRows = Cart::with(['product', 'variant'])
+                    ->whereNull('user_id')->where('guest_token', $token)
+                    ->lockForUpdate()->get();
+
+                foreach ($guestRows as $row) {
+                    if ($row->product && (int) $row->product->seller_id === (int) $user->id) {
+                        $row->delete();
+                        continue;
+                    }
+
+                    $mine = Cart::where('user_id', $user->id)
+                        ->when($row->isPack(),
+                            fn ($q) => $q->where('pack_id', $row->pack_id),
+                            fn ($q) => $q->whereNull('pack_id')->where('product_id', $row->product_id)
+                                ->when($row->variant_id, fn ($q2) => $q2->where('variant_id', $row->variant_id), fn ($q2) => $q2->whereNull('variant_id')))
+                        ->lockForUpdate()->first();
+
+                    if (!$mine) {
+                        $row->update(['user_id' => $user->id, 'guest_token' => null]);
+                        continue;
+                    }
+
+                    $qty = (int) $mine->quantity + (int) $row->quantity;
+                    if (!$row->isPack()) {
+                        $stock = $row->variant ? (int) $row->variant->stock : (int) ($row->product->stock ?? 0);
+                        $qty   = max(1, min($qty, max($stock, (int) $mine->quantity)));
+                    }
+                    $mine->update(['quantity' => min($qty, 100)]);
+                    $row->delete();
+                }
+            });
+        }
+
+        return $this->index($request);
+    }
+
+    /** This request's cart rows: the account's, or the guest token's (nothing without a token). */
+    private function cartQuery(Request $request)
+    {
+        if ($user = $request->user()) {
+            return Cart::where('user_id', $user->id);
+        }
+        $token = GuestCheckout::cartToken($request);
+        return Cart::whereNull('user_id')->where('guest_token', $token ?? '')
+            ->when(!$token, fn ($q) => $q->whereRaw('1 = 0'));
+    }
+
+    /** Owner columns for a new cart row. */
+    private function owner(Request $request): array
+    {
+        return $request->user()
+            ? ['user_id' => $request->user()->id]
+            : ['user_id' => null, 'guest_token' => GuestCheckout::cartToken($request)];
+    }
+
+    /** A guest adding to the cart must send its cart token. */
+    private function guestWithoutToken(Request $request): ?\Illuminate\Http\JsonResponse
+    {
+        if ($request->user() || GuestCheckout::cartToken($request)) {
+            return null;
+        }
+        return response()->json([
+            'success' => false,
+            'code'    => 'cart_token_missing',
+            'message' => __('messages.guest.cart_token_missing'),
+        ], 422);
     }
 
     // ── Private: Formatters ────────────────────────────────────────────────────

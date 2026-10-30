@@ -11,6 +11,7 @@ class Cart extends Model
 
     protected $fillable = [
         'user_id',
+        'guest_token',   // guest cart (no account): the browser's X-Cart-Token
         // ── Product row fields ──
         'product_id',
         'variant_id',

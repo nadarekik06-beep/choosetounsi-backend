@@ -57,7 +57,8 @@ class OrderPricing
      * @param Collection<int, Cart> $rows cart rows (product and pack rows)
      * @param string[] $couponCodes
      */
-    public function forCart(Collection $rows, array $couponCodes, int $userId, string $paymentMethod = 'cod'): array
+    /** $userId null = guest checkout; $guestPhone = the guest's delivery phone (coupon "per customer" limit). */
+    public function forCart(Collection $rows, array $couponCodes, ?int $userId, string $paymentMethod = 'cod', ?string $guestPhone = null): array
     {
         if ($rows->isEmpty()) {
             throw new PricingException(__('messages.checkout.cart_empty'));
@@ -72,10 +73,10 @@ class OrderPricing
             }
         }
 
-        return $this->build($lines, $this->resolveCodes($couponCodes), $userId, $paymentMethod);
+        return $this->build($lines, $this->resolveCodes($couponCodes), $userId, $paymentMethod, $guestPhone);
     }
 
-    public function forBuyNow(Product $product, ?ProductVariant $variant, int $quantity, ?string $couponCode, int $userId, string $paymentMethod = 'cod'): array
+    public function forBuyNow(Product $product, ?ProductVariant $variant, int $quantity, ?string $couponCode, ?int $userId, string $paymentMethod = 'cod', ?string $guestPhone = null): array
     {
         $line = $this->productLine($product, $variant, $quantity, $userId, 'buy_now', null);
 
@@ -90,12 +91,12 @@ class OrderPricing
             $codes = $this->resolveCodes([$couponCode]);
         }
 
-        return $this->build([$line], $codes, $userId, $paymentMethod);
+        return $this->build([$line], $codes, $userId, $paymentMethod, $guestPhone);
     }
 
     // ── Lines ────────────────────────────────────────────────────────────────
 
-    private function productLine(?Product $product, ?ProductVariant $variant, int $qty, int $userId, string $key, ?int $cartId): array
+    private function productLine(?Product $product, ?ProductVariant $variant, int $qty, ?int $userId, string $key, ?int $cartId): array
     {
         if (!$product || !$product->is_approved || !$product->is_active) {
             throw new PricingException($product
@@ -105,7 +106,7 @@ class OrderPricing
         if ($variant && (!$variant->is_active || $variant->product_id !== $product->id)) {
             throw new PricingException(__('messages.checkout.variant_unavailable'));
         }
-        if ($product->seller_id !== null && (int) $product->seller_id === $userId) {
+        if ($userId !== null && $product->seller_id !== null && (int) $product->seller_id === $userId) {
             throw new PricingException(__('messages.checkout.own_product'));
         }
         if ($qty < 1) {
@@ -255,7 +256,7 @@ class OrderPricing
 
     // ── Parcels ──────────────────────────────────────────────────────────────
 
-    private function build(array $lines, array $coupons, int $userId, string $paymentMethod): array
+    private function build(array $lines, array $coupons, ?int $userId, string $paymentMethod, ?string $guestPhone = null): array
     {
         $isCod = $paymentMethod === 'cod';
 
@@ -276,7 +277,7 @@ class OrderPricing
                 'line_total' => Millimes::toDecimal($l['total_m']),
             ])->values()->all();
 
-            $result = $this->coupons->validateForSeller($coupon->code, (int) $sellerId, $userId, $items);
+            $result = $this->coupons->validateForSeller($coupon->code, (int) $sellerId, $userId, $items, $guestPhone);
             if (!$result['valid']) {
                 throw new PricingException($result['message']);
             }

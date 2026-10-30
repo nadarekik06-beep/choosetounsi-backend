@@ -25,7 +25,12 @@ class CouponService
      *   discount_amount: float, eligible_product_ids: int[]
      * }
      */
-    public function validateForSeller(string $code, int $sellerId, int $userId, array $items): array
+    /**
+     * $userId null = guest: targeted coupons are refused, and the "per customer"
+     * limit counts by $guestPhone — every earlier order delivered to that phone
+     * (guest or account), so checking out as a guest never resets the limit.
+     */
+    public function validateForSeller(string $code, int $sellerId, ?int $userId, array $items, ?string $guestPhone = null): array
     {
         $invalid = fn (string $message) => [
             'valid' => false, 'message' => $message, 'coupon' => null,
@@ -50,10 +55,12 @@ class CouponService
         if (!$coupon->hasUsesRemaining()) {
             return $invalid(__('messages.coupon.limit_reached'));
         }
-        if ($coupon->usage_limit_per_customer !== null) {
-            $customerUses = CouponRedemption::where('coupon_id', $coupon->id)
-                ->where('user_id', $userId)
-                ->count();
+        if ($coupon->usage_limit_per_customer !== null && ($userId !== null || $guestPhone)) {
+            $customerUses = $userId !== null
+                ? CouponRedemption::where('coupon_id', $coupon->id)
+                    ->where('user_id', $userId)
+                    ->count()
+                : $this->usesByPhone($coupon->id, $guestPhone);
             if ($customerUses >= $coupon->usage_limit_per_customer) {
                 return $invalid(__('messages.coupon.customer_limit'));
             }
@@ -152,9 +159,19 @@ class CouponService
      *
      * @throws \RuntimeException if the coupon's usage limit was hit concurrently.
      */
-    public function redeem(Coupon $coupon, SellerOrder $sellerOrder, Order $order, int $userId, float $discountAmount): void
+    /** Coupon uses on orders delivered to this phone (guest or account orders). */
+    public function usesByPhone(int $couponId, string $phone): int
     {
-        DB::transaction(function () use ($coupon, $sellerOrder, $order, $userId, $discountAmount) {
+        return CouponRedemption::where('coupon_id', $couponId)
+            ->where(fn ($q) => $q->where('guest_phone', $phone)
+                ->orWhereIn('order_id', Order::where('phone', $phone)->select('id')))
+            ->count();
+    }
+
+    /** $userId null = guest order: $guestPhone is stored for the per-customer limit. */
+    public function redeem(Coupon $coupon, SellerOrder $sellerOrder, Order $order, ?int $userId, float $discountAmount, ?string $guestPhone = null): void
+    {
+        DB::transaction(function () use ($coupon, $sellerOrder, $order, $userId, $discountAmount, $guestPhone) {
             $locked = Coupon::where('id', $coupon->id)->lockForUpdate()->first();
 
             if (!$locked || !$locked->hasUsesRemaining()) {
@@ -166,6 +183,7 @@ class CouponService
                 'order_id'        => $order->id,
                 'seller_order_id' => $sellerOrder->id,
                 'user_id'         => $userId,
+                'guest_phone'     => $userId === null ? $guestPhone : null,
                 'discount_amount' => $discountAmount,
             ]);
 

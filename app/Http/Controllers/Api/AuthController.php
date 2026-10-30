@@ -105,6 +105,8 @@ class AuthController extends Controller
             'role'     => 'sometimes|in:client,seller',
             // Marketing e-mails are opt-in: the signup checkbox is unchecked by default.
             'marketing_opt_in' => 'sometimes|boolean',
+            // Guest checkout → "create your account": the order to attach once the e-mail is verified
+            'guest_tracking_token' => 'sometimes|nullable|string|regex:/^[A-Za-z0-9]{32,64}$/',
         ]);
 
         $email = strtolower(trim($validated['email']));
@@ -130,6 +132,7 @@ class AuthController extends Controller
                 'password'     => Hash::make($validated['password']),
                 'role'         => $role,
                 'marketing_opt_in' => (bool) ($validated['marketing_opt_in'] ?? false),
+                'guest_tracking_token' => $validated['guest_tracking_token'] ?? null,
                 'code'         => $code,
                 'expires_at'   => now()->addMinutes(self::PENDING_TTL_MINUTES)->toISOString(),
                 'attempts'     => 0,
@@ -264,6 +267,8 @@ class AuthController extends Controller
         if (!empty($pending['marketing_opt_in'])) {
             app(\App\Services\Ads\MarketingConsent::class)->set($user, true);
         }
+        // Guest orders of this (now verified) e-mail + the one just placed → this new account
+        app(\App\Services\Orders\GuestOrderClaimer::class)->claim($user, $pending['guest_tracking_token'] ?? null);
 
         // ── Clean up cache — pending registration no longer needed ─────────
         Cache::forget($cacheKey);
@@ -487,6 +492,8 @@ class AuthController extends Controller
                 'email_verified_at' => now(),
             ]);
             $isNewUser = true;
+            // Guest orders placed with this (Google-verified) e-mail → the new account
+            app(\App\Services\Orders\GuestOrderClaimer::class)->claim($user);
         }
 
         if ($isNewUser) {

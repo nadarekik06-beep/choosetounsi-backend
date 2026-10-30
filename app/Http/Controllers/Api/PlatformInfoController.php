@@ -37,6 +37,8 @@ class PlatformInfoController extends Controller
                 'd17_account_number' => $this->facts->d17AccountNumber(),
                 // Checkout methods the admin turned on (others show "Coming soon")
                 'payment_methods'    => app(\App\Services\Payments\CheckoutPaymentMethods::class)->all(),
+                // Order without an account (php artisan guest-checkout on|off)
+                'guest_checkout'     => \App\Support\GuestCheckout::enabled(),
             ],
         ]);
     }

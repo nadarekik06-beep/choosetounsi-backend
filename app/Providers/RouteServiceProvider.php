@@ -81,5 +81,33 @@ class RouteServiceProvider extends ServiceProvider
                     'success' => false, 'code' => 'rate_limited', 'message' => __('messages.search.image_too_many'),
                 ], 429));
         });
+
+        // Guest orders (no login): per IP and per delivery phone, per hour.
+        // Signed-in checkouts are not limited here (the 'api' limiter still applies).
+        RateLimiter::for('guest-checkout', function (Request $request) {
+            if ($request->user()) {
+                return Limit::none();
+            }
+            $tooMany = fn () => response()->json([
+                'success' => false, 'code' => 'rate_limited', 'message' => __('messages.guest.too_many_orders'),
+            ], 429);
+            $limits = [
+                Limit::perHour((int) config('guest_checkout.orders_per_ip_per_hour', 30))->by('guest-ip:' . $request->ip())->response($tooMany),
+            ];
+            $phone = \App\Support\TunisianPhone::normalize((string) $request->input('phone', ''));
+            if (is_string($phone) && $phone !== '') {
+                $limits[] = Limit::perHour((int) config('guest_checkout.orders_per_phone_per_hour', 5))->by('guest-phone:' . $phone)->response($tooMany);
+            }
+            return $limits;
+        });
+
+        // Order tracking by number + phone: stops anyone trying numbers one by one.
+        RateLimiter::for('guest-order-lookup', function (Request $request) {
+            return Limit::perHour((int) config('guest_checkout.lookups_per_ip_per_hour', 20))
+                ->by('order-lookup:' . $request->ip())
+                ->response(fn () => response()->json([
+                    'success' => false, 'code' => 'rate_limited', 'message' => __('messages.guest.too_many_lookups'),
+                ], 429));
+        });
     }
 }

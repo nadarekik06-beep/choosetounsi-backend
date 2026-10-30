@@ -373,8 +373,9 @@ class FinanceController extends Controller
                 ],
                 'customer' => [
                     'id'      => optional($order)->user_id,
-                    'name'    => optional(optional($order)->user)->name,
-                    'email'   => optional(optional($order)->user)->email,
+                    'name'    => $order?->buyerName(),
+                    'email'   => optional(optional($order)->user)->email ?? $order?->guest_email,
+                    'is_guest' => (bool) $order?->is_guest,
                     'phone'   => optional($order)->phone,
                     'address' => optional($order)->address,
                     'wilaya'  => optional($order)->wilaya,

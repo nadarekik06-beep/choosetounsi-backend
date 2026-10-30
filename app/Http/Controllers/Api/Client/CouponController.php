@@ -9,6 +9,8 @@ use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Services\CouponService;
 use App\Services\PromotionService;
+use App\Support\GuestCheckout;
+use App\Support\TunisianPhone;
 use Illuminate\Http\Request;
 
 /**
@@ -38,9 +40,11 @@ class CouponController extends Controller
             'product_id' => 'nullable|integer|exists:products,id',
             'variant_id' => 'nullable|integer|exists:product_variants,id',
             'quantity'   => 'nullable|integer|min:1|max:100',
+            'phone'      => 'nullable|string|max:30', // guest: delivery phone (per-customer limit)
         ]);
         $code = strtoupper($request->input('code'));
         $user = $request->user();
+        $guestPhone = $user ? null : $this->guestPhone($request);
 
         $coupon = Coupon::where('code', $code)->first();
         if (!$coupon) {
@@ -64,7 +68,9 @@ class CouponController extends Controller
         } else {
             // Non-pack cart rows (the selected ones) for this coupon's seller only —
             // packs never carry promotions and, by the same precedent, never carry coupons.
-            $items = Cart::where('user_id', $user->id)
+            $items = ($user
+                    ? Cart::where('user_id', $user->id)
+                    : Cart::whereNull('user_id')->where('guest_token', GuestCheckout::cartToken($request) ?? '')->whereNotNull('guest_token'))
                 ->whereNull('pack_id')
                 ->when($request->filled('item_ids'), fn ($q) => $q->whereIn('id', $request->input('item_ids')))
                 ->with('product:id,seller_id,price', 'variant:id,price_override')
@@ -79,7 +85,7 @@ class CouponController extends Controller
                 ->all();
         }
 
-        $result = $this->couponService->validateForSeller($code, $coupon->seller_id, $user->id, $items);
+        $result = $this->couponService->validateForSeller($code, $coupon->seller_id, $user?->id, $items, $guestPhone);
 
         return response()->json([
             'success'          => $result['valid'],
@@ -88,5 +94,11 @@ class CouponController extends Controller
             'discount_amount'  => $result['discount_amount'],
             'eligible_product_ids' => $result['eligible_product_ids'],
         ], $result['valid'] ? 200 : 422);
+    }
+
+    private function guestPhone(Request $request): ?string
+    {
+        $phone = TunisianPhone::normalize((string) $request->input('phone', ''));
+        return TunisianPhone::isValid($phone) ? $phone : null;
     }
 }

@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class CouponRedemption extends Model
 {
     protected $fillable = [
-        'coupon_id', 'order_id', 'seller_order_id', 'user_id', 'discount_amount',
+        'coupon_id', 'order_id', 'seller_order_id', 'user_id', 'guest_phone', 'discount_amount',
     ];
 
     protected $casts = [

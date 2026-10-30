@@ -28,6 +28,8 @@ return [
 
     'allowed_origins_patterns' => [],
 
+    // '*' echoes what the browser asks for. If this is ever narrowed to a list, it MUST keep
+    // X-Cart-Token (guest cart) and X-Session-Id (ad attribution), or guest checkout breaks.
     'allowed_headers' => ['*'],
 
     // Lets the admin panel read the server's file name on PDF downloads.

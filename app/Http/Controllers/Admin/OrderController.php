@@ -54,6 +54,7 @@ class OrderController extends Controller
                 $q->where('order_number', 'like', "%$s%")
                   ->orWhere('recipient_name', 'like', "%$s%")
                   ->orWhere('phone', 'like', "%$s%")
+                  ->orWhere('guest_email', 'like', "%$s%")
                   ->orWhereHas('user', fn($q2) =>
                       $q2->where('name', 'like', "%$s%")
                          ->orWhere('email', 'like', "%$s%")
@@ -68,6 +69,13 @@ class OrderController extends Controller
         }
         if ($m = $request->query('payment_method')) {
             $query->where('payment_method', $m);
+        }
+        // Guest checkout: placed without an account / by a registered buyer
+        $buyerType = $request->query('buyer_type');
+        if ($buyerType === 'guest') {
+            $query->where('is_guest', true);
+        } elseif ($buyerType === 'registered') {
+            $query->where('is_guest', false);
         }
 
         $sellerType     = $request->query('seller_type');
@@ -102,6 +110,7 @@ class OrderController extends Controller
             $order->setAttribute('export_issues', $documents->exportIssues($order));
 
             $order->unsetRelation('sellerOrders');
+            $order->makeVisible('guest_email'); // admins see the guest's e-mail
             return $order;
         });
 
@@ -207,6 +216,10 @@ class OrderController extends Controller
             $so->unsetRelation('reminders')->unsetRelation('items')->unsetRelation('order');
             $so->seller?->unsetRelation('sellerApplication');
         });
+
+        // Guest checkout: e-mail + the buyer's public tracking link (admins only)
+        $order->makeVisible('guest_email');
+        $order->setAttribute('tracking_url', $order->trackingPath() ? frontend_url($order->trackingPath()) : null);
 
         return response()->json(['success' => true, 'data' => $order]);
     }

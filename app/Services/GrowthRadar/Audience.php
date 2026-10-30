@@ -127,9 +127,10 @@ class Audience
     }
 
     /** Is this buyer allowed to use the coupon? (true for coupons without an audience) */
-    public static function allows(int $couponId, int $userId): bool
+    /** $userId null = guest checkout: never part of a targeted audience. */
+    public static function allows(int $couponId, ?int $userId): bool
     {
         $restricted = DB::table('coupon_audiences')->where('coupon_id', $couponId)->exists();
-        return !$restricted || DB::table('coupon_audiences')->where('coupon_id', $couponId)->where('user_id', $userId)->exists();
+        return !$restricted || ($userId !== null && DB::table('coupon_audiences')->where('coupon_id', $couponId)->where('user_id', $userId)->exists());
     }
 }

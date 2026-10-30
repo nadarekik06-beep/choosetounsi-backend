@@ -26,7 +26,9 @@ use App\Services\WalletService;
 use App\Services\StockAlertService;
 use App\Services\PromotionService;
 use App\Services\Recommendation\InteractionTracker;
+use App\Support\GuestCheckout;
 use App\Support\Millimes;
+use App\Support\TunisianPhone;
 use App\Support\ProfileFromCheckout;
 use App\Support\ShippingAddress;
 use Illuminate\Http\Request;
@@ -84,13 +86,14 @@ class CheckoutController extends Controller
             'variant_id'     => 'nullable|integer|exists:product_variants,id',
             'quantity'       => 'nullable|integer|min:1|max:100',
             'coupon_code'    => 'nullable|string',
+            'phone'          => 'nullable|string|max:30', // guest: delivery phone (coupon per-customer limit)
         ]);
         $user = $request->user();
 
         try {
             $quote = $request->filled('product_id')
                 ? $this->buyNowQuote($request, $user, 'cod')
-                : $this->pricing->forCart($this->cartRows($request, $user), $request->input('coupon_codes', []), $user->id, 'cod');
+                : $this->pricing->forCart($this->cartRows($request, $user), $request->input('coupon_codes', []), $user?->id, 'cod', $this->guestPhone($request, $user));
         } catch (PricingException $e) {
             return $e->toResponse();
         }
@@ -118,12 +121,15 @@ class CheckoutController extends Controller
             'coupon_codes'   => 'nullable|array',
             'coupon_codes.*' => 'string',
             'expected_total' => 'nullable|numeric|min:0',
-        ]);
+        ] + self::GUEST_RULES);
 
         $user          = $request->user();
         $paymentMethod = $request->payment_method ?? 'cod';
         if ($blocked = $this->paymentMethodBlocked($paymentMethod)) {
             return $blocked;
+        }
+        if (!$user && ($refused = $this->guestRefused($request, $paymentMethod))) {
+            return $refused;
         }
 
         $cartItems = $this->cartRows($request, $user);
@@ -132,7 +138,7 @@ class CheckoutController extends Controller
         }
 
         try {
-            $quote = $this->pricing->forCart($cartItems, $request->input('coupon_codes', []), $user->id, $paymentMethod);
+            $quote = $this->pricing->forCart($cartItems, $request->input('coupon_codes', []), $user?->id, $paymentMethod, $this->guestPhone($request, $user));
         } catch (PricingException $e) {
             return $e->toResponse();
         }
@@ -154,7 +160,7 @@ class CheckoutController extends Controller
         try {
             [$order, $soldLines] = $this->placeOrder($request, $user, $quote, $paymentMethod);
 
-            Cart::where('user_id', $user->id)->whereIn('id', $checkingOutIds)->delete();
+            Cart::whereIn('id', $checkingOutIds)->delete(); // ids come from cartRows(): this buyer's rows only
 
             // COD / wallet: sellers hear about it now (sent after the commit).
             // Card / D17 wait for the payment: see SellerOrderNotifier.
@@ -192,12 +198,15 @@ class CheckoutController extends Controller
             'payment_method' => 'nullable|string|in:' . implode(',', CheckoutPaymentMethods::ALL),
             'coupon_code'    => 'nullable|string',
             'expected_total' => 'nullable|numeric|min:0',
-        ]);
+        ] + self::GUEST_RULES);
 
         $user          = $request->user();
         $paymentMethod = $request->payment_method ?? 'cod';
         if ($blocked = $this->paymentMethodBlocked($paymentMethod)) {
             return $blocked;
+        }
+        if (!$user && ($refused = $this->guestRefused($request, $paymentMethod))) {
+            return $refused;
         }
 
         try {
@@ -246,14 +255,23 @@ class CheckoutController extends Controller
      *
      * @return array{0: Order, 1: array} the order and the sold lines for stock alerts
      */
-    private function placeOrder(Request $request, User $user, array $quote, string $paymentMethod): array
+    private function placeOrder(Request $request, ?User $user, array $quote, string $paymentMethod): array
     {
         $dec    = fn (int $m) => Millimes::toDecimal($m);
         $paid   = $paymentMethod === 'wallet' ? 'paid' : 'unpaid';
         $coupons = collect($quote['parcels'])->pluck('coupon')->filter();
+        $guestPhone = $this->guestPhone($request, $user);
 
         $order = Order::create([
-            'user_id'             => $user->id,
+            'user_id'             => $user?->id,
+            // Guest checkout: who to call + the public tracking link (/order/track/{token})
+            ...($user ? [] : [
+                'is_guest'       => true,
+                'guest_name'     => trim((string) $request->recipient_name),
+                'guest_phone'    => $guestPhone,
+                'guest_email'    => $request->filled('email') ? strtolower(trim((string) $request->email)) : null,
+                'tracking_token' => GuestCheckout::newTrackingToken(),
+            ]),
             'order_number'        => 'ORD-' . strtoupper(Str::random(8)),
             'status'              => 'pending',
             'payment_status'      => $paid,
@@ -295,11 +313,11 @@ class CheckoutController extends Controller
             $this->financialSnapshot->snapshotParcel($sellerOrder->id, $parcel);
 
             if ($coupon) {
-                $this->couponService->redeem($coupon, $sellerOrder, $order, $user->id, Millimes::toFloat($parcel['coupon_discount_m']));
+                $this->couponService->redeem($coupon, $sellerOrder, $order, $user?->id, Millimes::toFloat($parcel['coupon_discount_m']), $guestPhone);
             }
         }
 
-        if ($paymentMethod === 'wallet') {
+        if ($paymentMethod === 'wallet' && $user) {
             $this->walletService->deductForOrder($user, $order);
         }
 
@@ -389,16 +407,23 @@ class CheckoutController extends Controller
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private function cartRows(Request $request, User $user): Collection
+    /** The buyer's cart rows: the account's, or (guest) the X-Cart-Token's. */
+    private function cartRows(Request $request, ?User $user): Collection
     {
-        $query = Cart::with(self::CART_RELATIONS)->where('user_id', $user->id)->orderBy('id');
+        if (!$user && !GuestCheckout::cartToken($request)) {
+            return collect();
+        }
+        $query = Cart::with(self::CART_RELATIONS)->orderBy('id');
+        $user
+            ? $query->where('user_id', $user->id)
+            : $query->whereNull('user_id')->where('guest_token', GuestCheckout::cartToken($request));
         if (!empty($ids = $request->input('item_ids'))) {
             $query->whereIn('id', $ids);
         }
         return $query->get();
     }
 
-    private function buyNowQuote(Request $request, User $user, string $paymentMethod): array
+    private function buyNowQuote(Request $request, ?User $user, string $paymentMethod): array
     {
         $product = Product::find($request->product_id);
         $variant = null;
@@ -411,7 +436,55 @@ class CheckoutController extends Controller
                 throw new PricingException(__('messages.checkout.variant_unavailable'));
             }
         }
-        return $this->pricing->forBuyNow($product, $variant, (int) ($request->quantity ?? 1), $request->input('coupon_code'), $user->id, $paymentMethod);
+        return $this->pricing->forBuyNow($product, $variant, (int) ($request->quantity ?? 1), $request->input('coupon_code'), $user?->id, $paymentMethod, $this->guestPhone($request, $user));
+    }
+
+    // ── Guest checkout ────────────────────────────────────────────────────────
+
+    /** Extra field a guest may send (the delivery address rules are the same as signed in). */
+    private const GUEST_RULES = [
+        'email' => 'nullable|email:filter|max:191', // guest: only for the order confirmation
+    ];
+
+    /** Normalized delivery phone of a guest (null when signed in or invalid). */
+    private function guestPhone(Request $request, ?User $user): ?string
+    {
+        if ($user) {
+            return null;
+        }
+        $phone = TunisianPhone::normalize((string) $request->input('phone', ''));
+        return TunisianPhone::isValid($phone) ? $phone : null;
+    }
+
+    /**
+     * Guest-only rules, before anything is priced: cash on delivery only
+     * (wallet and online payments need an account), and at most
+     * guest_checkout.max_pending_per_phone unconfirmed orders per phone.
+     */
+    private function guestRefused(Request $request, string $paymentMethod): ?\Illuminate\Http\JsonResponse
+    {
+        if ($paymentMethod !== 'cod') {
+            return response()->json([
+                'success' => false,
+                'code'    => 'guest_cod_only',
+                'message' => __('messages.guest.cod_only'),
+                'errors'  => ['payment_method' => [__('messages.guest.cod_only')]],
+            ], 422);
+        }
+
+        $max     = max(1, (int) config('guest_checkout.max_pending_per_phone', 3));
+        $pending = Order::where('is_guest', true)
+            ->where('guest_phone', $this->guestPhone($request, null))
+            ->where('status', 'pending')
+            ->count();
+        if ($pending >= $max) {
+            return response()->json([
+                'success' => false,
+                'code'    => 'guest_too_many_pending',
+                'message' => __('messages.guest.too_many_pending', ['max' => $max]),
+            ], 429);
+        }
+        return null;
     }
 
     /** Disabled methods ("Coming soon" in the storefront) are refused here too. */
@@ -428,9 +501,9 @@ class CheckoutController extends Controller
         ], 422);
     }
 
-    private function walletShort(string $method, User $user, int $totalM): ?\Illuminate\Http\JsonResponse
+    private function walletShort(string $method, ?User $user, int $totalM): ?\Illuminate\Http\JsonResponse
     {
-        if ($method !== 'wallet' || Millimes::of($user->wallet_balance) >= $totalM) {
+        if ($method !== 'wallet' || !$user || Millimes::of($user->wallet_balance) >= $totalM) {
             return null;
         }
         return response()->json(['success' => false, 'message' => __('messages.checkout.insufficient_wallet'), 'data' => ['wallet_balance' => (float) $user->wallet_balance, 'required' => Millimes::toFloat($totalM)]], 422);
@@ -484,7 +557,26 @@ class CheckoutController extends Controller
             'parcels'         => $shown['parcels'],
             'seller_count'    => $shown['parcel_count'],
             'needs_payment'   => $paymentMethod === 'card',
-        ];
+        ] + ($order->is_guest ? [
+            'is_guest'       => true,
+            'tracking_token' => $order->tracking_token,
+            'phone'          => $order->phone,
+            'email'          => $order->guest_email,
+            // An account already uses this e-mail / phone: suggest logging in (never auto-attach)
+            'has_account'    => $this->guestHasAccount($order),
+        ] : []);
+    }
+
+    private function guestHasAccount(Order $order): bool
+    {
+        return User::query()
+            ->where(function ($q) use ($order) {
+                $q->where('phone', $order->guest_phone);
+                if ($order->guest_email) {
+                    $q->orWhere('email', $order->guest_email);
+                }
+            })
+            ->exists();
     }
 
     /** After the commit: stock alerts, purchase signals, ad attribution (never throw). */
@@ -508,10 +600,13 @@ class CheckoutController extends Controller
         app(AttributionService::class)->recordOrder($order, InteractionTracker::sessionIdFrom($request));
 
         // A shopper who skipped /complete-profile: the delivery details fill the empty profile fields.
-        try {
-            ProfileFromCheckout::fill($request->user(), ShippingAddress::columns($request));
-        } catch (\Throwable $e) {
-            Log::warning('[Checkout] profile fill failed: ' . $e->getMessage());
+        // (Guests have no profile.)
+        if ($request->user()) {
+            try {
+                ProfileFromCheckout::fill($request->user(), ShippingAddress::columns($request));
+            } catch (\Throwable $e) {
+                Log::warning('[Checkout] profile fill failed: ' . $e->getMessage());
+            }
         }
     }
 

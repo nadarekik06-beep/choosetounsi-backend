@@ -89,6 +89,9 @@ class Kernel extends ConsoleKernel
         $schedule->command('recommendations:refresh-profiles')->dailyAt('03:30')->withoutOverlapping()->runInBackground();
         $schedule->command('recommendations:prune')->weeklyOn(1, '04:00')->withoutOverlapping()->runInBackground();
 
+        // Guest checkout: abandoned guest carts (config guest_checkout.cart_ttl_days)
+        $schedule->command('carts:prune-guests')->dailyAt('04:20')->withoutOverlapping();
+
         // ── Sales forecasts ────────────────────────────────────────────────
         // Nightly: measure finished events, then one queued job per eligible seller
         // (needs php artisan queue:work). Forecasts also recompute after confirmed orders.

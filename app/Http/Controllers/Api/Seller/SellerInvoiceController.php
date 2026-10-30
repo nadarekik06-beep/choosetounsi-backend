@@ -113,7 +113,7 @@ class SellerInvoiceController extends Controller
                 // Parties
                 'seller'          => $sellerInfo,
                 'customer'        => [
-                    'name' => $order->user?->name ?? 'Client',
+                    'name' => $order->buyerName() ?? 'Client',
                     // email intentionally omitted
                 ],
 

@@ -53,6 +53,15 @@ return [
         'item_select_variant' => 'Veuillez choisir une variante pour « :product ».',
         'item_stock' => 'Stock insuffisant pour « :product ».',
     ],
+    'guest' => [
+        'cart_token_missing' => 'Votre panier est introuvable. Rechargez la page et réessayez.',
+        'cod_only' => 'Sans compte, seul le paiement à la livraison est disponible.',
+        'too_many_pending' => 'Vous avez déjà :max commandes en attente de confirmation avec ce numéro. Notre équipe vous appellera d\'abord pour les confirmer.',
+        'too_many_orders' => 'Trop de commandes en peu de temps. Réessayez plus tard ou contactez-nous sur WhatsApp.',
+        'too_many_lookups' => 'Trop de recherches. Réessayez dans un moment.',
+        'order_not_found' => 'Aucune commande trouvée. Vérifiez le numéro de commande et le téléphone utilisé pour la commande.',
+        'claim_mismatch' => 'Cette commande a été passée avec un autre e-mail ou numéro de téléphone que ceux de votre compte.',
+    ],
     'checkout' => [
         'reselect_region' => 'Veuillez resélectionner votre gouvernorat et votre délégation dans la liste.',
         'cart_empty' => 'Votre panier est vide.',
