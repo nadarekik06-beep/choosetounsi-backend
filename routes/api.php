@@ -78,28 +78,29 @@ Route::get('/auth/google/callback', [AuthController::class, 'googleCallback']);
 Route::post('/auth/verify-email',        [AuthController::class, 'verifyEmail']);
 Route::post('/auth/resend-verification', [AuthController::class, 'resendVerification']);
 
+// 'store.cards' (StoreBrandedCards): product cards get the store name + logo, never the seller's personal name
 Route::get('/products/{slug}/reviews', [ProductReviewController::class, 'index']);
 
 Route::get('/product-occasions', [ProductController::class, 'occasions']);
-Route::post('/products/by-ids', [ProductController::class, 'byIds']);
-Route::get('/products',          [ProductController::class, 'index']);
-Route::get('/products/featured', [ProductController::class, 'featured']);
+Route::post('/products/by-ids', [ProductController::class, 'byIds'])->middleware('store.cards');
+Route::get('/products',          [ProductController::class, 'index'])->middleware('store.cards');
+Route::get('/products/featured', [ProductController::class, 'featured'])->middleware('store.cards');
 
 // ── Recommendation routes MUST come BEFORE /products/{slug} ──────────────────
-Route::get('/products/{slug}/similar',       [ProductRecommendationController::class, 'similar']);
-Route::get('/products/{slug}/complementary', [ProductRecommendationController::class, 'complementary']);
-Route::get('/products/{slug}/from-seller',   [ProductRecommendationController::class, 'fromSeller']);
-Route::get('/products/{slug}/recommended',   [ProductRecommendationController::class, 'recommended']);
+Route::get('/products/{slug}/similar',       [ProductRecommendationController::class, 'similar'])->middleware('store.cards');
+Route::get('/products/{slug}/complementary', [ProductRecommendationController::class, 'complementary'])->middleware('store.cards');
+Route::get('/products/{slug}/from-seller',   [ProductRecommendationController::class, 'fromSeller'])->middleware('store.cards');
+Route::get('/products/{slug}/recommended',   [ProductRecommendationController::class, 'recommended'])->middleware('store.cards');
 
-Route::get('/products/{slug}',   [ProductController::class, 'show']);
+Route::get('/products/{slug}',   [ProductController::class, 'show'])->middleware('store.cards');
 
 Route::get('/categories',                 [CategoryController::class, 'index']);
-Route::get('/categories/with-products',   [CategoryController::class, 'withProducts']);
+Route::get('/categories/with-products',   [CategoryController::class, 'withProducts'])->middleware('store.cards');
 // Gendered categories (Femme / Homme): mega-menu columns and the round subcategory bar
 Route::get('/categories/mega-menu',       [\App\Http\Controllers\Api\GenderMenuController::class, 'megaMenu']);
 Route::get('/categories/{slug}/gender-bar', [\App\Http\Controllers\Api\GenderMenuController::class, 'bar']);
 Route::get('/categories/{slug}',          [CategoryController::class, 'show']);
-Route::get('/categories/{slug}/products', [CategoryController::class, 'products']);
+Route::get('/categories/{slug}/products', [CategoryController::class, 'products'])->middleware('store.cards');
 
 Route::get('/categories/{slug}/subcategories',     [SubcategoryController::class, 'index']);
 Route::get('/subcategories/{id}/attributes',       [SubcategoryController::class, 'attributes']);
@@ -110,8 +111,8 @@ Route::get('/seller-plans',          [\App\Http\Controllers\Api\PlatformInfoCont
 Route::get('/seller-landing',        [\App\Http\Controllers\Api\PlatformInfoController::class, 'sellerLanding']);
 Route::get('/checkout/payment-info', [\App\Http\Controllers\Api\PlatformInfoController::class, 'paymentInfo']);
 
-Route::post('/search/text',  [\App\Http\Controllers\Api\SearchController::class, 'searchText']);
-Route::post('/search/image', [\App\Http\Controllers\Api\SearchController::class, 'searchImage'])->middleware('throttle:image-search');
+Route::post('/search/text',  [\App\Http\Controllers\Api\SearchController::class, 'searchText'])->middleware('store.cards');
+Route::post('/search/image', [\App\Http\Controllers\Api\SearchController::class, 'searchImage'])->middleware('throttle:image-search')->middleware('store.cards');
 Route::get('/search/image/status',  [\App\Http\Controllers\Api\SearchController::class, 'imageStatus']);
 Route::post('/search/image/click',  [\App\Http\Controllers\Api\SearchController::class, 'imageClick'])->middleware('throttle:30,1');
 Route::get('/search/suggestions', [\App\Http\Controllers\Api\SearchController::class, 'suggestions']);
@@ -119,12 +120,12 @@ Route::get('/site-features',           [\App\Http\Controllers\Api\SiteFeaturesCo
 Route::get('/brand-products',          [PublicBrandProductController::class, 'index']);
 Route::get('/brand-products/featured', [PublicBrandProductController::class, 'featured']);
 Route::get('/brand-products/{slug}',   [PublicBrandProductController::class, 'show']);
-Route::get('/recommendations',                    [ProductRecommendationController::class, 'feed']);
-Route::get('/recommendations/similar/{productId}', [ProductRecommendationController::class, 'similar']);
+Route::get('/recommendations',                    [ProductRecommendationController::class, 'feed'])->middleware('store.cards');
+Route::get('/recommendations/similar/{productId}', [ProductRecommendationController::class, 'similar'])->middleware('store.cards');
 
 // ── Homepage personalization ─────────────────────────────────────────────────
-Route::get('/home/feed', [\App\Http\Controllers\Api\HomeFeedController::class, 'index']);
-Route::get('/shop/overview', [\App\Http\Controllers\Api\ShopOverviewController::class, 'index']);
+Route::get('/home/feed', [\App\Http\Controllers\Api\HomeFeedController::class, 'index'])->middleware('store.cards');
+Route::get('/shop/overview', [\App\Http\Controllers\Api\ShopOverviewController::class, 'index'])->middleware('store.cards');
 
 // Signal tracking (fire-and-forget from the storefront)
 Route::post('/track', [\App\Http\Controllers\Api\TrackingController::class, 'store'])
@@ -163,11 +164,11 @@ Route::post(
     [\App\Http\Controllers\Api\Client\PaymentController::class, 'stripeWebhook']
 )->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class]);
 
-Route::get('/sponsored-products', [SponsorshipController::class, 'publicFeed']);
+Route::get('/sponsored-products', [SponsorshipController::class, 'publicFeed'])->middleware('store.cards');
 // ── Ads (public) ──────────────────────────────────────────────────────────
 Route::get('/ads/config', [\App\Http\Controllers\Api\AdsConfigController::class, 'show']);
-Route::get('/ads', [\App\Http\Controllers\Api\AdsController::class, 'index'])->middleware('throttle:120,1');
-Route::get('/ads/popup', [\App\Http\Controllers\Api\AdsController::class, 'popup'])->middleware('throttle:30,1');
+Route::get('/ads', [\App\Http\Controllers\Api\AdsController::class, 'index'])->middleware('throttle:120,1')->middleware('store.cards');
+Route::get('/ads/popup', [\App\Http\Controllers\Api\AdsController::class, 'popup'])->middleware('throttle:30,1')->middleware('store.cards');
 Route::post('/ads/events', [\App\Http\Controllers\Api\AdsController::class, 'events'])->middleware('throttle:120,1');
 Route::get('/ads/r/{token}', [\App\Http\Controllers\Api\AdsController::class, 'redirect'])
     ->where('token', '[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+')->middleware('throttle:60,1')->name('ads.redirect');
@@ -175,12 +176,12 @@ Route::post('/ads/top-ups/callback/{gateway}', [\App\Http\Controllers\Api\Seller
     ->middleware('throttle:60,1')->name('ads.top-ups.callback');
 Route::post('/sponsorships/{id}/impression', [SponsorshipController::class, 'recordImpression']);
 Route::post('/sponsorships/{id}/click', [SponsorshipController::class, 'recordClick']);
-Route::get('/packs',        [PublicPackController::class, 'index']);
-Route::get('/packs/{slug}', [PublicPackController::class, 'show']);
-Route::get('/flash-sales', [PublicPromotionController::class, 'flashSales']);
-Route::get('/discounts', [PublicPromotionController::class, 'discounts']);
-Route::get('/promo-flyers', [PublicPromotionController::class, 'flyers'])->middleware('throttle:120,1');
-Route::get('/deals',     [\App\Http\Controllers\Api\DealsController::class, 'index']);
+Route::get('/packs',        [PublicPackController::class, 'index'])->middleware('store.cards');
+Route::get('/packs/{slug}', [PublicPackController::class, 'show'])->middleware('store.cards');
+Route::get('/flash-sales', [PublicPromotionController::class, 'flashSales'])->middleware('store.cards');
+Route::get('/discounts', [PublicPromotionController::class, 'discounts'])->middleware('store.cards');
+Route::get('/promo-flyers', [PublicPromotionController::class, 'flyers'])->middleware('throttle:120,1')->middleware('store.cards');
+Route::get('/deals',     [\App\Http\Controllers\Api\DealsController::class, 'index'])->middleware('store.cards');
 Route::get('/promotions/product/{productId}', [PublicPromotionController::class, 'forProduct']);
 Route::get('/sellers/{id}', [PublicSellerController::class, 'show']);
 Route::post('/delivery/register', [DeliveryAuthController::class, 'register']);
@@ -276,7 +277,7 @@ Route::middleware('auth:sanctum')->group(function () {
         ->where('token', '[A-Za-z0-9]{32,64}')->middleware('throttle:10,1');
 
     Route::prefix('favorites')->group(function () {
-        Route::get('/',                  [FavoriteController::class, 'index']);
+        Route::get('/',                  [FavoriteController::class, 'index'])->middleware('store.cards');
         Route::post('/',                 [FavoriteController::class, 'store']);
         Route::delete('/{productId}',    [FavoriteController::class, 'destroy']);
         Route::get('/check/{productId}', [FavoriteController::class, 'check']);

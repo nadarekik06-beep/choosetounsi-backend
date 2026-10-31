@@ -144,6 +144,8 @@ class FavoriteController extends Controller
             'image_url'       => $imageUrl,
             'variant_label'   => $variantLabel,
             'variant_options' => $variantOptions,
+            // Store name + logo are filled in by the store.cards middleware (StoreCards)
+            'seller'          => $product->seller_id ? ['id' => (int) $product->seller_id] : null,
         ] + $pricing;
     }
 

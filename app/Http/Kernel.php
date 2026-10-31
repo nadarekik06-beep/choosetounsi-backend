@@ -77,5 +77,6 @@ class Kernel extends HttpKernel
         'seller.feature' => \App\Http\Middleware\SellerFeatureMiddleware::class,
         'delivery'      => \App\Http\Middleware\DeliveryMiddleware::class,
         'profile.complete' => \App\Http\Middleware\EnsureProfileComplete::class,
+        'store.cards'   => \App\Http\Middleware\StoreBrandedCards::class, // storefront cards: store name + logo
         ];
 }

@@ -243,7 +243,7 @@ class SearchController extends Controller
         $products = DB::table('products as p')
             ->select([
                 'p.id', 'p.name', 'p.slug', 'p.description', 'p.translations',
-                'p.price', 'p.stock', 'p.views', 'p.featured',
+                'p.price', 'p.stock', 'p.views', 'p.featured', 'p.seller_id',
                 'c.name as category_name',      'c.slug as category_slug',
                 'c.name_fr as category_name_fr', 'c.name_ar as category_name_ar',
                 'sub.name as subcategory_name', 'sub.slug as subcategory_slug',
@@ -297,6 +297,8 @@ class SearchController extends Controller
             'primary_image'    => $product->primary_image
                 ? config('app.url') . '/storage/' . $product->primary_image
                 : null,
+            // Store name + logo are filled in by the store.cards middleware (StoreCards)
+            'seller'           => $product->seller_id ? ['id' => (int) $product->seller_id] : null,
         ] + $pricing;
     }
 
