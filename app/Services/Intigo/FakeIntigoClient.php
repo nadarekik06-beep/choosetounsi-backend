@@ -67,6 +67,51 @@ class FakeIntigoClient implements IntigoClient
         return ['nid' => $nid, 'district_name' => $district, 'district_fallback' => $fallback, 'raw' => $body];
     }
 
+    /**
+     * Validated like Intigo: old parcel known and delivered (5000), price 0–1000,
+     * description, pickup index, package size. config('intigo.fake_exchange_failure')
+     * = 'timeout' simulates a lost answer (tests).
+     */
+    public function createExchange(array $payload, ?int $sellerOrderId = null): array
+    {
+        if (config('intigo.fake_exchange_failure') === 'timeout') {
+            $e = IntigoException::connection('cURL error 28: Operation timed out (fake)');
+            $this->logger->log('fake', 'POST', '/parcels/exchange', $payload, null, null, 0, $sellerOrderId, $e->getMessage());
+            throw $e;
+        }
+        $errors = [];
+        foreach (['old_parcel_nid', 'description'] as $field) {
+            if (!isset($payload[$field]) || trim((string) $payload[$field]) === '') {
+                $errors[] = ['loc' => ['body', $field], 'msg' => 'field required', 'type' => 'value_error.missing'];
+            }
+        }
+        if (!isset($payload['pickup_index']) || !is_int($payload['pickup_index'])) {
+            $errors[] = ['loc' => ['body', 'pickup_index'], 'msg' => 'field required', 'type' => 'value_error.missing'];
+        }
+        $price = $payload['exchange_price'] ?? null;
+        if (!is_numeric($price) || (float) $price < 0 || (float) $price > 1000) {
+            $errors[] = ['loc' => ['body', 'exchange_price'], 'msg' => 'must be between 0 and 1000', 'type' => 'value_error'];
+        }
+        if (isset($payload['package_size']) && !in_array($payload['package_size'], [1, 4, 5], true)) {
+            $errors[] = ['loc' => ['body', 'package_size'], 'msg' => 'must be 1, 4 or 5', 'type' => 'value_error'];
+        }
+        if ($errors) {
+            return $this->fail('POST', '/parcels/exchange', $payload, 400, ['detail' => $errors], $sellerOrderId);
+        }
+        $old = $this->parcelRow((string) $payload['old_parcel_nid']);
+        if (!$old) {
+            return $this->fail('POST', '/parcels/exchange', $payload, 404, ['detail' => 'Colis introuvable'], $sellerOrderId);
+        }
+        if ((int) ($old->intigo_status_code ?? 0) !== 5000) {
+            return $this->fail('POST', '/parcels/exchange', $payload, 400, ['detail' => 'Colis non livré'], $sellerOrderId);
+        }
+
+        $nid  = 'FAKE-EX-' . strtoupper(bin2hex(random_bytes(3)));
+        $body = ['success' => true, 'nid' => $nid];
+        $this->logger->log('fake', 'POST', '/parcels/exchange', $payload, 201, $body, 0, $sellerOrderId);
+        return ['nid' => $nid, 'raw' => $body];
+    }
+
     public function findByCid(string $cid, ?int $sellerOrderId = null): array
     {
         $found = [];
@@ -105,6 +150,10 @@ class FakeIntigoClient implements IntigoClient
         $out = [];
         foreach (DB::table('seller_orders')->whereIn('intigo_nid', $nids)->get(['intigo_nid', 'intigo_status_code', 'intigo_status_label']) as $so) {
             $out[$so->intigo_nid] = ['status' => (int) ($so->intigo_status_code ?? 1000), 'status_label' => $so->intigo_status_label ?? 'En attente de ramassage'];
+        }
+        // Exchange parcels (complaints)
+        foreach (DB::table('complaints')->whereIn('intigo_exchange_nid', $nids)->get(['intigo_exchange_nid', 'intigo_exchange_status_code', 'intigo_exchange_status_label']) as $c) {
+            $out[$c->intigo_exchange_nid] = ['status' => (int) ($c->intigo_exchange_status_code ?? 1000), 'status_label' => $c->intigo_exchange_status_label ?? 'En attente de ramassage'];
         }
         $this->logger->log('fake', 'POST', '/parcels/status', ['nids' => array_values($nids)], 200, ['parcels' => $out], 0, null);
         return $out;

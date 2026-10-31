@@ -42,7 +42,6 @@ class DeliverySettingsController extends Controller
     public function update(Request $request): JsonResponse
     {
         $rules = [
-            'return_shipping_fee'        => array_merge(['required'], self::AMOUNT),
             'refused_parcel_fee_paid_by' => 'required|in:' . implode(',', DeliverySettings::PAYERS),
             'intigo_can_open'            => 'sometimes|boolean',
             'payment_methods'            => 'sometimes|array',
@@ -56,13 +55,17 @@ class DeliverySettingsController extends Controller
             foreach (DeliverySettings::SIZE_AMOUNTS as $field) {
                 $rules["sizes.{$size}.{$field}"] = array_merge(['required_with:sizes'], self::AMOUNT);
             }
+            // After-sale fees (complaints): optional, so older clients keep working
+            foreach (DeliverySettings::AFTER_SALE_AMOUNTS as $field) {
+                $rules["sizes.{$size}.{$field}"] = array_merge(['sometimes'], self::AMOUNT);
+            }
+            $rules["sizes.{$size}." . DeliverySettings::AFTER_SALE_SYNC] = 'sometimes|boolean';
         }
         $request->validate($rules, [
             'regex' => 'The :attribute must be an amount in TND, not negative, with at most 3 decimals.',
         ]);
 
         $values = [
-            'return_shipping_fee'        => Millimes::of((string) $request->input('return_shipping_fee')),
             'refused_parcel_fee_paid_by' => $request->input('refused_parcel_fee_paid_by'),
         ];
         if ($request->has('intigo_can_open')) {
@@ -72,6 +75,15 @@ class DeliverySettingsController extends Controller
             foreach (ParcelSize::ALL as $size) {
                 foreach (DeliverySettings::SIZE_AMOUNTS as $field) {
                     $values['sizes'][$size][$field] = Millimes::of((string) $request->input("sizes.{$size}.{$field}"));
+                }
+                foreach (DeliverySettings::AFTER_SALE_AMOUNTS as $field) {
+                    if ($request->has("sizes.{$size}.{$field}")) {
+                        $values['sizes'][$size][$field] = Millimes::of((string) $request->input("sizes.{$size}.{$field}"));
+                    }
+                }
+                $sync = "sizes.{$size}." . DeliverySettings::AFTER_SALE_SYNC;
+                if ($request->has($sync)) {
+                    $values['sizes'][$size][DeliverySettings::AFTER_SALE_SYNC] = $request->boolean($sync);
                 }
             }
         } else {
@@ -118,6 +130,7 @@ class DeliverySettingsController extends Controller
         $sizes = [];
         foreach ($v['sizes'] as $size => $r) {
             $sizes[$size] = array_map($f, $r) + [
+                DeliverySettings::AFTER_SALE_SYNC => $v['after_sale_sync'][$size] ?? true,
                 'package_size'  => ParcelSize::packageSize($size),
                 'margin_normal' => $f($margins['sizes'][$size]['normal']),
                 'margin_free'   => $f($margins['sizes'][$size]['free_delivery']),

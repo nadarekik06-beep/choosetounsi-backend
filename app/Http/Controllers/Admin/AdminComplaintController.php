@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Complaint;
 use App\Models\SellerAdjustment;
+use App\Services\Intigo\ExchangeSender;
 use App\Services\Orders\DeliveryDocumentService;
 use App\Services\Returns\ReturnPresenter;
 use App\Services\Returns\ReturnService;
@@ -24,6 +25,14 @@ use Illuminate\Http\Request;
  *   PATCH /api/admin/complaints/{id}/refund             money sent (method + reference)
  *   PATCH /api/admin/complaints/{id}/cancel             stop a return before pick-up
  *   PATCH /api/admin/complaints/{id}/close              legacy exchange only
+ *
+ * Exchanges (the approval holds the replacement stock and books the Intigo parcel):
+ *   PATCH /api/admin/complaints/{id}/exchange/book       book it at Intigo again (after a fix)
+ *   PATCH /api/admin/complaints/{id}/exchange/nid        booked by hand / checked in Intigo: paste its nid
+ *   PATCH /api/admin/complaints/{id}/exchange/delivered  manual: replacement delivered, old item collected
+ *   PATCH /api/admin/complaints/{id}/exchange/failed     manual: refused at the door
+ *   PATCH /api/admin/complaints/{id}/exchange/decide     failed exchange: retry | return | cancel
+ *   (old item back at the seller: the same /receive as a return)
  */
 class AdminComplaintController extends Controller
 {
@@ -45,7 +54,16 @@ class AdminComplaintController extends Controller
                 'to_refund'    => $n([Complaint::STATUS_RETURNED_TO_SELLER]),
                 'with_seller'  => $n([Complaint::STATUS_REQUESTED, Complaint::STATUS_SELLER_REJECTED]),
                 'refunded'     => $n([Complaint::STATUS_REFUNDED]),
-                'closed'       => $n([Complaint::STATUS_REJECTED, Complaint::STATUS_CANCELLED, Complaint::STATUS_CLOSED]),
+                'closed'       => $n([Complaint::STATUS_REJECTED, Complaint::STATUS_CANCELLED, Complaint::STATUS_CLOSED, Complaint::STATUS_EXCHANGE_COMPLETED]),
+                // Exchanges
+                'exchanges_in_transit' => $n([Complaint::STATUS_EXCHANGE_IN_TRANSIT]),
+                'exchanges_failed'     => $n([Complaint::STATUS_EXCHANGE_FAILED]),
+                'exchanges_to_book'    => Complaint::where('status', Complaint::STATUS_ADMIN_APPROVED)->where('resolution_type', Complaint::RESOLUTION_EXCHANGE)
+                    ->whereNotNull('fee_size')->count(),
+                'exchanges_needs_check' => Complaint::where('exchange_sync_status', Complaint::EXCHANGE_NEEDS_CHECK)->count(),
+                'old_item_not_received' => Complaint::where('status', Complaint::STATUS_EXCHANGED)
+                    ->where('exchanged_at', '<', now()->subDays(Complaint::OLD_ITEM_DAYS))->count(),
+                'fee_exceeds_refund'   => Complaint::where('fee_exceeds_refund', true)->whereIn('status', Complaint::OPEN_STATUSES)->count(),
             ],
         ]);
     }
@@ -62,6 +80,12 @@ class AdminComplaintController extends Controller
         if ($request->filled('seller_id')) $query->where('seller_id', $request->seller_id);
         if ($request->filled('from_date')) $query->whereDate('created_at', '>=', $request->from_date);
         if ($request->filled('to_date'))   $query->whereDate('created_at', '<=', $request->to_date);
+        if ($request->filled('resolution')) $query->where('resolution_type', $request->resolution === 'exchange' ? Complaint::RESOLUTION_EXCHANGE : Complaint::RESOLUTION_RETURN_REFUND);
+        if ($request->boolean('old_item_overdue')) {
+            $query->where('status', Complaint::STATUS_EXCHANGED)->where('exchanged_at', '<', now()->subDays(Complaint::OLD_ITEM_DAYS));
+        }
+        if ($request->boolean('needs_check')) $query->where('exchange_sync_status', Complaint::EXCHANGE_NEEDS_CHECK);
+        if ($request->boolean('fee_exceeds_refund')) $query->where('fee_exceeds_refund', true);
 
         if ($request->filled('search')) {
             $s = $request->search;
@@ -78,7 +102,7 @@ class AdminComplaintController extends Controller
         return response()->json(['success' => true, 'data' => $complaints]);
     }
 
-    public function show(DeliveryDocumentService $documents, $id)
+    public function show(DeliveryDocumentService $documents, ExchangeSender $exchanges, $id)
     {
         $complaint = Complaint::with([
             'user:id,name,email',
@@ -96,7 +120,31 @@ class AdminComplaintController extends Controller
         $complaint->setAttribute('refund_methods', $this->returns->refundMethodsFor($complaint->order));
         $complaint->setAttribute('cash_refund', $this->returns->isCashRefund($complaint));
         $complaint->setAttribute('adjustments', SellerAdjustment::where('complaint_id', $complaint->id)->get());
-        $complaint->setAttribute('allowed_transitions', Complaint::TRANSITIONS[$complaint->status] ?? []);
+        $complaint->setAttribute('allowed_transitions', $complaint->allowedTransitions());
+
+        // Fees for the payer switch before approval (recomputed live in the drawer)
+        $complaint->setAttribute('fees', [
+            'case_fee'     => round($complaint->caseFee(), 3),
+            'return_fee'   => round((float) $complaint->return_shipping_fee, 3),
+            'exchange_fee' => round((float) $complaint->exchange_fee, 3),
+            'client_fee'   => round($complaint->clientFee(), 3),
+            'seller_fee'   => round($complaint->sellerFee(), 3),
+            'items_amount' => round((float) $complaint->items_amount, 3),
+            'default_payer' => Complaint::payerFor((string) $complaint->complaint_type),
+        ]);
+        $complaint->setAttribute('costs', $complaint->costs()->orderBy('id')->get());
+
+        if ($complaint->isExchange() && !$complaint->isLegacyExchange()) {
+            $preview = $exchanges->preview($complaint);
+            $complaint->setAttribute('exchange', [
+                'original_nid' => $preview['original_nid'],
+                'can_book'     => !$preview['problems'] && $preview['payload'] !== null,
+                'problems'     => $preview['problems'],
+                'payload'      => $preview['payload'],
+                'cod'          => round($complaint->clientFee(), 3),
+                'intigo_mode'  => config('intigo.mode'),
+            ]);
+        }
 
         return response()->json(['success' => true, 'data' => $complaint]);
     }
@@ -104,12 +152,12 @@ class AdminComplaintController extends Controller
     public function returnSlip(Request $request, DeliveryDocumentService $documents, $id)
     {
         $complaint = Complaint::findOrFail($id);
-        abort_if($complaint->isExchange(), 422, 'Legacy exchange requests have no return slip.');
+        abort_if($complaint->isLegacyExchange(), 422, 'Legacy exchange requests have no slip.');
 
         $pdf = $documents->returnSlipPdf($complaint);
         $this->returns->event($complaint, 'slip_exported', $request->user(), 'admin', null);
 
-        $name = 'CT-' . $complaint->reference . '-return-slip.pdf';
+        $name = 'CT-' . $complaint->reference . ($complaint->isExchange() ? '-exchange-slip.pdf' : '-return-slip.pdf');
         return response($pdf, 200, [
             'Content-Type'        => 'application/pdf',
             'Content-Disposition' => 'attachment; filename="' . $name . '"',
@@ -125,7 +173,69 @@ class AdminComplaintController extends Controller
         ]);
         $c = $this->returns->adminApprove(Complaint::findOrFail($id), $request->user(), $request->note, $request->shipping_payer);
 
+        if ($c->isExchange()) {
+            return response()->json(['success' => true, 'message' => 'Exchange approved, replacement stock held. ' . $this->bookingMessage($c), 'data' => $c]);
+        }
         return response()->json(['success' => true, 'message' => 'Return approved. Client and seller notified; the pick-up can be scheduled.', 'data' => $c]);
+    }
+
+    public function exchangeBook(Request $request, ExchangeSender $exchanges, $id)
+    {
+        $complaint = Complaint::findOrFail($id);
+        abort_unless($complaint->isExchange() && !$complaint->isLegacyExchange(), 422, 'Not an exchange.');
+        $r = $exchanges->book($complaint, $request->user());
+
+        return response()->json(['success' => $r['result'] === Complaint::EXCHANGE_SENT, 'result' => $r['result'], 'message' => $r['message'], 'data' => $complaint->fresh()],
+            $r['result'] === Complaint::EXCHANGE_SENT ? 200 : 422);
+    }
+
+    /** Booked by hand in the Intigo dashboard (or found there after a lost answer): its tracking number. */
+    public function exchangeNid(Request $request, $id)
+    {
+        $data = $request->validate(['nid' => 'required|string|max:32']);
+        $complaint = Complaint::findOrFail($id);
+        abort_unless($complaint->isExchange() && !$complaint->isLegacyExchange(), 422, 'Not an exchange.');
+        abort_if($complaint->exchange_sync_status === Complaint::EXCHANGE_SENDING, 422, 'A booking is in progress: wait a few seconds.');
+
+        $c = $this->returns->exchangeShipped($complaint, $request->user(), 'admin', $data['nid'], 'manual');
+        return response()->json(['success' => true, 'message' => "Exchange parcel {$c->intigo_exchange_nid} saved. The client has been notified.", 'data' => $c]);
+    }
+
+    public function exchangeDelivered(Request $request, $id)
+    {
+        $request->validate(['note' => 'nullable|string|max:500']);
+        $c = $this->returns->markExchanged(Complaint::findOrFail($id), $request->user(), 'admin', $request->note);
+        return response()->json(['success' => true, 'message' => 'Marked as exchanged. The seller confirms the old item when it is back.', 'data' => $c]);
+    }
+
+    public function exchangeFailed(Request $request, $id)
+    {
+        $request->validate(['note' => 'nullable|string|max:500']);
+        $c = $this->returns->markExchangeFailed(Complaint::findOrFail($id), $request->user(), 'admin', $request->note);
+        return response()->json(['success' => true, 'message' => 'Exchange marked as failed: decide what happens next.', 'data' => $c]);
+    }
+
+    public function exchangeDecide(Request $request, $id)
+    {
+        $data = $request->validate(['action' => 'required|in:retry,return,cancel', 'note' => 'nullable|string|max:1000']);
+        $c = $this->returns->decideFailedExchange(Complaint::findOrFail($id), $request->user(), $data['action'], $data['note'] ?? null);
+
+        $message = match ($data['action']) {
+            'retry'  => $this->bookingMessage($c),
+            'return' => 'Switched to a return: the replacement is back in stock and the pick-up can be scheduled.',
+            default  => 'Exchange cancelled: the replacement is back in stock.',
+        };
+        return response()->json(['success' => true, 'message' => $message, 'data' => $c]);
+    }
+
+    private function bookingMessage(Complaint $c): string
+    {
+        return match ($c->exchange_sync_status) {
+            Complaint::EXCHANGE_SENT        => "Intigo exchange parcel {$c->intigo_exchange_nid} booked.",
+            Complaint::EXCHANGE_NEEDS_CHECK => 'Intigo did not answer clearly: check in Intigo and paste the tracking number (never re-sent automatically).',
+            Complaint::EXCHANGE_SEND_FAILED => 'Intigo refused the exchange: ' . $c->exchange_sync_error,
+            default                         => 'Book the exchange in the Intigo dashboard and paste its tracking number: ' . $c->exchange_sync_error,
+        };
     }
 
     public function reject(Request $request, $id)

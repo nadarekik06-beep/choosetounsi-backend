@@ -46,5 +46,9 @@ return [
         'rejected' => 'مرفوض',
         'cancelled' => 'ملغى',
         'closed' => 'مغلق',
+        'exchange_in_transit' => 'الاستبدال في الطريق',
+        'exchanged' => 'تم الاستبدال — المنتج القديم في طريق العودة',
+        'exchange_failed' => 'فشل الاستبدال',
+        'exchange_completed' => 'اكتمل الاستبدال',
     ],
 ];

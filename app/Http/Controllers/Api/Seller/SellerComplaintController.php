@@ -32,10 +32,14 @@ class SellerComplaintController extends Controller
             'data' => [
                 'total'          => (int) $counts->sum(),
                 'by_status'      => $counts,
-                'needs_action'   => $n([Complaint::STATUS_REQUESTED, Complaint::STATUS_PICKED_UP]),
+                // To answer, or a parcel to confirm (return picked up, old item of an exchange)
+                'needs_action'   => $n([Complaint::STATUS_REQUESTED, Complaint::STATUS_PICKED_UP, Complaint::STATUS_EXCHANGED]),
                 'requested'      => $n([Complaint::STATUS_REQUESTED]),
-                'in_progress'    => $n([Complaint::STATUS_SELLER_ACCEPTED, Complaint::STATUS_ESCALATED, Complaint::STATUS_ADMIN_APPROVED, Complaint::STATUS_PICKUP_SCHEDULED, Complaint::STATUS_PICKED_UP, Complaint::STATUS_RETURNED_TO_SELLER]),
+                'in_progress'    => $n([Complaint::STATUS_SELLER_ACCEPTED, Complaint::STATUS_ESCALATED, Complaint::STATUS_ADMIN_APPROVED, Complaint::STATUS_PICKUP_SCHEDULED, Complaint::STATUS_PICKED_UP, Complaint::STATUS_RETURNED_TO_SELLER,
+                    Complaint::STATUS_EXCHANGE_IN_TRANSIT, Complaint::STATUS_EXCHANGED, Complaint::STATUS_EXCHANGE_FAILED]),
                 'refunded'       => $n([Complaint::STATUS_REFUNDED]),
+                'exchanged'      => $n([Complaint::STATUS_EXCHANGE_COMPLETED]),
+                'old_item_to_confirm' => $n([Complaint::STATUS_EXCHANGED]),
                 'refused'        => $n([Complaint::STATUS_SELLER_REJECTED, Complaint::STATUS_REJECTED]),
             ],
         ]);
@@ -94,7 +98,8 @@ class SellerComplaintController extends Controller
 
         $c = $this->returns->sellerAccept($complaint, $request->user(), $request->seller_note);
 
-        return response()->json(['success' => true, 'message' => __('seller.complaint.approved'), 'data' => $c]);
+        $message = $c->isExchange() && !$c->isLegacyExchange() ? __('seller.complaint.approved_exchange') : __('seller.complaint.approved');
+        return response()->json(['success' => true, 'message' => $message, 'data' => $c]);
     }
 
     public function reject(Request $request, $id)

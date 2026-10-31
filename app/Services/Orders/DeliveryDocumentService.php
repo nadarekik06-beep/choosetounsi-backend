@@ -258,17 +258,23 @@ class DeliveryDocumentService
             'scope'           => $complaint->return_scope,
             'payment_method'  => $order->payment_method ?? 'cod',
             'items'           => collect($complaint->getAttribute('complained_items'))->map(fn($i) => [
-                'name'       => $i['product_name'] ?? '—',
-                'variant'    => $i['variant_label'] ?? null,
-                'quantity'   => (int) $i['return_quantity'],
-                'unit_price' => (float) $i['return_unit_price'],
-                'total'      => (float) $i['return_amount'],
-                'image'      => $this->localImage($i['image_url'] ?? null),
+                'name'        => $i['product_name'] ?? '—',
+                'variant'     => $i['variant_label'] ?? null,
+                'quantity'    => (int) $i['return_quantity'],
+                'unit_price'  => (float) $i['return_unit_price'],
+                'total'       => (float) $i['return_amount'],
+                'image'       => $this->localImage($i['image_url'] ?? null),
+                'replacement' => $i['replacement_label'] ?? null,
             ])->all(),
             'items_amount'    => (float) $complaint->items_amount,
             'shipping_payer'  => $complaint->shipping_payer,
-            'shipping_fee'    => (float) $complaint->return_shipping_fee,
+            'shipping_fee'    => $complaint->caseFee(),
             'refund_amount'   => (float) $complaint->refund_amount,
+            // Exchange: cash the courier collects with the replacement, Intigo parcel
+            'is_exchange'     => $complaint->isExchange(),
+            'collect_amount'  => $complaint->isExchange() ? $complaint->clientFee() : 0.0,
+            'fee_size'        => $complaint->fee_size,
+            'intigo_nid'      => $complaint->isExchange() ? $complaint->intigo_exchange_nid : $complaint->intigo_return_ref,
             // Cash on delivery: the courier pays the client back at pick-up
             'cash_refund'     => ($order->payment_method ?? 'cod') === 'cod',
             'photos'          => array_values(array_filter(array_map(
@@ -280,7 +286,9 @@ class DeliveryDocumentService
 
     public function returnSlipPdf(\App\Models\Complaint $complaint): string
     {
-        return $this->render('pdf.return-slip', ['slip' => $this->returnSlip($complaint)], 'RETURN ' . $complaint->reference);
+        return $complaint->isExchange()
+            ? $this->render('pdf.exchange-slip', ['slip' => $this->returnSlip($complaint)], 'EXCHANGE ' . $complaint->reference)
+            : $this->render('pdf.return-slip', ['slip' => $this->returnSlip($complaint)], 'RETURN ' . $complaint->reference);
     }
 
     /** A /storage/... URL (or path) → the file on disk, for mPDF. */

@@ -90,6 +90,7 @@ return [
         'note_submitted' => 'Note submitted. The complaint is now under review.',
         'approve_failed' => 'Failed to approve complaint.',
         'approved' => 'Return accepted. ChooseTounsi will validate it and schedule the pick-up.',
+        'approved_exchange' => 'Exchange accepted. ChooseTounsi will validate it and book the exchange: prepare the replacement.',
         'reject_failed' => 'Failed to reject complaint.',
         'rejected' => 'Refusal sent. The client has been notified and may ask ChooseTounsi to decide.',
         'received' => 'Reception confirmed. Resaleable items are back in stock.',
@@ -382,6 +383,22 @@ return [
             'cancelled' => [
                 'title' => 'Return :return cancelled',
                 'body' => 'Order :order — the return was cancelled.',
+            ],
+            'exchange_admin_approved' => [
+                'title' => 'Exchange :return approved',
+                'body' => 'Order :order — prepare the replacement: Intigo picks it up at your address and brings the old item back.',
+            ],
+            'exchanged' => [
+                'title' => 'Exchange :return delivered',
+                'body' => 'Order :order — the client got the replacement; the courier brings the old item back. Confirm it when you receive it.',
+            ],
+            'exchange_failed' => [
+                'title' => 'Exchange :return not delivered',
+                'body' => 'Order :order — the client did not take the replacement: it comes back to you. ChooseTounsi decides the next step.',
+            ],
+            'exchange_cancelled' => [
+                'title' => 'Exchange :return cancelled',
+                'body' => 'Order :order — the exchange was cancelled.',
             ],
         ],
         'complaint_created' => [

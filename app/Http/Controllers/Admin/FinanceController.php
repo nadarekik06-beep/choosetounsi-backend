@@ -151,6 +151,8 @@ class FinanceController extends Controller
                         'agency_fees_lost'   => $delivery['refused_platform_loss'],
                         'agency_fees_billed' => $delivery['refused_fees_billed_to_sellers'],
                     ],
+                    // After-sale parcels (complaint returns / exchanges): what Intigo bills vs what we got back
+                    'after_sale'            => $this->afterSale($dateRange),
                 ],
                 'payout_summary' => [
                     'pending' => [
@@ -175,6 +177,43 @@ class FinanceController extends Controller
     // ─────────────────────────────────────────────────────────────────────────
     // GET /api/admin/finance/orders
     // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Real margin on returns and exchanges, from complaint_costs (booked when
+     * a return is refunded, an exchange delivered or refused).
+     *
+     * @return array{count:int, intigo_cost:float, recovered_client:float, recovered_seller:float, margin:float, by_kind:array}
+     */
+    private function afterSale(?array $dateRange): array
+    {
+        $rows = DB::table('complaint_costs')
+            ->when($dateRange, fn ($q) => $q->whereBetween('booked_at', $dateRange))
+            ->groupBy('kind')
+            ->selectRaw('kind, COUNT(*) as n, SUM(intigo_cost) as cost, SUM(recovered_client) as client, SUM(recovered_seller) as seller')
+            ->get()->keyBy('kind');
+
+        $byKind = [];
+        foreach ([\App\Models\ComplaintCost::KIND_RETURN, \App\Models\ComplaintCost::KIND_EXCHANGE, \App\Models\ComplaintCost::KIND_EXCHANGE_FAILED] as $kind) {
+            $r = $rows->get($kind);
+            $cost = round((float) ($r->cost ?? 0), 3);
+            $client = round((float) ($r->client ?? 0), 3);
+            $seller = round((float) ($r->seller ?? 0), 3);
+            $byKind[$kind] = [
+                'count' => (int) ($r->n ?? 0), 'intigo_cost' => $cost, 'recovered_client' => $client,
+                'recovered_seller' => $seller, 'margin' => round($client + $seller - $cost, 3),
+            ];
+        }
+        $sum = fn (string $k) => round(array_sum(array_column($byKind, $k)), 3);
+
+        return [
+            'count'            => (int) array_sum(array_column($byKind, 'count')),
+            'intigo_cost'      => $sum('intigo_cost'),
+            'recovered_client' => $sum('recovered_client'),
+            'recovered_seller' => $sum('recovered_seller'),
+            'margin'           => $sum('margin'),
+            'by_kind'          => $byKind,
+        ];
+    }
 
     public function orders(Request $request): JsonResponse
     {

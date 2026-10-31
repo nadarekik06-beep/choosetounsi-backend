@@ -45,6 +45,12 @@ class SyncStatuses extends Command
             ->get(['id', 'intigo_nid', 'intigo_status_code']);
         $open = $open->reject(fn ($so) => IntigoStatusMap::isFinal($so->intigo_status_code === null ? null : (int) $so->intigo_status_code));
 
+        // Exchange parcels in transit (complaints): same polling, same events
+        $exchanges = DB::table('complaints')->whereNotNull('intigo_exchange_nid')
+            ->where('status', \App\Models\Complaint::STATUS_EXCHANGE_IN_TRANSIT)
+            ->get(['id', 'intigo_exchange_nid as intigo_nid', 'intigo_exchange_status_code as intigo_status_code']);
+        $open = $open->concat($exchanges->reject(fn ($c) => IntigoStatusMap::isFinal($c->intigo_status_code === null ? null : (int) $c->intigo_status_code)));
+
         $changed = $failedChunks = 0;
         foreach ($open->chunk(50) as $chunk) {
             try {

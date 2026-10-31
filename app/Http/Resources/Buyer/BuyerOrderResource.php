@@ -75,6 +75,7 @@ class BuyerOrderResource extends JsonResource
                     'id'               => $c->id,
                     'reference'        => $c->reference,
                     'status'           => $c->status,
+                    'resolution_type'  => $c->resolution_type,
                     'refund_amount'    => (float) $c->refund_amount,
                     'refund_method'    => $c->refund_method,
                     'refund_reference' => $c->status === 'refunded' ? $c->refund_reference : null,

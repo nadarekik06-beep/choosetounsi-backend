@@ -161,13 +161,16 @@ class ReturnFlowTest extends TestCase
 
     // ── Request ───────────────────────────────────────────────────────────────
 
-    public function test_exchange_is_gone_and_a_proof_photo_is_required(): void
+    public function test_exchange_needs_a_replacement_and_a_proof_photo_is_required(): void
     {
         [$p, $a] = $this->product();
         $order = $this->deliveredOrder([[$p, $a, 1]]);
         $line  = $this->line($order, $a);
 
+        // Exchange (ExchangeFlowTest covers it): the replacement variant is required
         $this->request($order, ['resolution_type' => 'exchange', 'items' => [['order_item_id' => $line->id, 'quantity' => 1]]])
+            ->assertStatus(422);
+        $this->request($order, ['resolution_type' => 'swap', 'items' => [['order_item_id' => $line->id, 'quantity' => 1]]])
             ->assertStatus(422)->assertJsonValidationErrors('resolution_type');
 
         $this->as($order->user)->postJson('/api/client/complaints', [

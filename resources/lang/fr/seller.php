@@ -90,6 +90,7 @@ return [
         'note_submitted' => 'Note envoyée. La réclamation est maintenant en cours d\'examen.',
         'approve_failed' => 'Impossible d\'accepter la réclamation.',
         'approved' => 'Retour accepté. ChooseTounsi le valide puis planifie l\'enlèvement.',
+        'approved_exchange' => 'Échange accepté. ChooseTounsi le valide puis réserve l\'échange : préparez l\'article de remplacement.',
         'reject_failed' => 'Impossible de refuser la réclamation.',
         'rejected' => 'Refus envoyé. Le client est notifié et peut demander l\'arbitrage de ChooseTounsi.',
         'received' => 'Réception confirmée. Les articles revendables sont remis en stock.',
@@ -382,6 +383,22 @@ return [
             'cancelled' => [
                 'title' => 'Retour :return annulé',
                 'body' => 'Commande :order — le retour a été annulé.',
+            ],
+            'exchange_admin_approved' => [
+                'title' => 'Échange :return approuvé',
+                'body' => 'Commande :order — préparez l\'article de remplacement : Intigo vient le chercher à votre adresse et vous rapporte l\'ancien.',
+            ],
+            'exchanged' => [
+                'title' => 'Échange :return livré',
+                'body' => 'Commande :order — le client a reçu le remplacement ; le livreur vous rapporte l\'ancien article. Confirmez sa réception.',
+            ],
+            'exchange_failed' => [
+                'title' => 'Échange :return non livré',
+                'body' => 'Commande :order — le client n\'a pas pris le remplacement : il vous revient. ChooseTounsi décide de la suite.',
+            ],
+            'exchange_cancelled' => [
+                'title' => 'Échange :return annulé',
+                'body' => 'Commande :order — l\'échange a été annulé.',
             ],
         ],
         'complaint_created' => [

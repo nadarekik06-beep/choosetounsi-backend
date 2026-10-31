@@ -25,6 +25,22 @@ class ReturnPresenter
         Complaint::STATUS_REFUNDED,
     ];
 
+    /** Path an exchange follows. */
+    private const EXCHANGE_PATH = [
+        Complaint::STATUS_REQUESTED,
+        'seller_decision',
+        Complaint::STATUS_ADMIN_APPROVED,
+        Complaint::STATUS_EXCHANGE_IN_TRANSIT,
+        Complaint::STATUS_EXCHANGED,
+        Complaint::STATUS_EXCHANGE_COMPLETED,
+    ];
+
+    /** Internal steps the client never sees. */
+    private const INTERNAL_EVENTS = [
+        'finance_applied', 'delivered_to_seller', 'payer_overridden', 'exchange_booking', 'exchange_retry',
+        'exchange_carrier_cancelled', 'replacement_released',
+    ];
+
     /** Notes the client may read on their timeline. */
     private const PUBLIC_NOTES = [Complaint::STATUS_SELLER_REJECTED, Complaint::STATUS_REJECTED, Complaint::STATUS_REQUESTED, Complaint::STATUS_ESCALATED];
 
@@ -35,7 +51,7 @@ class ReturnPresenter
         $c->setAttribute('timeline', self::timeline($c, $events));
         $c->setAttribute('cash_refund', ($c->order?->payment_method ?? 'cod') === 'cod');
         $c->setAttribute('public_events', $events
-            ->reject(fn($e) => in_array($e->status, ['finance_applied', 'delivered_to_seller'], true))
+            ->reject(fn($e) => in_array($e->status, self::INTERNAL_EVENTS, true))
             ->map(fn($e) => [
                 'status'     => $e->status,
                 'at'         => $e->created_at,
@@ -58,6 +74,10 @@ class ReturnPresenter
 
     public static function timeline(Complaint $c, $events): array
     {
+        if ($c->isExchange() && !$c->isLegacyExchange()) {
+            return self::exchangeTimeline($c, $events);
+        }
+
         $at = fn(string $status) => optional($events->firstWhere('status', $status))->created_at;
         $terminal = in_array($c->status, [Complaint::STATUS_REJECTED, Complaint::STATUS_CANCELLED, Complaint::STATUS_CLOSED], true);
 
@@ -101,11 +121,65 @@ class ReturnPresenter
         return $steps;
     }
 
-    private static function lastReached($events): int
+    /**
+     * requested → seller → approved → in transit → exchanged → old item back.
+     * A failed exchange shows as the current step after "in transit"; the last
+     * attempt's dates win (a retry re-opens "in transit").
+     */
+    private static function exchangeTimeline(Complaint $c, $events): array
+    {
+        $last = fn(string $status) => optional($events->where('status', $status)->last())->created_at;
+        $terminal = in_array($c->status, [Complaint::STATUS_REJECTED, Complaint::STATUS_CANCELLED], true);
+        $failed   = $c->status === Complaint::STATUS_EXCHANGE_FAILED;
+        $done     = $c->status === Complaint::STATUS_EXCHANGE_COMPLETED;
+
+        $currentIndex = match ($c->status) {
+            Complaint::STATUS_REQUESTED          => 0,
+            Complaint::STATUS_SELLER_ACCEPTED,
+            Complaint::STATUS_SELLER_REJECTED,
+            Complaint::STATUS_ESCALATED          => 1,
+            Complaint::STATUS_ADMIN_APPROVED     => 2,
+            Complaint::STATUS_EXCHANGE_IN_TRANSIT => 3,
+            Complaint::STATUS_EXCHANGE_FAILED    => 4,
+            Complaint::STATUS_EXCHANGED          => 4,
+            Complaint::STATUS_EXCHANGE_COMPLETED => 5,
+            default                              => self::lastReached($events, self::EXCHANGE_PATH),
+        };
+
+        $steps = [];
+        foreach (self::EXCHANGE_PATH as $i => $step) {
+            $status = $step;
+            $date   = $last($step);
+            if ($step === 'seller_decision') {
+                $status = $c->seller_decision === 'rejected' ? Complaint::STATUS_SELLER_REJECTED
+                    : ($c->seller_decision === 'approved' ? Complaint::STATUS_SELLER_ACCEPTED : 'seller_decision');
+                $date = $c->seller_decided_at ?? $last(Complaint::STATUS_SELLER_ACCEPTED) ?? $last(Complaint::STATUS_SELLER_REJECTED);
+                if ($c->status === Complaint::STATUS_ESCALATED) $status = Complaint::STATUS_ESCALATED;
+            }
+            if ($failed && $step === Complaint::STATUS_EXCHANGED) {
+                $status = Complaint::STATUS_EXCHANGE_FAILED;
+                $date   = $last(Complaint::STATUS_EXCHANGE_FAILED);
+            }
+            $steps[] = [
+                'key'     => $step,
+                'status'  => $status,
+                'at'      => $date,
+                'done'    => $i < $currentIndex || ($i === $currentIndex && $done),
+                'current' => !$terminal && $i === $currentIndex && !$done,
+                'skipped' => $step === 'seller_decision' && !$c->seller_decision && $i < $currentIndex,
+            ];
+        }
+        if ($terminal) {
+            $steps[] = ['key' => $c->status, 'status' => $c->status, 'at' => $last($c->status) ?? $c->resolved_at, 'done' => true, 'current' => true, 'skipped' => false];
+        }
+        return $steps;
+    }
+
+    private static function lastReached($events, array $path = self::PATH): int
     {
         $index = 0;
         foreach ($events as $e) {
-            $i = array_search($e->status, self::PATH, true);
+            $i = array_search($e->status, $path, true);
             if ($i === false && in_array($e->status, [Complaint::STATUS_SELLER_ACCEPTED, Complaint::STATUS_SELLER_REJECTED, Complaint::STATUS_ESCALATED], true)) $i = 1;
             if ($i !== false) $index = max($index, $i + 1);
         }

@@ -35,6 +35,12 @@ class ScriptedIntigoClient implements IntigoClient
         return $answer + ['district_name' => $payload['district_name'], 'district_fallback' => false, 'raw' => $answer];
     }
 
+    public function createExchange(array $payload, ?int $sellerOrderId = null): array
+    {
+        $this->calls['exchange'][] = $payload;
+        return ['nid' => 'SCR-EX-' . count($this->calls['exchange']), 'raw' => []];
+    }
+
     public function findByCid(string $cid, ?int $sellerOrderId = null): array
     {
         $this->calls['findByCid'][] = $cid;

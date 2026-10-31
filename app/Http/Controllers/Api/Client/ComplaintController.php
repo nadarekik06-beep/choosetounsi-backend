@@ -12,7 +12,8 @@ use App\Services\Returns\ReturnService;
 use Illuminate\Http\Request;
 
 /**
- * Client returns ("réclamations"): the only resolution is return + refund.
+ * Client after-sale requests ("réclamations"): RETURN (refund) or EXCHANGE (another
+ * variant of the same product, delivered by the courier who takes the old item back).
  *
  *   GET   /api/client/complaints/eligible-orders   delivered orders still returnable
  *   GET   /api/client/complaints[?order_id=]       my returns
@@ -48,7 +49,8 @@ class ComplaintController extends Controller
             $items = $this->returnableLines($order)->map(fn(array $l) => $l['line']->purchaseSnapshot() + [
                 'returnable_quantity' => $l['returnable'],
                 'paid_unit_price'     => $l['paid_unit_price'],
-            ])->values();
+                'parcel_size'         => \App\Support\ParcelSize::normalize($l['line']->product?->parcel_size),
+            ] + $this->exchangeOptions($l['line']))->values();
 
             $hoursLeft = max(0, $windowHours - (int) $order->updated_at->diffInHours(now()));
 
@@ -69,7 +71,12 @@ class ComplaintController extends Controller
             'success'             => true,
             'window_hours'        => $windowHours,
             'window_days'         => (int) ceil($windowHours / 24),
-            'return_shipping_fee' => $this->returns->returnShippingFee(),
+            // One fee per shop parcel, at the largest size of the chosen lines
+            'after_sale_fees'     => $this->returns->afterSaleFees(),
+            'seller_fault_types'  => Complaint::SELLER_FAULT_TYPES,
+            'complaint_types'     => array_keys(Complaint::COMPLAINT_TYPES),
+            // Older storefront builds: the size S return fee
+            'return_shipping_fee' => $this->returns->afterSaleFees()['S']['return'],
             'data'                => $result,
         ]);
     }
@@ -118,14 +125,15 @@ class ComplaintController extends Controller
         $validated = $request->validate([
             'order_id'           => 'required|integer|exists:orders,id',
             'complaint_type'     => 'required|string|in:' . implode(',', array_keys(Complaint::COMPLAINT_TYPES)),
-            // Exchange is gone: a client who wants another item reorders.
-            'resolution_type'    => 'nullable|string|in:return_refund',
+            'resolution_type'    => 'nullable|string|in:' . implode(',', Complaint::RESOLUTIONS),
             'other_reason'       => 'required_if:complaint_type,other|nullable|string|max:255',
             'description'        => 'required|string|min:20|max:2000',
             'return_all'         => 'nullable|boolean',
             'items'              => 'required_without_all:return_all,item_ids|array|min:1',
             'items.*.order_item_id' => 'required_with:items|integer',
             'items.*.quantity'   => 'required_with:items|integer|min:1',
+            // Exchange: the variant wanted instead (same product; none for products without variants)
+            'items.*.replacement_variant_id' => 'nullable|integer',
             'item_ids'           => 'nullable|array|min:1',   // legacy form: whole lines
             'item_ids.*'         => 'integer',
             'images'             => 'required_without:image|array|min:1|max:5',
@@ -181,6 +189,15 @@ class ComplaintController extends Controller
             }
         }
 
+        if (($validated['resolution_type'] ?? null) === Complaint::RESOLUTION_EXCHANGE) {
+            if (empty($validated['items'])) {
+                return response()->json(['success' => false, 'message' => __('messages.complaint.exchange_choose_items')], 422);
+            }
+            $validated['replacements'] = collect($validated['items'])
+                ->mapWithKeys(fn($i) => [(int) $i['order_item_id'] => isset($i['replacement_variant_id']) ? (int) $i['replacement_variant_id'] : null])
+                ->all();
+        }
+
         $images = $request->file('images') ?: array_filter([$request->file('image')]);
         $complaints = $this->returns->create($user, $order, $quantities, $validated, array_values($images));
 
@@ -231,6 +248,36 @@ class ComplaintController extends Controller
         $c->loadMissing('order:id,order_number,total_amount,status,return_status,payment_method,created_at');
         Complaint::withItemSnapshots($c);
         return (new BuyerComplaintResource(ReturnPresenter::forClient($c)))->resolve($request);
+    }
+
+    /**
+     * What this line can be exchanged for: in-stock variants of the same
+     * product at the same price (the current one included, for a defect).
+     * Products without variants: the same product again, when in stock.
+     *
+     * @return array{exchange_options: array<int, array{id:int, label:string, stock:int, current:bool}>, exchange_same_product: bool, exchange_other_price: bool}
+     */
+    private function exchangeOptions(OrderItem $line): array
+    {
+        $product = $line->product;
+        if (!$product || $product->trashed() || !$product->is_active) {
+            return ['exchange_options' => [], 'exchange_same_product' => false, 'exchange_other_price' => false];
+        }
+        $variants = $product->variants->where('is_active', true);
+        if ($variants->isEmpty()) {
+            return ['exchange_options' => [], 'exchange_same_product' => (int) $product->stock > 0, 'exchange_other_price' => false];
+        }
+        $original = $line->variant_id ? $product->variants->firstWhere('id', (int) $line->variant_id) : null;
+        $price    = $original ? $original->effective_price : (float) $line->unit_price;
+
+        $options = $variants
+            ->filter(fn($v) => (int) $v->stock > 0 && abs($v->effective_price - $price) < 0.0005)
+            ->map(fn($v) => ['id' => (int) $v->id, 'label' => $v->label ?: ('#' . $v->id), 'stock' => (int) $v->stock, 'current' => (int) $v->id === (int) $line->variant_id])
+            ->values()->all();
+        // Variants left out only for their price, so the form can say why
+        $otherPrice = $variants->contains(fn($v) => (int) $v->stock > 0 && abs($v->effective_price - $price) >= 0.0005);
+
+        return ['exchange_options' => $options, 'exchange_same_product' => false, 'exchange_other_price' => $otherPrice];
     }
 
     private function eligibleQuery(int $userId)

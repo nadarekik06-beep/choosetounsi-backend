@@ -11,12 +11,17 @@ use Illuminate\Database\Eloquent\Model;
  *
  * condition / restocked_* are set at reception: only resaleable units go back
  * to stock, once (restocked_at is the idempotency stamp).
+ *
+ * Exchange: replacement_variant_id is the variant sent instead (same product);
+ * its stock is held at approval (replacement_reserved_at) and given back only
+ * if the exchange doesn't happen (replacement_released_at).
  */
 class ComplaintItem extends Model
 {
     protected $fillable = [
         'complaint_id', 'order_item_id', 'quantity', 'unit_price', 'gross_amount', 'discount_amount',
         'net_amount', 'commission_amount', 'seller_amount', 'condition', 'restocked_quantity', 'restocked_at',
+        'replacement_variant_id', 'replacement_label', 'replacement_reserved_at', 'replacement_released_at',
     ];
 
     protected $casts = [
@@ -29,6 +34,8 @@ class ComplaintItem extends Model
         'commission_amount'  => 'decimal:3',
         'seller_amount'      => 'decimal:3',
         'restocked_at'       => 'datetime',
+        'replacement_reserved_at' => 'datetime',
+        'replacement_released_at' => 'datetime',
     ];
 
     public function complaint() { return $this->belongsTo(Complaint::class); }

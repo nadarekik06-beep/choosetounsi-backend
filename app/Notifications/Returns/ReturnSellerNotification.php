@@ -14,6 +14,8 @@ use Illuminate\Notifications\Notification;
  *   delivered_to_seller  parcel dropped at the shop: confirm reception + condition
  *   refunded             client refunded: the sale is reversed (earnings / payout)
  *   cancelled            the return was cancelled
+ *   exchanged            exchange delivered: the old item comes back, confirm it
+ *   exchange_failed      the client didn't take the replacement: it comes back
  */
 class ReturnSellerNotification extends Notification
 {
@@ -26,6 +28,9 @@ class ReturnSellerNotification extends Notification
         'delivered_to_seller' => ['package-check', 'pending'],
         'refunded'            => ['package-x', 'refunded'],
         'cancelled'           => ['x-circle', 'rejected'],
+        // Exchanges (admin_approved / cancelled use their exchange_ texts)
+        'exchanged'           => ['package-check', 'pending'],
+        'exchange_failed'     => ['x-circle', 'pending'],
     ];
 
     public function __construct(private Complaint $complaint, private string $event) {}
@@ -44,13 +49,15 @@ class ReturnSellerNotification extends Notification
             'amount' => number_format((float) $c->items_amount, 3, '.', ' '),
         ];
         [$icon, $action] = self::ICONS[$this->event];
+        $key = $c->isExchange() && \Illuminate\Support\Facades\Lang::has("seller.notif.return.exchange_{$this->event}.title")
+            ? "exchange_{$this->event}" : $this->event;
 
         return [
             'type'     => "return_{$this->event}",
             'category' => 'complaints',
             'audience' => 'seller',
-            'title'    => __("seller.notif.return.{$this->event}.title", $params),
-            'body'     => __("seller.notif.return.{$this->event}.body", $params),
+            'title'    => __("seller.notif.return.{$key}.title", $params),
+            'body'     => __("seller.notif.return.{$key}.body", $params),
             'link'     => '/seller/complaints?id=' . $c->id,
             'icon'     => $icon,
             'action'   => $action,

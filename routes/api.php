@@ -748,6 +748,11 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/complaints/{id}/cancel',            [AdminComplaintController::class, 'cancel']);
         Route::patch('/complaints/{id}/close',             [AdminComplaintController::class, 'close']);
         Route::get('/complaints/{id}/return-slip',         [AdminComplaintController::class, 'returnSlip'])->whereNumber('id');
+        Route::patch('/complaints/{id}/exchange/book',      [AdminComplaintController::class, 'exchangeBook'])->whereNumber('id');
+        Route::patch('/complaints/{id}/exchange/nid',       [AdminComplaintController::class, 'exchangeNid'])->whereNumber('id');
+        Route::patch('/complaints/{id}/exchange/delivered', [AdminComplaintController::class, 'exchangeDelivered'])->whereNumber('id');
+        Route::patch('/complaints/{id}/exchange/failed',    [AdminComplaintController::class, 'exchangeFailed'])->whereNumber('id');
+        Route::patch('/complaints/{id}/exchange/decide',    [AdminComplaintController::class, 'exchangeDecide'])->whereNumber('id');
 
         Route::patch('/users/{id}/wallet/top-up', [\App\Http\Controllers\Admin\UserController::class, 'walletTopUp']);
 

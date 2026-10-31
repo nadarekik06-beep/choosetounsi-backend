@@ -7,19 +7,30 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Storage;
 
 /**
- * A return request ("réclamation"). The only resolution is return + refund:
- * a client who wants another item simply reorders.
+ * An after-sale request ("réclamation"): a RETURN (item back, client refunded)
+ * or an EXCHANGE (the courier delivers another variant of the same product and
+ * collects the old item in the same trip — Intigo exchange parcel).
  *
  *   requested ──seller──► seller_accepted ──admin──► admin_approved
  *       │                                              ▲
  *       ├──seller──► seller_rejected ──client──► escalated ──admin──┘
  *       └──client──► cancelled          (admin may override any decision)
  *
- *   admin_approved → pickup_scheduled → picked_up → returned_to_seller → refunded
- *   (received & inspected: restock)           (finance + order status + money)
+ *   return:   admin_approved → pickup_scheduled → picked_up → returned_to_seller → refunded
+ *             (received & inspected: restock)            (finance + order status + money)
+ *   exchange: admin_approved (replacement stock held, Intigo parcel booked)
+ *             → exchange_in_transit → exchanged (replacement delivered, old item collected)
+ *             → exchange_completed (the seller confirms the old item is back: restock)
+ *             exchange_in_transit → exchange_failed (refused at the door) → admin decides:
+ *             retry (exchange_in_transit), switch to a return (admin_approved) or cancel.
+ *
+ * Who pays the after-sale parcel: the seller when at fault (SELLER_FAULT_TYPES),
+ * else the client (deducted from the refund, or collected as cash on the
+ * exchange parcel). One fee per complaint, at its largest parcel size.
  *
  * Transitions, money, stock and notifications live in App\Services\Returns\ReturnService.
- * Legacy "exchange" records stay readable; they can only be closed.
+ * Legacy exchange records (before fees per size: fee_size null) stay as they
+ * are; they can only be closed.
  */
 class Complaint extends Model
 {
@@ -40,46 +51,76 @@ class Complaint extends Model
     const STATUS_CANCELLED          = 'cancelled';
     const STATUS_CLOSED             = 'closed';   // legacy exchange, done
 
+    // Exchange path
+    const STATUS_EXCHANGE_IN_TRANSIT = 'exchange_in_transit';
+    const STATUS_EXCHANGED           = 'exchanged';            // replacement delivered, old item on its way back
+    const STATUS_EXCHANGE_FAILED     = 'exchange_failed';      // refused at the door: the admin decides
+    const STATUS_EXCHANGE_COMPLETED  = 'exchange_completed';   // the seller confirmed the old item is back
+
     const VALID_STATUSES = [
         self::STATUS_REQUESTED, self::STATUS_SELLER_ACCEPTED, self::STATUS_SELLER_REJECTED,
         self::STATUS_ESCALATED, self::STATUS_ADMIN_APPROVED, self::STATUS_PICKUP_SCHEDULED,
         self::STATUS_PICKED_UP, self::STATUS_RETURNED_TO_SELLER, self::STATUS_REFUNDED,
         self::STATUS_REJECTED, self::STATUS_CANCELLED, self::STATUS_CLOSED,
+        self::STATUS_EXCHANGE_IN_TRANSIT, self::STATUS_EXCHANGED, self::STATUS_EXCHANGE_FAILED, self::STATUS_EXCHANGE_COMPLETED,
     ];
 
-    /** Allowed next statuses — nothing can be skipped. */
+    /** Allowed next statuses — nothing can be skipped (filtered by resolution in canTransitionTo). */
     const TRANSITIONS = [
-        self::STATUS_REQUESTED          => [self::STATUS_SELLER_ACCEPTED, self::STATUS_SELLER_REJECTED, self::STATUS_ADMIN_APPROVED, self::STATUS_REJECTED, self::STATUS_CANCELLED],
-        self::STATUS_SELLER_ACCEPTED    => [self::STATUS_ADMIN_APPROVED, self::STATUS_REJECTED],
-        self::STATUS_SELLER_REJECTED    => [self::STATUS_ESCALATED, self::STATUS_ADMIN_APPROVED, self::STATUS_REJECTED],
-        self::STATUS_ESCALATED          => [self::STATUS_ADMIN_APPROVED, self::STATUS_REJECTED],
-        self::STATUS_ADMIN_APPROVED     => [self::STATUS_PICKUP_SCHEDULED, self::STATUS_CANCELLED, self::STATUS_CLOSED],
-        self::STATUS_PICKUP_SCHEDULED   => [self::STATUS_PICKED_UP, self::STATUS_CANCELLED, self::STATUS_CLOSED],
-        self::STATUS_PICKED_UP          => [self::STATUS_RETURNED_TO_SELLER, self::STATUS_CLOSED],
-        self::STATUS_RETURNED_TO_SELLER => [self::STATUS_REFUNDED],
+        self::STATUS_REQUESTED           => [self::STATUS_SELLER_ACCEPTED, self::STATUS_SELLER_REJECTED, self::STATUS_ADMIN_APPROVED, self::STATUS_REJECTED, self::STATUS_CANCELLED],
+        self::STATUS_SELLER_ACCEPTED     => [self::STATUS_ADMIN_APPROVED, self::STATUS_REJECTED],
+        self::STATUS_SELLER_REJECTED     => [self::STATUS_ESCALATED, self::STATUS_ADMIN_APPROVED, self::STATUS_REJECTED],
+        self::STATUS_ESCALATED           => [self::STATUS_ADMIN_APPROVED, self::STATUS_REJECTED],
+        self::STATUS_ADMIN_APPROVED      => [self::STATUS_PICKUP_SCHEDULED, self::STATUS_EXCHANGE_IN_TRANSIT, self::STATUS_CANCELLED, self::STATUS_CLOSED],
+        self::STATUS_PICKUP_SCHEDULED    => [self::STATUS_PICKED_UP, self::STATUS_CANCELLED, self::STATUS_CLOSED],
+        self::STATUS_PICKED_UP           => [self::STATUS_RETURNED_TO_SELLER, self::STATUS_CLOSED],
+        self::STATUS_RETURNED_TO_SELLER  => [self::STATUS_REFUNDED],
+        self::STATUS_EXCHANGE_IN_TRANSIT => [self::STATUS_EXCHANGED, self::STATUS_EXCHANGE_FAILED],
+        self::STATUS_EXCHANGED           => [self::STATUS_EXCHANGE_COMPLETED],
+        // Admin decision: retry, switch to a return (the client keeps the old item until the pick-up), cancel
+        self::STATUS_EXCHANGE_FAILED     => [self::STATUS_EXCHANGE_IN_TRANSIT, self::STATUS_ADMIN_APPROVED, self::STATUS_CANCELLED],
     ];
+
+    /** Statuses only a return goes through. */
+    const RETURN_ONLY_STATUSES = [self::STATUS_PICKUP_SCHEDULED, self::STATUS_PICKED_UP, self::STATUS_RETURNED_TO_SELLER, self::STATUS_REFUNDED];
+
+    /** Statuses only an exchange goes through. */
+    const EXCHANGE_ONLY_STATUSES = [self::STATUS_EXCHANGE_IN_TRANSIT, self::STATUS_EXCHANGED, self::STATUS_EXCHANGE_FAILED, self::STATUS_EXCHANGE_COMPLETED];
 
     /** Still in progress (counts as "open" for the client). */
     const OPEN_STATUSES = [
         self::STATUS_REQUESTED, self::STATUS_SELLER_ACCEPTED, self::STATUS_SELLER_REJECTED, self::STATUS_ESCALATED,
         self::STATUS_ADMIN_APPROVED, self::STATUS_PICKUP_SCHEDULED, self::STATUS_PICKED_UP, self::STATUS_RETURNED_TO_SELLER,
+        self::STATUS_EXCHANGE_IN_TRANSIT, self::STATUS_EXCHANGED, self::STATUS_EXCHANGE_FAILED,
     ];
 
     /** Waiting for an admin decision. */
-    const ADMIN_DECISION_STATUSES = [self::STATUS_SELLER_ACCEPTED, self::STATUS_ESCALATED];
+    const ADMIN_DECISION_STATUSES = [self::STATUS_SELLER_ACCEPTED, self::STATUS_ESCALATED, self::STATUS_EXCHANGE_FAILED];
 
     /** Items in these returns are reserved: they can't be requested again. */
     const BLOCKING_STATUSES = [
         self::STATUS_REQUESTED, self::STATUS_SELLER_ACCEPTED, self::STATUS_SELLER_REJECTED, self::STATUS_ESCALATED,
         self::STATUS_ADMIN_APPROVED, self::STATUS_PICKUP_SCHEDULED, self::STATUS_PICKED_UP,
         self::STATUS_RETURNED_TO_SELLER, self::STATUS_REFUNDED,
+        self::STATUS_EXCHANGE_IN_TRANSIT, self::STATUS_EXCHANGED, self::STATUS_EXCHANGE_FAILED, self::STATUS_EXCHANGE_COMPLETED,
     ];
 
     // ── Resolution ─────────────────────────────────────────────────────────
 
     const RESOLUTION_RETURN_REFUND = 'return_refund';
-    /** Legacy only — no new exchange can be created. */
     const RESOLUTION_EXCHANGE      = 'exchange';
+    const RESOLUTIONS              = [self::RESOLUTION_RETURN_REFUND, self::RESOLUTION_EXCHANGE];
+
+    /** After this many days in "exchanged" without the seller's confirmation: "Old item not received". */
+    const OLD_ITEM_DAYS = 7;
+
+    // Exchange parcel at Intigo (exchange_sync_status)
+    const EXCHANGE_SENDING     = 'sending';
+    const EXCHANGE_SENT        = 'sent';
+    const EXCHANGE_MANUAL      = 'manual';        // book it by hand in the Intigo dashboard
+    const EXCHANGE_NEEDS_CHECK = 'needs_check';   // no answer: it may exist — check Intigo, paste the nid
+    const EXCHANGE_SEND_FAILED = 'failed';        // Intigo refused it (reason in exchange_sync_error)
+    const EXCHANGE_CANCELLED   = 'cancelled';     // cancelled by Intigo
 
     // ── Rules ──────────────────────────────────────────────────────────────
 
@@ -90,15 +131,23 @@ class Complaint extends Model
     const ESCALATION_WINDOW_DAYS = 7;
 
     const COMPLAINT_TYPES = [
-        'wrong_product'   => 'Wrong product received',
-        'wrong_size'      => 'Wrong size',
-        'wrong_color'     => 'Wrong color',
-        'damaged_product' => 'Damaged / defective product',
-        'other'           => 'Other',
+        'wrong_product'      => 'Wrong product received',
+        'wrong_size'         => 'Wrong size sent',
+        'wrong_color'        => 'Wrong color sent',
+        'damaged_product'    => 'Damaged / defective product',
+        'changed_mind'       => 'Changed my mind',
+        'doesnt_fit'         => "Size doesn't fit",
+        'prefer_other_color' => 'Prefer another color',
+        'other'              => 'Other',
     ];
 
-    /** Reasons where the seller is at fault → the seller pays the return shipping. */
+    /** Reasons where the seller is at fault → the seller pays the after-sale parcel. */
     const SELLER_FAULT_TYPES = ['wrong_product', 'wrong_size', 'wrong_color', 'damaged_product'];
+
+    /** The client's choice → the client pays (the admin may still switch the payer before approving). */
+    const CLIENT_CHOICE_TYPES = ['changed_mind', 'doesnt_fit', 'prefer_other_color', 'other'];
+
+    const PAYERS = ['client', 'seller'];
 
     /** cash = paid back by the courier at pick-up (cash on delivery orders). */
     const REFUND_METHODS = ['cash', 'wallet', 'bank_transfer', 'd17', 'original'];
@@ -122,12 +171,24 @@ class Complaint extends Model
         'pickup_scheduled_at', 'pickup_note', 'picked_up_at', 'received_at', 'received_by', 'reception_note',
         'refunded_at', 'refunded_by', 'finance_applied_at',
         'reviewed_at', 'resolved_at', 'refund_status', 'refund_task_id',
+        'fee_size', 'exchange_fee', 'fee_exceeds_refund',
+        'intigo_exchange_nid', 'exchange_sync_status', 'exchange_sync_error',
+        'intigo_exchange_status_code', 'intigo_exchange_status_label', 'intigo_exchange_status_at',
+        'exchange_shipped_at', 'exchanged_at', 'exchange_failed_at', 'old_item_received_at',
     ];
 
     protected $casts = [
         'order_item_ids'      => 'array',
         'image_paths'         => 'array',
         'return_shipping_fee' => 'decimal:3',
+        'exchange_fee'        => 'decimal:3',
+        'fee_exceeds_refund'  => 'boolean',
+        'intigo_exchange_status_code' => 'integer',
+        'intigo_exchange_status_at'   => 'datetime',
+        'exchange_shipped_at'  => 'datetime',
+        'exchanged_at'         => 'datetime',
+        'exchange_failed_at'   => 'datetime',
+        'old_item_received_at' => 'datetime',
         'items_amount'        => 'decimal:3',
         'refund_amount'       => 'decimal:3',
         'reviewed_at'         => 'datetime',
@@ -142,7 +203,7 @@ class Complaint extends Model
         'finance_applied_at'  => 'datetime',
     ];
 
-    protected $appends = ['image_url', 'image_urls', 'can_escalate'];
+    protected $appends = ['image_url', 'image_urls', 'can_escalate', 'old_item_overdue', 'is_legacy_exchange'];
 
     // ── Relationships ──────────────────────────────────────────────────────
 
@@ -151,6 +212,7 @@ class Complaint extends Model
     public function seller() { return $this->belongsTo(User::class, 'seller_id'); }
     public function items()  { return $this->hasMany(ComplaintItem::class); }
     public function events() { return $this->hasMany(ComplaintEvent::class)->orderBy('id'); }
+    public function costs()  { return $this->hasMany(ComplaintCost::class); }
 
     public function refundTask()
     {
@@ -208,6 +270,10 @@ class Complaint extends Model
                     'return_amount'      => $ci ? (float) $ci->net_amount : (float) ($snap['total'] ?? 0),
                     'condition'          => $ci?->condition,
                     'restocked_quantity' => $ci ? (int) $ci->restocked_quantity : 0,
+                    // Exchange: the variant sent instead
+                    'replacement_variant_id' => $ci?->replacement_variant_id ? (int) $ci->replacement_variant_id : null,
+                    'replacement_label'      => $ci?->replacement_label,
+                    'replacement_reserved'   => (bool) ($ci?->replacement_reserved_at && !$ci?->replacement_released_at),
                 ];
             })->values()->all());
         }
@@ -249,6 +315,19 @@ class Complaint extends Model
         return $this->canEscalate();
     }
 
+    /** Exchanged more than OLD_ITEM_DAYS ago and the seller hasn't confirmed the old item is back. */
+    public function getOldItemOverdueAttribute(): bool
+    {
+        return $this->status === self::STATUS_EXCHANGED
+            && $this->exchanged_at
+            && $this->exchanged_at->lt(now()->subDays(self::OLD_ITEM_DAYS));
+    }
+
+    public function getIsLegacyExchangeAttribute(): bool
+    {
+        return $this->isLegacyExchange();
+    }
+
     public function getTypeLabel(): string
     {
         if ($this->complaint_type === 'other' && $this->other_reason) {
@@ -267,7 +346,20 @@ class Complaint extends Model
 
     public function canTransitionTo(string $status): bool
     {
-        return in_array($status, self::TRANSITIONS[$this->status] ?? [], true);
+        return in_array($status, $this->allowedTransitions(), true);
+    }
+
+    /** Next statuses for this complaint's resolution (a return never takes the exchange path, and back). */
+    public function allowedTransitions(): array
+    {
+        $next = self::TRANSITIONS[$this->status] ?? [];
+        if ($this->isLegacyExchange()) {
+            return array_values(array_intersect($next, [self::STATUS_CLOSED, self::STATUS_CANCELLED, self::STATUS_REJECTED]));
+        }
+        $blocked = $this->isExchange()
+            ? [...self::RETURN_ONLY_STATUSES, self::STATUS_CLOSED]
+            : [...self::EXCHANGE_ONLY_STATUSES, self::STATUS_CLOSED];
+        return array_values(array_diff($next, $blocked));
     }
 
     public function isExchange(): bool
@@ -275,9 +367,38 @@ class Complaint extends Model
         return $this->resolution_type === self::RESOLUTION_EXCHANGE;
     }
 
+    /** Filed under the old exchange policy (before fees per size): only closable. */
+    public function isLegacyExchange(): bool
+    {
+        return $this->isExchange() && $this->fee_size === null;
+    }
+
     public function isReturnRefund(): bool
     {
         return !$this->isExchange();
+    }
+
+    public static function payerFor(string $complaintType): string
+    {
+        return in_array($complaintType, self::SELLER_FAULT_TYPES, true) ? 'seller' : 'client';
+    }
+
+    /** The after-sale parcel fee of this case (frozen at request): exchange or return fee of its size. */
+    public function caseFee(): float
+    {
+        return $this->isExchange() ? (float) $this->exchange_fee : (float) $this->return_shipping_fee;
+    }
+
+    /** What the client pays: deducted from the refund (return) or cash to the courier (exchange). */
+    public function clientFee(): float
+    {
+        return $this->shipping_payer === 'client' ? $this->caseFee() : 0.0;
+    }
+
+    /** What comes off the seller's next settlement. */
+    public function sellerFee(): float
+    {
+        return $this->shipping_payer === 'seller' ? $this->caseFee() : 0.0;
     }
 
     public function sellerCanAct(): bool

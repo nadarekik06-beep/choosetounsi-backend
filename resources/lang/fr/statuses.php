@@ -46,5 +46,9 @@ return [
         'rejected' => 'Refusé',
         'cancelled' => 'Annulé',
         'closed' => 'Clôturé',
+        'exchange_in_transit' => 'Échange en cours de livraison',
+        'exchanged' => 'Échangé — ancien article en retour',
+        'exchange_failed' => 'Échange échoué',
+        'exchange_completed' => 'Échange terminé',
     ],
 ];

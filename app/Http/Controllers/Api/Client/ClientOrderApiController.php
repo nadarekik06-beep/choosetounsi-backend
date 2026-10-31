@@ -41,7 +41,7 @@ class ClientOrderApiController extends Controller
                 'items' => fn($q) => $q->with([
                     'product' => fn($pq) => $pq->withTrashed()->with(['images', 'primaryImage']),
                 ]),
-                'complaints' => fn($q) => $q->select('id', 'order_id', 'reference', 'status', 'refund_amount', 'refund_method', 'refund_reference', 'refunded_at', 'created_at'),
+                'complaints' => fn($q) => $q->select('id', 'order_id', 'reference', 'status', 'resolution_type', 'refund_amount', 'refund_method', 'refund_reference', 'refunded_at', 'created_at'),
             ])
             ->orderByDesc('created_at')
             ->paginate(20);
@@ -67,7 +67,7 @@ class ClientOrderApiController extends Controller
                 'items' => fn($q) => $q->with([
                     'product' => fn($pq) => $pq->withTrashed()->with(['images', 'primaryImage']),
                 ]),
-                'complaints' => fn($q) => $q->select('id', 'order_id', 'reference', 'status', 'refund_amount', 'refund_method', 'refund_reference', 'refunded_at', 'created_at'),
+                'complaints' => fn($q) => $q->select('id', 'order_id', 'reference', 'status', 'resolution_type', 'refund_amount', 'refund_method', 'refund_reference', 'refunded_at', 'created_at'),
             ])
             ->findOrFail($id);
 

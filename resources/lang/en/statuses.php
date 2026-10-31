@@ -46,5 +46,9 @@ return [
         'rejected' => 'Rejected',
         'cancelled' => 'Cancelled',
         'closed' => 'Closed',
+        'exchange_in_transit' => 'Exchange in transit',
+        'exchanged' => 'Exchanged — old item on its way back',
+        'exchange_failed' => 'Exchange failed',
+        'exchange_completed' => 'Exchange completed',
     ],
 ];

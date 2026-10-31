@@ -22,6 +22,17 @@ interface IntigoClient
     public function createParcel(array $payload, ?int $sellerOrderId = null): array;
 
     /**
+     * POST /parcels/exchange: an exchange parcel from a delivered one (status
+     * 5000). Body: old_parcel_nid, exchange_price (cash collected, 0–1000),
+     * description, pickup_index, package_size?, note?, can_open?. The client
+     * details are copied from the old parcel. No cid: a lost answer can't be
+     * looked up — never retry it blindly. Creates a REAL parcel in live mode.
+     *
+     * @return array{nid:string, raw:array}
+     */
+    public function createExchange(array $payload, ?int $sellerOrderId = null): array;
+
+    /**
      * GET /parcels/ filtered on our correlation id: the parcels Intigo knows
      * under that cid (normally one), newest first.
      *

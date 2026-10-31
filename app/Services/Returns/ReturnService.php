@@ -46,6 +46,17 @@ use Illuminate\Support\Facades\Notification;
  *   - on refund the sale is reversed on the order line and the sub-order
  *     (revenue, commission, payout); a sub-order already paid out gets a
  *     negative adjustment on the next settlement instead.
+ *
+ * After-sale fee (one per complaint = one Intigo parcel, at the largest
+ * parcel size of its lines, frozen at request):
+ *   - return: the size's after-sale return fee — client's choice: deducted
+ *     from the refund (never below 0, flagged when it eats it all); seller at
+ *     fault: off the seller's next settlement;
+ *   - exchange: the size's exchange fee — client's choice: cash the courier
+ *     collects (the Intigo exchange parcel's price); seller at fault: 0 for the
+ *     client, off the seller's next settlement.
+ *   An exchange is the same sale with another variant: no new commission, no
+ *   new payout. What Intigo bills and what we recover go to complaint_costs.
  */
 class ReturnService
 {
@@ -85,6 +96,9 @@ class ReturnService
             } catch (\Throwable $e) {
                 Log::error('[Return] creation notification failed: ' . $e->getMessage());
             }
+            if ($complaint->fee_exceeds_refund) {
+                $this->admin($complaint, 'fee_exceeds_refund');
+            }
         }
 
         return $complaints;
@@ -99,9 +113,18 @@ class ReturnService
             $groups = $lines->groupBy(fn($l) => $l->seller_order_id ?? 0);
             $created = collect();
 
+            $exchange = ($data['resolution_type'] ?? null) === Complaint::RESOLUTION_EXCHANGE;
+            $replacements = $exchange ? $this->replacementsFor($lines, $quantities, (array) ($data['replacements'] ?? [])) : [];
+
             foreach ($groups as $soId => $group) {
                 $sellerId = $group->first()->sellerOrder?->seller_id
                     ?? DB::table('products')->where('id', $group->first()->product_id)->value('seller_id');
+
+                // One parcel = one Intigo bill, at the largest size it holds
+                $size = \App\Support\ParcelSize::largest(
+                    DB::table('products')->whereIn('id', $group->pluck('product_id'))->pluck('parcel_size')->all() ?: ['S']
+                );
+                $settings = app(\App\Services\Delivery\DeliverySettings::class);
 
                 $complaint = Complaint::create([
                     'user_id'         => $client->id,
@@ -109,14 +132,16 @@ class ReturnService
                     'seller_id'       => $sellerId,
                     'order_item_ids'  => $group->pluck('id')->map(fn($v) => (int) $v)->values()->all(),
                     'complaint_type'  => $data['complaint_type'],
-                    'resolution_type' => Complaint::RESOLUTION_RETURN_REFUND,
+                    'resolution_type' => $exchange ? Complaint::RESOLUTION_EXCHANGE : Complaint::RESOLUTION_RETURN_REFUND,
                     'other_reason'    => $data['other_reason'] ?? null,
                     'description'     => $data['description'],
                     'image_path'      => $paths[0] ?? null,
                     'image_paths'     => $paths,
                     'status'          => Complaint::STATUS_REQUESTED,
-                    'shipping_payer'  => in_array($data['complaint_type'], Complaint::SELLER_FAULT_TYPES, true) ? 'seller' : 'client',
-                    'return_shipping_fee' => $this->returnShippingFee(),
+                    'shipping_payer'  => Complaint::payerFor($data['complaint_type']),
+                    'fee_size'        => $size,
+                    'return_shipping_fee' => \App\Support\Millimes::toFloat($settings->afterSaleReturnFee($size)),
+                    'exchange_fee'        => \App\Support\Millimes::toFloat($settings->exchangeFee($size)),
                 ]);
                 $complaint->update(['reference' => Complaint::nextReference($complaint->id)]);
 
@@ -129,16 +154,19 @@ class ReturnService
                     }
                     $share = $this->share($line, $qty);
                     $amount += $share['net_amount'];
-                    ComplaintItem::create(['complaint_id' => $complaint->id, 'order_item_id' => $line->id, 'quantity' => $qty] + $share);
+                    ComplaintItem::create(['complaint_id' => $complaint->id, 'order_item_id' => $line->id, 'quantity' => $qty]
+                        + $share + ($replacements[$line->id] ?? []));
                 }
 
                 // Whole shop's part of the order: every unit of every line of that sub-order
                 $shopLines  = $allLines->where('seller_order_id', $soId ?: null);
                 $isFull     = $shopLines->every(fn($l) => (int) ($quantities[$l->id] ?? 0) + (int) ($reserved[$l->id] ?? 0) >= (int) $l->quantity);
+                $fresh      = $complaint->fresh();
                 $complaint->update([
-                    'return_scope'  => $isFull ? 'full' : 'partial',
-                    'items_amount'  => round($amount, 3),
-                    'refund_amount' => $this->refundFor($complaint->fresh(), $amount),
+                    'return_scope'       => $isFull ? 'full' : 'partial',
+                    'items_amount'       => round($amount, 3),
+                    'refund_amount'      => $this->refundFor($fresh, $amount),
+                    'fee_exceeds_refund' => $this->feeExceedsRefund($fresh, $amount),
                 ]);
 
                 $this->event($complaint, Complaint::STATUS_REQUESTED, $client, 'client', $data['description']);
@@ -216,11 +244,18 @@ class ReturnService
         return $c;
     }
 
-    /** Admin approval (also overrides a seller refusal). Opens the pick-up. */
+    /**
+     * Admin approval (also overrides a seller refusal). The admin may switch
+     * who pays the after-sale parcel first ("other" is sometimes the seller's
+     * fault): logged in the history, refund / cash to collect recomputed.
+     *
+     * Return: opens the pick-up. Exchange: holds the replacement stock, then
+     * books the Intigo exchange parcel (or leaves the manual booking step).
+     */
     public function adminApprove(Complaint $complaint, User $admin, ?string $note, ?string $shippingPayer = null): Complaint
     {
-        if ($complaint->isExchange()) {
-            throw new ReturnException('Exchange requests are no longer handled — the client should reorder.');
+        if ($complaint->isLegacyExchange()) {
+            throw new ReturnException('Legacy exchange requests can only be closed.');
         }
         $extra = [
             'admin_decided_by' => $admin->id,
@@ -228,15 +263,33 @@ class ReturnService
             'admin_note'       => $note,
             'resolved_at'      => now(),
         ];
-        if ($shippingPayer) {
-            $extra['shipping_payer'] = $shippingPayer;
-        }
 
-        $c = DB::transaction(function () use ($complaint, $admin, $note, $extra) {
+        $sold = [];
+        $c = DB::transaction(function () use ($complaint, $admin, $note, $extra, $shippingPayer, &$sold) {
             $c = $this->move($complaint, Complaint::STATUS_ADMIN_APPROVED, $admin, 'admin', $note, $extra, null, false);
-            $c->update(['refund_amount' => $this->refundFor($c, (float) $c->items_amount)]);
+            if ($shippingPayer && $shippingPayer !== $c->shipping_payer) {
+                $this->event($c, 'payer_overridden', $admin, 'admin', $note, [
+                    'from' => $c->shipping_payer, 'to' => $shippingPayer, 'fee' => $c->caseFee(),
+                ]);
+                $c->update(['shipping_payer' => $shippingPayer]);
+            }
+            $c->update([
+                'refund_amount'      => $this->refundFor($c, (float) $c->items_amount),
+                'fee_exceeds_refund' => $this->feeExceedsRefund($c, (float) $c->items_amount),
+            ]);
+            if ($c->isExchange()) {
+                $sold = $this->reserveReplacements($c);
+            }
             return $c->fresh();
         });
+
+        if ($c->isExchange()) {
+            if ($sold) app(\App\Services\StockAlertService::class)->recordSales($sold);
+            $this->buyer($c, 'approved');
+            $this->seller($c, 'admin_approved');
+            app(\App\Services\Intigo\ExchangeSender::class)->book($c, $admin);
+            return $c->fresh();
+        }
 
         ComplaintApproved::dispatch($c);   // → pick-up task in the delivery app
         $this->buyer($c, 'approved');
@@ -262,10 +315,16 @@ class ReturnService
 
     public function adminCancel(Complaint $complaint, User $admin, string $reason): Complaint
     {
-        $c = $this->move($complaint, Complaint::STATUS_CANCELLED, $admin, 'admin', $reason, [
-            'admin_note'  => $reason,
-            'resolved_at' => now(),
-        ]);
+        $released = [];
+        $c = DB::transaction(function () use ($complaint, $admin, $reason, &$released) {
+            $c = $this->move($complaint, Complaint::STATUS_CANCELLED, $admin, 'admin', $reason, [
+                'admin_note'  => $reason,
+                'resolved_at' => now(),
+            ], null, false);
+            $released = $this->releaseReplacements($c);
+            return $c;
+        });
+        $this->restocked($released);
         RefundTaskSync::cancel($c);
         $this->buyer($c, 'cancelled');
         $this->seller($c, 'cancelled');
@@ -275,10 +334,264 @@ class ReturnService
     /** Legacy exchange records: nothing more to do than close them. */
     public function closeLegacyExchange(Complaint $complaint, User $admin, ?string $note): Complaint
     {
-        if (!$complaint->isExchange()) {
+        if (!$complaint->isLegacyExchange()) {
             throw new ReturnException('Only legacy exchange requests can be closed.');
         }
         return $this->move($complaint, Complaint::STATUS_CLOSED, $admin, 'admin', $note, ['resolved_at' => now()]);
+    }
+
+    // ── Exchange ────────────────────────────────────────────────────────────
+
+    /**
+     * The exchange parcel exists at Intigo (booked by the API, or by hand and
+     * its nid pasted): replacement on its way, cash to collect = client fee.
+     */
+    public function exchangeShipped(Complaint $complaint, ?User $actor, string $role, string $nid, string $source): Complaint
+    {
+        $nid = trim($nid);
+        if ($nid === '') {
+            throw new ReturnException('The Intigo parcel id (nid) is required.');
+        }
+        if (Complaint::where('intigo_exchange_nid', $nid)->where('id', '!=', $complaint->id)->exists()
+            || \App\Models\SellerOrder::where('intigo_nid', $nid)->exists()) {
+            throw new ReturnException("Intigo parcel {$nid} is already linked to another order or complaint.");
+        }
+
+        $previous = $complaint->intigo_exchange_nid;
+        $c = $this->move($complaint, Complaint::STATUS_EXCHANGE_IN_TRANSIT, $actor, $role, null, [
+            'intigo_exchange_nid'          => $nid,
+            'exchange_sync_status'         => $source === 'api' ? Complaint::EXCHANGE_SENT : Complaint::EXCHANGE_MANUAL,
+            'exchange_sync_error'          => null,
+            'intigo_exchange_status_code'  => null,
+            'intigo_exchange_status_label' => null,
+            'intigo_exchange_status_at'    => null,
+            'exchange_shipped_at'          => now(),
+            'exchange_failed_at'           => null,
+        ], ['nid' => $nid, 'source' => $source, 'previous_nid' => $previous, 'cod' => $complaint->clientFee()]);
+
+        $this->buyer($c, 'exchange_in_transit');
+        return $c;
+    }
+
+    /**
+     * Replacement delivered, cash collected, old item taken back by the courier.
+     * Books the exchange cost and the seller's share when at fault.
+     */
+    public function markExchanged(Complaint $complaint, ?User $actor, string $role, ?string $note = null): Complaint
+    {
+        $c = DB::transaction(function () use ($complaint, $actor, $role, $note) {
+            $c = $this->move($complaint, Complaint::STATUS_EXCHANGED, $actor, $role, $note, ['exchanged_at' => now()], null, false);
+            $this->bookCost($c, \App\Models\ComplaintCost::KIND_EXCHANGE, (float) $c->exchange_fee, $c->clientFee(), $c->sellerFee(), $c->intigo_exchange_nid);
+            if ($c->sellerFee() > 0 && $c->seller_id
+                && !SellerAdjustment::where('complaint_id', $c->id)->where('type', SellerAdjustment::TYPE_EXCHANGE_SHIPPING)->exists()) {
+                SellerAdjustment::create([
+                    'seller_id'       => $c->seller_id,
+                    'seller_order_id' => $this->sellerOrderId($c),
+                    'complaint_id'    => $c->id,
+                    'type'            => SellerAdjustment::TYPE_EXCHANGE_SHIPPING,
+                    'amount'          => -round($c->sellerFee(), 3),
+                    'description'     => "Exchange parcel {$c->reference} (" . $c->getTypeLabel() . ')',
+                    'created_by'      => $actor?->id,
+                ]);
+            }
+            return $c->fresh();
+        });
+
+        $this->buyer($c, 'exchanged');
+        $this->seller($c, 'exchanged');
+        return $c;
+    }
+
+    /** Refused at the door: the replacement goes back to the seller, the admin decides. */
+    public function markExchangeFailed(Complaint $complaint, ?User $actor, string $role, ?string $note = null): Complaint
+    {
+        $c = DB::transaction(function () use ($complaint, $actor, $role, $note) {
+            $c = $this->move($complaint, Complaint::STATUS_EXCHANGE_FAILED, $actor, $role, $note, ['exchange_failed_at' => now()], null, false);
+            // Intigo bills the refused parcel's return; nothing recovered
+            $refused = \App\Support\Millimes::toFloat(app(\App\Services\Delivery\DeliverySettings::class)->refusedFee($c->fee_size));
+            $this->bookCost($c, \App\Models\ComplaintCost::KIND_EXCHANGE_FAILED, $refused, 0, 0, $c->intigo_exchange_nid);
+            return $c->fresh();
+        });
+
+        $this->buyer($c, 'exchange_failed');
+        $this->seller($c, 'exchange_failed');
+        $this->admin($c, 'exchange_failed');
+        return $c;
+    }
+
+    /**
+     * Admin decision on a failed exchange:
+     *   retry   book a new exchange parcel (replacement stays held)
+     *   return  switch to a return: replacement released, the pick-up follows,
+     *           the return fee replaces the exchange fee
+     *   cancel  replacement released, case closed
+     */
+    public function decideFailedExchange(Complaint $complaint, User $admin, string $action, ?string $note): Complaint
+    {
+        if ($complaint->status !== Complaint::STATUS_EXCHANGE_FAILED) {
+            throw new ReturnException('Only a failed exchange waits for this decision.');
+        }
+
+        if ($action === 'retry') {
+            $this->event($complaint, 'exchange_retry', $admin, 'admin', $note);
+            app(\App\Services\Intigo\ExchangeSender::class)->book($complaint->fresh(), $admin);
+            return $complaint->fresh();
+        }
+        if ($action === 'cancel') {
+            return $this->adminCancel($complaint, $admin, $note ?: 'Exchange failed: cancelled by ChooseTounsi.');
+        }
+        if ($action !== 'return') {
+            throw new ReturnException("Unknown decision \"{$action}\".");
+        }
+
+        $released = [];
+        $c = DB::transaction(function () use ($complaint, $admin, $note, &$released) {
+            $released = $this->releaseReplacements($complaint);
+            Complaint::whereKey($complaint->id)->update(['resolution_type' => Complaint::RESOLUTION_RETURN_REFUND]);
+            $c = $this->move($complaint->fresh(), Complaint::STATUS_ADMIN_APPROVED, $admin, 'admin', $note, [
+                'admin_decided_by' => $admin->id,
+                'admin_decided_at' => now(),
+            ], ['converted_from' => 'exchange'], false);
+            $c->update([
+                'refund_amount'      => $this->refundFor($c, (float) $c->items_amount),
+                'fee_exceeds_refund' => $this->feeExceedsRefund($c, (float) $c->items_amount),
+            ]);
+            return $c->fresh();
+        });
+        $this->restocked($released);
+
+        ComplaintApproved::dispatch($c);
+        $this->buyer($c, 'approved');
+        $this->seller($c, 'admin_approved');
+        return $c;
+    }
+
+    /**
+     * Client's choice of replacement per line, checked: same product, active,
+     * in stock (summed over lines), same price as what they had. Products
+     * without variants: the same product again.
+     *
+     * @return array<int, array{replacement_variant_id: ?int, replacement_label: string}> order_item_id => columns
+     */
+    public function replacementsFor(Collection $lines, array $quantities, array $choices): array
+    {
+        $out = $need = [];
+        foreach ($lines as $line) {
+            $product = \App\Models\Product::with('variants.attributeOptions.attribute')->find($line->product_id);
+            if (!$product || !$product->is_active) {
+                throw new ReturnException(__('messages.complaint.exchange_unavailable', ['item' => $line->product_name]));
+            }
+            $variants = $product->variants->where('is_active', true);
+            $chosen   = $choices[$line->id] ?? null;
+
+            if ($variants->isEmpty()) {
+                if ($chosen !== null && (int) $chosen !== 0) {
+                    throw new ReturnException(__('messages.complaint.exchange_same_product', ['item' => $line->product_name]));
+                }
+                $key = 'p' . $product->id;
+                $need[$key] = ($need[$key] ?? 0) + (int) $quantities[$line->id];
+                if ($need[$key] > (int) $product->stock) {
+                    throw new ReturnException(__('messages.complaint.exchange_out_of_stock', ['item' => $line->product_name]));
+                }
+                $out[$line->id] = ['replacement_variant_id' => null, 'replacement_label' => $line->product_name];
+                continue;
+            }
+
+            $variant = $chosen ? $variants->firstWhere('id', (int) $chosen) : null;
+            if (!$variant) {
+                throw new ReturnException(__('messages.complaint.exchange_choose_variant', ['item' => $line->product_name]));
+            }
+            $original = $line->variant_id ? $product->variants->firstWhere('id', (int) $line->variant_id) : null;
+            $before   = $original ? $original->effective_price : (float) $line->unit_price;
+            if (abs($variant->effective_price - $before) > 0.0005) {
+                throw new ReturnException(__('messages.complaint.exchange_price_differs', ['item' => $line->product_name]));
+            }
+            $key = 'v' . $variant->id;
+            $need[$key] = ($need[$key] ?? 0) + (int) $quantities[$line->id];
+            if ($need[$key] > (int) $variant->stock) {
+                throw new ReturnException(__('messages.complaint.exchange_out_of_stock', ['item' => $line->product_name . ($variant->label ? " — {$variant->label}" : '')]));
+            }
+            $out[$line->id] = ['replacement_variant_id' => $variant->id, 'replacement_label' => trim($line->product_name . ($variant->label ? " — {$variant->label}" : ''))];
+        }
+        return $out;
+    }
+
+    /**
+     * Takes the replacement units off the shelf (once). Runs in the caller's
+     * transaction; returns the lines for StockAlertService::recordSales().
+     */
+    private function reserveReplacements(Complaint $c): array
+    {
+        $sold  = [];
+        $items = ComplaintItem::where('complaint_id', $c->id)->lockForUpdate()->get();
+        $stock = app(\App\Services\Orders\OrderStock::class);
+        foreach ($items as $item) {
+            if ($item->replacement_reserved_at && !$item->replacement_released_at) continue;
+            $productId = (int) DB::table('order_items')->where('id', $item->order_item_id)->value('product_id');
+            try {
+                $stock->reserve($item->replacement_variant_id ? (int) $item->replacement_variant_id : null, $productId, (int) $item->quantity, (string) $item->replacement_label);
+            } catch (\App\Exceptions\InsufficientStock $e) {
+                throw new ReturnException(__('messages.complaint.exchange_out_of_stock', ['item' => $item->replacement_label]));
+            }
+            $item->update(['replacement_reserved_at' => now(), 'replacement_released_at' => null]);
+            $sold[] = ['product_id' => $productId, 'variant_id' => $item->replacement_variant_id ? (int) $item->replacement_variant_id : null];
+        }
+        return $sold;
+    }
+
+    /**
+     * Gives held replacement units back (exchange cancelled / switched to a
+     * return). Runs in the caller's transaction; returns the lines to resync.
+     *
+     * @return array<int, array{0:int, 1:?int}> [product_id, variant_id]
+     */
+    private function releaseReplacements(Complaint $c): array
+    {
+        $out = [];
+        foreach (ComplaintItem::where('complaint_id', $c->id)->lockForUpdate()->get() as $item) {
+            if (!$item->replacement_reserved_at || $item->replacement_released_at) continue;
+            $productId = (int) DB::table('order_items')->where('id', $item->order_item_id)->value('product_id');
+            $item->replacement_variant_id
+                ? DB::table('product_variants')->where('id', $item->replacement_variant_id)->increment('stock', (int) $item->quantity)
+                : DB::table('products')->where('id', $productId)->increment('stock', (int) $item->quantity);
+            $item->update(['replacement_released_at' => now()]);
+            $out[] = [$productId, $item->replacement_variant_id ? (int) $item->replacement_variant_id : null];
+        }
+        if ($out) {
+            $this->event($c, 'replacement_released', null, 'system', null);
+        }
+        return $out;
+    }
+
+    private function restocked(array $lines): void
+    {
+        foreach ($lines as [$productId, $variantId]) {
+            app(\App\Services\StockAlertService::class)->restocked($productId, $variantId);
+        }
+    }
+
+    /** One cost row per (complaint, kind, Intigo parcel). */
+    private function bookCost(Complaint $c, string $kind, float $cost, float $client, float $seller, ?string $nid): void
+    {
+        \App\Models\ComplaintCost::firstOrCreate(
+            ['complaint_id' => $c->id, 'kind' => $kind, 'intigo_nid' => $nid],
+            [
+                'size'             => $c->fee_size,
+                'intigo_cost'      => round($cost, 3),
+                'recovered_client' => round($client, 3),
+                'recovered_seller' => round($seller, 3),
+                'payer'            => $c->shipping_payer,
+                'booked_at'        => now(),
+            ]
+        );
+    }
+
+    /** The sub-order (= original parcel) the complaint's lines belong to. */
+    public function sellerOrderId(Complaint $c): ?int
+    {
+        $id = DB::table('complaint_items as ci')->join('order_items as oi', 'oi.id', '=', 'ci.order_item_id')
+            ->where('ci.complaint_id', $c->id)->whereNotNull('oi.seller_order_id')->value('oi.seller_order_id');
+        return $id ? (int) $id : null;
     }
 
     // ── Pick-up ─────────────────────────────────────────────────────────────
@@ -373,18 +686,17 @@ class ReturnService
      */
     public function receive(Complaint $complaint, User $actor, string $role, array $conditions, ?string $note): Complaint
     {
-        if ($complaint->isExchange()) {
+        if ($complaint->isLegacyExchange()) {
             throw new ReturnException('Legacy exchange requests can only be closed.');
+        }
+        if ($complaint->isExchange()) {
+            return $this->receiveOldItem($complaint, $actor, $role, $conditions, $note);
         }
 
         $restockedLines = [];
         $c = DB::transaction(function () use ($complaint, $actor, $role, $conditions, $note, &$restockedLines) {
             $items = ComplaintItem::where('complaint_id', $complaint->id)->lockForUpdate()->get();
-            foreach ($items as $item) {
-                if (!in_array($conditions[$item->order_item_id] ?? null, [Complaint::CONDITION_RESALEABLE, Complaint::CONDITION_DAMAGED], true)) {
-                    throw new ReturnException(__('messages.complaint.condition_required'));
-                }
-            }
+            $this->checkConditions($items, $conditions);
 
             $c = $this->move($complaint, Complaint::STATUS_RETURNED_TO_SELLER, $actor, $role, $note, [
                 'received_at'    => now(),
@@ -392,24 +704,7 @@ class ReturnService
                 'reception_note' => $note,
             ], ['conditions' => $conditions], false);
 
-            $restocked = 0;
-            foreach ($items as $item) {
-                $condition = $conditions[$item->order_item_id];
-                $item->condition = $condition;
-                if ($condition === Complaint::CONDITION_RESALEABLE && !$item->restocked_at) {
-                    $line = DB::table('order_items')->where('id', $item->order_item_id)->first(['product_id', 'variant_id']);
-                    if ($line) {
-                        $line->variant_id && DB::table('product_variants')->where('id', $line->variant_id)->exists()
-                            ? DB::table('product_variants')->where('id', $line->variant_id)->increment('stock', $item->quantity)
-                            : DB::table('products')->where('id', $line->product_id)->increment('stock', $item->quantity);
-                        $restockedLines[] = $line;
-                        $item->restocked_quantity = $item->quantity;
-                        $item->restocked_at       = now();
-                        $restocked += $item->quantity;
-                    }
-                }
-                $item->save();
-            }
+            $restocked = $this->restockItems($items, $conditions, $restockedLines);
 
             Log::info("[Return] {$c->reference} received: {$restocked} unit(s) restocked.");
 
@@ -430,6 +725,70 @@ class ReturnService
             $this->admin($c, 'returned_to_seller');
         }
         return $c;
+    }
+
+    /**
+     * Exchange: the courier brought the old item back to the seller's pickup
+     * address. The seller's confirmation closes the case (restock if resaleable).
+     */
+    private function receiveOldItem(Complaint $complaint, User $actor, string $role, array $conditions, ?string $note): Complaint
+    {
+        $restockedLines = [];
+        $c = DB::transaction(function () use ($complaint, $actor, $role, $conditions, $note, &$restockedLines) {
+            $items = ComplaintItem::where('complaint_id', $complaint->id)->lockForUpdate()->get();
+            $this->checkConditions($items, $conditions);
+
+            $c = $this->move($complaint, Complaint::STATUS_EXCHANGE_COMPLETED, $actor, $role, $note, [
+                'received_at'          => now(),
+                'received_by'          => $actor->id,
+                'reception_note'       => $note,
+                'old_item_received_at' => now(),
+                'resolved_at'          => now(),
+            ], ['conditions' => $conditions, 'old_item' => true], false);
+
+            $restocked = $this->restockItems($items, $conditions, $restockedLines);
+            Log::info("[Exchange] {$c->reference} old item received: {$restocked} unit(s) restocked.");
+            return $c;
+        });
+
+        foreach ($restockedLines as $line) {
+            app(\App\Services\StockAlertService::class)->restocked((int) $line->product_id, $line->variant_id ? (int) $line->variant_id : null);
+        }
+        $this->buyer($c, 'exchange_completed');
+        return $c;
+    }
+
+    private function checkConditions(Collection $items, array $conditions): void
+    {
+        foreach ($items as $item) {
+            if (!in_array($conditions[$item->order_item_id] ?? null, [Complaint::CONDITION_RESALEABLE, Complaint::CONDITION_DAMAGED], true)) {
+                throw new ReturnException(__('messages.complaint.condition_required'));
+            }
+        }
+    }
+
+    /** Resaleable units back on their exact variant, once per line. Returns units restocked. */
+    private function restockItems(Collection $items, array $conditions, array &$restockedLines): int
+    {
+        $restocked = 0;
+        foreach ($items as $item) {
+            $condition = $conditions[$item->order_item_id];
+            $item->condition = $condition;
+            if ($condition === Complaint::CONDITION_RESALEABLE && !$item->restocked_at) {
+                $line = DB::table('order_items')->where('id', $item->order_item_id)->first(['product_id', 'variant_id']);
+                if ($line) {
+                    $line->variant_id && DB::table('product_variants')->where('id', $line->variant_id)->exists()
+                        ? DB::table('product_variants')->where('id', $line->variant_id)->increment('stock', $item->quantity)
+                        : DB::table('products')->where('id', $line->product_id)->increment('stock', $item->quantity);
+                    $restockedLines[] = $line;
+                    $item->restocked_quantity = $item->quantity;
+                    $item->restocked_at       = now();
+                    $restocked += $item->quantity;
+                }
+            }
+            $item->save();
+        }
+        return $restocked;
     }
 
     // ── Refund (money + finance + order status) ─────────────────────────────
@@ -570,8 +929,18 @@ class ReturnService
         $complaint->update([
             'items_amount'       => $items_amount,
             'refund_amount'      => $this->refundFor($complaint, $items_amount),
+            'fee_exceeds_refund' => $this->feeExceedsRefund($complaint, $items_amount),
             'finance_applied_at' => now(),
         ]);
+
+        // What Intigo bills for the return parcel (a normal parcel of that size)
+        // and what was recovered (refund deduction, capped by the refund; seller debit)
+        if ($complaint->fee_size) {
+            $settings = app(\App\Services\Delivery\DeliverySettings::class);
+            $this->bookCost($complaint, \App\Models\ComplaintCost::KIND_RETURN,
+                \App\Support\Millimes::toFloat($settings->agencyCost($complaint->fee_size)),
+                min($complaint->clientFee(), $items_amount), $complaint->sellerFee(), $complaint->intigo_return_ref);
+        }
 
         $this->event($complaint, 'finance_applied', $admin, 'system', null, array_map(fn($v) => round($v, 3), $rev));
     }
@@ -703,16 +1072,39 @@ class ReturnService
         ];
     }
 
-    /** Admin setting (Delivery & Fees), frozen on the return when it is created. */
-    public function returnShippingFee(): float
+    /**
+     * After-sale fees per parcel size (Delivery & Fees), as the client sees
+     * them before confirming. Frozen on the complaint when it is created.
+     *
+     * @return array<string, array{return: float, exchange: float}>
+     */
+    public function afterSaleFees(): array
     {
-        return \App\Support\Millimes::toFloat(app(\App\Services\Delivery\DeliverySettings::class)->returnShippingFee());
+        $settings = app(\App\Services\Delivery\DeliverySettings::class);
+        $out = [];
+        foreach (\App\Support\ParcelSize::ALL as $size) {
+            $out[$size] = [
+                // Not "return_fee": that name is Intigo's refused-parcel fee, never shown to buyers
+                'return'   => \App\Support\Millimes::toFloat($settings->afterSaleReturnFee($size)),
+                'exchange' => \App\Support\Millimes::toFloat($settings->exchangeFee($size)),
+            ];
+        }
+        return $out;
     }
 
+    /** Return: items − client-paid fee, never below 0. Exchange: nothing is refunded. */
     private function refundFor(Complaint $complaint, float $itemsAmount): float
     {
-        $fee = $complaint->shipping_payer === 'client' ? (float) $complaint->return_shipping_fee : 0.0;
-        return max(0, round($itemsAmount - $fee, 3));
+        if ($complaint->isExchange()) {
+            return 0.0;
+        }
+        return max(0, round($itemsAmount - $complaint->clientFee(), 3));
+    }
+
+    /** A client-paid return fee above what the items are worth: refund 0, flagged to the admin. */
+    private function feeExceedsRefund(Complaint $complaint, float $itemsAmount): bool
+    {
+        return !$complaint->isExchange() && $complaint->clientFee() > round($itemsAmount, 3) + 0.0005;
     }
 
     /**

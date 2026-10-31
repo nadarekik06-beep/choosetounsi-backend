@@ -14,7 +14,7 @@ class DeliverySettingsAdminTest extends TestCase
 
     private const VALID = [
         'client_delivery_fee' => 8, 'agency_delivery_cost' => 7, 'seller_free_delivery_contribution' => 6,
-        'return_shipping_fee' => 8, 'refused_parcel_agency_fee' => 7, 'refused_parcel_fee_paid_by' => 'platform',
+        'refused_parcel_agency_fee' => 7, 'refused_parcel_fee_paid_by' => 'platform',
     ];
 
     protected function setUp(): void
@@ -68,10 +68,26 @@ class DeliverySettingsAdminTest extends TestCase
             ->assertJsonPath('data.customer_delivery_fee', 9.5);
     }
 
-    public function test_return_fee_comes_from_the_settings(): void
+    public function test_after_sale_fees_per_size_come_from_the_settings(): void
     {
-        $this->as($this->admin)->putJson('/api/admin/delivery-settings', ['return_shipping_fee' => '5.250'] + self::VALID)->assertOk();
-        $this->assertSame(5.25, app(\App\Services\Returns\ReturnService::class)->returnShippingFee());
+        $sizes = [];
+        foreach (['S' => 8, 'L' => 10, 'XL' => 16] as $size => $agency) {
+            $sizes[$size] = ['client_fee' => 8, 'agency_cost' => $agency, 'return_fee' => '4.280', 'seller_contribution' => 6,
+                'after_sale_use_agency_cost' => $size !== 'XL', 'after_sale_return_fee' => '5.250', 'exchange_fee' => $agency + 1];
+        }
+        $this->as($this->admin)->putJson('/api/admin/delivery-settings', ['sizes' => $sizes] + self::VALID)->assertOk()
+            ->assertJsonPath('data.sizes.L.after_sale_return_fee', 10)        // follows the Intigo cost
+            ->assertJsonPath('data.sizes.XL.after_sale_return_fee', 5.25)     // custom value
+            ->assertJsonPath('data.sizes.XL.after_sale_use_agency_cost', false)
+            ->assertJsonPath('data.sizes.S.exchange_fee', 9);
+
+        $fees = app(\App\Services\Returns\ReturnService::class)->afterSaleFees();
+        $this->assertSame(['return' => 10.0, 'exchange' => 11.0], $fees['L']);
+        $this->assertSame(5.25, $fees['XL']['return']);
+
+        // Older admin builds (no after-sale fields) keep working and change nothing there
+        $this->as($this->admin)->putJson('/api/admin/delivery-settings', ['client_delivery_fee' => 9] + self::VALID)->assertOk();
+        $this->assertSame(5.25, app(\App\Services\Returns\ReturnService::class)->afterSaleFees()['XL']['return']);
     }
 
     public function test_custom_product_fees_are_gone(): void

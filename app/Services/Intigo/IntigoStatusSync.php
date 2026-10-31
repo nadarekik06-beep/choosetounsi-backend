@@ -86,6 +86,11 @@ class IntigoStatusSync
     {
         $so = SellerOrder::where('intigo_nid', $nid)->first();
         if (!$so) {
+            // An exchange parcel (after-sale complaint)?
+            $complaint = \App\Models\Complaint::where('intigo_exchange_nid', $nid)->first();
+            if ($complaint) {
+                return app(ExchangeStatusSync::class)->apply($complaint, $code, $label);
+            }
             Log::warning("[Intigo] status {$code} for unknown parcel {$nid}: ignored");
             return 'ignored: unknown nid';
         }

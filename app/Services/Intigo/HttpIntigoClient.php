@@ -42,6 +42,22 @@ class HttpIntigoClient implements IntigoClient
         ];
     }
 
+    public function createExchange(array $payload, ?int $sellerOrderId = null): array
+    {
+        $body = $this->request('POST', '/parcels/exchange', $payload, $sellerOrderId, [
+            'X-Intigo-Platform'         => config('intigo.platform'),
+            'X-Intigo-Platform-Version' => config('intigo.platform_version'),
+            'X-Intigo-Shop'             => config('intigo.shop'),
+        ]);
+
+        $nid = is_array($body) ? ($body['nid'] ?? $body['data']['nid'] ?? null) : null;
+        if (!is_string($nid) && !is_int($nid)) {
+            // 2xx without a nid: the exchange may exist (ambiguous): check in Intigo
+            throw new IntigoException('Intigo answered without a parcel id (nid)', 201, true, 'server', $body);
+        }
+        return ['nid' => (string) $nid, 'raw' => $body];
+    }
+
     public function findByCid(string $cid, ?int $sellerOrderId = null): array
     {
         $found = [];

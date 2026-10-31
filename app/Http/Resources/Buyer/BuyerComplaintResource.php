@@ -25,6 +25,7 @@ class BuyerComplaintResource extends JsonResource
         'id', 'order_id', 'seller_order_id', 'product_id', 'variant_id', 'product_name', 'variant_label',
         'variant_attributes', 'quantity', 'returned_quantity', 'return_state', 'unit_price', 'total', 'image_url',
         'return_quantity', 'return_unit_price', 'return_amount', 'condition', 'restocked_quantity',
+        'replacement_variant_id', 'replacement_label',
     ];
 
     public function toArray($request): array
@@ -66,6 +67,17 @@ class BuyerComplaintResource extends JsonResource
             'refund_method'       => $c->refund_method,
             'refund_reference'    => $c->status === Complaint::STATUS_REFUNDED ? $c->refund_reference : null,
             'refund_status'       => $c->refund_status,
+            'is_legacy_exchange'  => $c->isLegacyExchange(),
+            // Exchange: cash to hand the courier with the replacement (0 when the shop is at fault)
+            'exchange_fee'        => round((float) $c->exchange_fee, 3),
+            'client_fee'          => round($c->clientFee(), 3),
+            'fee_size'            => $c->fee_size,
+            'exchange_tracking'   => $c->isExchange() ? $c->intigo_exchange_nid : null,
+            'exchange_carrier_status' => $c->isExchange() ? $c->intigo_exchange_status_label : null,
+            'exchange_shipped_at' => $date($c->exchange_shipped_at),
+            'exchanged_at'        => $date($c->exchanged_at),
+            'exchange_failed_at'  => $date($c->exchange_failed_at),
+            'old_item_received_at' => $date($c->old_item_received_at),
             // Dates
             'seller_decided_at'   => $date($c->seller_decided_at),
             'escalated_at'        => $date($c->escalated_at),
