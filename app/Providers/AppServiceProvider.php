@@ -56,6 +56,9 @@ class AppServiceProvider extends ServiceProvider
             $model::saved(fn () => app(\App\Services\Gender\GenderMenu::class)->flush());
             $model::deleted(fn () => app(\App\Services\Gender\GenderMenu::class)->flush());
         }
+        // Subcategory bar on category pages: product visibility / stock / images clear its cache
+        Product::observe(\App\Observers\SubcategoryBarObserver::class);
+        \App\Models\ProductImage::observe(\App\Observers\SubcategoryBarObserver::class);
         Order::observe(OrderObserver::class);
         // Cancelled seller orders give their flash-sale units back
         SellerOrder::observe(SellerOrderObserver::class);

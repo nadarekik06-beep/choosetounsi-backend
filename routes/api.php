@@ -99,6 +99,7 @@ Route::get('/categories/with-products',   [CategoryController::class, 'withProdu
 // Gendered categories (Femme / Homme): mega-menu columns and the round subcategory bar
 Route::get('/categories/mega-menu',       [\App\Http\Controllers\Api\GenderMenuController::class, 'megaMenu']);
 Route::get('/categories/{slug}/gender-bar', [\App\Http\Controllers\Api\GenderMenuController::class, 'bar']);
+Route::get('/categories/{slug}/subcategory-bar', [\App\Http\Controllers\Api\GenderMenuController::class, 'subcategoryBar']);
 Route::get('/categories/{slug}',          [CategoryController::class, 'show']);
 Route::get('/categories/{slug}/products', [CategoryController::class, 'products'])->middleware('store.cards');
 

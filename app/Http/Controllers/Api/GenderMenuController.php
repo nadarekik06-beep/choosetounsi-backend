@@ -29,4 +29,14 @@ class GenderMenuController extends Controller
         $gender = (string) $request->query('gender', '');
         return response()->json(['success' => true, 'data' => $this->menu->bar($slug, $gender)]);
     }
+
+    /**
+     * GET /api/categories/{slug}/subcategory-bar?gender=women|men
+     * Round-image subcategory bar of any category page (gender only counts on gendered categories).
+     * [{ id, slug, name, name_fr, name_ar, count, image, image_source: admin|product|null }]
+     */
+    public function subcategoryBar(Request $request, string $slug, \App\Services\Catalog\SubcategoryBar $bar)
+    {
+        return response()->json(['success' => true, 'data' => $bar->get($slug, $request->query('gender'))]);
+    }
 }

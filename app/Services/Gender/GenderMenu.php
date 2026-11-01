@@ -26,9 +26,15 @@ class GenderMenu
         Cache::forever(self::VERSION_KEY, (int) Cache::get(self::VERSION_KEY, 0) + 1);
     }
 
+    /** Bumped by flush(); other caches built from the menu data (subcategory bar) key on it too. */
+    public function version(): int
+    {
+        return (int) Cache::get(self::VERSION_KEY, 0);
+    }
+
     private function key(string $suffix): string
     {
-        return 'gender_menu:v' . (int) Cache::get(self::VERSION_KEY, 0) . ':' . $suffix;
+        return 'gender_menu:v' . $this->version() . ':' . $suffix;
     }
 
     /**
