@@ -7,7 +7,6 @@ use App\Models\Coupon;
 use App\Models\Pack;
 use App\Models\Product;
 use App\Models\ProductVariant;
-use App\Models\User;
 use App\Services\CommissionService;
 use App\Services\CouponService;
 use App\Services\Delivery\DeliverySettings;
@@ -289,6 +288,9 @@ class OrderPricing
             $parcels[$sellerId]['coupon_shares'] = $this->coupons->allocateDiscountM($eligible, $result['discount_amount_m']);
         }
 
+        // Buyers see the shop's name, never the seller's personal name
+        $storeNames = \App\Services\ShopOverview::storeNames(array_column($parcels, 'seller_id'));
+
         $out = [];
         foreach ($parcels as $k => $p) {
             $sellerId = $p['seller_id'];
@@ -328,7 +330,7 @@ class OrderPricing
 
             $out[$k] = [
                 'seller_id'          => $sellerId,
-                'seller_name'        => $sellerId ? (User::whereKey($sellerId)->value('name') ?? '') : "CHOOSE'Tounsi",
+                'seller_name'        => $sellerId ? ($storeNames[(int) $sellerId] ?? '') : "CHOOSE'Tounsi",
                 'lines'              => $lineOut,
                 'coupon'             => $p['coupon'] ?? null,
                 'parcel_size'        => $size,

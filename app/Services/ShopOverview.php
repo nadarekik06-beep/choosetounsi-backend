@@ -163,4 +163,30 @@ class ShopOverview
             ]])
             ->all();
     }
+
+    /**
+     * seller_id => the name buyers see: the approved shop's business_name,
+     * else the account name when the shop has no name. One query.
+     */
+    public static function storeNames(array $sellerIds): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map('intval', $sellerIds))));
+        if (!$ids) return [];
+
+        // Ordered by id so the latest approved application wins (same as storefrontBranding)
+        $shops = DB::table('seller_applications')
+            ->whereIn('user_id', $ids)
+            ->where('status', 'approved')
+            ->orderBy('id')
+            ->pluck('business_name', 'user_id')
+            ->all();
+        $accounts = User::whereIn('id', $ids)->pluck('name', 'id')->all();
+
+        $out = [];
+        foreach ($ids as $id) {
+            $shop     = trim((string) ($shops[$id] ?? ''));
+            $out[$id] = $shop !== '' ? $shop : (string) ($accounts[$id] ?? '');
+        }
+        return $out;
+    }
 }

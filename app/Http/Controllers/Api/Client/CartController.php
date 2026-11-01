@@ -48,9 +48,14 @@ class CartController extends Controller
             ])
             ->get();
 
+        // Shop names (not the sellers' personal names), one query for the whole cart
+        $storeNames = \App\Services\ShopOverview::storeNames(
+            $items->map(fn($item) => $item->product?->seller_id)->filter()->all()
+        );
+
         $mapped = $items->map(fn($item) => $item->isPack()
             ? $this->formatPackCartItem($item)
-            : $this->formatCartItem($item)
+            : $this->formatCartItem($item, $storeNames)
         );
 
         return response()->json([
@@ -415,7 +420,7 @@ private function safeSessionId(Request $request): ?string
      * price when a flash sale or discount is active.
      * Everything else is identical to the original.
      */
-    private function formatCartItem(Cart $item): array
+    private function formatCartItem(Cart $item, array $storeNames = []): array
     {
         $product = $item->product;
         $variant = $item->variant;
@@ -451,7 +456,7 @@ private function safeSessionId(Request $request): ?string
             'sku'              => $variant?->sku ?? $product->sku,
             'category'         => $product->category?->name,
             'seller_id'        => $product->seller_id,
-            'seller_name'      => $product->seller?->name,
+            'seller_name'      => $storeNames[(int) $product->seller_id] ?? $product->seller?->name,
             'price'            => $price,
             'original_price'   => $promoData['original_price'],
             'discount_percent' => $promoData['discount_percent'],
