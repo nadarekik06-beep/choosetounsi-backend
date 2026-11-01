@@ -40,6 +40,7 @@ class SellerApplication extends Model
         'rejection_reason',
         'reviewed_at',
         'reviewed_by',
+        'created_by_admin_id',
     ];
 
     protected $casts = [
@@ -60,6 +61,12 @@ class SellerApplication extends Model
     public function reviewer()
     {
         return $this->belongsTo(User::class, 'reviewed_by');
+    }
+
+    /** The admin who filled the application in on the user's behalf (null = the user applied). */
+    public function createdByAdmin()
+    {
+        return $this->belongsTo(User::class, 'created_by_admin_id');
     }
 
     // ── Scopes ─────────────────────────────────────────────────────────────

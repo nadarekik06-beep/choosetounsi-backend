@@ -2,6 +2,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\SellerApplication;
 use App\Models\User;
 use Illuminate\Http\Request;
 
@@ -12,7 +13,14 @@ class UserController extends Controller
      */
     public function index(Request $request)
     {
-        $query = User::where('role', 'client')->withCount('orders');
+        $query = User::select('users.*')
+            ->where('role', 'client')
+            ->withCount('orders')
+            // Latest seller application's status (null = none): Users page "Create seller application"
+            ->addSelect(['seller_application_status' => SellerApplication::select('status')
+                ->whereColumn('seller_applications.user_id', 'users.id')
+                ->latest()
+                ->limit(1)]);
 
         if ($search = $request->query('search')) {
             $query->where(function ($q) use ($search) {

@@ -420,6 +420,9 @@ class AuthController extends Controller
                 'is_active'            => $user->is_active,
                 'avatar'               => $user->avatar,
                 'active_plan'          => $application?->plan ?? 'free',
+                // Latest seller application: the storefront polls while it is pending
+                'seller_application_id'     => $application?->id,
+                'seller_application_status' => $application?->status,
                 'onboarding_completed' => (bool) $user->onboarding_completed,
                 'profile_completed'    => $user->profileCompletion()->isComplete(),
                 'profile_prompt_skipped_at' => $user->profile_prompt_skipped_at?->toISOString(),

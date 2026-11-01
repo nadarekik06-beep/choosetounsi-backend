@@ -4,99 +4,20 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Mail\SellerApplicationApprovedMail;
-use App\Mail\SellerApplicationSubmittedMail;
-use App\Models\User;
 use App\Models\SellerApplication;
-use App\Notifications\NewSellerApplicationNotification;
 use App\Notifications\SellerApplicationReviewedNotification;
-use App\Models\IntigoZone;
 use App\Models\SellerPickupAddress;
 use App\Services\Sellers\PickupAddressService;
-use App\Support\TunisianPhone;
+use App\Services\Sellers\SellerApplicationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Mail;
-use Illuminate\Support\Facades\Notification;
-use Illuminate\Support\Facades\Storage;
 
 class SellerApplicationController extends Controller
 {
-    public function __construct(private PickupAddressService $pickups) {}
-
-    // ── Shared validation rules ────────────────────────────────────────────
-
-    private function validationRules(bool $isUpdate = false): array
-    {
-        $required = $isUpdate ? 'sometimes|required' : 'required';
-
-        return [
-            'full_name'                  => "{$required}|string|max:255",
-            'phone_number'               => [...explode('|', $required), 'string', 'regex:' . TunisianPhone::PATTERN],
-            'business_name'              => "{$required}|string|max:255",
-            'business_category'          => "{$required}|string|max:255",
-            'business_categories'        => 'nullable|array|max:5',
-            'business_categories.*'      => 'string|max:255',
-            'business_subcategories'     => 'nullable|array',           // ← NEW
-            'business_subcategories.*'   => 'string|max:255',           // ← NEW
-            'business_description'       => 'nullable|string|max:2000', // ← NOW OPTIONAL
-            // Pickup address (Intigo "Nouvelle adresse"): wilaya / city are derived from the zone
-            ...PickupAddressService::rules(!$isUpdate),
-            'profile_picture'            => 'nullable|image|mimes:jpg,jpeg,png,webp|max:4096',
-            'sample_images'              => 'nullable|array|max:5',
-            'sample_images.*'            => 'image|mimes:jpg,jpeg,png,webp|max:4096',
-            'sample_captions'            => 'nullable|array|max:5',
-            'sample_captions.*'          => 'nullable|string|max:200',
-            'facebook_url'               => 'nullable|url|max:500',
-            'instagram_url'              => 'nullable|url|max:500',
-            'website_url'                => 'nullable|url|max:500',
-            'preferred_plan'             => 'nullable|in:green,red,black',
-            'pricing_range'              => 'nullable|in:budget,mid,premium',
-        ];
-    }
-
-    // ── Helper: build categories array ────────────────────────────────────
-
-    private function resolveCategories(array $validated): array
-    {
-        $categories = $validated['business_categories']
-            ?? [$validated['business_category']];
-
-        return [
-            'primary'    => $categories[0] ?? $validated['business_category'] ?? '',
-            'all'        => $categories,
-            'subcats'    => $validated['business_subcategories'] ?? [],
-        ];
-    }
-
-    // ── Helper: handle file uploads ───────────────────────────────────────
-
-    private function handleProfilePicture(Request $request, ?string $existing = null): ?string
-    {
-        if ($request->hasFile('profile_picture')) {
-            // Delete old file if replacing
-            if ($existing) {
-                Storage::disk('public')->delete($existing);
-            }
-            return $request->file('profile_picture')
-                ->store('seller-applications/profiles', 'public');
-        }
-        return $existing;
-    }
-
-    private function handleSampleImages(Request $request, array $existing = []): array
-    {
-        if (!$request->hasFile('sample_images')) {
-            return $existing;
-        }
-
-        $paths = $existing; // keep existing images, append new ones
-        foreach ($request->file('sample_images') as $image) {
-            $paths[] = $image->store('seller-applications/samples', 'public');
-        }
-
-        return $paths;
-    }
+    public function __construct(
+        private PickupAddressService $pickups,
+        private SellerApplicationService $applications,
+    ) {}
 
     // ─────────────────────────────────────────────────────────────────────
     // PUBLIC (seller-facing) ENDPOINTS
@@ -160,11 +81,7 @@ class SellerApplicationController extends Controller
     {
         $user = Auth::user();
 
-        $existing = SellerApplication::where('user_id', $user->id)
-            ->where('status', 'pending')
-            ->first();
-
-        if ($existing) {
+        if ($existing = $this->applications->pendingFor($user)) {
             return response()->json([
                 'success' => false,
                 'message' => __('messages.seller_application.pending_exists'),
@@ -172,53 +89,7 @@ class SellerApplicationController extends Controller
             ], 422);
         }
 
-        PickupAddressService::prepare($request);
-        $request->merge(['phone_number' => TunisianPhone::normalize($request->input('phone_number'))]);
-        $validated = $request->validate($this->validationRules(false), PickupAddressService::messages());
-        $cats      = $this->resolveCategories($validated);
-        $zone      = IntigoZone::findOrFail($validated['intigo_zone_id']);
-
-        $profilePicturePath = $this->handleProfilePicture($request);
-        $sampleImagePaths   = $this->handleSampleImages($request);
-
-        $application = SellerApplication::create([
-            'user_id'                => $user->id,
-            'full_name'              => $validated['full_name'],
-            'phone_number'           => $validated['phone_number'],
-            'business_name'          => $validated['business_name'],
-            'business_category'      => $cats['primary'],
-            'business_categories'    => $cats['all'],
-            'business_subcategories' => $cats['subcats'],           // ← NEW
-            'business_description'   => $validated['business_description'] ?? null,
-            'wilaya'                 => $zone->wilaya ?: $zone->gouvernorat,
-            'city'                   => $zone->delegation,
-            'profile_picture'        => $profilePicturePath,
-            'sample_images'          => $sampleImagePaths ?: null,
-            'sample_captions'        => $validated['sample_captions'] ?? null,
-            'facebook_url'           => $validated['facebook_url']  ?? null,
-            'instagram_url'          => $validated['instagram_url'] ?? null,
-            'website_url'            => $validated['website_url']   ?? null,
-            'status'                 => 'pending',
-            'preferred_plan'         => $validated['preferred_plan'] ?? 'green',
-            'plan'                   => 'free',
-            'pricing_range'          => $validated['pricing_range'] ?? null,
-        ]);
-
-        $this->pickups->save($user, $validated, $user, 'application');
-
-        Notification::send(
-            User::getAllAdmins(),
-            new NewSellerApplicationNotification(
-                $application->id,
-                $validated['full_name'],
-                $validated['business_name'],
-                $user->id
-            )
-        );
-
-        Mail::to($user)->queue(
-            new SellerApplicationSubmittedMail($user, $application)
-        );
+        $application = $this->applications->create($user, $request);
 
         return response()->json([
             'success' => true,
@@ -248,20 +119,16 @@ class SellerApplicationController extends Controller
             ], 422);
         }
 
-        PickupAddressService::prepare($request);
-        if ($request->has('phone_number')) {
-            $request->merge(['phone_number' => TunisianPhone::normalize($request->input('phone_number'))]);
-        }
-        $validated = $request->validate($this->validationRules(true), PickupAddressService::messages());
-        $cats      = $this->resolveCategories($validated);
+        $validated = SellerApplicationService::validate($request, true);
+        $cats      = SellerApplicationService::resolveCategories($validated);
 
-        $profilePicturePath = $this->handleProfilePicture(
+        $profilePicturePath = SellerApplicationService::storeProfilePicture(
             $request,
             $application->profile_picture
         );
 
         // For updates: if new sample images sent, append; otherwise keep existing
-        $sampleImagePaths = $this->handleSampleImages(
+        $sampleImagePaths = SellerApplicationService::storeSampleImages(
             $request,
             $application->sample_images ?? []
         );
@@ -308,7 +175,7 @@ class SellerApplicationController extends Controller
 
     public function index(Request $request)
     {
-        $query = SellerApplication::with('user')->orderByDesc('created_at');
+        $query = SellerApplication::with(['user', 'createdByAdmin:id,name'])->orderByDesc('created_at');
 
         if ($status = $request->query('status')) {
             $query->where('status', $status);
@@ -333,7 +200,7 @@ class SellerApplicationController extends Controller
     public function show(int $id)
     {
         // Route parameter is {id}: resolve it here (implicit binding needs {application})
-        $application = SellerApplication::with('user')->findOrFail($id);
+        $application = SellerApplication::with(['user', 'createdByAdmin:id,name'])->findOrFail($id);
         $record = SellerPickupAddress::with('zone')->where('user_id', $application->user_id)->first();
         $application->setAttribute('pickup', $this->pickups->present($record, true));
         $application->setAttribute('pickup_history', $this->pickups->history($application->user_id, 20));
@@ -342,38 +209,20 @@ class SellerApplicationController extends Controller
 
     public function approve(Request $request, SellerApplication $application)
     {
+        if ($application->status === 'approved') {
+            return response()->json(['success' => false, 'message' => 'This application is already approved.'], 422);
+        }
+
         // The courier must find the shop: no approval without a zone and a map pin
-        $pickup = SellerPickupAddress::where('user_id', $application->user_id)->first();
-        if (!$pickup || !$pickup->isLocated()) {
+        if ($missing = $this->applications->approvalBlockers($application)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Cannot approve: the pickup address has no Intigo zone and/or map pin. Ask the seller to complete it.',
-                'missing' => $this->pickups->missing($pickup),
+                'missing' => $missing,
             ], 422);
         }
 
-        $application->update([
-            'status'      => 'approved',
-            'plan'        => \App\Models\SubscriptionPlan::defaultPlan()->slug,
-            'reviewed_at' => now(),
-        ]);
-
-        // Every approved seller has a subscription row (admin list, audit, limits)
-        app(\App\Services\SubscriptionService::class)->getOrCreateSubscription($application);
-
-        $application->user->update([
-            'role'        => 'seller',
-            'is_approved' => true,
-            'is_active'   => true,
-        ]);
-
-        $application->user->notify(
-            new SellerApplicationReviewedNotification('approved', $application->business_name)
-        );
-
-        Mail::to($application->user)->queue(
-            new SellerApplicationApprovedMail($application->user, $application)
-        );
+        $this->applications->approve($application);
 
         return response()->json([
             'success' => true,

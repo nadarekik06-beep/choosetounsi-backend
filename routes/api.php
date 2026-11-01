@@ -608,6 +608,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/users/{id}/ban',   [AdminUserController::class, 'ban']);
         Route::patch('/users/{id}/unban', [AdminUserController::class, 'unban']);
         Route::delete('/users/{id}',      [AdminUserController::class, 'destroy']);
+        Route::post('/users/{id}/seller-application', [\App\Http\Controllers\Admin\UserSellerApplicationController::class, 'store']);
 
         // ── Sellers ───────────────────────────────────────────────────────
         Route::get('/sellers',                [SellerController::class, 'index']);

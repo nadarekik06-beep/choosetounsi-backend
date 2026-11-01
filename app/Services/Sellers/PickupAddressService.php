@@ -153,7 +153,7 @@ class PickupAddressService
             $change = SellerAddressChange::create([
                 'user_id'         => $seller->id,
                 'changed_by'      => $actor?->id,
-                'changed_by_role' => $isAdmin ? 'admin' : 'seller',
+                'changed_by_role' => $isAdmin || $actor?->role === 'admin' ? 'admin' : 'seller',
                 'source'          => $source,
                 'old_values'      => $old,
                 'new_values'      => $new,
