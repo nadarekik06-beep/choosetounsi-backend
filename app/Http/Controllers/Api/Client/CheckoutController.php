@@ -17,6 +17,7 @@ use App\Models\User;
 use App\Services\CouponService;
 use App\Services\FinancialSnapshotService;
 use App\Services\Orders\BuyerOrderNotifier;
+use App\Services\Orders\CheckoutGuard;
 use App\Services\Orders\OrderPricing;
 use App\Services\Orders\PricingException;
 use App\Services\Orders\SellerOrderNotifier;
@@ -67,6 +68,7 @@ class CheckoutController extends Controller
         private BuyerOrderNotifier       $buyerNotifier,
         private OrderPricing             $pricing,
         private CheckoutPaymentMethods   $paymentMethods,
+        private CheckoutGuard            $guard,
     ) {}
 
     /**
@@ -121,10 +123,15 @@ class CheckoutController extends Controller
             'coupon_codes'   => 'nullable|array',
             'coupon_codes.*' => 'string',
             'expected_total' => 'nullable|numeric|min:0',
-        ] + self::GUEST_RULES);
+        ] + self::GUEST_RULES + CheckoutGuard::rules());
 
         $user          = $request->user();
         $paymentMethod = $request->payment_method ?? 'cod';
+        // Same confirmation sent again (double click, network retry): the order it already created
+        $idempotencyKey = $this->guard->key($request);
+        if ($replay = $this->guard->replay($idempotencyKey, $user, $request)) {
+            return $replay;
+        }
         if ($blocked = $this->paymentMethodBlocked($paymentMethod)) {
             return $blocked;
         }
@@ -156,32 +163,47 @@ class CheckoutController extends Controller
 
         $checkingOutIds = $cartItems->pluck('id')->all();
 
-        DB::beginTransaction();
-        try {
-            [$order, $soldLines] = $this->placeOrder($request, $user, $quote, $paymentMethod);
-
-            Cart::whereIn('id', $checkingOutIds)->delete(); // ids come from cartRows(): this buyer's rows only
-
-            // COD / wallet: sellers hear about it now (sent after the commit).
-            // Card / D17 wait for the payment: see SellerOrderNotifier.
-            $this->sellerNotifier->orderPlaced($order);
-            $this->buyerNotifier->orderPlaced($order);
-            DB::commit();
-        } catch (FlashSaleSoldOut $e) {
-            DB::rollBack();
-            return $this->flashSoldOut($e);
-        } catch (InsufficientStock $e) {
-            DB::rollBack();
-            return response()->json(['success' => false, 'message' => __('messages.checkout.stock_only', ['label' => $e->label, 'stock' => $e->available])], 422);
-        } catch (\Throwable $e) {
-            DB::rollBack();
-            Log::error('[Checkout] store failed: ' . $e->getMessage(), ['file' => $e->getFile(), 'line' => $e->getLine()]);
-            return response()->json(['success' => false, 'message' => __('messages.checkout.order_failed')], 500);
+        // Same lines placed seconds ago, or another order of this buyer in progress: nothing created
+        [$refused, $lock] = $this->guard->begin($request, $user, $quote, $paymentMethod, $idempotencyKey);
+        if ($refused) {
+            return $refused;
         }
+        try {
+            DB::beginTransaction();
+            try {
+                [$order, $soldLines] = $this->placeOrder($request, $user, $quote, $paymentMethod);
 
-        $this->afterOrder($request, $order, $soldLines);
+                Cart::whereIn('id', $checkingOutIds)->delete(); // ids come from cartRows(): this buyer's rows only
 
-        return response()->json($this->orderResponse($order, $quote, $paymentMethod), 201);
+                // COD / wallet: sellers hear about it now (sent after the commit).
+                // Card / D17 wait for the payment: see SellerOrderNotifier.
+                $this->sellerNotifier->orderPlaced($order);
+                $this->buyerNotifier->orderPlaced($order);
+                DB::commit();
+            } catch (FlashSaleSoldOut $e) {
+                DB::rollBack();
+                return $this->flashSoldOut($e);
+            } catch (InsufficientStock $e) {
+                DB::rollBack();
+                return response()->json(['success' => false, 'message' => __('messages.checkout.stock_only', ['label' => $e->label, 'stock' => $e->available])], 422);
+            } catch (\Throwable $e) {
+                DB::rollBack();
+                // The same key won a race a moment ago: answer with that order
+                if ($this->guard->isDuplicateKey($e) && ($replay = $this->guard->replay($idempotencyKey, $user, $request))) {
+                    return $replay;
+                }
+                Log::error('[Checkout] store failed: ' . $e->getMessage(), ['file' => $e->getFile(), 'line' => $e->getLine()]);
+                return response()->json(['success' => false, 'message' => __('messages.checkout.order_failed')], 500);
+            }
+
+            $this->afterOrder($request, $order, $soldLines);
+
+            $response = $this->orderResponse($order, $quote, $paymentMethod);
+            $this->guard->placed($idempotencyKey, $response, $request, $user, $quote, $paymentMethod);
+            return response()->json($response, 201);
+        } finally {
+            $this->guard->release($lock);
+        }
     }
 
     /**
@@ -198,10 +220,15 @@ class CheckoutController extends Controller
             'payment_method' => 'nullable|string|in:' . implode(',', CheckoutPaymentMethods::ALL),
             'coupon_code'    => 'nullable|string',
             'expected_total' => 'nullable|numeric|min:0',
-        ] + self::GUEST_RULES);
+        ] + self::GUEST_RULES + CheckoutGuard::rules());
 
         $user          = $request->user();
         $paymentMethod = $request->payment_method ?? 'cod';
+        // Same confirmation sent again (double click, network retry): the order it already created
+        $idempotencyKey = $this->guard->key($request);
+        if ($replay = $this->guard->replay($idempotencyKey, $user, $request)) {
+            return $replay;
+        }
         if ($blocked = $this->paymentMethodBlocked($paymentMethod)) {
             return $blocked;
         }
@@ -222,27 +249,42 @@ class CheckoutController extends Controller
             return $short;
         }
 
-        DB::beginTransaction();
-        try {
-            [$order, $soldLines] = $this->placeOrder($request, $user, $quote, $paymentMethod);
-            $this->sellerNotifier->orderPlaced($order);
-            $this->buyerNotifier->orderPlaced($order);
-            DB::commit();
-        } catch (FlashSaleSoldOut $e) {
-            DB::rollBack();
-            return $this->flashSoldOut($e);
-        } catch (InsufficientStock $e) {
-            DB::rollBack();
-            return response()->json(['success' => false, 'message' => __('messages.checkout.stock_only', ['label' => $e->label, 'stock' => $e->available])], 422);
-        } catch (\Throwable $e) {
-            DB::rollBack();
-            Log::error('[Checkout] buyNow failed: ' . $e->getMessage(), ['file' => $e->getFile(), 'line' => $e->getLine()]);
-            return response()->json(['success' => false, 'message' => __('messages.checkout.order_failed')], 500);
+        // Same product ordered seconds ago, or another order of this buyer in progress: nothing created
+        [$refused, $lock] = $this->guard->begin($request, $user, $quote, $paymentMethod, $idempotencyKey);
+        if ($refused) {
+            return $refused;
         }
+        try {
+            DB::beginTransaction();
+            try {
+                [$order, $soldLines] = $this->placeOrder($request, $user, $quote, $paymentMethod);
+                $this->sellerNotifier->orderPlaced($order);
+                $this->buyerNotifier->orderPlaced($order);
+                DB::commit();
+            } catch (FlashSaleSoldOut $e) {
+                DB::rollBack();
+                return $this->flashSoldOut($e);
+            } catch (InsufficientStock $e) {
+                DB::rollBack();
+                return response()->json(['success' => false, 'message' => __('messages.checkout.stock_only', ['label' => $e->label, 'stock' => $e->available])], 422);
+            } catch (\Throwable $e) {
+                DB::rollBack();
+                // The same key won a race a moment ago: answer with that order
+                if ($this->guard->isDuplicateKey($e) && ($replay = $this->guard->replay($idempotencyKey, $user, $request))) {
+                    return $replay;
+                }
+                Log::error('[Checkout] buyNow failed: ' . $e->getMessage(), ['file' => $e->getFile(), 'line' => $e->getLine()]);
+                return response()->json(['success' => false, 'message' => __('messages.checkout.order_failed')], 500);
+            }
 
-        $this->afterOrder($request, $order, $soldLines);
+            $this->afterOrder($request, $order, $soldLines);
 
-        return response()->json($this->orderResponse($order, $quote, $paymentMethod), 201);
+            $response = $this->orderResponse($order, $quote, $paymentMethod);
+            $this->guard->placed($idempotencyKey, $response, $request, $user, $quote, $paymentMethod);
+            return response()->json($response, 201);
+        } finally {
+            $this->guard->release($lock);
+        }
     }
 
     // ── Order writer ──────────────────────────────────────────────────────────
@@ -273,6 +315,9 @@ class CheckoutController extends Controller
                 'tracking_token' => GuestCheckout::newTrackingToken(),
             ]),
             'order_number'        => 'ORD-' . strtoupper(Str::random(8)),
+            // One order per checkout confirmation (unique: a repeated key cannot create a second one).
+            // Only when sent: requests from an older storefront write nothing new.
+            ...($request->filled('idempotency_key') ? ['idempotency_key' => $request->input('idempotency_key')] : []),
             'status'              => 'pending',
             'payment_status'      => $paid,
             'payment_method'      => $paymentMethod,

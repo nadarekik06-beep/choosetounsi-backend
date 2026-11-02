@@ -11,6 +11,7 @@ use App\Models\SponsorshipEvent;
 use App\Models\User;
 use App\Notifications\Buyer\OrderPlacedNotification;
 use App\Services\Intigo\ParcelPayload;
+use App\Services\Orders\CheckoutGuard;
 use App\Services\Orders\WhatsApp\SellerReminderPayload;
 use App\Support\GuestCheckout;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
@@ -71,6 +72,8 @@ class GuestCheckoutTest extends TestCase
     /** Quote then place, as the storefront does. */
     private function guestCheckout(array $body = [], string $phone = '22333444', ?string $token = null): \Illuminate\Testing\TestResponse
     {
+        // A real buyer's orders are seconds apart: past the identical-order window (CheckoutGuard)
+        $this->travel(CheckoutGuard::RECENT_SECONDS + 1)->seconds();
         $quote = $this->guest($token)->postJson('/api/checkout/quote', ['phone' => $phone] + array_intersect_key($body, array_flip(['coupon_codes'])))
             ->assertOk()->json('data');
         return $this->guest($token)->postJson('/api/checkout', $this->guestAddress($phone) + $body + [

@@ -65,6 +65,8 @@ return [
     'checkout' => [
         'reselect_region' => 'Veuillez resélectionner votre gouvernorat et votre délégation dans la liste.',
         'cart_empty' => 'Votre panier est vide.',
+        'duplicate_order' => 'Cette commande vient d\'être passée. Vérifiez « Mes commandes » avant de recommencer.',
+        'idempotency_conflict' => 'Cette demande de commande n\'est pas valide. Rechargez la page et réessayez.',
         'pack_unavailable' => 'Le pack « :pack » n\'est plus disponible.',
         'pack_product_unavailable' => 'Un produit du pack « :pack » n\'est plus disponible.',
         'pack_product_stock' => '« :product » du pack « :pack » n\'a que :stock article(s) en stock.',

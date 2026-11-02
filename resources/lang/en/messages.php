@@ -65,6 +65,8 @@ return [
     'checkout' => [
         'reselect_region' => 'Please select your governorate and delegation again from the list.',
         'cart_empty' => 'Your cart is empty.',
+        'duplicate_order' => 'This order was just placed. Check "My orders" before trying again.',
+        'idempotency_conflict' => 'This order request is not valid. Reload the page and try again.',
         'pack_unavailable' => 'The bundle ":pack" is no longer available.',
         'pack_product_unavailable' => 'A product in bundle ":pack" is no longer available.',
         'pack_product_stock' => '":product" in bundle ":pack" only has :stock item(s) in stock.',

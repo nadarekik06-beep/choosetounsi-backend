@@ -65,6 +65,8 @@ return [
     'checkout' => [
         'reselect_region' => 'يرجى إعادة اختيار الولاية والمعتمدية من القائمة.',
         'cart_empty' => 'سلتك فارغة.',
+        'duplicate_order' => 'تم تسجيل هذا الطلب للتو. تحقّق من «طلباتي» قبل إعادة المحاولة.',
+        'idempotency_conflict' => 'طلب الشراء هذا غير صالح. أعد تحميل الصفحة وحاول مجدداً.',
         'pack_unavailable' => 'الحزمة «:pack» لم تعد متوفرة.',
         'pack_product_unavailable' => 'أحد منتجات الحزمة «:pack» لم يعد متوفراً.',
         'pack_product_stock' => '«:product» في الحزمة «:pack» متوفر منه :stock قطعة فقط.',

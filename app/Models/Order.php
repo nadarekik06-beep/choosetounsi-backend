@@ -19,6 +19,7 @@ class Order extends Model
         'guest_email',
         'tracking_token',
         'order_number',
+        'idempotency_key',   // checkout confirmation key: one order per key
         'subtotal',
         'discount_amount',
         'coupon_codes',
