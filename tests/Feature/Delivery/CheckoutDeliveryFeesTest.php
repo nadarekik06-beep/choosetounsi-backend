@@ -10,6 +10,7 @@ use App\Models\Order;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use App\Services\Orders\CheckoutGuard;
 use Tests\TestCase;
 
 /**
@@ -283,7 +284,8 @@ class CheckoutDeliveryFeesTest extends TestCase
         $this->assertSame(58000, self::m(Order::find($old['order_id'])->total_amount));
         $this->assertSame(58000, self::m(Order::find($old['order_id'])->moneySummary()['total']));
 
-        // New orders use the new values
+        // New orders use the new values (a real re-order, after the duplicate guard's window)
+        $this->travel(CheckoutGuard::RECENT_SECONDS + 1)->seconds();
         $this->addToCart($product);
         $new = $this->checkout();
         $this->assertEquals(62.0, $new['total']);
@@ -311,7 +313,8 @@ class CheckoutDeliveryFeesTest extends TestCase
         $this->assertEquals(58.0, $res['total']);
         $this->assertParcel($this->parcel($res['order_id'], $seller), ['items' => '50', 'delivery_fee' => '8', 'cod' => '58']);
 
-        // Buy now: same
+        // Buy now: same (later on: the same line again at once is a duplicate, see CheckoutIdempotencyTest)
+        $this->travel(CheckoutGuard::RECENT_SECONDS + 1)->seconds();
         $this->as($this->customer)->postJson('/api/checkout/buy-now', $this->address() + $fake + [
             'product_id' => $product->id, 'quantity' => 1, 'payment_method' => 'cod',
         ])->assertCreated()->assertJsonPath('total', 58);
