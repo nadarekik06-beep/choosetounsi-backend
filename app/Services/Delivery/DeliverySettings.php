@@ -16,7 +16,8 @@ use Illuminate\Support\Facades\DB;
  *                                   seller_contribution, after-sale fees: after_sale_return_fee
  *                                   (follows agency_cost while after_sale_use_agency_cost is on)
  *                                   and exchange_fee (Intigo's exchange parcel price)
- *   delivery_settings (row id 1)    who pays a refused parcel's return fee, intigo_can_open;
+ *   delivery_settings (row id 1)    who pays a refused parcel's return fee, intigo_can_open,
+ *                                   intigo_is_exchange (both sent with every new Intigo parcel);
  *                                   its flat client / agency / contribution / refused columns
  *                                   mirror S (its old return_shipping_fee is no longer read)
  *
@@ -25,7 +26,7 @@ use Illuminate\Support\Facades\DB;
  */
 class DeliverySettings
 {
-    public const CACHE_KEY = 'delivery_settings.v3';
+    public const CACHE_KEY = 'delivery_settings.v4';
 
     /** Flat money fields (the S values), in display order. */
     public const AMOUNTS = [
@@ -56,7 +57,7 @@ class DeliverySettings
 
     /**
      * @return array{client_delivery_fee:int, agency_delivery_cost:int, seller_free_delivery_contribution:int,
-     *   refused_parcel_agency_fee:int, refused_parcel_fee_paid_by:string, intigo_can_open:bool,
+     *   refused_parcel_agency_fee:int, refused_parcel_fee_paid_by:string, intigo_can_open:bool, intigo_is_exchange:bool,
      *   sizes:array<string, array{client_fee:int, agency_cost:int, return_fee:int, seller_contribution:int,
      *   after_sale_return_fee:int, exchange_fee:int}>, after_sale_sync:array<string, bool>,
      *   updated_at:?string, updated_by:?int}
@@ -91,6 +92,7 @@ class DeliverySettings
             }
             $out['refused_parcel_fee_paid_by'] = $row->refused_parcel_fee_paid_by;
             $out['intigo_can_open']            = (bool) ($row->intigo_can_open ?? false);
+            $out['intigo_is_exchange']         = (bool) ($row->intigo_is_exchange ?? false);
             $out['sizes']                      = $sizes;
             $out['after_sale_sync']            = $sync;
             $out['updated_at']                 = $row->updated_at;
@@ -116,6 +118,8 @@ class DeliverySettings
     public function exchangeFee(?string $size = 'S'): int        { return $this->forSize($size)['exchange_fee']; }
     public function refusedFeePayer(): string { return $this->all()['refused_parcel_fee_paid_by']; }
     public function canOpen(): bool           { return $this->all()['intigo_can_open']; }
+    /** Intigo is_exchange flag sent with every new parcel. */
+    public function isExchange(): bool        { return $this->all()['intigo_is_exchange'] ?? false; }
 
     /** Platform delivery margin per shipment, per size, for the admin form and reports. */
     public function margins(?array $values = null): array
@@ -137,7 +141,7 @@ class DeliverySettings
      * Validation (no negatives, max 3 decimals) is the controller's job.
      *
      * $values may hold the flat fields (applied to size S), 'sizes' =>
-     * [size => [field => millimes]], refused_parcel_fee_paid_by and intigo_can_open.
+     * [size => [field => millimes]], refused_parcel_fee_paid_by, intigo_can_open and intigo_is_exchange.
      *
      * @return array<int, array{field:string, old:string, new:string}> the changes made
      */
@@ -195,6 +199,11 @@ class DeliverySettings
             if (array_key_exists('intigo_can_open', $values) && (bool) $values['intigo_can_open'] !== (bool) $row->intigo_can_open) {
                 $flat['intigo_can_open'] = (bool) $values['intigo_can_open'];
                 $changes[] = ['field' => 'intigo_can_open', 'old' => $row->intigo_can_open ? 'yes' : 'no', 'new' => $values['intigo_can_open'] ? 'yes' : 'no'];
+            }
+            if (array_key_exists('intigo_is_exchange', $values) && property_exists($row, 'intigo_is_exchange')
+                && (bool) $values['intigo_is_exchange'] !== (bool) $row->intigo_is_exchange) {
+                $flat['intigo_is_exchange'] = (bool) $values['intigo_is_exchange'];
+                $changes[] = ['field' => 'intigo_is_exchange', 'old' => $row->intigo_is_exchange ? 'yes' : 'no', 'new' => $values['intigo_is_exchange'] ? 'yes' : 'no'];
             }
 
             if ($changes) {
@@ -280,5 +289,6 @@ class DeliverySettings
         Cache::forget(self::CACHE_KEY);
         Cache::forget('delivery_settings.v1');
         Cache::forget('delivery_settings.v2');
+        Cache::forget('delivery_settings.v3');
     }
 }

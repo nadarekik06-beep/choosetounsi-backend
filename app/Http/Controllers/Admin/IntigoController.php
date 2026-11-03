@@ -407,6 +407,7 @@ class IntigoController extends Controller
             'sellers_with_pickup'   => $sellersWithIndex,
             'active_sellers'        => $activeSellers,
             'can_open'              => app(DeliverySettings::class)->canOpen(),
+            'is_exchange'           => app(DeliverySettings::class)->isExchange(),
         ];
     }
 }

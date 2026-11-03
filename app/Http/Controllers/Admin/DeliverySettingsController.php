@@ -12,7 +12,7 @@ use Illuminate\Http\Request;
 
 /**
  * Admin "Delivery & Fees" page.
- *   GET /api/admin/delivery-settings  — per-size prices, margins, payment methods, Intigo switch, history
+ *   GET /api/admin/delivery-settings  — per-size prices, margins, payment methods, Intigo switches, history
  *   PUT /api/admin/delivery-settings  — save (TND, ≥ 0, max 3 decimals); every change is logged
  *
  * Prices are per parcel size (S / L / XL): client fee, Intigo delivery cost,
@@ -44,6 +44,7 @@ class DeliverySettingsController extends Controller
         $rules = [
             'refused_parcel_fee_paid_by' => 'required|in:' . implode(',', DeliverySettings::PAYERS),
             'intigo_can_open'            => 'sometimes|boolean',
+            'intigo_is_exchange'         => 'sometimes|boolean',
             'payment_methods'            => 'sometimes|array',
             'payment_methods.*'          => 'boolean',
             'sizes'                      => 'sometimes|array',
@@ -70,6 +71,9 @@ class DeliverySettingsController extends Controller
         ];
         if ($request->has('intigo_can_open')) {
             $values['intigo_can_open'] = $request->boolean('intigo_can_open');
+        }
+        if ($request->has('intigo_is_exchange')) {
+            $values['intigo_is_exchange'] = $request->boolean('intigo_is_exchange');
         }
         if ($request->has('sizes')) {
             foreach (ParcelSize::ALL as $size) {
@@ -126,6 +130,7 @@ class DeliverySettingsController extends Controller
         }
         $settings['refused_parcel_fee_paid_by'] = $v['refused_parcel_fee_paid_by'];
         $settings['intigo_can_open']            = $v['intigo_can_open'];
+        $settings['intigo_is_exchange']         = $v['intigo_is_exchange'];
 
         $sizes = [];
         foreach ($v['sizes'] as $size => $r) {
@@ -143,7 +148,7 @@ class DeliverySettingsController extends Controller
             'margins'         => ['normal' => $f($margins['normal']), 'free_delivery' => $f($margins['free_delivery'])],
             'warnings'        => $warnings,
             'payment_methods' => $this->paymentMethods->all(),
-            'intigo'          => ['mode' => config('intigo.mode'), 'can_open' => $v['intigo_can_open']],
+            'intigo'          => ['mode' => config('intigo.mode'), 'can_open' => $v['intigo_can_open'], 'is_exchange' => $v['intigo_is_exchange']],
             'updated_at'      => $v['updated_at'],
             'history'         => $this->settings->history(),
         ];

@@ -58,7 +58,7 @@ class IntigoSendPayloadTest extends TestCase
             $this->assertSame(1, $payload['package_size']);
             $this->assertSame((int) $seller->intigo_pickup_index, $payload['pickup_index']);
             $this->assertFalse($payload['can_open']);
-            $this->assertArrayNotHasKey('is_exchange', $payload);
+            $this->assertFalse($payload['is_exchange'], 'exchange setting is off by default');
             // Order reference only: never the seller's name, phone or address
             $order = DB::table('orders')->find($orderId);
             $this->assertSame("{$order->order_number}-S{$so->id}", $payload['additional_info']);
@@ -222,6 +222,33 @@ class IntigoSendPayloadTest extends TestCase
         $so = $this->parcel($orderId, $seller);
         $this->prepare($so, $seller);
         $this->assertTrue($this->sentPayload($so)['can_open']);
+    }
+
+    public function test_is_exchange_follows_the_admin_setting_at_creation_time(): void
+    {
+        $settings = app(\App\Services\Delivery\DeliverySettings::class);
+        $seller   = $this->sellerWithPickup();
+
+        // Off (default): sent as false, like can_open
+        $this->assertFalse($settings->isExchange());
+        $this->addToCart($this->product($seller, 40));
+        [, $offOrderId] = $this->placeAndConfirm();
+        $off = $this->parcel($offOrderId, $seller);
+        $this->prepare($off, $seller);
+        $this->assertFalse($this->sentPayload($off)['is_exchange']);
+
+        // On: the next new parcel carries is_exchange true
+        $settings->update(['intigo_is_exchange' => true], $this->admin->id);
+        $this->addToCart($this->product($seller, 50));
+        [, $onOrderId] = $this->placeAndConfirm();
+        $on = $this->parcel($onOrderId, $seller);
+        $this->prepare($on, $seller);
+        $this->assertTrue($this->sentPayload($on)['is_exchange']);
+        $this->assertArrayHasKey('can_open', $this->sentPayload($on));
+
+        // The parcel created before the switch is unchanged
+        $this->assertFalse($this->sentPayload($off)['is_exchange']);
+        $this->assertSame('FAKE-' . $off->id, $this->so($off)->intigo_nid);
     }
 
     public function test_the_platform_own_products_use_the_platform_pickup_index(): void

@@ -68,6 +68,40 @@ class DeliverySettingsAdminTest extends TestCase
             ->assertJsonPath('data.customer_delivery_fee', 9.5);
     }
 
+    public function test_exchange_parcel_switch_is_off_by_default_saved_and_logged(): void
+    {
+        $this->as($this->admin)->getJson('/api/admin/delivery-settings')->assertOk()
+            ->assertJsonPath('data.settings.intigo_is_exchange', false)
+            ->assertJsonPath('data.intigo.is_exchange', false);
+
+        $this->as($this->admin)->putJson('/api/admin/delivery-settings', ['intigo_is_exchange' => true] + self::VALID)->assertOk()
+            ->assertJsonPath('data.settings.intigo_is_exchange', true)
+            ->assertJsonPath('data.intigo.is_exchange', true)
+            ->assertJsonPath('data.history.0.field', 'intigo_is_exchange');
+        $this->assertTrue(app(DeliverySettings::class)->isExchange());
+
+        $log = DB::table('delivery_setting_changes')->where('field', 'intigo_is_exchange')->orderByDesc('id')->first();
+        $this->assertSame('no', $log->old_value);
+        $this->assertSame('yes', $log->new_value);
+        $this->assertSame($this->admin->id, (int) $log->changed_by);
+        $this->assertNotNull($log->created_at);
+
+        // Saving again without a change logs nothing; omitting the field keeps it
+        $count = DB::table('delivery_setting_changes')->where('field', 'intigo_is_exchange')->count();
+        $this->as($this->admin)->putJson('/api/admin/delivery-settings', ['intigo_is_exchange' => true] + self::VALID)->assertOk();
+        $this->as($this->admin)->putJson('/api/admin/delivery-settings', self::VALID)->assertOk()
+            ->assertJsonPath('data.settings.intigo_is_exchange', true);
+        $this->assertSame($count, DB::table('delivery_setting_changes')->where('field', 'intigo_is_exchange')->count());
+
+        // Back off: logged yes → no
+        $this->as($this->admin)->putJson('/api/admin/delivery-settings', ['intigo_is_exchange' => false] + self::VALID)->assertOk();
+        $log = DB::table('delivery_setting_changes')->where('field', 'intigo_is_exchange')->orderByDesc('id')->first();
+        $this->assertSame(['yes', 'no'], [$log->old_value, $log->new_value]);
+        $this->assertFalse(app(DeliverySettings::class)->isExchange());
+
+        $this->as($this->admin)->putJson('/api/admin/delivery-settings', ['intigo_is_exchange' => 'maybe'] + self::VALID)->assertStatus(422);
+    }
+
     public function test_after_sale_fees_per_size_come_from_the_settings(): void
     {
         $sizes = [];

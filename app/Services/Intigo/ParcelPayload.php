@@ -25,7 +25,11 @@ use Illuminate\Support\Facades\DB;
  *   additional_info  our order reference only: never the seller's name, phone
  *                    or address (the pickup address lives at Intigo).
  *   cid              "CT-SO-{seller_order_id}": finds the parcel again after a
- *                    lost answer. Never is_exchange (it adds fees).
+ *                    lost answer.
+ *   can_open         admin switch on Delivery & Fees (intigo_can_open).
+ *   is_exchange      admin switch on Delivery & Fees (intigo_is_exchange), off by
+ *                    default: Intigo bills an exchange parcel differently. Read at
+ *                    creation time, so it only affects parcels created afterwards.
  */
 class ParcelPayload
 {
@@ -137,6 +141,7 @@ class ParcelPayload
             'description'         => mb_substr($this->description($so), 0, 500),
             'additional_info'     => mb_substr($this->documents->reference($order, $so), 0, 500),
             'can_open'            => $this->settings->canOpen(),
+            'is_exchange'         => $this->settings->isExchange(),
             'pickup_index'        => $pickup,
             'cid'                 => self::cid($so->id),
         ];
