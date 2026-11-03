@@ -35,6 +35,9 @@ class AppServiceProvider extends ServiceProvider
         $this->app->bind(\App\Services\Intigo\IntigoClient::class, fn ($app) => config('intigo.mode') === 'live'
             ? $app->make(\App\Services\Intigo\HttpIntigoClient::class)
             : $app->make(\App\Services\Intigo\FakeIntigoClient::class));
+        $this->app->bind(\App\Services\Intigo\BordereauClient::class, fn ($app) => config('intigo.mode') === 'live'
+            ? $app->make(\App\Services\Intigo\HttpBordereauClient::class)
+            : $app->make(\App\Services\Intigo\FakeBordereauClient::class));
     }
 
     public function boot(): void

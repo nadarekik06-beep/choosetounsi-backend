@@ -79,4 +79,14 @@ return [
 
     // Webhook events and logs kept for this many days (intigo:sync-statuses prunes)
     'retention_days' => 180,
+
+    // Bordereau (courier label) PDFs: GET {host}/secure-api/bordereaux/{nid}, key in this header.
+    // Fetched on the first download, then served from storage/app/{cache_dir}. Check it with
+    // php artisan intigo:bordereau-check (read-only).
+    'bordereau' => [
+        'auth_header' => env('INTIGO_BORDEREAU_AUTH_HEADER', 'apikey'),
+        'timeout'     => 30,
+        'cache_dir'   => 'private/bordereaux',
+        'bulk_max'    => 50,
+    ],
 ];
