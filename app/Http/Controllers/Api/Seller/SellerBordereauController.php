@@ -12,12 +12,13 @@ use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * The seller prints the Intigo bordereau of their own parcels.
+ * The seller prints the bordereau of their own parcels: the PDF the admin uploaded
+ * (works whatever INTIGO_BORDEREAU_ENABLED says), or Intigo's while that flag is on.
  *
  *   GET  /api/seller/orders/{id}/bordereau   one PDF
  *   POST /api/seller/bordereaux/bulk         {ids: [...]} → one merged PDF
  *
- * 403 another seller's order · 409 no Intigo parcel yet · 502 Intigo failed (logged).
+ * 403 another seller's order · 404 no bordereau yet · 502 Intigo failed (logged).
  * Never a 500 with details: Intigo's answer stays in the logs.
  */
 class SellerBordereauController extends Controller
@@ -26,9 +27,6 @@ class SellerBordereauController extends Controller
 
     public function show(Request $request, int $id): Response
     {
-        if (!BordereauService::enabledForSellers()) {
-            return $this->comingSoon();
-        }
         $so = SellerOrder::find($id);
         if (!$so) {
             return $this->error(__('seller.bordereau_not_found'), 404);
@@ -36,8 +34,8 @@ class SellerBordereauController extends Controller
         if ((int) $so->seller_id !== (int) $request->user()->id) {
             return $this->error(__('seller.bordereau_forbidden'), 403);
         }
-        if (!BordereauService::available($so)) {
-            return $this->error(__('seller.bordereau_not_ready'), 409, 'no_parcel');
+        if (!BordereauService::availableToSeller($so)) {
+            return $this->error(__('seller.bordereau_not_available'), 404, 'not_available');
         }
 
         try {
@@ -52,9 +50,6 @@ class SellerBordereauController extends Controller
 
     public function bulk(Request $request): Response
     {
-        if (!BordereauService::enabledForSellers()) {
-            return $this->comingSoon();
-        }
         $max  = (int) config('intigo.bordereau.bulk_max', 50);
         $data = $request->validate([
             'ids'   => "required|array|min:1|max:{$max}",
@@ -69,7 +64,7 @@ class SellerBordereauController extends Controller
         $pdfs = $printed = $skipped = [];
         foreach ($ids as $id) {
             $so = $orders->get($id);
-            if (!$so || !BordereauService::available($so)) {
+            if (!$so || !BordereauService::availableToSeller($so)) {
                 $skipped[] = $id;
                 continue;
             }
@@ -83,7 +78,7 @@ class SellerBordereauController extends Controller
         }
 
         if (!$pdfs) {
-            return $this->error(__('seller.bordereau_bulk_none'), 409, 'no_parcel', ['skipped' => $skipped]);
+            return $this->error(__('seller.bordereau_bulk_none'), 404, 'not_available', ['skipped' => $skipped]);
         }
 
         try {
@@ -118,6 +113,10 @@ class SellerBordereauController extends Controller
 
     public static function intigoFailed(SellerOrder $so, \Throwable $e): JsonResponse
     {
+        if ($e instanceof IntigoException && $e->kind === 'missing') {
+            Log::error('[Bordereau] ' . $e->getMessage());
+            return response()->json(['success' => false, 'code' => 'not_available', 'message' => __('seller.bordereau_not_available')], 404);
+        }
         $timeout = $e instanceof IntigoException && $e->kind === 'connection';
         Log::warning("[Bordereau] seller_order {$so->id}: " . ($e instanceof IntigoException ? $e->getMessage() : get_class($e) . ': ' . $e->getMessage()));
         return response()->json([
@@ -125,12 +124,6 @@ class SellerBordereauController extends Controller
             'code'    => $timeout ? 'intigo_timeout' : 'intigo_error',
             'message' => __($timeout ? 'seller.bordereau_intigo_timeout' : 'seller.bordereau_intigo_error'),
         ], $timeout ? 504 : 502);
-    }
-
-    /** INTIGO_BORDEREAU_ENABLED is off. */
-    private function comingSoon(): JsonResponse
-    {
-        return $this->error(__('seller.bordereau_coming_soon'), 503, 'coming_soon');
     }
 
     private function error(string $message, int $status, ?string $code = null, array $extra = []): JsonResponse

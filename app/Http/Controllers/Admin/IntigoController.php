@@ -264,14 +264,34 @@ class IntigoController extends Controller
         };
     }
 
-    /** Badge data: "Bordereau printed ✓ {first} ({count}x)" / "Not printed yet". */
+    /**
+     * Bordereau of one seller_order for the admin, whatever the source (manual upload, or
+     * Intigo's while INTIGO_BORDEREAU_ENABLED is on): the 3 steps uploaded → seller
+     * notified → seller printed, plus what the admin may do now.
+     */
     public static function bordereauSummary(SellerOrder $so): array
     {
+        $manual = \App\Services\Intigo\BordereauService::hasManual($so);
+        $intigo = \App\Services\Intigo\BordereauService::enabledForSellers() && \App\Services\Intigo\BordereauService::available($so);
+        $by     = $manual && $so->bordereau_uploaded_by
+            ? DB::table('users')->where('id', $so->bordereau_uploaded_by)->first(['id', 'name'])
+            : null;
         return [
-            'available'        => \App\Services\Intigo\BordereauService::available($so),
+            // "available": the seller can print it (Intigo's only while the flag is on)
+            'available'        => $manual || $intigo,
+            'source'           => $manual ? 'manual' : ($intigo ? 'intigo' : null),
+            'has_upload'       => $manual,
+            'original_name'    => $manual ? $so->bordereau_original_name : null,
+            'uploaded_at'      => $manual ? $so->bordereau_uploaded_at : null,
+            'uploaded_by'      => $by ? ['id' => (int) $by->id, 'name' => $by->name] : null,
+            'versions'         => $manual ? DB::table('bordereau_uploads')->where('seller_order_id', $so->id)->count() : 0,
+            'notified_at'      => $manual ? $so->bordereau_seller_notified_at : null,
+            'notify_error'     => $manual ? $so->bordereau_notify_error : null,
             'first_printed_at' => $so->bordereau_first_downloaded_at,
             'last_printed_at'  => $so->bordereau_last_downloaded_at,
             'print_count'      => (int) $so->bordereau_download_count,
+            'can_upload'       => \App\Services\Intigo\BordereauUploads::blockReason($so) === null,
+            'upload_block_reason' => \App\Services\Intigo\BordereauUploads::blockReason($so),
         ];
     }
 

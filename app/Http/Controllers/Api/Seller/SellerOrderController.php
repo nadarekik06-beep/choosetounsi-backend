@@ -362,10 +362,15 @@ public function updateStatus(Request $request, $id)
             'status_code'  => $so->intigo_status_code,
             'status_label' => $so->intigo_status_label,
             'parcel_size'  => $so->parcel_size,
-            // Intigo bordereau: printable once the parcel exists; first / last print by the seller
+            // Bordereau: printable once the admin uploaded it (or Intigo's, flag on); first / last print by the seller
             'bordereau'    => [
-                'enabled'            => \App\Services\Intigo\BordereauService::enabledForSellers(),   // feature flag: false = hide the button
+                'enabled'            => \App\Services\Intigo\BordereauService::enabledForSellers(),   // Intigo API source (manual uploads ignore it)
                 'available'          => \App\Services\Intigo\BordereauService::availableToSeller($so),
+                'source'             => \App\Services\Intigo\BordereauService::availableToSeller($so) ? ($so->bordereau_source ?: 'intigo') : null,
+                'uploaded_at'        => \App\Services\Intigo\BordereauService::hasManual($so) ? $so->bordereau_uploaded_at : null,
+                // The admin replaced an earlier file ("Updated" until the seller opens it)
+                'is_update'          => \App\Services\Intigo\BordereauService::hasManual($so)
+                    && \Illuminate\Support\Facades\DB::table('bordereau_uploads')->where('seller_order_id', $so->id)->count() > 1,
                 'first_printed_at'   => $so->bordereau_first_downloaded_at,
                 'last_printed_at'    => $so->bordereau_last_downloaded_at,
                 'print_count'        => (int) $so->bordereau_download_count,

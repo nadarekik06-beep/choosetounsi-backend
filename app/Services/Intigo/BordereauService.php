@@ -12,13 +12,15 @@ use Mpdf\Mpdf;
 use setasign\Fpdi\PdfParser\StreamReader;
 
 /**
- * Sellers (and admins) download a parcel's Intigo bordereau.
+ * Sellers (and admins) download a parcel's bordereau. Two sources:
  *
- *   pdf()     cached copy on the local disk (private/bordereaux/{id}-{nid}.pdf), else
- *             fetched from Intigo (BordereauClient) and cached. A new nid (re-send
- *             after a cancel) fetches again.
+ *   manual  the admin uploaded the PDF (BordereauUploads): works whatever INTIGO_BORDEREAU_ENABLED says
+ *   intigo  fetched from Intigo's API, only while INTIGO_BORDEREAU_ENABLED=true
+ *
+ *   pdf()     the uploaded file, else the cached Intigo copy (private/bordereaux/{id}-{nid}.pdf),
+ *             else fetched from Intigo (BordereauClient) and cached.
  *   record()  audit row in bordereau_downloads; seller downloads update the counters
- *             and the FIRST one tells the admins (bell + e-mail, once per parcel).
+ *             and the FIRST one per file tells the admins (bell + e-mail).
  *   merge()   several bordereaux in one PDF (bulk print).
  *
  * Read-only towards the parcel flow: never touches the intigo_* columns.
@@ -33,22 +35,35 @@ class BordereauService
         return (bool) $so->intigo_nid && $so->intigo_sync_status !== ParcelSender::CANCELLED;
     }
 
-    /** Feature flag INTIGO_BORDEREAU_ENABLED: sellers' side only (admins always have it). */
+    /** Feature flag INTIGO_BORDEREAU_ENABLED: the Intigo API source only (manual uploads ignore it). */
     public static function enabledForSellers(): bool
     {
         return (bool) config('intigo.bordereau.enabled', false);
     }
 
-    /** What the seller dashboard shows: the flag is on and the parcel exists. */
-    public static function availableToSeller(SellerOrder $so): bool
+    /** The admin uploaded a PDF for this seller_order. */
+    public static function hasManual(SellerOrder $so): bool
     {
-        return self::enabledForSellers() && self::available($so);
+        return $so->bordereau_source === 'manual' && filled($so->bordereau_path);
     }
 
-    /** @throws IntigoException */
+    /** What the seller can print: an uploaded PDF, or (flag on) the Intigo one. */
+    public static function availableToSeller(SellerOrder $so): bool
+    {
+        return self::hasManual($so) || (self::enabledForSellers() && self::available($so));
+    }
+
+    /** @throws IntigoException kind "missing" when the uploaded file is gone */
     public function pdf(SellerOrder $so): string
     {
         $disk = Storage::disk('local');
+        if (self::hasManual($so)) {
+            $bytes = $disk->exists($so->bordereau_path) ? $disk->get($so->bordereau_path) : '';
+            if (!str_starts_with($bytes, '%PDF')) {
+                throw new IntigoException("Uploaded bordereau file missing for seller_order {$so->id}", null, false, 'missing');
+            }
+            return $bytes;
+        }
         $path = trim((string) config('intigo.bordereau.cache_dir', 'private/bordereaux'), '/')
             . '/' . $so->id . '-' . preg_replace('/[^A-Za-z0-9_-]/', '_', (string) $so->intigo_nid) . '.pdf';
 
@@ -62,8 +77,9 @@ class BordereauService
         $pdf = $this->client->pdf((string) $so->intigo_nid, $so->id);
         try {
             $disk->put($path, $pdf);
-            DB::table('seller_orders')->where('id', $so->id)->update(['bordereau_path' => $path]);
-            $so->bordereau_path = $path;
+            DB::table('seller_orders')->where('id', $so->id)->update(['bordereau_path' => $path, 'bordereau_source' => 'intigo']);
+            $so->bordereau_path   = $path;
+            $so->bordereau_source = 'intigo';
         } catch (\Throwable $e) {
             // Serving the PDF matters more than caching it
             Log::warning("[Bordereau] could not cache seller_order {$so->id}: " . $e->getMessage());
@@ -112,9 +128,11 @@ class BordereauService
             if ($first) {
                 $shop   = $user ? ($user->storefrontBranding()['business_name'] ?? $user->name) : ('Seller #' . $so->seller_id);
                 $number = DB::table('orders')->where('id', $so->order_id)->value('order_number') ?: ('#' . $so->order_id);
-                // Bell to every admin + e-mail to intigo.alert_email, once per parcel (notification_dispatches)
+                // Bell to every admin + e-mail to intigo.alert_email, once per parcel and file
+                // (a replaced upload is a new file: its first print is told again)
+                $version = $so->bordereau_source === 'manual' && $so->bordereau_upload_id ? 'u' . $so->bordereau_upload_id : null;
                 $this->alerts->inform($so, 'bordereau_printed', 'Bordereau printed',
-                    "{$shop} printed the bordereau for order #{$number}.", true);
+                    "{$shop} printed the bordereau for order #{$number}.", true, $version);
             }
         } catch (\Throwable $e) {
             Log::warning("[Bordereau] download of seller_order {$so->id} not recorded: " . $e->getMessage());

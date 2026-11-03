@@ -661,12 +661,11 @@ return [
     // Intigo bordereau download (SellerBordereauController)
     'bordereau_not_found' => 'الطلبية غير موجودة.',
     'bordereau_forbidden' => 'هذه الطلبية لا تنتمي إلى متجرك.',
-    'bordereau_not_ready' => 'البوردرو غير متوفر بعد: يرجى تأكيد تحضير الطلبية أولاً.',
+    'bordereau_not_available' => "البوردرو غير متوفر بعد: سيظهر هنا بمجرد أن تضيفه Choose'Tounsi.",
     'bordereau_intigo_error' => 'تعذر على شركة التوصيل توفير البوردرو حالياً. يرجى المحاولة بعد بضع دقائق.',
     'bordereau_intigo_timeout' => 'شركة التوصيل لا تستجيب. يرجى المحاولة بعد بضع دقائق.',
-    'bordereau_bulk_none' => 'لا تحتوي أي من الطلبيات المحددة على بوردرو بعد: يرجى تأكيد تحضيرها أولاً.',
+    'bordereau_bulk_none' => "لا تحتوي أي من الطلبيات المحددة على بوردرو بعد.",
     'bordereau_merge_failed' => 'تعذر جمع هذه البوردروات في ملف واحد. يرجى طباعتها واحداً تلو الآخر.',
-    'bordereau_coming_soon' => "طباعة البوردرو من لوحة التحكم ستتوفر قريباً. إلى ذلك الحين، يرسله لك فريق CHOOSE'Tounsi.",
     'pickup' => [
         'zone_invalid' => 'اختر منطقة من القائمة (معتمدية أو قطاع Intigo).',
         'pin_required' => 'ضع العلامة على الخريطة (أو استعمل «موقعي»).',

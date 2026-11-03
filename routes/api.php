@@ -729,6 +729,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/seller-orders/{id}/intigo/dismiss', [\App\Http\Controllers\Admin\IntigoController::class, 'dismiss'])->whereNumber('id');
         Route::put('/seller-orders/{id}/parcel-size',     [\App\Http\Controllers\Admin\IntigoController::class, 'setSize'])->whereNumber('id');
         Route::get('/seller-orders/{id}/bordereau',       [\App\Http\Controllers\Admin\BordereauController::class, 'show'])->whereNumber('id')->middleware('throttle:30,1');
+        // Manual bordereau: the admin attaches the PDF from the Intigo dashboard (one per seller_order)
+        Route::post('/seller-orders/{id}/bordereau',        [\App\Http\Controllers\Admin\BordereauController::class, 'store'])->whereNumber('id')->middleware('throttle:30,1');
+        Route::delete('/seller-orders/{id}/bordereau',      [\App\Http\Controllers\Admin\BordereauController::class, 'destroy'])->whereNumber('id')->middleware('throttle:30,1');
+        Route::post('/seller-orders/{id}/bordereau/notify', [\App\Http\Controllers\Admin\BordereauController::class, 'notify'])->whereNumber('id')->middleware('throttle:10,1');
 
         // ── Admin Notifications ───────────────────────────────────────────
         Route::prefix('notifications')->group(function () {

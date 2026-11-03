@@ -67,13 +67,14 @@ class IntigoAlerts
      * picked it up, delivered or returned it. Bell (+ e-mail when $email), once
      * per parcel and event; nothing kept on the parcel.
      */
-    public function inform(SellerOrder|int $parcel, string $event, string $title, string $body, bool $email = false): void
+    public function inform(SellerOrder|int $parcel, string $event, string $title, string $body, bool $email = false, ?string $dedupe = null): void
     {
         $so = $parcel instanceof SellerOrder ? $parcel : SellerOrder::find($parcel);
         if (!$so) return;
         try {
+            // $dedupe: once per parcel, event AND this key (e.g. one bordereau file version)
             $claimed = DB::table('notification_dispatches')->insertOrIgnore([
-                'user_id' => 0, 'dedupe_key' => mb_substr("intigo-info:{$so->id}:{$event}", 0, 191), 'created_at' => now(),
+                'user_id' => 0, 'dedupe_key' => mb_substr("intigo-info:{$so->id}:{$event}" . ($dedupe !== null ? ":{$dedupe}" : ''), 0, 191), 'created_at' => now(),
             ]) === 1;
             if (!$claimed) return;
 

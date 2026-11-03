@@ -94,8 +94,18 @@ return [
         'title'    => "Bordereau prêt — :ref",
         'body'     => "Imprimez le bordereau de livraison depuis la page de la commande et collez-le sur le colis.|Imprimez le bordereau de livraison depuis la page de la commande et collez-le sur le colis.",
         'headline' => "Votre bordereau est prêt",
-        'intro'    => "La demande de livraison a été envoyée au livreur. Imprimez le bordereau depuis votre tableau de bord et collez-le sur le colis.",
+        'intro'    => "Le bordereau de livraison de cette commande est dans votre tableau de bord. Imprimez-le et collez-le sur le colis avant le passage du livreur.",
         'next'     => "Ouvrez la commande et cliquez sur « Imprimer le bordereau ».",
+        'cta'      => "Ouvrir la commande",
+    ],
+
+    'bordereau_updated' => [
+        'subject'  => "Commande :ref — bordereau mis à jour, imprimez le nouveau|Commande :ref — bordereau mis à jour, imprimez le nouveau",
+        'title'    => "Bordereau mis à jour — :ref",
+        'body'     => "Un nouveau bordereau remplace le précédent : imprimez-le depuis la page de la commande et collez-le sur le colis.|Un nouveau bordereau remplace le précédent : imprimez-le depuis la page de la commande et collez-le sur le colis.",
+        'headline' => "Votre bordereau a été mis à jour",
+        'intro'    => "Choose'Tounsi a remplacé le bordereau de cette commande. Imprimez le nouveau et utilisez-le à la place de l'ancien.",
+        'next'     => "Ouvrez la commande et cliquez sur « Imprimer le bordereau ». N'utilisez pas l'ancien.",
         'cta'      => "Ouvrir la commande",
     ],
 

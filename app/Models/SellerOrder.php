@@ -62,6 +62,8 @@ class SellerOrder extends Model
         'bordereau_first_downloaded_at' => 'datetime',
         'bordereau_last_downloaded_at'  => 'datetime',
         'bordereau_download_count'      => 'integer',
+        'bordereau_uploaded_at'         => 'datetime',
+        'bordereau_seller_notified_at'  => 'datetime',
     ];
 
     /**

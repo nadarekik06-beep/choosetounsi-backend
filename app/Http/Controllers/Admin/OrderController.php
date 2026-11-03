@@ -32,7 +32,7 @@ class OrderController extends Controller
     {
         $query = Order::with([
             'user:id,name,email',
-            'sellerOrders:id,order_id,seller_id,status,subtotal,coupon_code,discount_amount,delivery_fee,prepared_at,intigo_nid,intigo_sync_status,intigo_error,bordereau_first_downloaded_at,bordereau_last_downloaded_at,bordereau_download_count',
+            'sellerOrders:id,order_id,seller_id,status,subtotal,coupon_code,discount_amount,delivery_fee,prepared_at,intigo_nid,intigo_sync_status,intigo_error,bordereau_first_downloaded_at,bordereau_last_downloaded_at,bordereau_download_count,bordereau_source,bordereau_path,bordereau_upload_id,bordereau_uploaded_at,bordereau_uploaded_by,bordereau_original_name,bordereau_seller_notified_at,bordereau_notify_error',
             'sellerOrders.seller:id,name',
             'sellerOrders.seller.sellerApplication', 'sellerOrders.seller.pickupAddress.zone', // pickup completeness → export readiness
         ])
@@ -51,6 +51,20 @@ class OrderController extends Controller
                 ->whereNotNull('prepared_at')
                 ->whereNotNull('intigo_nid')
                 ->where(fn($q2) => $q2->whereNull('intigo_sync_status')->orWhere('intigo_sync_status', '!=', 'cancelled'))
+                ->whereNull('bordereau_first_downloaded_at'));
+        }
+        // Prepared by the seller, no bordereau attached yet: upload it
+        if ($request->query('bordereau') === 'missing') {
+            $query->whereHas('sellerOrders', fn($q) => $q
+                ->where('status', 'confirmed')
+                ->whereNotNull('prepared_at')
+                ->whereNull('bordereau_source'));
+        }
+        // Uploaded, the seller never opened it: chase the seller
+        if ($request->query('bordereau') === 'uploaded_not_printed') {
+            $query->whereHas('sellerOrders', fn($q) => $q
+                ->whereIn('status', \App\Services\Intigo\BordereauUploads::STATUSES)
+                ->where('bordereau_source', 'manual')
                 ->whereNull('bordereau_first_downloaded_at'));
         }
 

@@ -99,11 +99,15 @@ class SellerOrderNotifier
         return $this->send($sellerOrder, SellerParcelStatusNotification::STEPS[$step], new SellerParcelStatusNotification($sellerOrder, $step));
     }
 
-    /** The Intigo parcel exists: print the bordereau (bell + e-mail, once per sub-order). */
-    public function bordereauReady(SellerOrder $sellerOrder): bool
+    /**
+     * A bordereau PDF is there for the seller (uploaded by the admin, or Intigo's while
+     * INTIGO_BORDEREAU_ENABLED is on): bell + e-mail. Nothing when no PDF is available
+     * (e.g. parcel created but nothing uploaded yet). $claim: once per that key
+     * (default once per sub-order; manual uploads use one key per file / resend).
+     */
+    public function bordereauReady(SellerOrder $sellerOrder, bool $updated = false, ?string $claim = null): bool
     {
-        // INTIGO_BORDEREAU_ENABLED off: nothing sent (and nothing claimed)
-        if (!\App\Services\Intigo\BordereauService::enabledForSellers()
+        if (!\App\Services\Intigo\BordereauService::availableToSeller($sellerOrder)
             || $sellerOrder->seller_id === null || $sellerOrder->isPlatformParcel()) {
             return false;
         }
@@ -111,7 +115,9 @@ class SellerOrderNotifier
         if (!$sellerOrder->seller) {
             return false;
         }
-        return $this->send($sellerOrder, 'bordereau_ready', new SellerBordereauReadyNotification($sellerOrder));
+        $uploadId = $sellerOrder->bordereau_source === 'manual' ? $sellerOrder->bordereau_upload_id : null;
+        return $this->send($sellerOrder, $claim ?? 'bordereau_ready',
+            new SellerBordereauReadyNotification($sellerOrder, $updated, $uploadId ? (int) $uploadId : null));
     }
 
     public function pickupReminder(SellerOrder $sellerOrder): bool

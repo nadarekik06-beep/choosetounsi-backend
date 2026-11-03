@@ -94,8 +94,18 @@ return [
         'title'    => "Bordereau ready — :ref",
         'body'     => "Print the delivery bordereau from the order page and stick it on the parcel.|Print the delivery bordereau from the order page and stick it on the parcel.",
         'headline' => "Your bordereau is ready",
-        'intro'    => "The delivery request was sent to the courier. Print the bordereau from your dashboard and stick it on the parcel.",
+        'intro'    => "The delivery bordereau of this order is in your dashboard. Print it and stick it on the parcel before the courier comes.",
         'next'     => "Open the order and click “Print bordereau”.",
+        'cta'      => "Open the order",
+    ],
+
+    'bordereau_updated' => [
+        'subject'  => "Order :ref — updated bordereau, print the new one|Order :ref — updated bordereau, print the new one",
+        'title'    => "Bordereau updated — :ref",
+        'body'     => "A new bordereau replaces the previous one: print it from the order page and stick it on the parcel.|A new bordereau replaces the previous one: print it from the order page and stick it on the parcel.",
+        'headline' => "Your bordereau was updated",
+        'intro'    => "Choose'Tounsi replaced the bordereau of this order. Print the new one and use it instead of the previous one.",
+        'next'     => "Open the order and click “Print bordereau”. Do not use the old one.",
         'cta'      => "Open the order",
     ],
 

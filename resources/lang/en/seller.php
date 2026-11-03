@@ -661,12 +661,11 @@ return [
     // Intigo bordereau download (SellerBordereauController)
     'bordereau_not_found' => 'Order not found.',
     'bordereau_forbidden' => 'This order does not belong to your shop.',
-    'bordereau_not_ready' => 'The bordereau is not available yet: mark the order as prepared first.',
+    'bordereau_not_available' => "Bordereau not available yet: it will appear here once Choose'Tounsi adds it.",
     'bordereau_intigo_error' => 'The delivery company could not provide the bordereau right now. Please try again in a few minutes.',
     'bordereau_intigo_timeout' => 'The delivery company is not answering. Please try again in a few minutes.',
-    'bordereau_bulk_none' => 'None of the selected orders has a bordereau yet: mark them as prepared first.',
+    'bordereau_bulk_none' => "None of the selected orders has a bordereau yet.",
     'bordereau_merge_failed' => 'These bordereaux could not be combined into one file. Please print them one by one.',
-    'bordereau_coming_soon' => "Printing the bordereau from your dashboard is coming soon. Until then, the CHOOSE'Tounsi team sends it to you.",
     'pickup' => [
         'zone_invalid' => 'Pick a zone from the list (Intigo delegation or sector).',
         'pin_required' => 'Place the marker on the map (or use “My position”).',
