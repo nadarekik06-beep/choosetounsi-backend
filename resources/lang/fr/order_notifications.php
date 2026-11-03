@@ -89,6 +89,10 @@ return [
         'next'      => 'Quand le colis est prêt, passez la commande en « Terminée » dans votre tableau de bord.',
     ],
     // Mises à jour du transporteur (Intigo) : cloche du tableau de bord
+    'parcel_picked_up' => [
+        'title' => 'Colis :ref ramassé',
+        'body'  => 'Le livreur a ramassé votre colis (:count article) : il est en route vers le client.|Le livreur a ramassé votre colis (:count articles) : il est en route vers le client.',
+    ],
     'parcel_out_for_delivery' => [
         'title' => 'Colis :ref en cours de livraison',
         'body'  => 'Le livreur remet aujourd\'hui votre colis (:count article) au client.|Le livreur remet aujourd\'hui votre colis (:count articles) au client.',

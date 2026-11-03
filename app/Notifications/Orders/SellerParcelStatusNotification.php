@@ -3,13 +3,14 @@
 namespace App\Notifications\Orders;
 
 /**
- * The delivery agency moved the seller's parcel: out for delivery, delivered
+ * The delivery agency moved the seller's parcel: picked up, out for delivery, delivered
  * (cash collected, payout on its way) or returned to the seller's pickup
  * address. Dashboard bell only. Sent through SellerOrderNotifier::parcelUpdate().
  */
 class SellerParcelStatusNotification extends SellerOrderNotification
 {
     public const STEPS = [
+        'handed_to_courier'  => 'parcel_picked_up',
         'out_for_delivery'   => 'parcel_out_for_delivery',
         'delivered'          => 'parcel_delivered',
         'returned_to_seller' => 'parcel_returned',

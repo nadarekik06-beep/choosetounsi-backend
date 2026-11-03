@@ -248,6 +248,22 @@ class IntigoController extends Controller
     // ── Shared payload ─────────────────────────────────────────────────────
 
     /** The Intigo block of a parcel (admin order drawer). $full adds the history and logs. */
+    /**
+     * One word for the admin: sent | pending | failed | missing_pickup | cancelled | null (not requested).
+     * missing_pickup = refused before any call because the seller's Intigo pickup isn't ready.
+     */
+    public static function sendState(SellerOrder $so): ?string
+    {
+        if ($so->intigo_nid && $so->intigo_sync_status !== ParcelSender::CANCELLED) return 'sent';
+        return match ($so->intigo_sync_status) {
+            ParcelSender::PENDING   => 'pending',
+            ParcelSender::CANCELLED => 'cancelled',
+            ParcelSender::FAILED    => str_contains((string) $so->intigo_error, \App\Services\Sellers\PickupAddressService::HOLD)
+                || str_contains((string) $so->intigo_error, 'no Intigo pickup address') ? 'missing_pickup' : 'failed',
+            default => null,
+        };
+    }
+
     public static function parcelPayload(SellerOrder $so, bool $full = false): array
     {
         $out = [
@@ -258,6 +274,8 @@ class IntigoController extends Controller
             'can_change_size'          => !$so->intigo_nid && in_array($so->status, ['pending', 'confirmed'], true),
             'nid'                      => $so->intigo_nid,
             'sync_status'              => $so->intigo_sync_status,
+            'send_state'               => self::sendState($so),
+            'prepared_at'              => $so->prepared_at,
             'error'                    => $so->intigo_error,
             'attention'                => $so->intigo_attention,
             'status_code'              => $so->intigo_status_code,

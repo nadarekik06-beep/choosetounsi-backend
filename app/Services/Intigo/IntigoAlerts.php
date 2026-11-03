@@ -62,6 +62,44 @@ class IntigoAlerts
         }
     }
 
+    /**
+     * News for the admins, not a problem: the seller prepared the parcel, Intigo
+     * picked it up, delivered or returned it. Bell (+ e-mail when $email), once
+     * per parcel and event; nothing kept on the parcel.
+     */
+    public function inform(SellerOrder|int $parcel, string $event, string $title, string $body, bool $email = false): void
+    {
+        $so = $parcel instanceof SellerOrder ? $parcel : SellerOrder::find($parcel);
+        if (!$so) return;
+        try {
+            $claimed = DB::table('notification_dispatches')->insertOrIgnore([
+                'user_id' => 0, 'dedupe_key' => mb_substr("intigo-info:{$so->id}:{$event}", 0, 191), 'created_at' => now(),
+            ]) === 1;
+            if (!$claimed) return;
+
+            $ref = DB::table('orders')->where('id', $so->order_id)->value('order_number');
+            $to  = config('intigo.alert_email');
+            if ($email && is_string($to) && filter_var($to, FILTER_VALIDATE_EMAIL)) {
+                try {
+                    Mail::to($to)->queue(new IntigoAlertMail($title, $body, $ref, $so->order_id ? (int) $so->order_id : null, $so->id, null, true));
+                } catch (\Throwable $e) {
+                    Log::warning('[Intigo] info e-mail failed: ' . $e->getMessage());
+                }
+            }
+            $admins = User::where('role', 'admin')->where('is_active', true)->get();
+            if ($admins->isEmpty()) return;
+            Notification::send($admins, new IntigoAdminNotification(
+                $title,
+                ($ref ? "{$ref}-S{$so->id}: " : "Parcel #{$so->id}: ") . $body,
+                (int) $so->order_id,
+                $so->id,
+                $event,
+            ));
+        } catch (\Throwable $e) {
+            Log::warning('[Intigo] admin info failed: ' . $e->getMessage());
+        }
+    }
+
     /** Kinds that are also e-mailed to config intigo.alert_email: the parcel was not created (or twice). */
     public const EMAIL_KINDS = ['send_failed', 'duplicate'];
 }

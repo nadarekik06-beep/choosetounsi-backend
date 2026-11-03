@@ -32,7 +32,7 @@ class OrderController extends Controller
     {
         $query = Order::with([
             'user:id,name,email',
-            'sellerOrders:id,order_id,seller_id,status,subtotal,coupon_code,discount_amount,delivery_fee',
+            'sellerOrders:id,order_id,seller_id,status,subtotal,coupon_code,discount_amount,delivery_fee,prepared_at,intigo_nid,intigo_sync_status,intigo_error',
             'sellerOrders.seller:id,name',
             'sellerOrders.seller.sellerApplication', 'sellerOrders.seller.pickupAddress.zone', // pickup completeness → export readiness
         ])
@@ -108,6 +108,15 @@ class OrderController extends Controller
             // Lets the list disable bulk export with a reason, without opening each order.
             $order->setAttribute('address_status', ShippingAddressResource::make($order)->resolve()['status']);
             $order->setAttribute('export_issues', $documents->exportIssues($order));
+
+            // List badges: "Prepared by seller" (prepared_at, the parcel stays confirmed) and Intigo send state
+            $order->setAttribute('parcels_summary', $order->sellerOrders->map(fn ($so) => [
+                'id'          => $so->id,
+                'status'      => $so->status,
+                'prepared_at' => $so->prepared_at,
+                'intigo_nid'  => $so->intigo_nid,
+                'intigo'      => \App\Http\Controllers\Admin\IntigoController::sendState($so),
+            ])->values());
 
             $order->unsetRelation('sellerOrders');
             $order->makeVisible('guest_email'); // admins see the guest's e-mail

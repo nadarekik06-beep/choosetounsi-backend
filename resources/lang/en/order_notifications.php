@@ -89,6 +89,10 @@ return [
         'next'      => 'When the package is ready, set the order to “Completed” in your dashboard.',
     ],
     // Delivery agency (Intigo) updates: dashboard bell
+    'parcel_picked_up' => [
+        'title' => 'Parcel :ref picked up',
+        'body'  => 'The courier picked up your parcel (:count item): it is on its way to the customer.|The courier picked up your parcel (:count items): it is on its way to the customer.',
+    ],
     'parcel_out_for_delivery' => [
         'title' => 'Parcel :ref out for delivery',
         'body'  => 'The courier is delivering your parcel (:count item) to the customer today.|The courier is delivering your parcel (:count items) to the customer today.',

@@ -190,7 +190,9 @@ class IntigoHttpClientTest extends TestCase
         $this->assertSame('INT-777', $fresh->intigo_nid);
         $this->assertSame('sent', $fresh->intigo_sync_status);
         Http::assertSent(fn (Request $r) => $r->url() === self::BASE . '/parcels/by-name' && $r['cid'] === 'CT-SO-' . $so->id && $r['pickup_index'] === 3);
-        Mail::assertNotQueued(IntigoAlertMail::class);
+        // Only the "prepared" news mail: no problem alert
+        Mail::assertNotQueued(IntigoAlertMail::class, fn (IntigoAlertMail $m) => !$m->info);
+        Mail::assertQueued(IntigoAlertMail::class, fn (IntigoAlertMail $m) => $m->info && $m->title === 'Parcel prepared by the seller');
     }
 
     public function test_402_keeps_the_order_marks_the_parcel_failed_and_alerts_by_mail_and_bell(): void
@@ -211,7 +213,7 @@ class IntigoHttpClientTest extends TestCase
 
         Mail::assertQueued(IntigoAlertMail::class, fn (IntigoAlertMail $m) => $m->hasTo('alerts@example.com') && $m->sellerOrderId === $so->id
             && str_contains($m->reason, 'insufficient account balance'));
-        Mail::assertQueued(IntigoAlertMail::class, 1);
+        $this->assertCount(1, Mail::queued(IntigoAlertMail::class, fn (IntigoAlertMail $m) => !$m->info));   // + the "prepared" news mail
         $this->assertTrue($this->admin->fresh()->notifications()->where('type', \App\Notifications\Delivery\IntigoAdminNotification::class)->exists());
     }
 

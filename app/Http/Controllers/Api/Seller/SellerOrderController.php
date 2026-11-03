@@ -315,6 +315,13 @@ public function updateStatus(Request $request, $id)
             }
             app(\App\Services\Orders\WhatsApp\SellerReminderService::class)->markPrepared($sellerOrder, auth()->id());
 
+            // Admins: bell + e-mail (once per parcel), whatever happens with Intigo
+            $sellerName = auth()->user()->name ?? ('#' . auth()->id());
+            app(\App\Services\Intigo\IntigoAlerts::class)->inform($sellerOrder, 'prepared',
+                'Parcel prepared by the seller',
+                "Seller {$sellerName} marked the parcel as prepared. The Intigo parcel is being requested (see the order).",
+                true);
+
             try {
                 if (!$sellerOrder->intigo_nid) {
                     DB::table('seller_orders')->where('id', $sellerOrder->id)->whereNull('intigo_nid')

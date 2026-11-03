@@ -9,7 +9,7 @@ use Illuminate\Queue\SerializesModels;
 
 /**
  * A parcel that needs a human (Intigo refused it, it could not be sent, possible
- * duplicate), to config intigo.alert_email, in French. Sent by IntigoAlerts with
+ * duplicate) or, with $info, simple news (seller prepared the parcel), to config intigo.alert_email, in French. Sent by IntigoAlerts with
  * the bell notification, once per parcel and reason.
  */
 class IntigoAlertMail extends Mailable implements ShouldQueue
@@ -23,6 +23,7 @@ class IntigoAlertMail extends Mailable implements ShouldQueue
         public ?int $orderId,
         public ?int $sellerOrderId,
         public ?string $refLabel = null,   // e.g. "vendeur #4 (pickup 1)" for a pickup address alert
+        public bool $info = false,         // news, not a problem (e.g. the seller prepared the parcel)
     ) {
         $this->queue  = 'emails';
         $this->locale = 'fr';
@@ -41,6 +42,7 @@ class IntigoAlertMail extends Mailable implements ShouldQueue
                 'ref'      => $ref,
                 'orderUrl' => $this->orderId ? admin_url('/orders?order=' . $this->orderId) : null,
                 'panelUrl' => admin_url('/intigo'),
+                'info'     => $this->info,
             ]);
     }
 }

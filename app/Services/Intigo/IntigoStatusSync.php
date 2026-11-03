@@ -181,6 +181,7 @@ class IntigoStatusSync
         }
 
         $this->notifySeller($so, $moved);
+        $this->notifyAdmins($so, $moved, $code, $label);
         return $moved ? 'moved to ' . implode(' → ', $moved) : 'no move';
     }
 
@@ -198,11 +199,25 @@ class IntigoStatusSync
         return 'cancelled by Intigo: admin notified';
     }
 
-    /** Seller hears about out for delivery, delivered and returned (bell + e-mail). */
+    /** Seller hears about picked up, out for delivery, delivered and returned (dashboard bell). */
     private function notifySeller(SellerOrder $so, array $moved): void
     {
-        foreach (array_intersect($moved, ['out_for_delivery', 'delivered', 'returned_to_seller']) as $step) {
+        foreach (array_intersect($moved, ['handed_to_courier', 'out_for_delivery', 'delivered', 'returned_to_seller']) as $step) {
             app(SellerOrderNotifier::class)->parcelUpdate($so, $step);
+        }
+    }
+
+    /** Admin bell: picked up, delivered, refused, returned (once per parcel and step). */
+    private function notifyAdmins(SellerOrder $so, array $moved, int $code, string $label): void
+    {
+        $titles = [
+            'handed_to_courier'  => 'Parcel picked up by Intigo',
+            'delivered'          => 'Parcel delivered',
+            'refused'            => 'Parcel refused by the client',
+            'returned_to_seller' => 'Parcel returned to the seller',
+        ];
+        foreach (array_intersect($moved, array_keys($titles)) as $step) {
+            $this->alerts->inform($so, 'carrier_' . $step, $titles[$step], "Intigo {$so->intigo_nid}: {$label} ({$code}).");
         }
     }
 }
