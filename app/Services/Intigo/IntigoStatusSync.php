@@ -98,6 +98,11 @@ class IntigoStatusSync
 
         $label = IntigoStatusMap::label($code, $label);
 
+        // A code we have no status for: never dropped silently (event row keeps Intigo's label)
+        if (IntigoStatusMap::isUnmapped($code)) {
+            Log::warning("[Intigo] unmapped status {$code} \"{$label}\" for parcel {$nid} (seller_order {$so->id}): stored, no status change");
+        }
+
         // Carrier status shown: forward only; delivered / returned are never overwritten
         $current = $so->intigo_status_code;
         $rank    = IntigoStatusMap::rank($code);
@@ -115,7 +120,10 @@ class IntigoStatusSync
             ]);
         }
         if (!$forward) {
-            return $rank === 0 ? "recorded only: {$label} (informational)" : "recorded only: older than the current status {$current}";
+            if ($rank === 0) {
+                return IntigoStatusMap::isUnmapped($code) ? "unmapped status {$code} ({$label}): logged only" : "recorded only: {$label} (informational)";
+            }
+            return "recorded only: older than the current status {$current}";
         }
 
         $target = IntigoStatusMap::target($code);
@@ -123,10 +131,64 @@ class IntigoStatusSync
             return $this->carrierCancelled($so->fresh(), $code, $label);
         }
         if ($target === null || $target === 'confirmed') {
-            return "carrier status {$code} ({$label})";
+            return IntigoStatusMap::isUnmapped($code) ? "unmapped status {$code} ({$label}): shown, no move" : "carrier status {$code} ({$label})";
         }
 
         return $this->walkTo($so->fresh(), $target, $code, $label);
+    }
+
+    /**
+     * Read one parcel's current status from Intigo (GET /parcels/{nid}, read-only)
+     * and apply it like a webhook. Idempotent: the event is stored once per
+     * Intigo update, and apply() only ever moves forward (notifications go out
+     * only for steps actually taken, so webhook + sync never double-notify).
+     * Used by the admin "Sync with Intigo" button and intigo:sync-order.
+     *
+     * @return array{code:int,label:?string,result:string}
+     */
+    public function syncParcel(SellerOrder $so, IntigoClient $client): array
+    {
+        if (!$so->intigo_nid) {
+            throw new \RuntimeException('This parcel has not been sent to Intigo.');
+        }
+        $body   = $client->getParcel($so->intigo_nid, $so->id);
+        $parcel = isset($body['parcel']) && is_array($body['parcel']) ? $body['parcel'] : $body;
+        if (!isset($parcel['status']) || !is_numeric($parcel['status'])) {
+            throw new \RuntimeException('Intigo returned no status for parcel ' . $so->intigo_nid . '.');
+        }
+        $code  = (int) $parcel['status'];
+        $label = isset($parcel['status_label']) ? (string) $parcel['status_label'] : null;
+        $stamp = isset($parcel['updated_at']) ? (string) $parcel['updated_at'] : 'poll';
+
+        $eventId = $this->record($so->intigo_nid, $code, $so->intigo_status_code !== null ? (int) $so->intigo_status_code : null, $stamp, $label, 'poll');
+        // Already stored (webhook or an earlier sync): apply again, it is a no-op once up to date
+        $result = $eventId ? $this->process($eventId) : $this->apply($so->intigo_nid, $code, $label);
+
+        return ['code' => $code, 'label' => $label, 'result' => $result];
+    }
+
+    /**
+     * The parcel's carrier timeline for sellers and buyers: Intigo's label and
+     * when, oldest first. No internal results or payloads.
+     *
+     * @return array<int, array{code:int,label:string,at:?string}>
+     */
+    public static function timeline(SellerOrder $so): array
+    {
+        if (!$so->intigo_nid) {
+            return [];
+        }
+        return DB::table('intigo_webhook_events')
+            ->where('seller_order_id', $so->id)->where('nid', $so->intigo_nid)
+            ->whereIn('source', ['webhook', 'poll'])
+            ->orderBy('created_at')->orderBy('id')
+            ->get(['new_status', 'status_label', 'created_at'])
+            ->unique('new_status')
+            ->map(fn ($e) => [
+                'code'  => (int) $e->new_status,
+                'label' => IntigoStatusMap::label((int) $e->new_status, $e->status_label),
+                'at'    => $e->created_at ? \Illuminate\Support\Carbon::parse($e->created_at)->toIso8601String() : null,
+            ])->values()->all();
     }
 
     /** Steps from our current status to $target, forward flow or return branch only. */

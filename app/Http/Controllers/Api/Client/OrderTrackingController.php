@@ -103,6 +103,8 @@ class OrderTrackingController extends Controller
                 'step'            => self::STEPS[$so->status] ?? 'placed',
                 'delivery_status' => $so->intigo_status_label ?: null,
                 'delivery_at'     => optional($so->intigo_status_at)->toIso8601String(),
+                'tracking_ref'    => $so->intigo_nid && $so->intigo_sync_status !== 'cancelled' ? $so->intigo_nid : null,
+                'timeline'        => $so->intigo_sync_status !== 'cancelled' ? \App\Services\Intigo\IntigoStatusSync::timeline($so) : [],
                 'items'           => $order->items->where('seller_order_id', $so->id)->values()->map(fn ($i) => [
                     'name'     => $i->product_name,
                     'variant'  => $i->variant_label,

@@ -19,7 +19,7 @@ class ScriptedIntigoClient implements IntigoClient
     public array $atIntigo = [];
     public array $statuses = [];
     public ?\Closure $onCancel = null;
-    public array $calls = ['create' => [], 'findByCid' => [], 'cancel' => [], 'statuses' => []];
+    public array $calls = ['create' => [], 'findByCid' => [], 'cancel' => [], 'statuses' => [], 'getParcel' => []];
 
     public function mode(): string { return 'fake'; }
 
@@ -47,7 +47,12 @@ class ScriptedIntigoClient implements IntigoClient
         return $this->atIntigo[$cid] ?? [];
     }
 
-    public function getParcel(string $nid, ?int $sellerOrderId = null): array { return ['nid' => $nid]; }
+    /** Live shape: {success, parcel: {nid, status, status_label, updated_at…}}; status from $statuses when scripted. */
+    public function getParcel(string $nid, ?int $sellerOrderId = null): array
+    {
+        $this->calls['getParcel'][] = $nid;
+        return ['success' => true, 'parcel' => ['nid' => $nid] + ($this->statuses[$nid] ?? [])];
+    }
 
     public function history(string $nid, ?int $sellerOrderId = null): array { return []; }
 

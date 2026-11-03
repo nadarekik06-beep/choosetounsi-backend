@@ -5,7 +5,9 @@ namespace App\Services\Intigo;
 /**
  * Intigo status codes → our parcel workflow (App\Services\Orders\ParcelStatus).
  *
- *   1000–1008          pickup phase           stays 'confirmed' (awaiting pickup)
+ *   1000               waiting for pickup     stays 'confirmed'
+ *   1002               picked up by the agent 'handed_to_courier' ("Pickup Ramassé", seen live)
+ *   1001, 1003–1008    not documented         no move: logged, Intigo's label shown
  *   2000–3100          warehouse / transfer   'handed_to_courier' (in transit)
  *   4000               out for delivery       'out_for_delivery'
  *   5000               delivered              'delivered' (cash collected: commission, payout)
@@ -23,6 +25,7 @@ class IntigoStatusMap
 
     public const LABELS = [
         1000 => 'En attente de ramassage',
+        1002 => 'Ramassé',
         2000 => 'Au dépôt',
         2001 => 'En attente d\'appel du client',
         2004 => 'Reçu au dépôt',
@@ -42,7 +45,8 @@ class IntigoStatusMap
     public static function target(int $code): ?string
     {
         return match (true) {
-            $code >= 1000 && $code <= 1008 => 'confirmed',
+            $code === 1000                 => 'confirmed',
+            $code === 1002                 => 'handed_to_courier',
             $code >= 1100 && $code <= 1102 => self::CARRIER_CANCELLED,
             $code === 3201                 => 'refused',
             $code >= 2000 && $code < 4000  => 'handed_to_courier',
@@ -51,14 +55,26 @@ class IntigoStatusMap
             $code === 6000, $code === 6001 => 'refused',
             $code === 6900                 => 'returned_to_seller',
             $code >= 9000 && $code <= 9004 => self::CARRIER_CANCELLED,
-            default                        => null,   // 99 rerouting, 6500 exchange, unknown
+            default                        => null,   // 99 rerouting, 6500 exchange, 1001/1003–1008, unknown
         };
     }
 
-    /** null (just created) counts as waiting for pickup. */
+    /** Informational on purpose (no move expected); anything else without a target is unmapped. */
+    public static function isInformational(int $code): bool
+    {
+        return $code === 99 || $code === 6500;
+    }
+
+    /** No status of ours for this code (not informational either): log it, show Intigo's label. */
+    public static function isUnmapped(int $code): bool
+    {
+        return self::target($code) === null && !self::isInformational($code);
+    }
+
+    /** Not picked up yet: null (just created), 1000, 1001. From 1002 the agent has it. */
     public static function isPickupPhase(?int $code): bool
     {
-        return $code === null || ($code >= 1000 && $code <= 1008);
+        return $code === null || $code === 1000 || $code === 1001;
     }
 
     public static function isCancelled(?int $code): bool
@@ -77,6 +93,8 @@ class IntigoStatusMap
     {
         if ($code === null) return 1;
         return match (true) {
+            // 1002 (picked up) ends the pickup phase: an undocumented 1001/1003–1008 never outranks it
+            $code === 1002                 => 110,
             $code >= 1000 && $code <= 1008 => 100 + ($code - 1000),
             $code >= 1100 && $code <= 1102 => 900 + ($code - 1100),
             $code >= 2000 && $code < 3000  => 200 + intdiv($code - 2000, 10),

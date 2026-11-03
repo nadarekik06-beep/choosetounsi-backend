@@ -726,6 +726,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/seller-orders/{id}/intigo',          [\App\Http\Controllers\Admin\IntigoController::class, 'parcel'])->whereNumber('id');
         Route::post('/seller-orders/{id}/intigo/retry',   [\App\Http\Controllers\Admin\IntigoController::class, 'retry'])->whereNumber('id');
         Route::post('/seller-orders/{id}/intigo/cancel',  [\App\Http\Controllers\Admin\IntigoController::class, 'cancel'])->whereNumber('id');
+        Route::post('/seller-orders/{id}/intigo/sync',    [\App\Http\Controllers\Admin\IntigoController::class, 'sync'])->whereNumber('id')->middleware('throttle:30,1');
         Route::post('/seller-orders/{id}/intigo/dismiss', [\App\Http\Controllers\Admin\IntigoController::class, 'dismiss'])->whereNumber('id');
         Route::put('/seller-orders/{id}/parcel-size',     [\App\Http\Controllers\Admin\IntigoController::class, 'setSize'])->whereNumber('id');
         Route::get('/seller-orders/{id}/bordereau',       [\App\Http\Controllers\Admin\BordereauController::class, 'show'])->whereNumber('id')->middleware('throttle:30,1');

@@ -11,7 +11,7 @@ use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Safety net for missed webhooks (scheduled every 2 hours):
+ * Safety net for missed webhooks (scheduled every 15 minutes):
  *   1. events stored but never processed are processed again
  *   2. POST /parcels/status for every sent parcel not final here (delivered,
  *      returned, cancelled, refunded) nor at Intigo; a changed status goes
@@ -42,7 +42,7 @@ class SyncStatuses extends Command
         $open = DB::table('seller_orders')->whereNotNull('intigo_nid')
             ->where('intigo_sync_status', ParcelSender::SENT)
             ->whereNotIn('status', self::OUR_FINAL)
-            ->get(['id', 'intigo_nid', 'intigo_status_code']);
+            ->get(['id', 'intigo_nid', 'intigo_status_code', 'status']);
         $open = $open->reject(fn ($so) => IntigoStatusMap::isFinal($so->intigo_status_code === null ? null : (int) $so->intigo_status_code));
 
         // Exchange parcels in transit (complaints): same polling, same events
@@ -62,7 +62,17 @@ class SyncStatuses extends Command
             }
             foreach ($chunk as $so) {
                 $s = $statuses[$so->intigo_nid] ?? null;
-                if (!$s || (int) $s['status'] === (int) $so->intigo_status_code) {
+                if (!$s) {
+                    continue;
+                }
+                if ((int) $s['status'] === (int) $so->intigo_status_code) {
+                    // Same carrier code, but our status still behind it (e.g. a code mapped
+                    // after it arrived): apply again. apply() is forward-only and idempotent.
+                    $target = IntigoStatusMap::target((int) $s['status']);
+                    if (isset($so->status) && $target && $target !== IntigoStatusMap::CARRIER_CANCELLED
+                        && IntigoStatusSync::path($so->status, $target)) {
+                        try { $sync->apply($so->intigo_nid, (int) $s['status'], $s['status_label'] ?? null); $changed++; } catch (\Throwable $e) { /* logged */ }
+                    }
                     continue;
                 }
                 // One poll event per (parcel, status): repeated polls dedupe on it

@@ -12,6 +12,7 @@ use App\Services\Intigo\IntigoClient;
 use App\Services\Intigo\IntigoException;
 use App\Services\Intigo\IntigoRegions;
 use App\Services\Intigo\IntigoStatusMap;
+use App\Services\Intigo\IntigoStatusSync;
 use App\Services\Intigo\ParcelCanceller;
 use App\Services\Intigo\ParcelPayload;
 use App\Services\Intigo\ParcelSender;
@@ -160,6 +161,29 @@ class IntigoController extends Controller
             'message' => $result['message'],
             'data'    => self::parcelPayload($so->fresh(['order', 'seller']), true),
         ], $ok || $result['result'] === 'retry' ? 200 : 422);
+    }
+
+    /** POST /admin/seller-orders/{id}/intigo/sync: read the parcel at Intigo (GET only) and apply its status. */
+    public function sync(Request $request, int $id, IntigoClient $client, IntigoStatusSync $sync): JsonResponse
+    {
+        $so = SellerOrder::findOrFail($id);
+        if (!$so->intigo_nid) {
+            return response()->json(['success' => false, 'message' => 'This parcel was not sent to Intigo.'], 422);
+        }
+        Log::info("[Intigo] manual sync of parcel {$so->intigo_nid} (seller_order {$id}) by admin {$request->user()->id}");
+        try {
+            $r = $sync->syncParcel($so, $client);
+        } catch (\Throwable $e) {
+            return response()->json(['success' => false, 'message' => 'Intigo sync failed: ' . $e->getMessage()], 502);
+        }
+        $so = $so->fresh(['order', 'seller']);
+        return response()->json([
+            'success' => true,
+            'message' => "Intigo: {$r['code']} " . ($r['label'] ?? '') . " — {$r['result']}",
+            'result'  => $r['result'],
+            'status'  => $so->status,
+            'data'    => self::parcelPayload($so, true),
+        ]);
     }
 
     public function cancel(Request $request, int $id, ParcelCanceller $canceller): JsonResponse

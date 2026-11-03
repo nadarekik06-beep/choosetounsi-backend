@@ -361,6 +361,8 @@ public function updateStatus(Request $request, $id)
             'nid'          => $state === 'sent' ? $so->intigo_nid : null,
             'status_code'  => $so->intigo_status_code,
             'status_label' => $so->intigo_status_label,
+            'status_at'    => optional($so->intigo_status_at)->toIso8601String(),
+            'timeline'     => $state === 'sent' ? \App\Services\Intigo\IntigoStatusSync::timeline($so) : [],
             'parcel_size'  => $so->parcel_size,
             // Bordereau: printable once the admin uploaded it (or Intigo's, flag on); first / last print by the seller
             'bordereau'    => [

@@ -118,6 +118,9 @@ class BuyerOrderResource extends JsonResource
                 'stage'        => self::stage($so, $sent),
                 'tracking_ref' => $sent ? $so->intigo_nid : null,
                 'updated_at'   => optional($so->intigo_status_at ?? $so->updated_at)->toISOString(),
+                // Intigo's own wording and steps (label + date only)
+                'carrier_label' => $sent ? ($so->intigo_status_label ?: null) : null,
+                'timeline'      => $sent ? \App\Services\Intigo\IntigoStatusSync::timeline($so) : [],
             ],
         ];
     }
