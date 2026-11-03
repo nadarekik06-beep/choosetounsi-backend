@@ -89,6 +89,16 @@ return [
         'next'      => 'Quand le colis est prêt, passez la commande en « Terminée » dans votre tableau de bord.',
     ],
     // Mises à jour du transporteur (Intigo) : cloche du tableau de bord
+    'bordereau_ready' => [
+        'subject'  => "Commande :ref — votre bordereau est prêt à imprimer|Commande :ref — votre bordereau est prêt à imprimer",
+        'title'    => "Bordereau prêt — :ref",
+        'body'     => "Imprimez le bordereau de livraison depuis la page de la commande et collez-le sur le colis.|Imprimez le bordereau de livraison depuis la page de la commande et collez-le sur le colis.",
+        'headline' => "Votre bordereau est prêt",
+        'intro'    => "La demande de livraison a été envoyée au livreur. Imprimez le bordereau depuis votre tableau de bord et collez-le sur le colis.",
+        'next'     => "Ouvrez la commande et cliquez sur « Imprimer le bordereau ».",
+        'cta'      => "Ouvrir la commande",
+    ],
+
     'parcel_picked_up' => [
         'title' => 'Colis :ref ramassé',
         'body'  => 'Le livreur a ramassé votre colis (:count article) : il est en route vers le client.|Le livreur a ramassé votre colis (:count articles) : il est en route vers le client.',

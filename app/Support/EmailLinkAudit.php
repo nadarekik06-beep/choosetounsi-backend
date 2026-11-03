@@ -175,6 +175,7 @@ final class EmailLinkAudit
             'SellerOrderConfirmedNotification'  => $notif(fn () => ($s = $so()) ? new N\Orders\SellerOrderConfirmedNotification($s) : null, $seller),
             'SellerOrderCancelledNotification'  => $notif(fn () => ($s = $so()) ? new N\Orders\SellerOrderCancelledNotification($s) : null, $seller),
             'SellerPickupReminderNotification'  => $notif(fn () => ($s = $so()) ? new N\Orders\SellerPickupReminderNotification($s) : null, $seller),
+            'SellerBordereauReadyNotification'  => $notif(fn () => ($s = $so()) ? new N\Orders\SellerBordereauReadyNotification($s) : null, $seller),
             // (SellerParcelStatusNotification: bell only, no e-mail)
 
             // ── Seller insights / ads / payments ──

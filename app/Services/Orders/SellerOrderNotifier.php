@@ -8,6 +8,7 @@ use App\Notifications\Orders\NewSellerOrderNotification;
 use App\Notifications\Orders\SellerOrderCancelledNotification;
 use App\Notifications\Orders\SellerOrderConfirmedNotification;
 use App\Notifications\Orders\SellerOrderNotification;
+use App\Notifications\Orders\SellerBordereauReadyNotification;
 use App\Notifications\Orders\SellerParcelStatusNotification;
 use App\Notifications\Orders\SellerPickupReminderNotification;
 use Illuminate\Support\Collection;
@@ -96,6 +97,19 @@ class SellerOrderNotifier
             return false;
         }
         return $this->send($sellerOrder, SellerParcelStatusNotification::STEPS[$step], new SellerParcelStatusNotification($sellerOrder, $step));
+    }
+
+    /** The Intigo parcel exists: print the bordereau (bell + e-mail, once per sub-order). */
+    public function bordereauReady(SellerOrder $sellerOrder): bool
+    {
+        if ($sellerOrder->seller_id === null || $sellerOrder->isPlatformParcel()) {
+            return false;
+        }
+        $sellerOrder->loadMissing('seller');
+        if (!$sellerOrder->seller) {
+            return false;
+        }
+        return $this->send($sellerOrder, 'bordereau_ready', new SellerBordereauReadyNotification($sellerOrder));
     }
 
     public function pickupReminder(SellerOrder $sellerOrder): bool

@@ -89,6 +89,16 @@ return [
         'next'      => 'When the package is ready, set the order to “Completed” in your dashboard.',
     ],
     // Delivery agency (Intigo) updates: dashboard bell
+    'bordereau_ready' => [
+        'subject'  => "Order :ref — your bordereau is ready to print|Order :ref — your bordereau is ready to print",
+        'title'    => "Bordereau ready — :ref",
+        'body'     => "Print the delivery bordereau from the order page and stick it on the parcel.|Print the delivery bordereau from the order page and stick it on the parcel.",
+        'headline' => "Your bordereau is ready",
+        'intro'    => "The delivery request was sent to the courier. Print the bordereau from your dashboard and stick it on the parcel.",
+        'next'     => "Open the order and click “Print bordereau”.",
+        'cta'      => "Open the order",
+    ],
+
     'parcel_picked_up' => [
         'title' => 'Parcel :ref picked up',
         'body'  => 'The courier picked up your parcel (:count item): it is on its way to the customer.|The courier picked up your parcel (:count items): it is on its way to the customer.',

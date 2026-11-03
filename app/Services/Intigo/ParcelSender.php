@@ -227,6 +227,15 @@ class ParcelSender
             return $so;
         });
 
+        // Seller: "your bordereau is ready" (bell + e-mail, once). Never affects the send.
+        if ($so->intigo_nid === $nid) {
+            try {
+                app(\App\Services\Orders\SellerOrderNotifier::class)->bordereauReady($so);
+            } catch (\Throwable $e) {
+                Log::warning("[Intigo] bordereau-ready notice for seller_order {$id} failed: " . $e->getMessage());
+            }
+        }
+
         if ($fallback) {
             $this->alerts->flag($so, 'Intigo guessed the delegation', "The client's delegation was not recognised; Intigo used \"{$districtName}\". Check the address with the client if needed.", 'district_fallback', false);
         }
