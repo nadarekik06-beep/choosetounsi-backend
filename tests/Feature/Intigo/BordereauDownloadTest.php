@@ -72,6 +72,7 @@ class BordereauDownloadTest extends TestCase
         // The seller's order list shows it (added field only)
         $item = collect($this->as($seller)->getJson('/api/seller/orders')->json('data.data'))->firstWhere('id', $so->id);
         $this->assertTrue($item['delivery']['bordereau']['available']);
+        $this->assertTrue($item['delivery']['bordereau']['enabled']);
         $this->assertSame(1, $item['delivery']['bordereau']['print_count']);
     }
 
@@ -271,6 +272,7 @@ class BordereauDownloadTest extends TestCase
         // Order list: the button is hidden
         $item = collect($this->as($seller)->getJson('/api/seller/orders')->json('data.data'))->firstWhere('id', $so->id);
         $this->assertFalse($item['delivery']['bordereau']['available']);
+        $this->assertFalse($item['delivery']['bordereau']['enabled']);
 
         // Admin: download and log still work, admin badge still shows the parcel has one
         $this->as($this->admin)->get("/api/admin/seller-orders/{$so->id}/bordereau")->assertOk();
