@@ -728,6 +728,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/seller-orders/{id}/intigo/cancel',  [\App\Http\Controllers\Admin\IntigoController::class, 'cancel'])->whereNumber('id');
         Route::post('/seller-orders/{id}/intigo/dismiss', [\App\Http\Controllers\Admin\IntigoController::class, 'dismiss'])->whereNumber('id');
         Route::put('/seller-orders/{id}/parcel-size',     [\App\Http\Controllers\Admin\IntigoController::class, 'setSize'])->whereNumber('id');
+        Route::get('/seller-orders/{id}/bordereau',       [\App\Http\Controllers\Admin\BordereauController::class, 'show'])->whereNumber('id')->middleware('throttle:30,1');
 
         // ── Admin Notifications ───────────────────────────────────────────
         Route::prefix('notifications')->group(function () {

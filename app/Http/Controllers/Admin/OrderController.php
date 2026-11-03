@@ -32,7 +32,7 @@ class OrderController extends Controller
     {
         $query = Order::with([
             'user:id,name,email',
-            'sellerOrders:id,order_id,seller_id,status,subtotal,coupon_code,discount_amount,delivery_fee,prepared_at,intigo_nid,intigo_sync_status,intigo_error',
+            'sellerOrders:id,order_id,seller_id,status,subtotal,coupon_code,discount_amount,delivery_fee,prepared_at,intigo_nid,intigo_sync_status,intigo_error,bordereau_first_downloaded_at,bordereau_last_downloaded_at,bordereau_download_count',
             'sellerOrders.seller:id,name',
             'sellerOrders.seller.sellerApplication', 'sellerOrders.seller.pickupAddress.zone', // pickup completeness → export readiness
         ])
@@ -42,6 +42,16 @@ class OrderController extends Controller
         if ($request->boolean('needs_slips')) {
             $query->where('status', 'confirmed')
                   ->whereDoesntHave('exports', fn($q) => $q->whereIn('type', OrderExport::SLIP_TYPES));
+        }
+
+        // A parcel the seller prepared, sent to Intigo, whose bordereau was never printed: chase the seller
+        if ($request->query('bordereau') === 'not_printed') {
+            $query->whereHas('sellerOrders', fn($q) => $q
+                ->where('status', 'confirmed')
+                ->whereNotNull('prepared_at')
+                ->whereNotNull('intigo_nid')
+                ->where(fn($q2) => $q2->whereNull('intigo_sync_status')->orWhere('intigo_sync_status', '!=', 'cancelled'))
+                ->whereNull('bordereau_first_downloaded_at'));
         }
 
         if ($s = $request->query('status')) {
@@ -116,6 +126,7 @@ class OrderController extends Controller
                 'prepared_at' => $so->prepared_at,
                 'intigo_nid'  => $so->intigo_nid,
                 'intigo'      => \App\Http\Controllers\Admin\IntigoController::sendState($so),
+                'bordereau'   => \App\Http\Controllers\Admin\IntigoController::bordereauSummary($so),
             ])->values());
 
             $order->unsetRelation('sellerOrders');

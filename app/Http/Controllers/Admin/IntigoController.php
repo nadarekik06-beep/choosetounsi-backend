@@ -264,6 +264,17 @@ class IntigoController extends Controller
         };
     }
 
+    /** Badge data: "Bordereau printed ✓ {first} ({count}x)" / "Not printed yet". */
+    public static function bordereauSummary(SellerOrder $so): array
+    {
+        return [
+            'available'        => \App\Services\Intigo\BordereauService::available($so),
+            'first_printed_at' => $so->bordereau_first_downloaded_at,
+            'last_printed_at'  => $so->bordereau_last_downloaded_at,
+            'print_count'      => (int) $so->bordereau_download_count,
+        ];
+    }
+
     public static function parcelPayload(SellerOrder $so, bool $full = false): array
     {
         $out = [
@@ -295,6 +306,8 @@ class IntigoController extends Controller
                 && $so->intigo_sync_status !== ParcelSender::CANCELLED
                 && IntigoStatusMap::isPickupPhase($so->intigo_status_code),
             'mode'                     => config('intigo.mode'),
+            // Seller's bordereau prints (admin downloads are not counted)
+            'bordereau'                => self::bordereauSummary($so),
         ];
 
         // What goes (or went) to Intigo: the seller's pickup, the client's checkout address, the COD
