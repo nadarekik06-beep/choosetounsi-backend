@@ -58,6 +58,10 @@ class SellerOrder extends Model
         'intigo_district_fallback' => 'boolean',
         'intigo_attempts'          => 'integer',
         'intigo_previous_nids'     => 'array',
+        // Bordereau downloads (App\Services\Intigo\BordereauService)
+        'bordereau_first_downloaded_at' => 'datetime',
+        'bordereau_last_downloaded_at'  => 'datetime',
+        'bordereau_download_count'      => 'integer',
     ];
 
     /**
@@ -91,7 +95,7 @@ class SellerOrder extends Model
     protected $appends = ['display_status'];
 
     /** Courier-side internals: the admin reads them through IntigoController::parcelPayload(). */
-    protected $hidden = ['intigo_error', 'intigo_attention', 'intigo_locked_at', 'intigo_previous_nids', 'intigo_attempts'];
+    protected $hidden = ['intigo_error', 'intigo_attention', 'intigo_locked_at', 'intigo_previous_nids', 'intigo_attempts', 'bordereau_path'];
 
     /**
      * Status to show: a fully returned seller order is 'refunded' ("Returned

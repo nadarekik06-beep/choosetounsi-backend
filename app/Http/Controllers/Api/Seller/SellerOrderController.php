@@ -362,6 +362,13 @@ public function updateStatus(Request $request, $id)
             'status_code'  => $so->intigo_status_code,
             'status_label' => $so->intigo_status_label,
             'parcel_size'  => $so->parcel_size,
+            // Intigo bordereau: printable once the parcel exists; first / last print by the seller
+            'bordereau'    => [
+                'available'          => \App\Services\Intigo\BordereauService::available($so),
+                'first_printed_at'   => $so->bordereau_first_downloaded_at,
+                'last_printed_at'    => $so->bordereau_last_downloaded_at,
+                'print_count'        => (int) $so->bordereau_download_count,
+            ],
         ];
     }
 

@@ -33,7 +33,7 @@ return [
     'allowed_headers' => ['*'],
 
     // Lets the admin panel read the server's file name on PDF downloads.
-    'exposed_headers' => ['Content-Disposition'],
+    'exposed_headers' => ['Content-Disposition', 'X-Bordereaux-Printed', 'X-Bordereaux-Skipped'],
 
     'max_age' => 0,
 

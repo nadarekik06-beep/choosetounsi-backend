@@ -433,6 +433,9 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/orders/{id}/status',  [SellerOrderController::class, 'updateStatus']);
         Route::patch('/orders/{id}/payment', [SellerOrderController::class, 'updatePayment']);
         Route::post('/orders/{id}/prepared', [SellerOrderController::class, 'markPrepared'])->whereNumber('id');
+        // Intigo bordereau (courier label): the seller prints it, admins are told on the first print
+        Route::get('/orders/{id}/bordereau',  [\App\Http\Controllers\Api\Seller\SellerBordereauController::class, 'show'])->whereNumber('id')->middleware('throttle:30,1');
+        Route::post('/bordereaux/bulk',       [\App\Http\Controllers\Api\Seller\SellerBordereauController::class, 'bulk'])->middleware('throttle:30,1');
         Route::get('orders/{id}/invoice', [\App\Http\Controllers\Api\Seller\SellerInvoiceController::class, 'show']);
 
         // ── Complaints ────────────────────────────────────────────────────

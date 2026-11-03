@@ -658,6 +658,14 @@ return [
     ],
     'order_prepared'     => 'Order marked as prepared.',
     'order_not_preparable' => 'Only a confirmed order, not yet handed to the courier, can be marked as prepared.',
+    // Intigo bordereau download (SellerBordereauController)
+    'bordereau_not_found' => 'Order not found.',
+    'bordereau_forbidden' => 'This order does not belong to your shop.',
+    'bordereau_not_ready' => 'The bordereau is not available yet: mark the order as prepared first.',
+    'bordereau_intigo_error' => 'The delivery company could not provide the bordereau right now. Please try again in a few minutes.',
+    'bordereau_intigo_timeout' => 'The delivery company is not answering. Please try again in a few minutes.',
+    'bordereau_bulk_none' => 'None of the selected orders has a bordereau yet: mark them as prepared first.',
+    'bordereau_merge_failed' => 'These bordereaux could not be combined into one file. Please print them one by one.',
     'pickup' => [
         'zone_invalid' => 'Pick a zone from the list (Intigo delegation or sector).',
         'pin_required' => 'Place the marker on the map (or use “My position”).',
