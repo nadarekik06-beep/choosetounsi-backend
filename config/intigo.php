@@ -83,7 +83,10 @@ return [
     // Bordereau (courier label) PDFs: GET {host}/secure-api/bordereaux/{nid}, key in this header.
     // Fetched on the first download, then served from storage/app/{cache_dir}. Check it with
     // php artisan intigo:bordereau-check (read-only).
+    // enabled: off by default. Off = sellers see no button (available=false), their routes answer 503
+    // "coming soon" and no "bordereau ready" notification is sent. Admin download and logs still work.
     'bordereau' => [
+        'enabled'     => filter_var(env('INTIGO_BORDEREAU_ENABLED', false), FILTER_VALIDATE_BOOLEAN),
         'auth_header' => env('INTIGO_BORDEREAU_AUTH_HEADER', 'apikey'),
         'timeout'     => 30,
         'cache_dir'   => 'private/bordereaux',

@@ -364,7 +364,7 @@ public function updateStatus(Request $request, $id)
             'parcel_size'  => $so->parcel_size,
             // Intigo bordereau: printable once the parcel exists; first / last print by the seller
             'bordereau'    => [
-                'available'          => \App\Services\Intigo\BordereauService::available($so),
+                'available'          => \App\Services\Intigo\BordereauService::availableToSeller($so),
                 'first_printed_at'   => $so->bordereau_first_downloaded_at,
                 'last_printed_at'    => $so->bordereau_last_downloaded_at,
                 'print_count'        => (int) $so->bordereau_download_count,

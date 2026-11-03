@@ -33,6 +33,18 @@ class BordereauService
         return (bool) $so->intigo_nid && $so->intigo_sync_status !== ParcelSender::CANCELLED;
     }
 
+    /** Feature flag INTIGO_BORDEREAU_ENABLED: sellers' side only (admins always have it). */
+    public static function enabledForSellers(): bool
+    {
+        return (bool) config('intigo.bordereau.enabled', false);
+    }
+
+    /** What the seller dashboard shows: the flag is on and the parcel exists. */
+    public static function availableToSeller(SellerOrder $so): bool
+    {
+        return self::enabledForSellers() && self::available($so);
+    }
+
     /** @throws IntigoException */
     public function pdf(SellerOrder $so): string
     {

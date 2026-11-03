@@ -26,7 +26,7 @@ class BordereauDownloadTest extends TestCase
     {
         parent::setUp();
         $this->setUpIntigo();
-        config(['intigo.alert_email' => 'alerts@example.com']);
+        config(['intigo.alert_email' => 'alerts@example.com', 'intigo.bordereau.enabled' => true]);
         Mail::fake();
         Storage::fake('local');
     }
@@ -238,5 +238,44 @@ class BordereauDownloadTest extends TestCase
 
         // Nothing printable → 409
         $this->as($seller)->postJson('/api/seller/bordereaux/bulk', ['ids' => [$notPrepared->id, $foreign->id]])->assertStatus(409);
+    }
+
+    // ── INTIGO_BORDEREAU_ENABLED=false ─────────────────────────────────────
+
+    public function test_flag_is_off_by_default(): void
+    {
+        // No INTIGO_BORDEREAU_ENABLED in the environment → off
+        $this->assertNull(env('INTIGO_BORDEREAU_ENABLED'));
+        $this->assertFalse((require config_path('intigo.php'))['bordereau']['enabled']);
+    }
+
+    public function test_flag_off_hides_the_seller_side_but_admin_still_works(): void
+    {
+        config(['intigo.bordereau.enabled' => false]);
+        $seller = $this->sellerWithPickup();
+        $so = $this->confirmedParcel($seller);
+        $this->prepare($so, $seller);
+
+        // No "bordereau ready" notification (nothing claimed either)
+        $this->assertSame(0, DB::table('seller_order_notifications')->where('seller_order_id', $so->id)->where('event', 'bordereau_ready')->count());
+        $this->assertSame(0, DB::table('notifications')->where('notifiable_id', $seller->id)->where('data', 'like', '%"event":"bordereau_ready"%')->count());
+
+        // Seller routes: 503 coming soon, nothing fetched or logged
+        $this->as($seller)->getJson("/api/seller/orders/{$so->id}/bordereau")
+            ->assertStatus(503)->assertJson(['code' => 'coming_soon']);
+        $this->as($seller)->postJson('/api/seller/bordereaux/bulk', ['ids' => [$so->id]])
+            ->assertStatus(503)->assertJson(['code' => 'coming_soon']);
+        $this->assertSame(0, DB::table('bordereau_downloads')->count());
+        $this->assertSame(0, $this->adminNotes('intigo_bordereau_printed'));
+
+        // Order list: the button is hidden
+        $item = collect($this->as($seller)->getJson('/api/seller/orders')->json('data.data'))->firstWhere('id', $so->id);
+        $this->assertFalse($item['delivery']['bordereau']['available']);
+
+        // Admin: download and log still work, admin badge still shows the parcel has one
+        $this->as($this->admin)->get("/api/admin/seller-orders/{$so->id}/bordereau")->assertOk();
+        $this->assertSame('admin', DB::table('bordereau_downloads')->where('seller_order_id', $so->id)->value('source'));
+        $order = collect($this->as($this->admin)->getJson('/api/admin/orders?per_page=100')->json('data.data'))->firstWhere('id', $so->order_id);
+        $this->assertTrue(collect($order['parcels_summary'])->firstWhere('id', $so->id)['bordereau']['available']);
     }
 }

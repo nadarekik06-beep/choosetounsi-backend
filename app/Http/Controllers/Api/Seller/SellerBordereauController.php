@@ -26,6 +26,9 @@ class SellerBordereauController extends Controller
 
     public function show(Request $request, int $id): Response
     {
+        if (!BordereauService::enabledForSellers()) {
+            return $this->comingSoon();
+        }
         $so = SellerOrder::find($id);
         if (!$so) {
             return $this->error(__('seller.bordereau_not_found'), 404);
@@ -49,6 +52,9 @@ class SellerBordereauController extends Controller
 
     public function bulk(Request $request): Response
     {
+        if (!BordereauService::enabledForSellers()) {
+            return $this->comingSoon();
+        }
         $max  = (int) config('intigo.bordereau.bulk_max', 50);
         $data = $request->validate([
             'ids'   => "required|array|min:1|max:{$max}",
@@ -119,6 +125,12 @@ class SellerBordereauController extends Controller
             'code'    => $timeout ? 'intigo_timeout' : 'intigo_error',
             'message' => __($timeout ? 'seller.bordereau_intigo_timeout' : 'seller.bordereau_intigo_error'),
         ], $timeout ? 504 : 502);
+    }
+
+    /** INTIGO_BORDEREAU_ENABLED is off. */
+    private function comingSoon(): JsonResponse
+    {
+        return $this->error(__('seller.bordereau_coming_soon'), 503, 'coming_soon');
     }
 
     private function error(string $message, int $status, ?string $code = null, array $extra = []): JsonResponse

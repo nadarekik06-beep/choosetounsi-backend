@@ -102,7 +102,9 @@ class SellerOrderNotifier
     /** The Intigo parcel exists: print the bordereau (bell + e-mail, once per sub-order). */
     public function bordereauReady(SellerOrder $sellerOrder): bool
     {
-        if ($sellerOrder->seller_id === null || $sellerOrder->isPlatformParcel()) {
+        // INTIGO_BORDEREAU_ENABLED off: nothing sent (and nothing claimed)
+        if (!\App\Services\Intigo\BordereauService::enabledForSellers()
+            || $sellerOrder->seller_id === null || $sellerOrder->isPlatformParcel()) {
             return false;
         }
         $sellerOrder->loadMissing('seller');

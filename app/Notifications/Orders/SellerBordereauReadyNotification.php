@@ -30,6 +30,6 @@ class SellerBordereauReadyNotification extends SellerOrderNotification
     public function shouldSend($notifiable, string $channel): bool
     {
         $so = $this->sellerOrder->fresh();
-        return $so && \App\Services\Intigo\BordereauService::available($so) && $so->status !== 'cancelled';
+        return $so && \App\Services\Intigo\BordereauService::availableToSeller($so) && $so->status !== 'cancelled';
     }
 }
