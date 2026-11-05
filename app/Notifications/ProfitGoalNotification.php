@@ -21,8 +21,8 @@ use Illuminate\Notifications\Notification;
 class ProfitGoalNotification extends Notification implements ShouldQueue
 {
     use Queueable;
+    use \App\Support\Queue\RetriesDelivery;   // 5 tries, 1 min -> 1 h
 
-    public $tries = 3;
 
     public const ICONS = [
         'milestone' => 'target', 'behind_pace' => 'trending-down', 'weekly' => 'gauge',

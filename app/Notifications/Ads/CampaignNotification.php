@@ -16,6 +16,7 @@ use Illuminate\Notifications\Notification;
 abstract class CampaignNotification extends Notification implements ShouldQueue
 {
     use Queueable;
+    use \App\Support\Queue\RetriesDelivery;   // 5 tries, 1 min -> 1 h
 
     public function __construct(protected Sponsorship $campaign)
     {

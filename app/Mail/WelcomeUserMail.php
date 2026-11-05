@@ -19,6 +19,7 @@ use Illuminate\Queue\SerializesModels;
 class WelcomeUserMail extends Mailable
 {
     use Queueable, SerializesModels;
+    use \App\Support\Queue\RetriesDelivery;   // 5 tries, 1 min -> 1 h
 
     public User $user;
     public array $featuredProducts;

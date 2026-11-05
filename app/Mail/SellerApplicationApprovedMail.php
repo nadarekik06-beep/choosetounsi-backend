@@ -13,6 +13,7 @@ use Illuminate\Queue\SerializesModels;
 class SellerApplicationApprovedMail extends Mailable implements ShouldQueue
 {
     use Queueable, SerializesModels;
+    use \App\Support\Queue\RetriesDelivery;   // 5 tries, 1 min -> 1 h
 
     public User $seller;
     public SellerApplication $application;

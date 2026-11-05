@@ -20,8 +20,8 @@ use Illuminate\Notifications\Notification;
 class ForecastAlertNotification extends Notification implements ShouldQueue
 {
     use Queueable;
+    use \App\Support\Queue\RetriesDelivery;   // 5 tries, 1 min -> 1 h
 
-    public $tries = 3;
 
     public function __construct(public string $type, public array $params, public bool $withEmail)
     {

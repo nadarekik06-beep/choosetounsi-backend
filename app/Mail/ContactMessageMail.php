@@ -14,6 +14,7 @@ use Illuminate\Queue\SerializesModels;
 class ContactMessageMail extends Mailable implements ShouldQueue
 {
     use Queueable, SerializesModels;
+    use \App\Support\Queue\RetriesDelivery;   // 5 tries, 1 min -> 1 h
 
     /** Topics of the form (storefront contact page) → label for the team. */
     public const TOPICS = [

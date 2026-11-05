@@ -17,8 +17,8 @@ use Illuminate\Notifications\Notification;
 abstract class StockAlertNotification extends Notification implements ShouldQueue
 {
     use Queueable;
+    use \App\Support\Queue\RetriesDelivery;   // 5 tries, 1 min -> 1 h
 
-    public $tries = 3;
 
     /** Items named in the bell body; the rest is "+N". */
     private const BODY_ITEMS = 4;

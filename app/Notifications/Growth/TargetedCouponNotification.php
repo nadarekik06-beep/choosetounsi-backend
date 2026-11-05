@@ -14,7 +14,7 @@ use App\Notifications\Buyer\BuyerNotification;
  */
 class TargetedCouponNotification extends BuyerNotification
 {
-    public $tries = 3;
+    // tries + backoff: BuyerNotification (5 tries, 1 min -> 1 h)
 
     public function __construct(public string $code, public string $discountType, public float $discountValue,
                                 public string $productName, public ?string $productSlug, public string $shop,
