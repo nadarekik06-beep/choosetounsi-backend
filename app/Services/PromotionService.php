@@ -151,7 +151,8 @@ class PromotionService
             COALESCE((SELECT h.price {$history} AND h.changed_at < ? ORDER BY h.changed_at DESC, h.id DESC LIMIT 1), {$table}.price))";
 
         // Correlated subqueries only (MariaDB has no LATERAL), so the reference is inlined twice
-        $sql = "COALESCE((SELECT ROUND(GREATEST(0, CASE WHEN pr.discount_type = 'percentage'
+        // A promotion that would bring the price to 0 is ignored (same rule as pricing())
+        $sql = "COALESCE(NULLIF((SELECT ROUND(GREATEST(0, CASE WHEN pr.discount_type = 'percentage'
                         THEN ROUND({$reference}, 3) * (1 - pr.discount_value / 100)
                         ELSE ROUND({$reference}, 3) - pr.discount_value END), 3)
                 FROM promotions pr
@@ -161,7 +162,7 @@ class PromotionService
                   AND pr.starts_at <= ? AND pr.ends_at > ?
                   AND (pr.flash_stock IS NULL OR pr.flash_stock_used < pr.flash_stock)
                 ORDER BY (pr.type = 'flash_sale') DESC, pr.priority DESC, pr.created_at DESC, pr.id DESC
-                LIMIT 1), {$table}.price)";
+                LIMIT 1), 0), {$table}.price)";
 
         return [$sql, [$since, $since, $since, $since, $now, $now]];
     }
@@ -217,6 +218,11 @@ class PromotionService
         }
 
         $final  = round(max(0, $this->applyDiscount($reference, $promo)), 3);
+        if ($final <= 0) {
+            // Never sell for free: a promotion that would (the price was lowered after
+            // it was created) is ignored. Creating one is refused (zeroPriceProducts).
+            return $this->pricing($currentPrice, $currentPrice, null);
+        }
         $amount = round($reference - $final, 3);
 
         return [
@@ -224,12 +230,25 @@ class PromotionService
             'final_price'      => $final,
             'effective_price'  => $final,
             'discount_amount'  => $amount,
-            'discount_percent' => $reference > 0 ? (int) round($amount / $reference * 100) : 0,
+            'discount_percent' => self::percentOff($promo, $reference, $amount),
             'promo_type'       => $promo->type === 'flash_sale' ? 'flash_sale' : 'promotion',
             'promo_label'      => $promo->name,
             'ends_at'          => $this->endsAt($promo)->toISOString(),
             'promotion'        => $this->formatPromotion($promo),
         ];
+    }
+
+    /**
+     * The "-X%" every screen shows. A percentage promotion shows its own rate
+     * (rounded), so the product card, detail page, cart and checkout always agree
+     * whatever the price or variant; a fixed amount is converted from the real prices.
+     */
+    public static function percentOff(Promotion $promo, float $reference, float $amount): int
+    {
+        if ($promo->discount_type === 'percentage') {
+            return (int) round((float) $promo->discount_value);
+        }
+        return $reference > 0 ? (int) round($amount / $reference * 100) : 0;
     }
 
     private function applyDiscount(float $price, Promotion $promo): float
@@ -262,6 +281,7 @@ class PromotionService
             'ends_at'               => $this->endsAt($promo)->toISOString(),
             'flash_stock_remaining' => $promo->flashStockRemaining(),
             'is_flash_sale'         => $promo->type === 'flash_sale',
+            'source'                => $promo->created_by ?? Promotion::SOURCE_SELLER,
         ];
     }
 
@@ -512,15 +532,37 @@ class PromotionService
 
     // ── Validation ────────────────────────────────────────────────────────
 
+    /** Highest percentage an admin promotion may take (owner's decision 2026-11-05). */
+    public const ADMIN_MAX_PERCENT = 99;
+
     /**
      * Validate a promotion payload against business rules.
      * Returns array of error messages (empty = valid).
+     *
+     * Sellers: durations 1 h-72 h (flash) / 1-90 days (discount), max 90% / 70%.
+     * Admin ($source = 'admin'): any duration, max ADMIN_MAX_PERCENT.
+     * Both: end after start, value > 0.
      */
-    public function validate(array $data, string $type): array
+    public function validate(array $data, string $type, string $source = Promotion::SOURCE_SELLER): array
     {
         $errors = [];
         $starts = isset($data['starts_at']) ? Carbon::parse($data['starts_at']) : null;
         $ends   = isset($data['ends_at'])   ? Carbon::parse($data['ends_at'])   : null;
+
+        if ($starts && $ends && $ends <= $starts) {
+            $errors[] = 'The end date must be after the start date.';
+        }
+
+        if ($source === Promotion::SOURCE_ADMIN) {
+            if (isset($data['discount_type'], $data['discount_value'])) {
+                if ($data['discount_value'] <= 0) {
+                    $errors[] = 'Discount value must be greater than 0.';
+                } elseif ($data['discount_type'] === 'percentage' && $data['discount_value'] > self::ADMIN_MAX_PERCENT) {
+                    $errors[] = 'Max discount is ' . self::ADMIN_MAX_PERCENT . '%.';
+                }
+            }
+            return $errors;
+        }
 
         if ($starts && $ends) {
             $durationHours = $starts->diffInHours($ends);
@@ -547,4 +589,146 @@ class PromotionService
 
         return $errors;
     }
+
+    /**
+     * Products (or variants) this discount would bring to 0 DT or less, from the
+     * same reference price the storefront uses. Empty = every final price > 0.
+     *
+     * @param  int[] $productIds
+     * @return string[] product labels ("Name" or "Name (variant)")
+     */
+    public function zeroPriceProducts(array $productIds, string $discountType, float $value): array
+    {
+        $promo    = $this->draftPromotion($discountType, $value);
+        $bad      = [];
+        $products = Product::with(['variants' => fn ($q) => $q->where('is_active', true)])->whereIn('id', $productIds)->get();
+        foreach ($products as $product) {
+            $lines = [[null, (float) $product->price]];
+            foreach ($product->variants as $variant) {
+                if ($variant->price_override !== null) {
+                    $lines[] = [$variant, (float) $variant->price_override];
+                }
+            }
+            foreach ($lines as [$variant, $price]) {
+                $reference = $this->referencePrice($product, $price, $variant?->id);
+                if (round(max(0, $this->applyDiscount($reference, $promo)), 3) <= 0) {
+                    $bad[] = $variant ? "{$product->name} ({$variant->label})" : $product->name;
+                }
+            }
+        }
+        return $bad;
+    }
+
+    /**
+     * What a draft discount would charge, per product and per variant, with the
+     * exact rules and rounding of checkout (admin form live preview).
+     *
+     * @param  int[] $productIds
+     */
+    public function preview(array $productIds, string $discountType, float $value): array
+    {
+        $promo    = $this->draftPromotion($discountType, $value);
+        $products = Product::with(['variants' => fn ($q) => $q->where('is_active', true)])
+            ->whereIn('id', $productIds)->get();
+
+        $row = function (Product $product, ?ProductVariant $variant) use ($promo): array {
+            $base      = self::basePrice($product, $variant);
+            $reference = $this->referencePrice($product, $base, $variant?->id);
+            $p         = $this->pricing($base, $reference, $promo);
+            return [
+                'current_price'    => round($base, 3),
+                'original_price'   => $p['original_price'],
+                'final_price'      => $p['final_price'],
+                'discount_amount'  => $p['discount_amount'],
+                'discount_percent' => $p['discount_percent'],
+                'valid'            => $p['promotion'] !== null,
+            ];
+        };
+
+        return $products->map(fn (Product $product) => ['product_id' => $product->id, 'name' => $product->name]
+            + $row($product, null)
+            + ['variants' => $product->variants
+                ->filter(fn ($v) => $v->price_override !== null)
+                ->map(fn ($v) => ['variant_id' => $v->id, 'label' => $v->label] + $row($product, $v))
+                ->values()->all()],
+        )->values()->all();
+    }
+
+    /** An unsaved promotion, to price a draft with the real rules. */
+    private function draftPromotion(string $discountType, float $value): Promotion
+    {
+        return new Promotion([
+            'name' => 'preview', 'type' => 'discount', 'discount_type' => $discountType,
+            'discount_value' => $value, 'status' => 'active', 'starts_at' => now(), 'ends_at' => now()->addDay(),
+        ]);
+    }
+
+    // ── One promotion per product ─────────────────────────────────────────
+
+    /**
+     * Live or upcoming promotions (active / scheduled, not ended) on any of these
+     * products whose window overlaps [$startsAt, $endsAt). A product may only
+     * have one promotion at a time, for sellers and admins alike. Paused ones
+     * don't block; they are checked again when resumed.
+     *
+     * @param  int[] $productIds
+     * @return Collection<int, Promotion> each with `products` limited to the overlapping ones
+     */
+    public function conflicts(array $productIds, $startsAt, $endsAt, ?int $ignoreId = null): Collection
+    {
+        $ids = array_values(array_unique(array_map('intval', $productIds)));
+        if (!$ids) return collect();
+
+        return Promotion::query()
+            ->whereIn('status', Promotion::PRICING_STATUSES)
+            ->where('ends_at', '>', now())
+            ->where('starts_at', '<', Carbon::parse($endsAt))
+            ->where('ends_at', '>', Carbon::parse($startsAt))
+            ->when($ignoreId, fn ($q) => $q->where('id', '!=', $ignoreId))
+            ->whereHas('products', fn ($q) => $q->whereIn('products.id', $ids))
+            ->with(['products' => fn ($q) => $q->whereIn('products.id', $ids)->select('products.id', 'products.name', 'products.seller_id')])
+            ->orderBy('starts_at')
+            ->get();
+    }
+
+    /** conflicts() for an API response (admin warning, seller error). */
+    public function formatConflicts(Collection $conflicts): array
+    {
+        return $conflicts->map(fn (Promotion $p) => [
+            'id'             => $p->id,
+            'name'           => $p->name,
+            'type'           => $p->type,
+            'source'         => $p->created_by ?? Promotion::SOURCE_SELLER,
+            'seller_id'      => $p->seller_id,
+            'discount_type'  => $p->discount_type,
+            'discount_value' => (float) $p->discount_value,
+            'status'         => $p->displayStatus(),
+            'starts_at'      => $p->starts_at?->toISOString(),
+            'ends_at'        => $p->ends_at?->toISOString(),
+            'products'       => $p->products->map(fn ($prod) => ['id' => $prod->id, 'name' => $prod->name])->values(),
+        ])->values()->all();
+    }
+
+    /**
+     * Admin chose "replace": the overlapping products leave the conflicting
+     * promotions (which keep their other products); a promotion left with no
+     * product ends. Past orders keep their promotion_id and prices.
+     *
+     * @return array<int, array{promotion: Promotion, product_ids: int[], ended: bool}>
+     */
+    public function removeProductsFromConflicts(Collection $conflicts): array
+    {
+        $out = [];
+        foreach ($conflicts as $promo) {
+            $ids = $promo->products->pluck('id')->map(fn ($id) => (int) $id)->all();
+            $promo->products()->detach($ids);
+            $ended = !$promo->products()->exists();
+            if ($ended) {
+                $promo->update(['status' => 'expired']);
+            }
+            $out[] = ['promotion' => $promo, 'product_ids' => $ids, 'ended' => $ended];
+        }
+        return $out;
+    }
 }
+

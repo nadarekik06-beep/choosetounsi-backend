@@ -672,6 +672,18 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/product-changes/{id}/revert', [\App\Http\Controllers\Admin\ProductChangeController::class, 'revert']);
 
 
+        // ── Admin Promotions (seller + admin promotions, same tables) ─────
+        Route::get('/promotions/stats',        [\App\Http\Controllers\Admin\AdminPromotionController::class, 'stats']);
+        Route::get('/promotions/products',     [\App\Http\Controllers\Admin\AdminPromotionController::class, 'products']);
+        Route::post('/promotions/preview',     [\App\Http\Controllers\Admin\AdminPromotionController::class, 'preview']);
+        Route::get('/promotions',              [\App\Http\Controllers\Admin\AdminPromotionController::class, 'index']);
+        Route::post('/promotions',             [\App\Http\Controllers\Admin\AdminPromotionController::class, 'store']);
+        Route::get('/promotions/{id}',         [\App\Http\Controllers\Admin\AdminPromotionController::class, 'show'])->whereNumber('id');
+        Route::put('/promotions/{id}',         [\App\Http\Controllers\Admin\AdminPromotionController::class, 'update'])->whereNumber('id');
+        Route::post('/promotions/{id}/pause',  [\App\Http\Controllers\Admin\AdminPromotionController::class, 'pause'])->whereNumber('id');
+        Route::post('/promotions/{id}/resume', [\App\Http\Controllers\Admin\AdminPromotionController::class, 'resume'])->whereNumber('id');
+        Route::delete('/promotions/{id}',      [\App\Http\Controllers\Admin\AdminPromotionController::class, 'destroy'])->whereNumber('id');
+
         // ── Admin Packs ───────────────────────────────────────────────────
         // stats MUST come before /{id} to avoid being captured as an ID
         Route::get('/packs/stats',          [AdminPackController::class, 'stats']);

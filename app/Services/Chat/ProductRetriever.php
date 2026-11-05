@@ -202,6 +202,7 @@ class ProductRetriever
             $r->old_price     = $pricing['promo_type'] ? $pricing['original_price'] : null;
             $r->promo_type    = $pricing['promo_type'];
             $r->promo_ends_at = $pricing['ends_at'];
+            $r->discount_percent = (int) $pricing['discount_percent'];
         });
     }
 
@@ -266,6 +267,8 @@ class ProductRetriever
                 'name'         => $r->name,
                 'price'        => round($final, 3),
                 'old_price'    => $r->old_price !== null && $r->old_price > $final ? round($r->old_price, 3) : null,
+                // Same "-X%" as every other screen (PromotionService::percentOff)
+                'discount_percent' => $r->old_price !== null && $r->old_price > $final ? (int) ($r->discount_percent ?? 0) : 0,
                 'price_from'   => (int) $r->variant_prices > 1,
                 'image'        => $images[$r->id] ?? null,
                 'seller'       => $sellers[$r->seller_id] ?? null,

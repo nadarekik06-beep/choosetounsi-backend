@@ -7,10 +7,14 @@ use Carbon\Carbon;
 class Promotion extends Model
 {
     protected $fillable = [
-        'seller_id', 'name', 'type', 'discount_type', 'discount_value',
+        'seller_id', 'created_by', 'created_by_admin_id', 'funded_by',
+        'name', 'type', 'discount_type', 'discount_value',
         'starts_at', 'ends_at', 'flash_stock', 'flash_stock_used',
         'status', 'priority',
     ];
+
+    public const SOURCE_SELLER = 'seller';
+    public const SOURCE_ADMIN  = 'admin';
 
     protected $casts = [
         'starts_at'        => 'datetime',
@@ -30,6 +34,17 @@ class Promotion extends Model
     public function products()
     {
         return $this->belongsToMany(Product::class, 'promotion_products');
+    }
+
+    /** The admin user who created it (admin promotions only). */
+    public function createdByAdmin()
+    {
+        return $this->belongsTo(User::class, 'created_by_admin_id');
+    }
+
+    public function orderItems()
+    {
+        return $this->hasMany(OrderItem::class);
     }
 
     // ── Scopes ────────────────────────────────────────────────────────────
@@ -55,7 +70,27 @@ class Promotion extends Model
     public function scopeFlashSales($q) { return $q->where('type', 'flash_sale'); }
     public function scopeDiscounts($q)  { return $q->where('type', 'discount'); }
 
+    public function scopeByAdmin($q)  { return $q->where('created_by', self::SOURCE_ADMIN); }
+    public function scopeBySeller($q) { return $q->where('created_by', self::SOURCE_SELLER); }
+
     // ── Helpers ───────────────────────────────────────────────────────────
+
+    /** Created by Choose'Tounsi: read-only for the seller. */
+    public function isAdminPromotion(): bool
+    {
+        return ($this->created_by ?? self::SOURCE_SELLER) === self::SOURCE_ADMIN;
+    }
+
+    /**
+     * Status as screens show it, decided by the dates (the stored status can lag
+     * the cron by a minute): paused | scheduled | active | expired.
+     */
+    public function displayStatus(): string
+    {
+        if ($this->status === 'expired' || $this->ends_at <= now()) return 'expired';
+        if ($this->status === 'paused') return 'paused';
+        return $this->starts_at > now() ? 'scheduled' : 'active';
+    }
 
     /** Same rule as scopeActive(), for an already loaded promotion. */
     public function isCurrentlyActive(): bool

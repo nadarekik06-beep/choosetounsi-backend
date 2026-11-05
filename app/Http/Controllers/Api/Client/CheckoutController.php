@@ -383,12 +383,15 @@ class CheckoutController extends Controller
             'product_id'            => $product->id,
             'variant_id'            => $variant?->id,
             'promotion_id'          => $line['pricing']['promotion']['id'] ?? null,
+            'promotion_source'      => $line['promotion_source'],
             'flash_reserved'        => $held,
             'variant_label'         => $this->variantLabel($variant),
             ...OrderItemSnapshot::capture($product, $variant), // image + attributes as bought
             'product_name'          => $product->getAttributes()['name'], // order snapshot keeps the seller's original text
             'quantity'              => $qty,
-            'unit_price'            => Millimes::toDecimal($line['unit_m']),
+            'unit_price'            => Millimes::toDecimal($line['unit_m']),            // FINAL unit price
+            'original_unit_price'   => Millimes::toDecimal($line['original_unit_m']),   // before the promotion
+            'promo_discount_amount' => Millimes::toDecimal($line['promo_discount_m']),  // (original − final) × qty
             'price'                 => Millimes::toDecimal($line['unit_m']),
             'total'                 => Millimes::toDecimal($c['total_price_m']),
             'discount_amount'       => Millimes::toDecimal($c['discount_amount_m']),

@@ -101,15 +101,16 @@ if (!empty($businessErrors)) {
             ], 403);
         }
 
-        // Flash sale: check for overlap (no two flash_sales on same product simultaneously)
-        if ($validated['type'] === 'flash_sale') {
-            $overlap = $this->detectFlashSaleOverlap($productIds, $validated['starts_at'], $validated['ends_at']);
-            if ($overlap) {
-                return response()->json([
-                    'success' => false,
-                    'message' => __('seller.promotion.flash_overlap'),
-                ], 422);
-            }
+        // Final price must stay above 0 DT (fixed amount ≥ price, on any variant)
+        if ($zero = $this->promoService->zeroPriceProducts($productIds, $validated['discount_type'], (float) $validated['discount_value'])) {
+            return response()->json(['success' => false, 'errors' => [
+                'discount_value' => [__('seller.promotion.zero_price', ['products' => implode(', ', $zero)])],
+            ]], 422);
+        }
+
+        // One promotion per product at a time (flash sale or discount, seller or admin)
+        if ($conflict = $this->conflictResponse($productIds, $validated['starts_at'], $validated['ends_at'])) {
+            return $conflict;
         }
 
         DB::beginTransaction();
@@ -158,26 +159,87 @@ if (!empty($businessErrors)) {
 
     // ── Update ─────────────────────────────────────────────────────────────
 
+    /**
+     * Editable: name, discount value, end date, flash quota, products, status
+     * (active | paused). Type, discount type and start date are fixed once created.
+     * Same rules as store(): ownership, caps, final price > 0, one promotion per product.
+     */
     public function update(Request $request, int $id)
     {
-        $promo = Promotion::where('seller_id', $request->user()->id)->findOrFail($id);
+        $seller = $request->user();
+        $promo  = Promotion::where('seller_id', $seller->id)->findOrFail($id);
 
+        if ($promo->isAdminPromotion()) {
+            return response()->json(['success' => false, 'message' => __('seller.promotion.admin_read_only')], 403);
+        }
         if ($promo->status === 'expired') {
             return response()->json(['success' => false, 'message' => __('seller.promotion.expired')], 422);
         }
 
+        try {
+            $request->validate([
+                'name'           => 'sometimes|required|string|max:255',
+                'discount_value' => 'sometimes|required|numeric|min:0.001',
+                'ends_at'        => 'sometimes|required|date',
+                'flash_stock'    => 'nullable|integer|min:1',
+                'status'         => 'sometimes|required|in:active,scheduled,paused',
+                'product_ids'    => 'sometimes|required|array|min:1',
+                'product_ids.*'  => 'integer',
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'errors' => $e->errors()], 422);
+        }
+
+        $data = [
+            'name'           => $request->input('name', $promo->name),
+            'discount_type'  => $promo->discount_type,
+            'discount_value' => (float) $request->input('discount_value', $promo->discount_value),
+            'starts_at'      => $promo->starts_at->toDateTimeString(),
+            'ends_at'        => $request->filled('ends_at') ? \Carbon\Carbon::parse($request->input('ends_at'))->toDateTimeString() : $promo->ends_at->toDateTimeString(),
+        ];
+        if ($errors = $this->promoService->validate($data, $promo->type)) {
+            return response()->json(['success' => false, 'errors' => $this->fieldErrors($errors)], 422);
+        }
+
+        $productIds = $request->has('product_ids')
+            ? array_values(array_unique(array_map('intval', $request->product_ids)))
+            : $promo->products()->pluck('products.id')->map(fn ($id) => (int) $id)->all();
+
+        if ($request->has('product_ids')) {
+            $owned = Product::where('seller_id', $seller->id)->whereIn('id', $productIds)
+                ->where('is_approved', true)->where('is_active', true)->count();
+            if ($owned !== count($productIds)) {
+                return response()->json(['success' => false, 'message' => __('seller.common.products_not_yours')], 403);
+            }
+        }
+
+        if ($zero = $this->promoService->zeroPriceProducts($productIds, $promo->discount_type, $data['discount_value'])) {
+            return response()->json(['success' => false, 'errors' => [
+                'discount_value' => [__('seller.promotion.zero_price', ['products' => implode(', ', $zero)])],
+            ]], 422);
+        }
+
+        // paused stays paused; active / scheduled follow the start date
+        $status = $request->input('status', $promo->status);
+        if ($status !== 'paused') {
+            $status = now()->lessThan($promo->starts_at) ? 'scheduled' : 'active';
+            if ($conflict = $this->conflictResponse($productIds, $data['starts_at'], $data['ends_at'], $promo->id)) {
+                return $conflict;
+            }
+        }
+
         DB::beginTransaction();
         try {
-            $promo->update(array_filter([
-                'name'           => $request->input('name',           $promo->name),
-                'discount_value' => $request->input('discount_value', $promo->discount_value),
-                'ends_at'        => $request->input('ends_at',        $promo->ends_at),
-                'flash_stock'    => $request->input('flash_stock',    $promo->flash_stock),
-                'status'         => $request->input('status',         $promo->status),
-            ], fn($v) => $v !== null));
+            $promo->update([
+                'name'           => $data['name'],
+                'discount_value' => $data['discount_value'],
+                'ends_at'        => $data['ends_at'],
+                'flash_stock'    => $promo->type === 'flash_sale' ? $request->input('flash_stock', $promo->flash_stock) : null,
+                'status'         => $status,
+            ]);
 
             if ($request->has('product_ids')) {
-                $promo->products()->sync(array_unique($request->product_ids));
+                $promo->products()->sync($productIds);
             }
 
             DB::commit();
@@ -198,6 +260,14 @@ if (!empty($businessErrors)) {
     public function destroy(Request $request, int $id)
     {
         $promo = Promotion::where('seller_id', $request->user()->id)->findOrFail($id);
+        if ($promo->isAdminPromotion()) {
+            return response()->json(['success' => false, 'message' => __('seller.promotion.admin_read_only')], 403);
+        }
+        // Orders point at it: end it instead, so they keep their promotion
+        if ($promo->orderItems()->exists()) {
+            $promo->update(['status' => 'expired']);
+            return response()->json(['success' => true, 'message' => __('seller.promotion.ended_kept')]);
+        }
         $promo->delete();
         return response()->json(['success' => true, 'message' => __('seller.promotion.deleted')]);
     }
@@ -241,6 +311,11 @@ if (!empty($businessErrors)) {
             'flash_stock_used'      => $p->flash_stock_used,
             'flash_stock_remaining' => $p->flashStockRemaining(),
             'status'                => $p->status,
+            'display_status'        => $p->displayStatus(),
+            // Admin promotions: shown as "Promotion by Choose'Tounsi", read-only here
+            'created_by'            => $p->created_by ?? Promotion::SOURCE_SELLER,
+            'is_admin_promotion'    => $p->isAdminPromotion(),
+            'read_only'             => $p->isAdminPromotion(),
             'priority'              => $p->priority,
             'is_flash_sale'         => $p->type === 'flash_sale',
             'products_count'        => $products->count(),
@@ -255,18 +330,36 @@ if (!empty($businessErrors)) {
         ];
     }
 
-    private function detectFlashSaleOverlap(array $productIds, string $startsAt, string $endsAt): bool
+    /** 422 naming the products already in a promotion during these dates, or null. */
+    private function conflictResponse(array $productIds, $startsAt, $endsAt, ?int $ignoreId = null): ?\Illuminate\Http\JsonResponse
     {
-        return Promotion::where('type', 'flash_sale')
-            ->whereIn('status', ['active', 'scheduled'])
-            ->whereHas('products', fn($q) => $q->whereIn('products.id', $productIds))
-            ->where(fn($q) => $q
-                ->whereBetween('starts_at', [$startsAt, $endsAt])
-                ->orWhereBetween('ends_at',  [$startsAt, $endsAt])
-                ->orWhere(fn($q2) => $q2
-                    ->where('starts_at', '<=', $startsAt)
-                    ->where('ends_at',   '>=', $endsAt))
-            )->exists();
+        $conflicts = $this->promoService->conflicts($productIds, $startsAt, $endsAt, $ignoreId);
+        if ($conflicts->isEmpty()) {
+            return null;
+        }
+        $names = $conflicts->flatMap(fn ($p) => $p->products->pluck('name'))->unique()->implode(', ');
+        return response()->json([
+            'success'   => false,
+            'code'      => 'promotion_conflict',
+            'message'   => __('seller.promotion.product_conflict', ['products' => $names]),
+            'conflicts' => $this->promoService->formatConflicts($conflicts),
+        ], 422);
+    }
+
+    /** Business-rule messages → the form field they belong to. */
+    private function fieldErrors(array $messages): array
+    {
+        $out = [];
+        foreach ($messages as $msg) {
+            if (str_contains($msg, 'hour') || str_contains($msg, 'day') || str_contains($msg, 'exceed') || str_contains($msg, 'end date')) {
+                $out['ends_at'][] = $msg;
+            } elseif (str_contains($msg, 'iscount') || str_contains($msg, '%')) {
+                $out['discount_value'][] = $msg;
+            } else {
+                $out['general'][] = $msg;
+            }
+        }
+        return $out;
     }
 
     private function syncExpiredStatuses(int $sellerId): void

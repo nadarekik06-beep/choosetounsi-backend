@@ -64,6 +64,8 @@ class CartController extends Controller
                 'items'    => $mapped,
                 'count'    => $mapped->sum('quantity'),
                 'subtotal' => round($mapped->sum('line_total'), 3),
+                'savings'  => round($mapped->sum(fn ($i) => $i['line_savings'] ?? 0), 3),
+                'promo_ended' => $mapped->filter(fn ($i) => $i['promo_ended'] ?? false)->pluck('name')->values(),
             ],
         ]);
     }
@@ -163,14 +165,23 @@ class CartController extends Controller
             }
         }
 
+        // Remember the promotion shown now: if it ends while the item waits in the
+        // cart, the cart and checkout say so (the price is always recalculated live)
+        $shown    = $this->promotionService->priceLine($product, $variantId ? ProductVariant::find($variantId) : null);
+        $snapshot = [
+            'promotion_id_snapshot' => $shown['promotion']['id'] ?? null,
+            'promo_price_snapshot'  => $shown['promotion'] ? $shown['final_price'] : null,
+        ];
+
         if ($cartItem) {
+            $cartItem->fill($snapshot)->save();
             $cartItem->increment('quantity', $qty);
         } else {
             Cart::create($this->owner($request) + [
                 'product_id' => $productId,
                 'variant_id' => $variantId,
                 'quantity'   => $qty,
-            ]);
+            ] + $snapshot);
         }
 
         app(InteractionTracker::class)->recordFromRequest($request, 'cart_add', $product);
@@ -462,6 +473,12 @@ private function safeSessionId(Request $request): ?string
             'discount_percent' => $promoData['discount_percent'],
             'promo_type'       => $promoData['promo_type'],
             'promotion'        => $promoData['promotion'],
+            'promotion_source' => $promoData['promotion']['source'] ?? null,
+            'discount_amount'  => $promoData['discount_amount'],
+            'line_savings'     => \App\Support\Millimes::toFloat(\App\Support\Millimes::of($promoData['discount_amount']) * (int) $item->quantity),
+            // Added during a promotion that has ended: normal price now, tell the buyer
+            'promo_ended'       => \App\Services\Orders\OrderPricing::promotionEnded($item, $promoData),
+            'promo_ended_price' => \App\Services\Orders\OrderPricing::promotionEnded($item, $promoData) ? (float) $item->promo_price_snapshot : null,
             'quantity'         => $item->quantity,
             'stock'            => $stock,
             'line_total'       => \App\Support\Millimes::toFloat(\App\Support\Millimes::of($price) * (int) $item->quantity),

@@ -15,6 +15,8 @@ class Cart extends Model
         // ── Product row fields ──
         'product_id',
         'variant_id',
+        'promotion_id_snapshot', // promotion the row was added with ("promotion ended" notice only)
+        'promo_price_snapshot',  // price shown when added (never charged)
         // ── Pack row fields (new) ──
         'pack_id',
         'pack_price_snapshot',
@@ -29,6 +31,8 @@ class Cart extends Model
         'variant_id'           => 'integer',
         'pack_id'              => 'integer',
         'pack_price_snapshot'  => 'float',
+        'promo_price_snapshot' => 'float',
+        'promotion_id_snapshot'=> 'integer',
         'pack_selections'      => 'array',   // auto JSON encode/decode
     ];
 

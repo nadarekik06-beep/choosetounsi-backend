@@ -107,6 +107,11 @@ return [
         'expired' => 'Cannot edit an expired promotion.',
         'updated' => 'Promotion updated.',
         'deleted' => 'Promotion deleted.',
+        'product_conflict' => 'A product can only have one promotion at a time. Already in a promotion during these dates: :products.',
+        'zero_price' => 'This discount would bring the price to 0 DT or less for: :products.',
+        'admin_read_only' => "This promotion was created by Choose'Tounsi and cannot be changed from your dashboard.",
+        'ended_kept' => 'Promotion ended (kept because it has orders).',
+        'invalid_status' => 'Invalid status.',
     ],
     'review' => [
         'reply_saved' => 'Reply saved.',

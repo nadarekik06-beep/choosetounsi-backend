@@ -22,6 +22,8 @@ use Illuminate\Support\Collection;
  *
  * One seller = one parcel = one pickup. Per parcel:
  *   items_subtotal  Σ line totals (post pack price / discount / flash sale)
+ *   promo_savings   Σ (original − final unit price) × qty of promoted lines: shown to
+ *                   the buyer only, the money above is already the final price
  *   coupon_discount the seller's coupon (one per seller, never on promoted lines or packs)
  *   is_free         every item of the parcel is free delivery (a pack: all its products)
  *   parcel_size     the largest size of its items (S / L / XL, App\Support\ParcelSize);
@@ -68,7 +70,7 @@ class OrderPricing
             if ($row->isPack()) {
                 array_push($lines, ...$this->packLines($row));
             } else {
-                $lines[] = $this->productLine($row->product, $row->variant, (int) $row->quantity, $userId, 'c' . $row->id, $row->id);
+                $lines[] = $this->productLine($row->product, $row->variant, (int) $row->quantity, $userId, 'c' . $row->id, $row->id, $row);
             }
         }
 
@@ -95,7 +97,8 @@ class OrderPricing
 
     // ── Lines ────────────────────────────────────────────────────────────────
 
-    private function productLine(?Product $product, ?ProductVariant $variant, int $qty, ?int $userId, string $key, ?int $cartId): array
+    /** $row: the cart row, to tell the buyer when the promotion it was added with has ended. */
+    private function productLine(?Product $product, ?ProductVariant $variant, int $qty, ?int $userId, string $key, ?int $cartId, ?Cart $row = null): array
     {
         if (!$product || !$product->is_approved || !$product->is_active) {
             throw new PricingException($product
@@ -117,8 +120,11 @@ class OrderPricing
             throw new PricingException(__('messages.checkout.stock_requested', ['label' => $label, 'stock' => $stock, 'requested' => $qty]));
         }
 
-        $pricing = $this->promo->priceLine($product, $variant);
-        $unitM   = Millimes::of($pricing['final_price']);
+        // Always the live price: promotion active at this exact moment, never a client figure
+        $pricing   = $this->promo->priceLine($product, $variant);
+        $unitM     = Millimes::of($pricing['final_price']);
+        $originalM = $pricing['promotion'] ? max($unitM, Millimes::of($pricing['original_price'])) : $unitM;
+        $ended     = self::promotionEnded($row, $pricing);
 
         return [
             'kind'      => 'product',
@@ -131,9 +137,26 @@ class OrderPricing
             'pricing'   => $pricing,
             'unit_m'    => $unitM,
             'total_m'   => $unitM * $qty,
+            'original_unit_m'  => $originalM,
+            'promo_discount_m' => ($originalM - $unitM) * $qty,
+            'promotion_source' => $pricing['promotion'] ? ($pricing['promotion']['source'] ?? 'seller') : null,
+            'promo_ended'      => $ended,
+            'promo_ended_price_m' => $ended ? Millimes::of($row->promo_price_snapshot) : null,
             'is_free'   => $product->isFreeDelivery(),
             'size'      => ParcelSize::normalize($product->parcel_size),
         ];
+    }
+
+    /**
+     * The cart row was added during a promotion that no longer prices it (ended,
+     * paused, sold out): the normal price applies and the buyer is told so.
+     */
+    public static function promotionEnded(?Cart $row, array $pricing): bool
+    {
+        return $row !== null
+            && $row->promotion_id_snapshot !== null
+            && $row->promo_price_snapshot !== null
+            && $pricing['promotion'] === null;
     }
 
     /** One line per seller present in the pack, carrying that seller's share of the pack price. */
@@ -357,6 +380,10 @@ class OrderPricing
         }
 
         $sum = fn (string $key) => array_sum(array_column($out, $key));
+        $promoM = 0;
+        foreach ($lines as $l) {
+            $promoM += $l['promo_discount_m'] ?? 0;
+        }
         $paidBy = collect($out)->every(fn ($p) => $p['is_free_delivery']) ? 'seller'
             : (collect($out)->contains(fn ($p) => $p['is_free_delivery']) ? 'mixed' : 'customer');
 
@@ -365,6 +392,9 @@ class OrderPricing
             'parcels'            => $out,
             'items_subtotal_m'   => $sum('items_subtotal_m'),
             'discount_m'         => $sum('coupon_discount_m'),
+            'promo_savings_m'    => $promoM,
+            'promo_ended'        => collect($lines)->filter(fn ($l) => $l['promo_ended'] ?? false)
+                ->map(fn ($l) => $l['product']->name)->values()->all(),
             'delivery_fee_m'     => $sum('delivery_fee_m'),
             'total_m'            => $sum('parcel_total_m'),
             'agency_cost_m'      => $sum('agency_cost_m'),
@@ -401,10 +431,23 @@ class OrderPricing
                     'unit_price' => $f($l['unit_m']),
                     'total'      => $f($l['total_m']),
                     'discount'   => $f($l['discount_m']),
+                    // Promotion breakdown (product lines): original → final, same numbers as the order
+                    'product_id'          => $l['kind'] === 'product' ? $l['product']->id : null,
+                    'variant_id'          => $l['kind'] === 'product' ? $l['variant']?->id : null,
+                    'original_unit_price' => $f($l['original_unit_m'] ?? $l['unit_m']),
+                    'promo_discount'      => $f($l['promo_discount_m'] ?? 0),
+                    'discount_percent'    => $l['kind'] === 'product' ? (int) $l['pricing']['discount_percent'] : 0,
+                    'promo_type'          => $l['kind'] === 'product' ? $l['pricing']['promo_type'] : null,
+                    'promotion_source'    => $l['promotion_source'] ?? null,
+                    'promo_ended'         => (bool) ($l['promo_ended'] ?? false),
+                    'promo_ended_price'   => isset($l['promo_ended_price_m']) ? $f($l['promo_ended_price_m']) : null,
                 ], $p['lines']),
             ], $quote['parcels'])),
             'subtotal'           => $f($quote['items_subtotal_m']),
             'discount_amount'    => $f($quote['discount_m']),
+            'promo_savings'      => $f($quote['promo_savings_m']),
+            'total_savings'      => $f($quote['promo_savings_m'] + $quote['discount_m']),
+            'promo_ended'        => $quote['promo_ended'],
             'delivery_fee'       => $f($quote['delivery_fee_m']),
             'shipping_fee'       => $f($quote['delivery_fee_m']),
             'total'              => $f($quote['total_m']),

@@ -33,6 +33,9 @@ class OrderItem extends Model
         'net_total',         // total − discount_amount (commission base)
         'promotion_id',      // promotion that priced this line at checkout
         'flash_reserved',    // units held in that flash sale's quota (0 once released)
+        'promotion_source',      // seller | admin, frozen at checkout
+        'original_unit_price',   // unit price before the promotion
+        'promo_discount_amount', // (original_unit_price - unit_price) x quantity
         'image_url',          // purchase snapshot: copy of the bought variant's image
         'image_source',
         // ── Commission columns (populated at checkout) ─────────────────────
