@@ -347,6 +347,12 @@ class ParcelStatus
             $this->stock->releaseForSellerOrders([$so->id], $to === 'cancelled' ? OrderStock::CANCELLED : OrderStock::REFUSED);
             $this->promotions->releaseForSellerOrders([$so->id]);
         }
+        // Cancelled: the customer gets the coupon use back; re-opened: it is used again (AUDIT H-2)
+        if ($to === 'cancelled') {
+            app(\App\Services\CouponService::class)->releaseForSellerOrders([$so->id]);
+        } elseif ($from === 'cancelled') {
+            app(\App\Services\CouponService::class)->reclaimForSellerOrders([$so->id]);
+        }
 
         // Nothing is owed on a parcel that earns nothing; re-opened, it waits for cash again
         if (in_array($to, SellerOrder::NOT_SHIPPED, true)) {

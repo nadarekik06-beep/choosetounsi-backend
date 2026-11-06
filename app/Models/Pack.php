@@ -103,7 +103,23 @@ public function itemsWithDetails()
      */
     public function getSavingsAttribute(): float
     {
-        return max(0, (float) $this->original_price - (float) $this->pack_price);
+        return max(0, $this->currentItemsValue() - (float) $this->pack_price);
+    }
+
+    /**
+     * Its items at their CURRENT prices (product price × quantity), so the
+     * savings shown never use a stale original_price after a price edit
+     * (AUDIT L-6). Falls back to the stored original_price when the items
+     * and their products aren't loaded.
+     */
+    public function currentItemsValue(): float
+    {
+        if (!$this->relationLoaded('items') || $this->items->isEmpty()
+            || $this->items->contains(fn ($i) => !$i->relationLoaded('product') || !$i->product)) {
+            return (float) $this->original_price;
+        }
+        $m = $this->items->sum(fn ($i) => \App\Support\Millimes::of($i->product->price) * max(1, (int) $i->quantity));
+        return \App\Support\Millimes::toFloat($m);
     }
 
     /**

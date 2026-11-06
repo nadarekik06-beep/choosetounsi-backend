@@ -165,25 +165,34 @@ class CommissionService
     /**
      * Full breakdown for a seller — resolves override / plan / default.
      * Used by checkout; the returned rate + source are snapshotted on the order.
+     *
+     * Rule for every discount (promotion, flash sale, pack, coupon — AUDIT M-7):
+     * the bracket is chosen from the ORIGINAL unit price ($tierPrice; defaults to
+     * $unitPrice), the rate is applied to the FINAL amount paid (line − coupon).
+     *
+     * $fundedM (AUDIT M-8): discount the platform pays back to the seller on a
+     * platform-funded promotion. The seller is paid as if sold at the original
+     * price (original − commission on original); `commission_amount` is what the
+     * platform keeps from the cash (final − seller), negative when the platform
+     * pays more than it earns. Always: net_total = seller_amount + commission_amount.
      */
-    public function calculateForSeller(?int $sellerId, float $unitPrice, int $quantity = 1, float $discount = 0.0): array
+    public function calculateForSeller(?int $sellerId, float $unitPrice, int $quantity = 1, float $discount = 0.0, ?float $tierPrice = null, int $fundedM = 0): array
     {
-        $resolved = $this->resolveForSeller($sellerId, $unitPrice);
-        return $this->breakdown($unitPrice, $resolved['rate'], $resolved['plan'], $quantity, $discount)
+        $tier     = $tierPrice ?? $unitPrice;
+        $resolved = $this->resolveForSeller($sellerId, $tier);
+        return $this->breakdown($unitPrice, $resolved['rate'], $resolved['plan'], $quantity, $discount, $tier, $fundedM)
             + ['commission_source' => $resolved['source']];
     }
 
     /**
      * Full breakdown for a plan (no seller override) — previews and marketing.
-     *
-     * Coupon rule: the rate is picked from the ORIGINAL unit price (a discount
-     * can never move an item into another tier), but it is applied to the line
-     * total AFTER the discount. The seller funds the discount.
+     * Same rule as calculateForSeller(): bracket from $tierPrice (original), rate on the final amount.
      */
-    public function calculate(float $unitPrice, string $plan, int $quantity = 1, float $discount = 0.0): array
+    public function calculate(float $unitPrice, string $plan, int $quantity = 1, float $discount = 0.0, ?float $tierPrice = null): array
     {
-        $resolved = $this->planRate($unitPrice, SubscriptionPlan::forSlug($plan));
-        return $this->breakdown($unitPrice, $resolved['rate'], $plan, $quantity, $discount)
+        $tier     = $tierPrice ?? $unitPrice;
+        $resolved = $this->planRate($tier, SubscriptionPlan::forSlug($plan));
+        return $this->breakdown($unitPrice, $resolved['rate'], $plan, $quantity, $discount, $tier)
             + ['commission_source' => $resolved['source']];
     }
 
@@ -192,18 +201,21 @@ class CommissionService
      * is rounded half-up to the millime, once. The *_m keys carry the exact
      * millimes; the float keys are the same values for existing callers.
      */
-    private function breakdown(float $unitPrice, float $rate, string $plan, int $quantity, float $discount): array
+    private function breakdown(float $unitPrice, float $rate, string $plan, int $quantity, float $discount, ?float $tierPrice = null, int $fundedM = 0): array
     {
+        $tier        = $tierPrice ?? $unitPrice;
         $unitM       = Millimes::of($unitPrice);
         $totalM      = $unitM * $quantity;
         $discountM   = min(max(Millimes::of($discount), 0), $totalM);
         $netM        = $totalM - $discountM;
-        $commissionM = Millimes::percent($netM, $rate);
-        $sellerM     = $netM - $commissionM;
+        $fundedM     = max(0, $fundedM);
+        $baseM       = $netM + $fundedM;                     // = original amount on a platform-funded line
+        $sellerM     = $baseM - Millimes::percent($baseM, $rate);
+        $commissionM = $netM - $sellerM;                     // what the platform keeps from the cash
 
         // How much the seller saves vs the default plan (for upgrade nudge)
-        $defaultRate = $this->planRate($unitPrice, SubscriptionPlan::defaultPlan())['rate'];
-        $savedM      = Millimes::percent($netM, $defaultRate) - $commissionM;
+        $defaultRate = $this->planRate($tier, SubscriptionPlan::defaultPlan())['rate'];
+        $savedM      = Millimes::percent($baseM, $defaultRate) - Millimes::percent($baseM, $rate);
 
         return [
             'unit_price'             => Millimes::toFloat($unitM),
@@ -215,14 +227,16 @@ class CommissionService
             'commission_amount'      => Millimes::toFloat($commissionM),
             'seller_amount'          => Millimes::toFloat($sellerM),
             'plan_used'              => $plan,
-            'base_rate'              => $this->getBaseRate($unitPrice),
+            'base_rate'              => $this->getBaseRate($tier),
             'plan_reduction'         => $this->getPlanReduction($plan),
             'saved_with_plan'        => Millimes::toFloat(max(0, $savedM)),
+            'tier_price'             => round($tier, 3),
             'total_price_m'          => $totalM,
             'discount_amount_m'      => $discountM,
             'net_total_m'            => $netM,
             'commission_amount_m'    => $commissionM,
             'seller_amount_m'        => $sellerM,
+            'platform_funded_m'      => $fundedM,
         ];
     }
 

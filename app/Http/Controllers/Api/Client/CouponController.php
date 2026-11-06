@@ -60,10 +60,12 @@ class CouponController extends Controller
                 ? ProductVariant::where('product_id', $product->id)->find($request->variant_id)
                 : null;
             $qty     = (int) $request->input('quantity', 1);
-            $items   = $product->seller_id === $coupon->seller_id ? [[
+            $priced  = $promotions->priceLine($product, $variant);
+            $items   = (int) $product->seller_id === (int) $coupon->seller_id ? [[
                 'product_id' => $product->id,
                 'quantity'   => $qty,
-                'line_total' => round($promotions->priceLine($product, $variant)['final_price'] * $qty, 3),
+                'line_total' => \App\Support\Millimes::toDecimal(\App\Support\Millimes::of($priced['final_price']) * $qty),
+                'promoted'   => $priced['promotion'] !== null,
             ]] : [];
         } else {
             // Non-pack cart rows (the selected ones) for this coupon's seller only —
@@ -75,12 +77,16 @@ class CouponController extends Controller
                 ->when($request->filled('item_ids'), fn ($q) => $q->whereIn('id', $request->input('item_ids')))
                 ->with('product:id,seller_id,price', 'variant:id,price_override')
                 ->get()
-                ->filter(fn ($item) => $item->product && $item->product->seller_id === $coupon->seller_id)
-                ->map(fn ($item) => [
-                    'product_id' => $item->product_id,
-                    'quantity'   => $item->quantity,
-                    'line_total' => round($promotions->priceLine($item->product, $item->variant)['final_price'] * $item->quantity, 3),
-                ])
+                ->filter(fn ($item) => $item->product && (int) $item->product->seller_id === (int) $coupon->seller_id)
+                ->map(function ($item) use ($promotions) {
+                    $priced = $promotions->priceLine($item->product, $item->variant);
+                    return [
+                        'product_id' => $item->product_id,
+                        'quantity'   => $item->quantity,
+                        'line_total' => \App\Support\Millimes::toDecimal(\App\Support\Millimes::of($priced['final_price']) * (int) $item->quantity),
+                        'promoted'   => $priced['promotion'] !== null,
+                    ];
+                })
                 ->values()
                 ->all();
         }
@@ -93,6 +99,8 @@ class CouponController extends Controller
             'seller_id'        => $coupon->seller_id,
             'discount_amount'  => $result['discount_amount'],
             'eligible_product_ids' => $result['eligible_product_ids'],
+            // Promoted items the coupon skipped (never stacked, AUDIT M-5)
+            'skipped_product_ids'  => $result['skipped_product_ids'] ?? [],
         ], $result['valid'] ? 200 : 422);
     }
 

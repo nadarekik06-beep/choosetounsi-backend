@@ -117,6 +117,8 @@ class FinancialSnapshotService
             'commission_source'                 => $sources->count() > 1 ? 'mixed' : $sources->first(),
             'plan_used'                         => optional($rated->first() ?? $items->first())->plan_used,
             'seller_net_amount'                 => $dec($parcel['seller_payout_m']),
+            // Discount of platform-funded promotions paid back to the seller (already netted out of commission)
+            'platform_funded_amount'            => $dec($parcel['platform_funded_m'] ?? 0),
             'delivery_fee'                      => $dec($parcel['delivery_fee_m']),
             'shipping_cost'                     => $dec($parcel['agency_cost_m']),
             'seller_shipping_charge'            => $dec($parcel['contribution_m']),

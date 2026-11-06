@@ -5,13 +5,39 @@ use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Models\Promotion;
 use App\Services\PromotionService;
+use App\Support\TunisTime;
 use App\Services\GrowthRadar\GrowthActions;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class SellerPromotionController extends Controller
 {
+    /** A start typed a few minutes ago (form opened, then submitted) is still "now" (AUDIT L-8). */
+    private const START_GRACE_MINUTES = 10;
+
     public function __construct(private PromotionService $promoService) {}
+
+    /**
+     * POST /api/seller/promotions/preview — what buyers would really pay with
+     * this discount, per product and variant: the exact pricing checkout uses
+     * (PromotionService::preview → the same pricing() OrderPricing charges,
+     * 30-day reference price, millime rounding). AUDIT M-6.
+     */
+    public function preview(Request $request)
+    {
+        $v = $request->validate([
+            'product_ids'    => 'required|array|min:1|max:100',
+            'product_ids.*'  => 'integer',
+            'discount_type'  => 'required|in:percentage,fixed',
+            'discount_value' => 'required|numeric|min:0',
+        ]);
+        $own = Product::where('seller_id', $request->user()->id)
+            ->whereIn('id', array_map('intval', $v['product_ids']))->pluck('id')->map(fn ($i) => (int) $i)->all();
+
+        return response()->json(['success' => true, 'data' => $this->promoService->preview(
+            $own, $v['discount_type'], (float) $v['discount_value'],
+        )]);
+    }
 
     // ── Index ──────────────────────────────────────────────────────────────
 
@@ -62,11 +88,19 @@ class SellerPromotionController extends Controller
                 'starts_at' => 'required|date',
                 'ends_at'        => 'required|date|after:starts_at',
                 'flash_stock'    => 'nullable|integer|min:1',
+                'per_customer_limit' => 'nullable|integer|min:1|max:100',
                 'product_ids'    => 'required|array|min:1',
                 'product_ids.*'  => 'integer',
             ]);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json(['success' => false, 'errors' => $e->errors()], 422);
+        }
+
+        // Typed in Tunis time, stored in UTC (AUDIT L-3); never started in the past (AUDIT L-8)
+        $validated['starts_at'] = TunisTime::toUtcString($validated['starts_at']);
+        $validated['ends_at']   = TunisTime::toUtcString($validated['ends_at']);
+        if (\Carbon\Carbon::parse($validated['starts_at'])->lt(now()->subMinutes(self::START_GRACE_MINUTES))) {
+            return response()->json(['success' => false, 'errors' => ['starts_at' => [__('seller.promotion.start_in_past')]]], 422);
         }
 
         // Business rule validation — return as field-keyed errors so frontend shows inline
@@ -126,6 +160,8 @@ if (!empty($businessErrors)) {
                 'starts_at'      => $validated['starts_at'],
                 'ends_at'        => $validated['ends_at'],
                 'flash_stock'    => $validated['type'] === 'flash_sale' ? ($validated['flash_stock'] ?? null) : null,
+                'per_customer_limit' => $validated['type'] === 'flash_sale' ? ($validated['per_customer_limit'] ?? Promotion::DEFAULT_PER_CUSTOMER_LIMIT) : null,
+                'funded_by'      => Promotion::FUNDED_SELLER,
                 'status'         => $status,
                 'priority'       => $validated['type'] === 'flash_sale' ? 10 : 5,
             ]);
@@ -182,6 +218,7 @@ if (!empty($businessErrors)) {
                 'discount_value' => 'sometimes|required|numeric|min:0.001',
                 'ends_at'        => 'sometimes|required|date',
                 'flash_stock'    => 'nullable|integer|min:1',
+                'per_customer_limit' => 'nullable|integer|min:1|max:100',
                 'status'         => 'sometimes|required|in:active,scheduled,paused',
                 'product_ids'    => 'sometimes|required|array|min:1',
                 'product_ids.*'  => 'integer',
@@ -195,7 +232,7 @@ if (!empty($businessErrors)) {
             'discount_type'  => $promo->discount_type,
             'discount_value' => (float) $request->input('discount_value', $promo->discount_value),
             'starts_at'      => $promo->starts_at->toDateTimeString(),
-            'ends_at'        => $request->filled('ends_at') ? \Carbon\Carbon::parse($request->input('ends_at'))->toDateTimeString() : $promo->ends_at->toDateTimeString(),
+            'ends_at'        => $request->filled('ends_at') ? TunisTime::toUtcString($request->input('ends_at')) : $promo->ends_at->toDateTimeString(),
         ];
         if ($errors = $this->promoService->validate($data, $promo->type)) {
             return response()->json(['success' => false, 'errors' => $this->fieldErrors($errors)], 422);
@@ -235,6 +272,9 @@ if (!empty($businessErrors)) {
                 'discount_value' => $data['discount_value'],
                 'ends_at'        => $data['ends_at'],
                 'flash_stock'    => $promo->type === 'flash_sale' ? $request->input('flash_stock', $promo->flash_stock) : null,
+                'per_customer_limit' => $promo->type === 'flash_sale'
+                    ? (int) $request->input('per_customer_limit', $promo->per_customer_limit ?? Promotion::DEFAULT_PER_CUSTOMER_LIMIT)
+                    : null,
                 'status'         => $status,
             ]);
 
@@ -310,6 +350,8 @@ if (!empty($businessErrors)) {
             'flash_stock'           => $p->flash_stock,
             'flash_stock_used'      => $p->flash_stock_used,
             'flash_stock_remaining' => $p->flashStockRemaining(),
+            'per_customer_limit'    => $p->per_customer_limit,
+            'funded_by'             => $p->funded_by ?? Promotion::FUNDED_SELLER,
             'status'                => $p->status,
             'display_status'        => $p->displayStatus(),
             // Admin promotions: shown as "Promotion by Choose'Tounsi", read-only here

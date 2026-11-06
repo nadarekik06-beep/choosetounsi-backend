@@ -7,6 +7,8 @@ use App\Models\Coupon;
 use App\Models\Pack;
 use App\Models\Product;
 use App\Models\ProductVariant;
+use App\Models\Promotion;
+use App\Exceptions\FlashCustomerLimit;
 use App\Services\CommissionService;
 use App\Services\CouponService;
 use App\Services\Delivery\DeliverySettings;
@@ -20,6 +22,12 @@ use Illuminate\Support\Collection;
  * the storefront only displays this, and checkout recomputes it when the
  * order is placed. All money is integer millimes (App\Support\Millimes).
  *
+ * One discount per line, never stacked (AUDIT_DISCOUNTS §3):
+ *   pack row      → the pack price, spread over its lines (nothing else applies)
+ *   product row   → at most one promotion: flash sale > promotion (admin = seller)
+ *   seller coupon → only that seller's coupon products WITHOUT a promotion; promoted
+ *                   ones are skipped, the coupon is refused only if none remains
+ *
  * One seller = one parcel = one pickup. Per parcel:
  *   items_subtotal  Σ line totals (post pack price / discount / flash sale)
  *   promo_savings   Σ (original − final unit price) × qty of promoted lines: shown to
@@ -31,17 +39,22 @@ use Illuminate\Support\Collection;
  *   delivery_fee    0 when free, else the admin client fee for the size
  *   parcel_total    items_subtotal − coupon_discount + delivery_fee
  *   cod_amount      parcel_total for cash on delivery (0 when prepaid)
- *   commission      Σ line commissions, on (line − coupon share) only, never on delivery
+ *   commission      Σ line commissions: bracket from the ORIGINAL unit price, rate on
+ *                   the final amount (line − coupon share), never on delivery (AUDIT M-7)
+ *   platform_funded Σ discounts of platform-funded admin promotions, paid back to the
+ *                   seller (AUDIT M-8); commission is then what the platform keeps
  *   contribution    seller_free_delivery_contribution when free, else 0
- *   seller_payout   items_subtotal − coupon_discount − commission − contribution
+ *   seller_payout   Σ line seller amounts − contribution
  *   agency_cost     admin agency_delivery_cost (the courier keeps it from the cash)
  *   delivery_margin free ? contribution − agency_cost : delivery_fee − agency_cost
  *
  * Always: parcel_total = seller_payout + commission + agency_cost + delivery_margin.
  *
- * Packs: priced at the pack's CURRENT price × quantity; a pack spanning
- * several sellers is split between them in proportion to the value of their
- * products (normal price × quantity in the pack), remainder on the last seller.
+ * Packs (AUDIT C-1): priced at the pack's CURRENT price × quantity. One pack's
+ * price is spread over ALL its lines in proportion to each item's original
+ * price (normal price × quantity in the pack), in millimes, remainder on the
+ * last line: the lines sum exactly to the pack price. Each line keeps its own
+ * share, so returns, refunds, commission and payouts work line by line.
  */
 class OrderPricing
 {
@@ -57,8 +70,9 @@ class OrderPricing
     /**
      * @param Collection<int, Cart> $rows cart rows (product and pack rows)
      * @param string[] $couponCodes
+     * $userId null = guest checkout; $guestPhone = the guest's delivery phone
+     * (coupon and flash-sale "per customer" limits).
      */
-    /** $userId null = guest checkout; $guestPhone = the guest's delivery phone (coupon "per customer" limit). */
     public function forCart(Collection $rows, array $couponCodes, ?int $userId, string $paymentMethod = 'cod', ?string $guestPhone = null): array
     {
         if ($rows->isEmpty()) {
@@ -68,11 +82,12 @@ class OrderPricing
         $lines = [];
         foreach ($rows as $row) {
             if ($row->isPack()) {
-                array_push($lines, ...$this->packLines($row));
+                array_push($lines, ...$this->packLines($row, $userId));
             } else {
                 $lines[] = $this->productLine($row->product, $row->variant, (int) $row->quantity, $userId, 'c' . $row->id, $row->id, $row);
             }
         }
+        $this->checkFlashLimits($lines, $userId, $guestPhone);
 
         return $this->build($lines, $this->resolveCodes($couponCodes), $userId, $paymentMethod, $guestPhone);
     }
@@ -80,6 +95,7 @@ class OrderPricing
     public function forBuyNow(Product $product, ?ProductVariant $variant, int $quantity, ?string $couponCode, ?int $userId, string $paymentMethod = 'cod', ?string $guestPhone = null): array
     {
         $line = $this->productLine($product, $variant, $quantity, $userId, 'buy_now', null);
+        $this->checkFlashLimits([$line], $userId, $guestPhone);
 
         if ($couponCode !== null && $couponCode !== '' && $line['seller_id'] === null) {
             throw new PricingException(__('messages.checkout.no_coupon_platform'));
@@ -122,9 +138,12 @@ class OrderPricing
 
         // Always the live price: promotion active at this exact moment, never a client figure
         $pricing   = $this->promo->priceLine($product, $variant);
+        $promotion = $pricing['promotion'];
         $unitM     = Millimes::of($pricing['final_price']);
-        $originalM = $pricing['promotion'] ? max($unitM, Millimes::of($pricing['original_price'])) : $unitM;
+        $originalM = $promotion ? max($unitM, Millimes::of($pricing['original_price'])) : $unitM;
         $ended     = self::promotionEnded($row, $pricing);
+        $promoM    = ($originalM - $unitM) * $qty;
+        $platform  = $promotion && ($promotion['funded_by'] ?? null) === Promotion::FUNDED_PLATFORM;
 
         return [
             'kind'      => 'product',
@@ -138,8 +157,11 @@ class OrderPricing
             'unit_m'    => $unitM,
             'total_m'   => $unitM * $qty,
             'original_unit_m'  => $originalM,
-            'promo_discount_m' => ($originalM - $unitM) * $qty,
-            'promotion_source' => $pricing['promotion'] ? ($pricing['promotion']['source'] ?? 'seller') : null,
+            'tier_m'           => $originalM,                       // commission bracket (AUDIT M-7)
+            'promo_discount_m' => $promoM,
+            'promotion_source' => $promotion ? ($promotion['source'] ?? 'seller') : null,
+            'funded_by'        => $promotion ? ($platform ? Promotion::FUNDED_PLATFORM : Promotion::FUNDED_SELLER) : null,
+            'funded_m'         => $platform ? $promoM : 0,          // paid back to the seller (AUDIT M-8)
             'promo_ended'      => $ended,
             'promo_ended_price_m' => $ended ? Millimes::of($row->promo_price_snapshot) : null,
             'is_free'   => $product->isFreeDelivery(),
@@ -159,14 +181,21 @@ class OrderPricing
             && $pricing['promotion'] === null;
     }
 
-    /** One line per seller present in the pack, carrying that seller's share of the pack price. */
-    private function packLines(Cart $row): array
+    /**
+     * One line per item of the pack, each carrying its share of the pack price
+     * (by original price, remainder on the last line — AUDIT C-1).
+     */
+    private function packLines(Cart $row, ?int $userId): array
     {
         $pack    = $row->pack;
         $packQty = max(1, (int) $row->quantity);
 
         if (!$pack || !$pack->is_active || !$pack->is_approved) {
             throw new PricingException(__('messages.checkout.pack_unavailable', ['pack' => $row->pack_name]));
+        }
+        $priceM = Millimes::of($pack->pack_price);              // current price, never the cart snapshot
+        if ($priceM <= 0) {
+            throw new PricingException(__('messages.checkout.pack_invalid_price', ['pack' => $pack->name]));
         }
 
         $selections = collect($row->pack_selections ?? [])->keyBy('pack_item_id');
@@ -176,56 +205,59 @@ class OrderPricing
             if (!$product || !$product->is_approved || !$product->is_active) {
                 throw new PricingException(__('messages.checkout.pack_product_unavailable', ['pack' => $pack->name]));
             }
+            if ($userId !== null && $product->seller_id !== null && (int) $product->seller_id === $userId) {
+                throw new PricingException(__('messages.checkout.own_pack'));
+            }
             $variantId = $selections->get($packItem->id)['variant_id'] ?? null;
             $variant   = $variantId ? ($product->variants->firstWhere('id', (int) $variantId) ?? ProductVariant::find($variantId)) : null;
-            $qty       = (int) $packItem->quantity * $packQty;
+            $perPack   = max(1, (int) $packItem->quantity);
+            $qty       = $perPack * $packQty;
             $stock     = $variant ? (int) $variant->stock : (int) $product->stock;
             if ($stock < $qty) {
                 throw new PricingException(__('messages.checkout.pack_product_stock', ['product' => $product->name, 'pack' => $pack->name, 'stock' => $stock]));
             }
+            $unitOriginalM = Millimes::of(PromotionService::basePrice($product, $variant));
             $components[] = [
-                'pack_item' => $packItem,
-                'product'   => $product,
-                'variant'   => $variant,
-                'quantity'  => $qty,
-                'seller_id' => $product->seller_id !== null ? (int) $product->seller_id : null,
-                // Value weight for the seller split: normal price × quantity in one pack
-                'weight_m'  => Millimes::of(PromotionService::basePrice($product, $variant)) * (int) $packItem->quantity,
+                'pack_item'  => $packItem,
+                'product'    => $product,
+                'variant'    => $variant,
+                'per_pack'   => $perPack,
+                'quantity'   => $qty,
+                'seller_id'  => $product->seller_id !== null ? (int) $product->seller_id : null,
+                'unit_original_m' => $unitOriginalM,
+                // Weight of the split: normal price × quantity in one pack
+                'weight_m'   => $unitOriginalM * $perPack,
             ];
         }
         if (!$components) {
             throw new PricingException(__('messages.checkout.pack_unavailable', ['pack' => $pack->name]));
         }
 
-        $priceM    = Millimes::of($pack->pack_price);              // current price, never the cart snapshot
         $snapshotM = Millimes::of($row->pack_price_snapshot);
         $isFree    = collect($components)->every(fn ($c) => $c['product']->isFreeDelivery());
-
-        // Split one pack's price between its sellers by value
-        $bySeller = [];
-        foreach ($components as $c) {
-            $k = $c['seller_id'] ?? 'platform';
-            $bySeller[$k]['seller_id']    = $c['seller_id'];
-            $bySeller[$k]['weight_m']     = ($bySeller[$k]['weight_m'] ?? 0) + $c['weight_m'];
-            $bySeller[$k]['components'][] = $c;
-        }
-        $weights = array_map(fn ($s) => $s['weight_m'], $bySeller);
-        $shares  = $this->splitByWeight($priceM, $weights);
+        $shares    = $this->splitByWeight($priceM, array_column($components, 'weight_m'));
 
         $lines = [];
-        foreach ($bySeller as $k => $s) {
+        foreach ($components as $i => $c) {
             $lines[] = [
                 'kind'           => 'pack',
-                'key'            => 'p' . $row->id . '-' . $k,
+                'key'            => 'p' . $row->id . '-' . $i,
                 'cart_id'        => $row->id,
-                'seller_id'      => $s['seller_id'],
+                'seller_id'      => $c['seller_id'],
                 'pack'           => $pack,
+                'pack_group'     => 'c' . $row->id,
                 'pack_quantity'  => $packQty,
-                'components'     => $s['components'],
-                'unit_m'         => $shares[$k],          // this seller's share of ONE pack
-                'total_m'        => $shares[$k] * $packQty,
+                'component'      => $c,
+                'product'        => $c['product'],
+                'variant'        => $c['variant'],
+                'quantity'       => $c['quantity'],              // units of this item
+                'unit_m'         => $shares[$i],                 // this line's share of ONE pack
+                'total_m'        => $shares[$i] * $packQty,
+                'tier_m'         => $c['unit_original_m'],       // commission bracket (AUDIT M-7)
+                'original_value_m' => $c['weight_m'] * $packQty,
+                'funded_m'       => 0,
                 'is_free'        => $isFree,
-                'size'           => ParcelSize::largest(array_map(fn ($c) => $c['product']->parcel_size, $s['components'])),
+                'size'           => ParcelSize::normalize($c['product']->parcel_size),
                 'pack_price_m'   => $priceM,
                 'pack_changed'   => $snapshotM !== $priceM,
             ];
@@ -255,6 +287,33 @@ class OrderPricing
             $allocated += $out[$k];
         }
         return $out;
+    }
+
+    /**
+     * Flash sales: at most `per_customer_limit` units per customer at the flash
+     * price, counting what this cart adds (several lines of the same sale) and
+     * earlier orders. Checked again under lock when the order is written.
+     */
+    private function checkFlashLimits(array $lines, ?int $userId, ?string $guestPhone): void
+    {
+        $byPromo = [];
+        foreach ($lines as $l) {
+            $p = $l['pricing']['promotion'] ?? null;
+            if ($l['kind'] === 'product' && $p && !empty($p['is_flash_sale']) && !empty($p['per_customer_limit'])) {
+                $byPromo[$p['id']]['pricing']  = $l['pricing'];
+                $byPromo[$p['id']]['name']     = $l['product']->name;
+                $byPromo[$p['id']]['quantity'] = ($byPromo[$p['id']]['quantity'] ?? 0) + $l['quantity'];
+            }
+        }
+        foreach ($byPromo as $p) {
+            try {
+                $this->promo->assertFlashCustomerLimit($p['pricing'], $p['quantity'], $userId, $guestPhone, $p['name']);
+            } catch (FlashCustomerLimit $e) {
+                throw new PricingException(__('messages.checkout.flash_customer_limit', [
+                    'product' => $e->productName, 'limit' => $e->limit, 'bought' => $e->bought,
+                ]), 422, 'flash_customer_limit');
+            }
+        }
     }
 
     // ── Coupons ──────────────────────────────────────────────────────────────
@@ -290,25 +349,29 @@ class OrderPricing
             $parcels[$k]['lines'][]   = $line;
         }
 
-        // Coupons: each must match a seller of this cart
+        // Coupons: each must match a seller of this cart; promoted lines are skipped (AUDIT M-5)
         foreach ($coupons as $sellerId => $coupon) {
             $productLines = collect($parcels[$sellerId]['lines'] ?? [])->where('kind', 'product');
             $items = $productLines->map(fn ($l) => [
                 'product_id' => $l['product']->id,
                 'quantity'   => $l['quantity'],
                 'line_total' => Millimes::toDecimal($l['total_m']),
+                'promoted'   => $l['pricing']['promotion'] !== null,  // the promotion actually charged
             ])->values()->all();
 
             $result = $this->coupons->validateForSeller($coupon->code, (int) $sellerId, $userId, $items, $guestPhone);
             if (!$result['valid']) {
                 throw new PricingException($result['message']);
             }
-            $eligible = $productLines->filter(fn ($l) => in_array($l['product']->id, $result['eligible_product_ids'], true))
+            $eligible = $productLines
+                ->filter(fn ($l) => $l['pricing']['promotion'] === null && in_array($l['product']->id, $result['eligible_product_ids'], true))
                 ->mapWithKeys(fn ($l) => [$l['key'] => $l['total_m']])->all();
 
-            $parcels[$sellerId]['coupon']        = $result['coupon'];
-            $parcels[$sellerId]['coupon_m']      = $result['discount_amount_m'];
-            $parcels[$sellerId]['coupon_shares'] = $this->coupons->allocateDiscountM($eligible, $result['discount_amount_m']);
+            $parcels[$sellerId]['coupon']         = $result['coupon'];
+            $parcels[$sellerId]['coupon_m']       = $result['discount_amount_m'];
+            $parcels[$sellerId]['coupon_shares']  = $this->coupons->allocateDiscountM($eligible, $result['discount_amount_m']);
+            $parcels[$sellerId]['coupon_applied'] = $result['eligible_product_ids'];
+            $parcels[$sellerId]['coupon_skipped'] = $result['skipped_product_ids'] ?? [];
         }
 
         // Buyers see the shop's name, never the seller's personal name
@@ -319,22 +382,31 @@ class OrderPricing
             $sellerId = $p['seller_id'];
             $shares   = $p['coupon_shares'] ?? [];
             $lineOut  = [];
-            $itemsM = $discountM = $commissionM = $sellerItemsM = 0;
+            $itemsM = $discountM = $commissionM = $sellerItemsM = $fundedM = 0;
 
             foreach ($p['lines'] as $line) {
                 $discount = $shares[$line['key']] ?? 0;
                 $qty      = $line['kind'] === 'pack' ? $line['pack_quantity'] : $line['quantity'];
-                $c        = $this->commission->calculateForSeller($sellerId, Millimes::toFloat($line['unit_m']), $qty, Millimes::toFloat($discount));
+                $c        = $this->commission->calculateForSeller(
+                    $sellerId,
+                    Millimes::toFloat($line['unit_m']),
+                    $qty,
+                    Millimes::toFloat($discount),
+                    Millimes::toFloat($line['tier_m']),
+                    (int) ($line['funded_m'] ?? 0),
+                );
 
                 $line['discount_m']   = $c['discount_amount_m'];
                 $line['net_m']        = $c['net_total_m'];
                 $line['commission']   = $c;
+                $line['coupon']       = $c['discount_amount_m'] > 0 ? ($p['coupon'] ?? null) : null;
                 $lineOut[] = $line;
 
                 $itemsM       += $line['total_m'];
                 $discountM    += $c['discount_amount_m'];
                 $commissionM  += $c['commission_amount_m'];
                 $sellerItemsM += $c['seller_amount_m'];
+                $fundedM      += $c['platform_funded_m'];
             }
 
             // One parcel, one size: the largest of its items, priced by the admin per size
@@ -356,6 +428,8 @@ class OrderPricing
                 'seller_name'        => $sellerId ? ($storeNames[(int) $sellerId] ?? '') : "CHOOSE'Tounsi",
                 'lines'              => $lineOut,
                 'coupon'             => $p['coupon'] ?? null,
+                'coupon_product_ids' => $p['coupon_applied'] ?? [],
+                'coupon_skipped_product_ids' => $p['coupon_skipped'] ?? [],
                 'parcel_size'        => $size,
                 'items_subtotal_m'   => $itemsM,
                 'coupon_discount_m'  => $discountM,
@@ -364,6 +438,7 @@ class OrderPricing
                 'parcel_total_m'     => $totalM,
                 'cod_amount_m'       => $codM,
                 'commission_m'       => $commissionM,
+                'platform_funded_m'  => $fundedM,
                 'seller_items_net_m' => $sellerItemsM,
                 'contribution_m'     => $contributionM,
                 'seller_payout_m'    => $sellerItemsM - $contributionM,
@@ -419,29 +494,50 @@ class OrderPricing
                 'items_subtotal'   => $f($p['items_subtotal_m']),
                 'coupon_code'      => $p['coupon']?->code,
                 'coupon_discount'  => $f($p['coupon_discount_m']),
+                // Which items the coupon applied to, and the promoted ones it skipped (AUDIT M-5)
+                'coupon_product_ids'         => $p['coupon_product_ids'] ?? [],
+                'coupon_skipped_product_ids' => $p['coupon_skipped_product_ids'] ?? [],
                 'is_free_delivery' => $p['is_free_delivery'],
                 'delivery_fee'     => $f($p['delivery_fee_m']),
                 'total'            => $f($p['parcel_total_m']),
                 'cod_amount'       => $f($p['cod_amount_m']),
-                'lines'            => array_map(fn ($l) => [
+                'lines'            => array_map(fn ($l) => $l['kind'] === 'pack' ? [
+                    'cart_id'    => $l['cart_id'],
+                    'kind'       => 'pack',
+                    'name'       => $l['pack']->name,
+                    'quantity'   => $l['pack_quantity'],
+                    'unit_price' => $f($l['unit_m']),
+                    'total'      => $f($l['total_m']),
+                    'discount'   => 0.0,
+                    'product_id' => null, 'variant_id' => null,
+                    'original_unit_price' => $f($l['unit_m']),
+                    'promo_discount'      => 0.0,
+                    'discount_percent'    => 0,
+                    'promo_type'          => null,
+                    'promotion_source'    => null,
+                    'promo_ended'         => false,
+                    'promo_ended_price'   => null,
+                    'coupon_applied'      => false,
+                ] : [
                     'cart_id'    => $l['cart_id'],
                     'kind'       => $l['kind'],
-                    'name'       => $l['kind'] === 'pack' ? $l['pack']->name : $l['product']->name,
-                    'quantity'   => $l['kind'] === 'pack' ? $l['pack_quantity'] : $l['quantity'],
+                    'name'       => $l['product']->name,
+                    'quantity'   => $l['quantity'],
                     'unit_price' => $f($l['unit_m']),
                     'total'      => $f($l['total_m']),
                     'discount'   => $f($l['discount_m']),
-                    // Promotion breakdown (product lines): original → final, same numbers as the order
-                    'product_id'          => $l['kind'] === 'product' ? $l['product']->id : null,
-                    'variant_id'          => $l['kind'] === 'product' ? $l['variant']?->id : null,
+                    // Promotion breakdown: original → final, same numbers as the order
+                    'product_id'          => $l['product']->id,
+                    'variant_id'          => $l['variant']?->id,
                     'original_unit_price' => $f($l['original_unit_m'] ?? $l['unit_m']),
                     'promo_discount'      => $f($l['promo_discount_m'] ?? 0),
-                    'discount_percent'    => $l['kind'] === 'product' ? (int) $l['pricing']['discount_percent'] : 0,
-                    'promo_type'          => $l['kind'] === 'product' ? $l['pricing']['promo_type'] : null,
+                    'discount_percent'    => (int) $l['pricing']['discount_percent'],
+                    'promo_type'          => $l['pricing']['promo_type'],
                     'promotion_source'    => $l['promotion_source'] ?? null,
                     'promo_ended'         => (bool) ($l['promo_ended'] ?? false),
                     'promo_ended_price'   => isset($l['promo_ended_price_m']) ? $f($l['promo_ended_price_m']) : null,
-                ], $p['lines']),
+                    'coupon_applied'      => $l['discount_m'] > 0,
+                ], self::mergePackLines($p['lines'])),
             ], $quote['parcels'])),
             'subtotal'           => $f($quote['items_subtotal_m']),
             'discount_amount'    => $f($quote['discount_m']),
@@ -454,5 +550,27 @@ class OrderPricing
             'parcel_count'       => count($quote['parcels']),
             'pack_price_changed' => $quote['pack_price_changed'],
         ];
+    }
+
+    /** The storefront shows one line per pack row (and seller): its item lines summed. */
+    private static function mergePackLines(array $lines): array
+    {
+        $out = [];
+        $packAt = [];
+        foreach ($lines as $l) {
+            if ($l['kind'] !== 'pack') {
+                $out[] = $l;
+                continue;
+            }
+            if (!isset($packAt[$l['cart_id']])) {
+                $packAt[$l['cart_id']] = count($out);
+                $out[] = $l;
+                continue;
+            }
+            $i = $packAt[$l['cart_id']];
+            $out[$i]['unit_m']  += $l['unit_m'];
+            $out[$i]['total_m'] += $l['total_m'];
+        }
+        return $out;
     }
 }

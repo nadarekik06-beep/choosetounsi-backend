@@ -63,6 +63,10 @@ return [
         'claim_mismatch' => 'Cette commande a été passée avec un autre e-mail ou numéro de téléphone que ceux de votre compte.',
     ],
     'checkout' => [
+        'flash_customer_limit' => 'Vente flash sur « :product » : :limit article(s) maximum par client au prix flash (déjà acheté : :bought).',
+        'coupon_unavailable' => "Le code promo « :code » vient d'atteindre sa limite d'utilisation. Votre total a été recalculé sans ce code ; vérifiez-le avant de commander.",
+        'pack_invalid_price' => "Le pack « :pack » n'a pas de prix valide et ne peut pas être commandé.",
+        'own_pack' => 'Vous ne pouvez pas commander un pack contenant vos propres produits.',
         'reselect_region' => 'Veuillez resélectionner votre gouvernorat et votre délégation dans la liste.',
         'cart_empty' => 'Votre panier est vide.',
         'duplicate_order' => 'Cette commande vient d\'être passée. Vérifiez « Mes commandes » avant de recommencer.',
@@ -88,6 +92,8 @@ return [
         'payment_method_unavailable' => 'Le paiement en ligne arrive bientôt. Pour l\'instant, payez en espèces à la livraison.',
     ],
     'coupon' => [
+        'all_items_promoted' => "Ce code promo ne s'applique pas : tous ses articles sont déjà en promotion.",
+        'applied_partial' => 'Code promo appliqué sur une partie des articles (les articles déjà en promotion sont exclus).',
         'invalid' => 'Code promo invalide.',
         'invalid_for_seller' => 'Code promo invalide pour ce vendeur.',
         'inactive' => 'Ce code promo n\'est plus actif.',
@@ -110,6 +116,7 @@ return [
         'subject'  => '[Contact] :subject — :name',
     ],
     'complaint' => [
+        'legacy_pack_whole' => "« :item » fait partie du pack « :pack » : sur cette commande, le pack doit être retourné en entier (tous ses articles, toutes les quantités).",
         'order_not_found' => 'Commande introuvable.',
         'only_delivered' => 'Vous ne pouvez déposer une réclamation que sur une commande livrée.',
         'window_passed' => 'Le délai de 48 heures pour réclamer sur cette commande est dépassé.',

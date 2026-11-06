@@ -31,7 +31,8 @@ class SyncPromotionStatuses extends Command
 
         // Safety net: cancellations written without the observer
         $released = app(PromotionService::class)->releaseCancelled();
+        $coupons  = app(\App\Services\CouponService::class)->releaseCancelled();
 
-        $this->info("Activated: {$activated} | Expired: {$expired} | Flash units released: {$released}");
+        $this->info("Activated: {$activated} | Expired: {$expired} | Flash units released: {$released} | Coupon uses released: {$coupons}");
     }
 }

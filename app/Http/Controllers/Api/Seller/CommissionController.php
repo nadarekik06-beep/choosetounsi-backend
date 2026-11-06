@@ -33,6 +33,8 @@ class CommissionController extends Controller
         $request->validate([
             'price'    => 'required|numeric|min:0',
             'quantity' => 'nullable|integer|min:1|max:9999',
+            // Original (pre-discount) unit price: the bracket comes from it (AUDIT M-7)
+            'tier_price' => 'nullable|numeric|min:0',
         ]);
 
         $user = $request->user();
@@ -45,7 +47,8 @@ class CommissionController extends Controller
         $quantity = (int)   ($request->quantity ?? 1);
 
         // Same resolution as checkout (seller override → plan → default)
-        $breakdown        = $this->commission->calculateForSeller($user->id, $price, $quantity);
+        $tier             = $request->filled('tier_price') ? max((float) $request->tier_price, $price) : null;
+        $breakdown        = $this->commission->calculateForSeller($user->id, $price, $quantity, 0.0, $tier);
         $upgradeSuggestions = $this->commission->getUpgradeSavings($price, $plan, $quantity);
 
         return response()->json([

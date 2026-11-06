@@ -310,6 +310,30 @@ class GuestCheckoutTest extends TestCase
         $this->guestCheckout()->assertStatus(429)->assertJsonPath('code', 'rate_limited');
     }
 
+    /** The guest limits (per IP / per phone) never apply to a signed-in buyer, even though the limiter runs before auth.optional. */
+    public function test_signed_in_buyers_are_not_held_by_the_guest_rate_limit(): void
+    {
+        config(['guest_checkout.orders_per_phone_per_hour' => 2, 'guest_checkout.orders_per_ip_per_hour' => 2, 'guest_checkout.max_pending_per_phone' => 99]);
+        $product = $this->product($this->seller(), 20);
+        $token = $this->customer->createToken('t')->plainTextToken;
+        for ($i = 1; $i <= 3; $i++) {
+            $this->addToCart($product);
+            $this->travel(CheckoutGuard::RECENT_SECONDS + 1)->seconds();
+            // A fresh request, as in production: default guard back to "web", nothing resolved yet
+            // (an earlier request in this test process would otherwise have switched it to sanctum)
+            config(['auth.defaults.guard' => 'web']);
+            $this->app['auth']->forgetGuards();
+            $this->flushHeaders();
+            $this->withHeaders(['Authorization' => "Bearer {$token}"])
+                ->postJson('/api/checkout', $this->address() + ['payment_method' => 'cod'])->assertCreated();
+        }
+        // A guest with the same phone is still limited (signed-in orders didn't count against it)
+        foreach ([201, 201, 429] as $status) {
+            $this->guestAdd($product);
+            $this->guestCheckout([], '22123456')->assertStatus($status);
+        }
+    }
+
     public function test_signed_in_checkout_unchanged_and_a_bad_token_is_401(): void
     {
         $this->addToCart($this->product($this->seller(), 50));

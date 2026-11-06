@@ -59,7 +59,7 @@ public function show(Request $request, int $id)
         try {
             $request->validate([
                 'name'        => 'required|string|max:255',
-                'pack_price'  => 'required|numeric|min:0',
+                'pack_price'  => 'required|numeric|gt:0|regex:/^\d+(\.\d{1,3})?$/',
                 'items'       => 'required|array|min:1',
                 'items.*.product_id' => 'required|integer',
                 'items.*.quantity'   => 'required|integer|min:1',
@@ -81,6 +81,10 @@ public function show(Request $request, int $id)
                 'success' => false,
                 'message' => __('seller.common.products_not_owned'),
             ], 403);
+        }
+
+        if ($refused = $this->priceRefused($request->pack_price, $request->items)) {
+            return $refused;
         }
 
         DB::beginTransaction();
@@ -140,6 +144,24 @@ public function show(Request $request, int $id)
     {
         $pack = Pack::where('seller_id', $request->user()->id)->findOrFail($id);
 
+        // Same price rules as create (AUDIT H-1), on the new items when they change
+        try {
+            $request->validate([
+                'pack_price'         => 'sometimes|required|numeric|gt:0|regex:/^\d+(\.\d{1,3})?$/',
+                'items'              => 'sometimes|required|array|min:1',
+                'items.*.product_id' => 'required_with:items|integer',
+                'items.*.quantity'   => 'required_with:items|integer|min:1',
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return response()->json(['success' => false, 'message' => collect($e->errors())->flatten()->first(), 'errors' => $e->errors()], 422);
+        }
+        $items = $request->has('items')
+            ? $request->items
+            : $pack->items()->get(['product_id', 'quantity'])->map(fn ($i) => ['product_id' => $i->product_id, 'quantity' => $i->quantity])->all();
+        if ($refused = $this->priceRefused($request->input('pack_price', $pack->pack_price), $items)) {
+            return $refused;
+        }
+
         DB::beginTransaction();
         try {
             $pack->update([
@@ -195,6 +217,28 @@ public function show(Request $request, int $id)
             Log::error('[SellerPack::update] ' . $e->getMessage());
             return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
         }
+    }
+
+    /**
+     * A pack must cost more than 0 and less than its items at their current
+     * prices (product price × quantity). Null = accepted.
+     */
+    private function priceRefused($price, array $items): ?\Illuminate\Http\JsonResponse
+    {
+        $priceM = \App\Support\Millimes::of(is_numeric($price) ? (string) $price : 0);
+        if ($priceM <= 0) {
+            return response()->json(['success' => false, 'message' => __('seller.pack.price_positive'),
+                'errors' => ['pack_price' => [__('seller.pack.price_positive')]]], 422);
+        }
+        $prices = Product::whereIn('id', collect($items)->pluck('product_id')->map(fn ($id) => (int) $id))->pluck('price', 'id');
+        $itemsM = collect($items)->sum(fn ($row) => \App\Support\Millimes::of($prices[(int) $row['product_id']] ?? 0) * max(1, (int) ($row['quantity'] ?? 1)));
+        if ($priceM >= $itemsM) {
+            $msg = __('seller.pack.price_below_items', [
+                'price' => \App\Support\Millimes::toDecimal($priceM), 'items' => \App\Support\Millimes::toDecimal($itemsM),
+            ]);
+            return response()->json(['success' => false, 'message' => $msg, 'errors' => ['pack_price' => [$msg]]], 422);
+        }
+        return null;
     }
 
     // ── Destroy ────────────────────────────────────────────────────────────

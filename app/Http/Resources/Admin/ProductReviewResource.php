@@ -267,7 +267,10 @@ class ProductReviewResource extends JsonResource
         $plan       = $this->context['seller_plan'] ?? 'free';
         $commission = app(CommissionService::class);
         // Same resolution as checkout, so seller overrides are reflected
-        $calc       = $commission->calculateForSeller($p->seller_id, round($effective, 3));
+        // Bracket from the original price, rate on the final price (AUDIT M-7)
+        $funded     = $active && $active->isPlatformFunded()
+            ? \App\Support\Millimes::of($priced['original_price']) - \App\Support\Millimes::of($effective) : 0;
+        $calc       = $commission->calculateForSeller($p->seller_id, round($effective, 3), 1, 0.0, (float) $priced['original_price'], $funded);
 
         $formatPromo = fn($promo) => [
             'id'             => $promo->id,

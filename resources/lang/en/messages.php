@@ -63,6 +63,10 @@ return [
         'claim_mismatch' => 'This order was placed with another e-mail or phone number than your account\'s.',
     ],
     'checkout' => [
+        'flash_customer_limit' => 'Flash sale on ":product": at most :limit item(s) per customer at the flash price (already bought: :bought).',
+        'coupon_unavailable' => 'The coupon ":code" just reached its usage limit. Your total was recalculated without it; please review it before ordering.',
+        'pack_invalid_price' => 'The pack ":pack" has no valid price and cannot be ordered.',
+        'own_pack' => 'You cannot order a pack that contains your own products.',
         'reselect_region' => 'Please select your governorate and delegation again from the list.',
         'cart_empty' => 'Your cart is empty.',
         'duplicate_order' => 'This order was just placed. Check "My orders" before trying again.',
@@ -88,6 +92,8 @@ return [
         'payment_method_unavailable' => 'Online payment is coming soon. For now, please pay cash on delivery.',
     ],
     'coupon' => [
+        'all_items_promoted' => 'This coupon does not apply: all of its items are already on promotion.',
+        'applied_partial' => 'Coupon applied to some items (items already on promotion are excluded).',
         'invalid' => 'Invalid coupon code.',
         'invalid_for_seller' => 'Invalid coupon code for this seller.',
         'inactive' => 'This coupon is no longer active.',
@@ -110,6 +116,7 @@ return [
         'subject'  => '[Contact] :subject — :name',
     ],
     'complaint' => [
+        'legacy_pack_whole' => '":item" is part of the pack ":pack": on this order the whole pack must be returned (every item, every unit).',
         'order_not_found' => 'Order not found.',
         'only_delivered' => 'You can only file a complaint on a delivered order.',
         'window_passed' => 'The 48-hour complaint window has passed for this order.',

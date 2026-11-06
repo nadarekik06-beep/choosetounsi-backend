@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers\Api\Client;
 
+use App\Exceptions\CouponExhausted;
+use App\Exceptions\FlashCustomerLimit;
 use App\Exceptions\FlashSaleSoldOut;
 use App\Exceptions\InsufficientStock;
 use App\Services\Ads\AttributionService;
@@ -183,6 +185,12 @@ class CheckoutController extends Controller
             } catch (FlashSaleSoldOut $e) {
                 DB::rollBack();
                 return $this->flashSoldOut($e);
+            } catch (FlashCustomerLimit $e) {
+                DB::rollBack();
+                return $this->flashCustomerLimit($e);
+            } catch (CouponExhausted $e) {
+                DB::rollBack();
+                return $this->couponExhausted($e);
             } catch (InsufficientStock $e) {
                 DB::rollBack();
                 return response()->json(['success' => false, 'message' => __('messages.checkout.stock_only', ['label' => $e->label, 'stock' => $e->available])], 422);
@@ -264,6 +272,12 @@ class CheckoutController extends Controller
             } catch (FlashSaleSoldOut $e) {
                 DB::rollBack();
                 return $this->flashSoldOut($e);
+            } catch (FlashCustomerLimit $e) {
+                DB::rollBack();
+                return $this->flashCustomerLimit($e);
+            } catch (CouponExhausted $e) {
+                DB::rollBack();
+                return $this->couponExhausted($e);
             } catch (InsufficientStock $e) {
                 DB::rollBack();
                 return response()->json(['success' => false, 'message' => __('messages.checkout.stock_only', ['label' => $e->label, 'stock' => $e->available])], 422);
@@ -352,7 +366,7 @@ class CheckoutController extends Controller
             foreach ($parcel['lines'] as $line) {
                 $line['kind'] === 'pack'
                     ? $this->writePackLine($order, $sellerOrder, $line, $soldLines)
-                    : $this->writeProductLine($order, $sellerOrder, $line, $soldLines);
+                    : $this->writeProductLine($order, $sellerOrder, $line, $soldLines, $user?->id, $guestPhone);
             }
 
             $this->financialSnapshot->snapshotParcel($sellerOrder->id, $parcel);
@@ -369,20 +383,31 @@ class CheckoutController extends Controller
         return [$order, $soldLines];
     }
 
-    private function writeProductLine(Order $order, SellerOrder $sellerOrder, array $line, array &$soldLines): void
+    private function writeProductLine(Order $order, SellerOrder $sellerOrder, array $line, array &$soldLines, ?int $userId = null, ?string $guestPhone = null): void
     {
-        $product = $line['product'];
-        $variant = $line['variant'];
-        $qty     = $line['quantity'];
-        $c       = $line['commission'];
-        $held    = $this->promoService->reserveForLine($line['pricing'], $qty) ?? throw new FlashSaleSoldOut($product->name);
+        $product   = $line['product'];
+        $variant   = $line['variant'];
+        $qty       = $line['quantity'];
+        $c         = $line['commission'];
+        $promotion = $line['pricing']['promotion'];
+        // Flash sale: per-customer limit, then quota, both under lock in this transaction
+        $held      = $this->promoService->reserveForLine($line['pricing'], $qty, $userId, $guestPhone, $product->name)
+            ?? throw new FlashSaleSoldOut($product->name);
+
+        // One discount per line (AUDIT M-4): the promotion, else the coupon share, else none
+        $coupon = $line['coupon'] ?? null;
+        [$type, $sourceId, $appliedM] = match (true) {
+            $promotion !== null   => [$line['pricing']['promo_type'] === 'flash_sale' ? 'flash_sale' : 'promotion', $promotion['id'], $line['promo_discount_m']],
+            $coupon !== null      => ['coupon', $coupon->id, $c['discount_amount_m']],
+            default               => ['none', null, 0],
+        };
 
         OrderItem::create([
             'order_id'              => $order->id,
             'seller_order_id'       => $sellerOrder->id,
             'product_id'            => $product->id,
             'variant_id'            => $variant?->id,
-            'promotion_id'          => $line['pricing']['promotion']['id'] ?? null,
+            'promotion_id'          => $promotion['id'] ?? null,
             'promotion_source'      => $line['promotion_source'],
             'flash_reserved'        => $held,
             'variant_label'         => $this->variantLabel($variant),
@@ -396,7 +421,15 @@ class CheckoutController extends Controller
             'total'                 => Millimes::toDecimal($c['total_price_m']),
             'discount_amount'       => Millimes::toDecimal($c['discount_amount_m']),
             'net_total'             => Millimes::toDecimal($c['net_total_m']),
+            'discount_type'         => $type,
+            'discount_source_id'    => $sourceId,
+            'applied_discount_amount' => Millimes::toDecimal($appliedM),
+            'promo_discount_type'   => $promotion['discount_type'] ?? null,
+            'promo_discount_value'  => $promotion['discount_value'] ?? null,
+            'funded_by'             => $line['funded_by'],
+            'platform_funded_amount'=> Millimes::toDecimal($c['platform_funded_m']),
             'commission_percentage' => $c['commission_percentage'],
+            'commission_tier_price' => Millimes::toDecimal($line['tier_m']),
             'commission_source'     => $c['commission_source'],
             'commission_amount'     => Millimes::toDecimal($c['commission_amount_m']),
             'seller_amount'         => Millimes::toDecimal($c['seller_amount_m']),
@@ -408,49 +441,52 @@ class CheckoutController extends Controller
     }
 
     /**
-     * A pack's share for one seller: the FIRST line carries the money (the
-     * seller's share of the pack price × pack quantity, commission on it);
-     * the following lines track stock only (zero money, by design).
+     * One item of a pack (AUDIT C-1): the line carries its own share of the pack
+     * price (allocated by original price, see OrderPricing::packLines), with its
+     * own commission and seller amount, so a partial return refunds exactly it.
      */
     private function writePackLine(Order $order, SellerOrder $sellerOrder, array $line, array &$soldLines): void
     {
-        $c     = $line['commission'];
-        $first = true;
+        $c        = $line['commission'];
+        $product  = $line['product'];
+        $variant  = $line['variant'];
+        $qty      = $line['quantity'];
+        $totalM   = $c['total_price_m'];
+        $unitM    = Millimes::divRound($totalM, max(1, $qty)); // display; money is on total / net_total
+        $savingM  = max(0, $line['original_value_m'] - $totalM);
 
-        foreach ($line['components'] as $component) {
-            $product = $component['product'];
-            $variant = $component['variant'];
-            $money   = $first ? [
-                'unit_price'            => Millimes::toDecimal($line['unit_m']),
-                'price'                 => Millimes::toDecimal($line['unit_m']),
-                'total'                 => Millimes::toDecimal($c['total_price_m']),
-                'discount_amount'       => Millimes::toDecimal($c['discount_amount_m']),
-                'net_total'             => Millimes::toDecimal($c['net_total_m']),
-                'commission_percentage' => $c['commission_percentage'],
-                'commission_source'     => $c['commission_source'],
-                'commission_amount'     => Millimes::toDecimal($c['commission_amount_m']),
-                'seller_amount'         => Millimes::toDecimal($c['seller_amount_m']),
-            ] : [
-                'unit_price' => 0, 'price' => 0, 'total' => 0, 'net_total' => 0,
-                'commission_percentage' => 0, 'commission_amount' => 0, 'seller_amount' => 0,
-            ];
+        OrderItem::create([
+            'order_id'              => $order->id,
+            'seller_order_id'       => $sellerOrder->id,
+            'product_id'            => $product->id,
+            'variant_id'            => $variant?->id,
+            'variant_label'         => $this->variantLabel($variant),
+            ...OrderItemSnapshot::capture($product, $variant), // image + attributes as bought
+            'product_name'          => $product->getAttributes()['name'] . ' (Bundle: ' . $line['pack']->name . ')',
+            'quantity'              => $qty,
+            'unit_price'            => Millimes::toDecimal($unitM),
+            'original_unit_price'   => Millimes::toDecimal($line['tier_m']),
+            'price'                 => Millimes::toDecimal($unitM),
+            'total'                 => Millimes::toDecimal($totalM),
+            'discount_amount'       => Millimes::toDecimal($c['discount_amount_m']),
+            'net_total'             => Millimes::toDecimal($c['net_total_m']),
+            'discount_type'         => 'pack',
+            'discount_source_id'    => $line['pack']->id,
+            'applied_discount_amount' => Millimes::toDecimal($savingM),
+            'pack_id'               => $line['pack']->id,
+            'pack_group'            => $line['pack_group'],
+            'pack_allocation'       => Millimes::toDecimal($totalM),
+            'pack_original_value'   => Millimes::toDecimal($line['original_value_m']),
+            'commission_percentage' => $c['commission_percentage'],
+            'commission_tier_price' => Millimes::toDecimal($line['tier_m']),
+            'commission_source'     => $c['commission_source'],
+            'commission_amount'     => Millimes::toDecimal($c['commission_amount_m']),
+            'seller_amount'         => Millimes::toDecimal($c['seller_amount_m']),
+            'plan_used'             => $c['plan_used'],
+        ]);
 
-            OrderItem::create([
-                'order_id'        => $order->id,
-                'seller_order_id' => $sellerOrder->id,
-                'product_id'      => $product->id,
-                'variant_id'      => $variant?->id,
-                'variant_label'   => $this->variantLabel($variant),
-                ...OrderItemSnapshot::capture($product, $variant), // image + attributes as bought
-                'product_name'    => $product->getAttributes()['name'] . ' (Bundle: ' . $line['pack']->name . ')',
-                'quantity'        => $component['quantity'],
-                'plan_used'       => $c['plan_used'],
-            ] + $money);
-            $first = false;
-
-            $this->orderStock->reserve($variant?->id, $product->id, $component['quantity'], $this->stockLabel($product, $variant));
-            $soldLines[] = ['product_id' => (int) $product->id, 'variant_id' => $variant ? (int) $variant->id : null];
-        }
+        $this->orderStock->reserve($variant?->id, $product->id, $qty, $this->stockLabel($product, $variant));
+        $soldLines[] = ['product_id' => (int) $product->id, 'variant_id' => $variant ? (int) $variant->id : null];
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -668,6 +704,26 @@ class CheckoutController extends Controller
     private function stockLabel(Product $product, ?ProductVariant $variant): string
     {
         return $variant ? "\"{$product->name}\" ({$variant->label})" : "\"{$product->name}\"";
+    }
+
+    private function flashCustomerLimit(FlashCustomerLimit $e): \Illuminate\Http\JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'code'    => 'flash_customer_limit',
+            'message' => __('messages.checkout.flash_customer_limit', ['product' => $e->productName, 'limit' => $e->limit, 'bought' => $e->bought]),
+        ], 422);
+    }
+
+    /** The coupon's last use was taken by another order a moment ago (AUDIT M-3). */
+    private function couponExhausted(CouponExhausted $e): \Illuminate\Http\JsonResponse
+    {
+        return response()->json([
+            'success' => false,
+            'code'    => 'coupon_unavailable',
+            'message' => __('messages.checkout.coupon_unavailable', ['code' => $e->couponCode]),
+            'data'    => ['coupon_code' => $e->couponCode],
+        ], 422);
     }
 
     private function flashSoldOut(FlashSaleSoldOut $e): \Illuminate\Http\JsonResponse

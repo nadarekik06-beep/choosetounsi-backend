@@ -16,6 +16,7 @@ return [
         'qty'           => 'الكمية',
         'items_total'   => 'مجموع المنتجات',
         'discount'      => 'قسيمتك',
+        'platform_funded' => "تخفيض تدفعه Choose'Tounsi",
         'commission'    => "عمولة Choose'Tounsi",
         'shipping'      => 'التوصيل على حسابك',
         'net'           => 'أرباحك الصافية',

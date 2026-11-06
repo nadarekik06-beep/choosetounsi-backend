@@ -38,6 +38,7 @@ return [
         'new_goal_suggested' => 'حدّد هدف :month. اقتراح حسب أشهرك الأخيرة: :suggested.',
     ],
     'export' => [
+        'platform_funded' => "تخفيض تدفعه Choose'Tounsi",
         'title'      => 'مركز الأرباح — تقرير شهري',
         'gross'      => 'المبيعات الإجمالية',
         'refunds'    => 'المرتجعات المستردة',
@@ -52,6 +53,7 @@ return [
         'goal'       => 'الهدف',
         'achieved'   => 'المُحقّق',
         'col' => [
+            'platform_funded' => "تخفيض تدفعه Choose'Tounsi",
             'order' => 'الطلب', 'date' => 'التاريخ', 'status' => 'الحالة', 'amount' => 'المبلغ (د.ت)',
             'commission' => 'العمولة (د.ت)', 'shipping' => 'التوصيل (د.ت)', 'net' => 'الصافي (د.ت)', 'payout' => 'الدفع',
         ],

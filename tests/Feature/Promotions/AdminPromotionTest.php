@@ -387,7 +387,8 @@ class AdminPromotionTest extends TestCase
         $before = Order::count();
         $res = $this->as($this->customer)->postJson('/api/checkout', $this->address(['coupon_codes' => [$coupon->code]]));
         $this->assertContains($res->status(), [409, 422]);
-        $this->assertSame(__('messages.coupon.not_with_promotion'), $res->json('message'));
+        // Its only product is promoted: nothing left for the coupon (AUDIT M-5)
+        $this->assertSame(__('messages.coupon.all_items_promoted'), $res->json('message'));
         $this->assertSame($before, Order::count());
     }
 
@@ -505,7 +506,8 @@ class AdminPromotionTest extends TestCase
     {
         $res = $this->as($this->seller)->postJson('/api/seller/promotions', [
             'name' => 'Rentrée', 'type' => 'discount', 'discount_type' => 'percentage', 'discount_value' => 20,
-            'starts_at' => now()->subMinute()->toDateTimeString(), 'ends_at' => now()->addDays(10)->toDateTimeString(),
+            // ISO with offset, as the seller form sends it (naive strings are read as Tunis time)
+            'starts_at' => now()->subMinute()->toIso8601String(), 'ends_at' => now()->addDays(10)->toIso8601String(),
             'product_ids' => [$this->robe->id],
         ])->assertCreated()->json('data');
         $this->assertSame('seller', $res['created_by']);

@@ -129,8 +129,12 @@ $mappedItems = $sellerOrder->items->map(function ($item) {
             // ── Commission snapshot fields ────────────────────────────────
             // NEVER recalculate — always read stored values.
             // commission_amount = 0 means legacy order → has_commission = false.
-            $commissionAmount = (float) ($item->commission_amount ?? 0);
-            $hasCommission    = $commissionAmount > 0;
+            // Platform-funded promotions (AUDIT M-8): the seller is charged commission on the
+            // ORIGINAL price and the platform adds back the discount; commission_amount stored
+            // is the platform's net take, so the charged commission = stored + funded.
+            $funded           = round((float) ($item->platform_funded_amount ?? 0), 3);
+            $commissionAmount = round((float) ($item->commission_amount ?? 0) + $funded, 3);
+            $hasCommission    = (float) ($item->commission_percentage ?? 0) > 0 || $commissionAmount > 0;
 
             return [
                 // ── Core fields ───────────────────────────────────────────
@@ -158,6 +162,15 @@ $mappedItems = $sellerOrder->items->map(function ($item) {
                 'commission_amount'     => $hasCommission ? round($commissionAmount, 3)            : null,
                 'seller_amount'         => $hasCommission ? round((float) $item->seller_amount, 3) : null,
                 'plan_used'             => $hasCommission ? $item->plan_used                       : null,
+
+                // ── Discount snapshot (AUDIT M-4 / M-7 / M-8) ─────────────
+                'discount_type'           => $item->discount_type,            // promotion | flash_sale | pack | coupon | none | null (older orders)
+                'applied_discount_amount' => round((float) ($item->applied_discount_amount ?? 0), 3),
+                'original_unit_price'     => $item->original_unit_price !== null ? (float) $item->original_unit_price : null,
+                'commission_tier_price'   => $item->commission_tier_price !== null ? (float) $item->commission_tier_price : null,
+                'funded_by'               => $item->funded_by,                // seller | platform | null
+                'platform_funded_amount'  => $funded,                         // added to the seller's payout
+                'pack_id'                 => $item->pack_id,
                 'is_returned'           => $item->return_state === 'returned',
                 'item_status'           => $item->return_state,   // returned | partially_returned | null
             ];
@@ -167,15 +180,17 @@ $mappedItems = $sellerOrder->items->map(function ($item) {
         // Aggregate only from items that have commission data.
         // For legacy orders: has_commission = false, amounts = null.
         // Refunded returns already took their units / commission off the lines
-        $commissionItems = $sellerOrder->items->filter(fn($i) => (float) ($i->commission_amount ?? 0) > 0);
+        $commissionItems = $sellerOrder->items->filter(fn($i) => (float) ($i->commission_percentage ?? 0) > 0 || (float) ($i->commission_amount ?? 0) > 0);
+$totalFunded      = round($sellerOrder->items->sum(fn($i) => (float) ($i->platform_funded_amount ?? 0)), 3);
 $hasAnyCommission = $commissionItems->isNotEmpty();
 
 // seller_subtotal is already adjusted by MarkOrderRefunded (returned items subtracted)
 $totalGross            = round((float) $sellerOrder->subtotal, 3);
 $totalDiscount         = round((float) ($sellerOrder->discount_amount ?? 0), 3);
 $totalNet              = round($totalGross - $totalDiscount, 3); // what the customer paid for this seller's items
+// Commission charged to the seller (on the original price for platform-funded lines)
 $totalCommissionAmount = $hasAnyCommission
-    ? round($commissionItems->sum(fn($i) => (float) $i->commission_amount), 3)
+    ? round($commissionItems->sum(fn($i) => (float) $i->commission_amount + (float) ($i->platform_funded_amount ?? 0)), 3)
     : null;
 $totalSellerNet        = $hasAnyCommission
     ? round($commissionItems->sum(fn($i) => (float) $i->seller_amount), 3)
@@ -238,6 +253,7 @@ $netAfterShipping = $totalSellerNet !== null ? round($totalSellerNet - $shipping
                     'total_seller_net'        => $hasAnyCommission ? 0.0 : null,
                     'shipping_paid_by_seller' => 0.0,
                     'net_after_shipping'      => $hasAnyCommission ? 0.0 : null,
+                    'total_platform_funded'   => 0.0,
                 ] : [
                     'has_commission'          => $hasAnyCommission,
                     'total_gross'             => $totalGross,
@@ -246,7 +262,9 @@ $netAfterShipping = $totalSellerNet !== null ? round($totalSellerNet - $shipping
                     'total_commission_amount' => $totalCommissionAmount,
                     'total_seller_net'        => $totalSellerNet,
                     'shipping_paid_by_seller' => $shippingCharge,     // 0 unless free shipping
-                    'net_after_shipping'      => $netAfterShipping,   // sale − commission − shipping
+                    'net_after_shipping'      => $netAfterShipping,   // sale + platform-funded − commission − shipping
+                    // Discount of Choose'Tounsi-funded promotions paid to the seller (AUDIT M-8)
+                    'total_platform_funded'   => $totalFunded,
                 ],
             ],
         ]);

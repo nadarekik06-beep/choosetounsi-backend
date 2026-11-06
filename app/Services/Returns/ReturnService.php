@@ -2,6 +2,7 @@
 
 namespace App\Services\Returns;
 
+use App\Support\Millimes;
 use App\Events\ComplaintApproved;
 use App\Models\Complaint;
 use App\Models\ComplaintEvent;
@@ -115,6 +116,8 @@ class ReturnService
 
             $exchange = ($data['resolution_type'] ?? null) === Complaint::RESOLUTION_EXCHANGE;
             $replacements = $exchange ? $this->replacementsFor($lines, $quantities, (array) ($data['replacements'] ?? [])) : [];
+
+            $this->guardLegacyPacks($allLines, $quantities, $reserved);
 
             foreach ($groups as $soId => $group) {
                 $sellerId = $group->first()->sellerOrder?->seller_id
@@ -876,6 +879,7 @@ class ReturnService
 
             $share = $this->share($line, $qty);
             $item->update($share);
+            $funded = $this->fundedShare($line, $qty);
 
             $left = (int) $line->quantity - $qty;
             DB::table('order_items')->where('id', $line->id)->update([
@@ -888,6 +892,7 @@ class ReturnService
                 'net_total'         => $line->net_total !== null ? round((float) $line->net_total - $share['net_amount'], 3) : null,
                 'commission_amount' => round((float) $line->commission_amount - $share['commission_amount'], 3),
                 'seller_amount'     => round((float) $line->seller_amount - $share['seller_amount'], 3),
+                'platform_funded_amount' => Millimes::toDecimal(Millimes::of($line->platform_funded_amount) - $funded),
                 // a fully returned line must never be given back to stock by a later cancel
                 'stock_restored_at'     => $left === 0 ? ($line->stock_restored_at ?? now()) : $line->stock_restored_at,
                 'stock_restored_reason' => $left === 0 ? ($line->stock_restored_reason ?? 'returned') : $line->stock_restored_reason,
@@ -899,6 +904,7 @@ class ReturnService
                 $rev[$k] += $share[$col];
                 $bySellerOrder[$line->seller_order_id ?? 0][$k] = ($bySellerOrder[$line->seller_order_id ?? 0][$k] ?? 0) + $share[$col];
             }
+            $bySellerOrder[$line->seller_order_id ?? 0]['funded_m'] = ($bySellerOrder[$line->seller_order_id ?? 0]['funded_m'] ?? 0) + $funded;
         }
 
         if ($fullyReturned) {
@@ -956,7 +962,12 @@ class ReturnService
         $oldNet    = (float) $so->getAttribute('seller_net_amount');
         $oldCharge = (float) $so->getAttribute('seller_shipping_charge');
 
-        $commission = max(0, round((float) $so->getAttribute('commission_amount') - $sum['commission'], 3));
+        // Platform-funded promotions can leave a negative commission: only clamp tiny rounding below 0
+        $oldCommission = (float) $so->getAttribute('commission_amount');
+        $commission    = round($oldCommission - $sum['commission'], 3);
+        if ($oldCommission >= 0) {
+            $commission = max(0, $commission);
+        }
         // The free-delivery contribution stays charged even when everything
         // comes back: the delivery was made and the agency was paid.
         $newNet = round($oldNet - $sum['seller'], 3);
@@ -966,6 +977,7 @@ class ReturnService
             'discount_amount'   => max(0, round((float) $so->discount_amount - $sum['discount'], 3)),
             'commission_amount' => $commission,
             'platform_profit'   => round((float) $so->getAttribute('platform_profit') - $sum['commission'], 3),
+            'platform_funded_amount' => Millimes::toDecimal(max(0, Millimes::of($so->getAttribute('platform_funded_amount')) - ($sum['funded_m'] ?? 0))),
             'return_status'     => $full ? 'full' : 'partial',
             'payment_status'    => 'refunded',
         ];
@@ -1050,26 +1062,79 @@ class ReturnService
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
-    /** Money of $qty units of a line, as paid (proportional share of the line's live figures). */
+    /**
+     * Money of $qty units of a line, as paid (proportional share of the line's
+     * live figures). Integer millimes (AUDIT L-2): each figure rounded half-up
+     * once; the seller amount is net − commission, so the share always balances.
+     * The last units of a line take exactly what is left.
+     *
+     * Pack lines (AUDIT C-1) hold their own share of the pack price, so this is
+     * exact for them too. Legacy pack lines are guarded by guardLegacyPacks().
+     */
     public function share(OrderItem $line, int $qty): array
     {
         $current = max(1, (int) $line->quantity);
-        $ratio   = min(1, $qty / $current);
         $whole   = $qty >= $current;
-        $part    = fn($v) => $whole ? round((float) $v, 3) : round((float) $v * $ratio, 3);
+        $part    = fn ($v) => $whole ? Millimes::of($v ?? 0) : Millimes::share(Millimes::of($v ?? 0), $qty, $current);
 
-        $gross    = $part($line->getRawOriginal('total') ?: (float) $line->unit_price * $current);
-        $discount = $part($line->discount_amount ?? 0);
-        $net      = $line->net_total !== null ? $part($line->net_total) : round($gross - $discount, 3);
+        $rawTotal = $line->getRawOriginal('total');
+        $gross    = $part(Millimes::of($rawTotal) !== 0 ? $rawTotal : Millimes::toDecimal(Millimes::of($line->unit_price) * $current));
+        $discount = $part($line->discount_amount);
+        $net      = $line->net_total !== null ? $part($line->net_total) : $gross - $discount;
+        $commission = $part($line->commission_amount);
+        $seller   = $whole ? Millimes::of($line->seller_amount ?? 0) : $net - $commission;
+        if ($whole) {
+            $commission = Millimes::of($line->commission_amount ?? 0);
+        }
+        $f = fn (int $m) => Millimes::toFloat($m);
 
         return [
             'unit_price'        => round((float) $line->unit_price, 3),
-            'gross_amount'      => $gross,
-            'discount_amount'   => $discount,
-            'net_amount'        => $net,
-            'commission_amount' => $part($line->commission_amount ?? 0),
-            'seller_amount'     => $part($line->seller_amount ?? 0),
+            'gross_amount'      => $f($gross),
+            'discount_amount'   => $f($discount),
+            'net_amount'        => $f($net),
+            'commission_amount' => $f($commission),
+            'seller_amount'     => $f($seller),
         ];
+    }
+
+    /** Platform-funded discount (AUDIT M-8) carried by $qty units of a line, in millimes. */
+    private function fundedShare(OrderItem $line, int $qty): int
+    {
+        $current = max(1, (int) $line->quantity);
+        $funded  = Millimes::of($line->platform_funded_amount ?? 0);
+        return $qty >= $current ? $funded : Millimes::share($funded, $qty, $current);
+    }
+
+    /**
+     * Orders placed before pack money was spread over each line (pack_id null,
+     * "(Bundle: …)" lines: all the money on the first line): a partial return
+     * would refund the wrong amount, so such a pack can only be returned whole —
+     * every line of it, every unit (AUDIT C-1). Those orders are never changed.
+     */
+    private function guardLegacyPacks(Collection $allLines, array $quantities, array $reserved): void
+    {
+        $groups = $allLines
+            ->filter(fn ($l) => $l->pack_id === null && preg_match('/ \(Bundle: (.+)\)$/u', (string) $l->product_name))
+            ->groupBy(function ($l) {
+                preg_match('/ \(Bundle: (.+)\)$/u', (string) $l->product_name, $m);
+                return ($l->seller_order_id ?? 0) . '|' . $m[1];
+            });
+
+        foreach ($groups as $key => $lines) {
+            $touched = $lines->contains(fn ($l) => (int) ($quantities[$l->id] ?? 0) > 0);
+            if (!$touched) {
+                continue;
+            }
+            $whole = $lines->every(fn ($l) => (int) ($quantities[$l->id] ?? 0) + (int) ($reserved[$l->id] ?? 0) >= (int) $l->quantity);
+            if (!$whole) {
+                $first = $lines->first(fn ($l) => (int) ($quantities[$l->id] ?? 0) > 0) ?? $lines->first();
+                throw new ReturnException(__('messages.complaint.legacy_pack_whole', [
+                    'item' => preg_replace('/ \(Bundle: .+\)$/u', '', (string) $first->product_name),
+                    'pack' => explode('|', $key, 2)[1],
+                ]));
+            }
+        }
     }
 
     /**

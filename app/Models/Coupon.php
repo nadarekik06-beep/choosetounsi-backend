@@ -3,9 +3,13 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Coupon extends Model
 {
+    /** Deleted coupons are soft-deleted: redemption history is kept, they can't be applied (AUDIT M-1). */
+    use SoftDeletes;
+
     protected $fillable = [
         'seller_id', 'code', 'discount_type', 'discount_value',
         'min_order_amount', 'usage_limit', 'usage_limit_per_customer',

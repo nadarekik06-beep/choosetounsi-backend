@@ -107,7 +107,8 @@ class SellerCouponController extends Controller
                 'usage_limit_per_customer'  => $validated['usage_limit_per_customer'] ?? null,
                 'usage_count'               => 0,
                 'is_active'                 => $validated['is_active'] ?? true,
-                'expires_at'                => $validated['expires_at'] ?? null,
+                // Typed in Tunis time, stored in UTC (AUDIT L-3)
+                'expires_at'                => \App\Support\TunisTime::toUtcString($validated['expires_at'] ?? null),
             ]);
 
             $coupon->products()->attach($productIds);
@@ -176,8 +177,12 @@ class SellerCouponController extends Controller
 
             if (isset($validated['product_ids'])) {
                 $productIds = array_unique($validated['product_ids']);
+                // Same rule as create (AUDIT L-7): own, approved and active products only
                 $owned = Product::where('seller_id', $request->user()->id)
-                    ->whereIn('id', $productIds)->count();
+                    ->whereIn('id', $productIds)
+                    ->where('is_approved', true)
+                    ->where('is_active', true)
+                    ->count();
                 if ($owned !== count($productIds)) {
                     DB::rollBack();
                     return response()->json([
@@ -204,7 +209,10 @@ class SellerCouponController extends Controller
 
     public function destroy(Request $request, int $id)
     {
+        // Soft delete (AUDIT M-1): its redemption history stays (limits, stats, finance)
+        // and the code can't be applied nor created again.
         $coupon = Coupon::where('seller_id', $request->user()->id)->findOrFail($id);
+        $coupon->forceFill(['is_active' => false])->save();
         $coupon->delete();
         return response()->json(['success' => true, 'message' => __('seller.coupon.deleted')]);
     }

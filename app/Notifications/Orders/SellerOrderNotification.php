@@ -160,7 +160,9 @@ abstract class SellerOrderNotification extends Notification implements ShouldQue
 
         $itemsTotal = (float) $so->subtotal;
         $discount   = (float) ($so->discount_amount ?? 0);
-        $commission = (float) ($so->commission_amount ?? $so->items->sum('commission_amount'));
+        // Commission charged; a platform-funded discount is shown apart (AUDIT M-8)
+        $funded     = (float) ($so->platform_funded_amount ?? 0);
+        $commission = (float) ($so->commission_amount ?? $so->items->sum('commission_amount')) + $funded;
         $shipping   = (float) ($so->seller_shipping_charge ?? 0);
         $net        = $so->seller_net_amount !== null
             ? (float) $so->seller_net_amount
@@ -179,6 +181,7 @@ abstract class SellerOrderNotification extends Notification implements ShouldQue
             'items_total'    => $this->money($itemsTotal),
             'discount'       => $discount > 0 ? $this->money($discount) : null,
             'commission'     => $this->money($commission),
+            'platform_funded'=> $funded > 0 ? $this->money($funded) : null,
             'shipping'       => $shipping > 0 ? $this->money($shipping) : null,
             'net_label'      => $this->money($net),
             'dashboard_path' => $path,

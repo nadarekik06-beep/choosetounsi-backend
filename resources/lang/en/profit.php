@@ -38,6 +38,7 @@ return [
         'new_goal_suggested' => 'Set your :month goal. Suggested from your recent months: :suggested.',
     ],
     'export' => [
+        'platform_funded' => "Discount paid by Choose'Tounsi",
         'title'      => 'Profit Center — monthly report',
         'gross'      => 'Gross sales',
         'refunds'    => 'Refunded returns',
@@ -52,6 +53,7 @@ return [
         'goal'       => 'Goal',
         'achieved'   => 'Achieved',
         'col' => [
+            'platform_funded' => "Discount paid by Choose'Tounsi",
             'order' => 'Order', 'date' => 'Date', 'status' => 'Status', 'amount' => 'Amount (DT)',
             'commission' => 'Commission (DT)', 'shipping' => 'Shipping (DT)', 'net' => 'Net (DT)', 'payout' => 'Payout',
         ],

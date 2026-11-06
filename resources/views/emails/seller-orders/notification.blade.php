@@ -83,6 +83,12 @@
             <td style="padding:4px 0;text-align:{{ $end }};white-space:nowrap;">&minus;&nbsp;{{ $s['discount'] }}</td>
           </tr>
         @endif
+@if (!empty($s['platform_funded']))
+          <tr>
+            <td style="padding:4px 0;text-align:{{ $start }};{{ $muted }}">{{ __('order_notifications.common.platform_funded') }}</td>
+            <td style="padding:4px 0;text-align:{{ $end }};white-space:nowrap;">+&nbsp;{{ $s['platform_funded'] }}</td>
+          </tr>
+@endif
         <tr>
           <td style="padding:4px 0;text-align:{{ $start }};{{ $muted }}">{{ __('order_notifications.common.commission') }}</td>
           <td style="padding:4px 0;text-align:{{ $end }};white-space:nowrap;">&minus;&nbsp;{{ $s['commission'] }}</td>

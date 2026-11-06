@@ -19,6 +19,9 @@
 @if ($s['discount'])
 {!! __('order_notifications.common.discount') !!}: -{!! $s['discount'] !!}
 @endif
+@if (!empty($s['platform_funded']))
+{!! __('order_notifications.common.platform_funded') !!}: +{!! $s['platform_funded'] !!}
+@endif
 {!! __('order_notifications.common.commission') !!}: -{!! $s['commission'] !!}
 @if ($s['shipping'])
 {!! __('order_notifications.common.shipping') !!}: -{!! $s['shipping'] !!}

@@ -68,6 +68,7 @@ class FinanceController extends Controller
                 COALESCE(SUM(so.seller_shipping_charge), 0) as total_seller_shipping,
                 COALESCE(SUM(so.shipping_cost), 0)     as total_shipping_cost,
                 COALESCE(SUM(so.platform_profit), 0)   as total_platform_profit,
+                COALESCE(SUM(so.platform_funded_amount), 0) as total_platform_funded,
                 COUNT(DISTINCT so.id)                  as orders_count
             ')
             ->first();
@@ -126,6 +127,9 @@ class FinanceController extends Controller
                 'kpis' => [
                     'gross_revenue'         => round((float) $totals->gross_revenue,        3),
                     'total_commission'      => round((float) $totals->total_commission,     3),
+                    // Discounts of platform-funded admin promotions paid to sellers (AUDIT M-8):
+                    // already deducted from total_commission and platform profit
+                    'total_platform_funded_discounts' => round((float) $totals->total_platform_funded, 3),
                     'total_seller_payouts'  => round((float) $totals->total_seller_payouts, 3),
                     // Shipping: collected from customers + deducted from sellers
                     // (free shipping) − paid to the agency. Net is inside platform_profit.

@@ -482,6 +482,7 @@ Route::middleware('auth:sanctum')->group(function () {
         // ── Promotions ────────────────────────────────────────────────────
         // stats MUST come before {id} to avoid being matched as an ID
         Route::get('/promotions/stats',    [SellerPromotionController::class, 'stats']);
+        Route::post('/promotions/preview', [SellerPromotionController::class, 'preview']); // AUDIT M-6: what buyers really pay
         Route::get('/promotions',          [SellerPromotionController::class, 'index']);
         Route::post('/promotions',         [SellerPromotionController::class, 'store'])->middleware('seller.feature:promotions');
         Route::get('/promotions/{id}',     [SellerPromotionController::class, 'show']);

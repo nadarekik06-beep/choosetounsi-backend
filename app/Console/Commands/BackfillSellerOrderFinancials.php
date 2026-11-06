@@ -65,8 +65,11 @@ class BackfillSellerOrderFinancials extends Command
 
         $service = app(\App\Services\FinancialSnapshotService::class);
 
+        // Legacy rows only: parcels frozen at checkout (platform_delivery_margin set) are never
+        // recomputed (a platform-funded parcel can have a commission of exactly 0)
         $ids = DB::table('seller_orders')
             ->where('commission_amount', 0)
+            ->whereNull('platform_delivery_margin')
             ->pluck('id');
 
         $this->info("Found {$ids->count()} seller_orders to freeze.");

@@ -67,6 +67,8 @@ return [
         'failed' => 'Restock failed. Please try again.',
     ],
     'pack' => [
+        'price_positive' => "The pack price must be greater than 0 DT.",
+        'price_below_items' => "The pack price (:price DT) must be lower than the items bought separately (:items DT).",
         'created' => 'Pack created! It will be reviewed by an admin.',
         'create_failed' => 'Failed to create pack.',
         'updated' => 'Pack updated.',
@@ -102,6 +104,7 @@ return [
         'deleted' => 'Coupon deleted.',
     ],
     'promotion' => [
+        'start_in_past' => "The start date cannot be in the past.",
         'flash_overlap' => 'One or more products already have an active flash sale in this time range.',
         'created' => 'Promotion created successfully.',
         'expired' => 'Cannot edit an expired promotion.',

@@ -110,6 +110,9 @@
                 <span class="label">Status</span> {{ $so->status }} · {{ $so->payment_status }}
                 @if ($so->getAttribute('payout_status')) · payout {{ $so->getAttribute('payout_status') }}@endif<br>
                 <span class="label">Commission</span> {{ $dt($so->getAttribute('commission_amount')) }}
+                @if ((float) $so->getAttribute('platform_funded_amount') > 0)
+                    · <span class="label">Platform-funded discount</span> {{ $dt($so->getAttribute('platform_funded_amount')) }} (already netted out of commission)
+                @endif
                 · <span class="label">Seller net</span> {{ $dt($so->getAttribute('seller_net_amount')) }}<br>
                 <span class="label">Shipping cost share</span> {{ $dt($so->getAttribute('shipping_cost')) }}
                 · <span class="label">Seller shipping charge</span> {{ $dt($so->getAttribute('seller_shipping_charge')) }}<br>

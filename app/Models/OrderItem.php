@@ -36,6 +36,19 @@ class OrderItem extends Model
         'promotion_source',      // seller | admin, frozen at checkout
         'original_unit_price',   // unit price before the promotion
         'promo_discount_amount', // (original_unit_price - unit_price) x quantity
+        // ── Discount snapshot (AUDIT_DISCOUNTS C-1 / M-4 / M-7 / M-8) ─────────
+        'discount_type',           // promotion | flash_sale | pack | coupon | none
+        'discount_source_id',      // promotions.id / packs.id / coupons.id
+        'applied_discount_amount', // money that discount took off this line
+        'promo_discount_type',     // percentage | fixed (promotion terms)
+        'promo_discount_value',
+        'pack_id',
+        'pack_group',              // one group per pack row of the order
+        'pack_allocation',         // this line's share of the pack price × pack quantity
+        'pack_original_value',     // this line's items at their original price
+        'commission_tier_price',   // original unit price the commission bracket was chosen from
+        'funded_by',               // seller | platform
+        'platform_funded_amount',  // discount paid back to the seller by the platform
         'image_url',          // purchase snapshot: copy of the bought variant's image
         'image_source',
         // ── Commission columns (populated at checkout) ─────────────────────
@@ -57,6 +70,10 @@ class OrderItem extends Model
         'commission_percentage' => 'decimal:2',
         'commission_amount'     => 'decimal:3',
         'seller_amount'         => 'decimal:3',
+        'applied_discount_amount' => 'decimal:3',
+        'pack_allocation'       => 'decimal:3',
+        'pack_original_value'   => 'decimal:3',
+        'platform_funded_amount' => 'decimal:3',
     ];
 
     protected $appends = ['resolved_image_url', 'ordered_quantity', 'return_state'];
@@ -152,7 +169,13 @@ class OrderItem extends Model
             'returned_quantity'  => (int) ($this->attributes['returned_quantity'] ?? 0),
             'return_state'       => $this->return_state,
             'unit_price'         => (float) $this->unit_price,
-            'total'              => round((float) $this->unit_price * $this->ordered_quantity, 3),
+            // Pack lines: their exact share of the pack price (unit_price is rounded for display)
+            'total'              => $this->pack_allocation !== null
+                ? round((float) $this->pack_allocation, 3)
+                : round((float) $this->unit_price * $this->ordered_quantity, 3),
+            'discount_type'      => $this->discount_type,
+            'applied_discount_amount' => round((float) ($this->applied_discount_amount ?? 0), 3),
+            'pack_id'            => $this->pack_id,
             'image_url'          => $this->displayImageUrl(),
         ];
     }

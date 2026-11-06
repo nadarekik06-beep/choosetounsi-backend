@@ -16,6 +16,7 @@ return [
         'qty'           => 'Qty',
         'items_total'   => 'Items total',
         'discount'      => 'Your coupon',
+        'platform_funded' => "Discount paid by Choose'Tounsi",
         'commission'    => "Choose'Tounsi commission",
         'shipping'      => 'Shipping you cover',
         'net'           => 'Your net earnings',

@@ -7,6 +7,7 @@ use App\Models\ProductImage;
 use App\Models\ProductVariant;
 use App\Models\Promotion;
 use Carbon\Carbon;
+use App\Support\Millimes;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
@@ -17,7 +18,7 @@ use Illuminate\Support\Facades\Storage;
  *
  * Active promotion: status active|scheduled (dates decide, never the cron),
  * starts_at <= now < ends_at, flash quota not used up. Dates are stored and
- * compared in UTC, the same instant as Africa/Tunis wall-clock time.
+ * compared in UTC (Tunis is UTC+1; forms send Tunis time, see App\Support\TunisTime).
  *
  * When several apply: flash sale first, then higher `priority`, then newest.
  *
@@ -217,20 +218,23 @@ class PromotionService
             ];
         }
 
-        $final  = round(max(0, $this->applyDiscount($reference, $promo)), 3);
-        if ($final <= 0) {
+        // Integer millimes (AUDIT L-1): same result as finalPriceSql() to the millime
+        $refM   = Millimes::of($reference);
+        $finalM = self::discountedMillimes($refM, $promo);
+        if ($finalM <= 0) {
             // Never sell for free: a promotion that would (the price was lowered after
             // it was created) is ignored. Creating one is refused (zeroPriceProducts).
             return $this->pricing($currentPrice, $currentPrice, null);
         }
-        $amount = round($reference - $final, 3);
+        $final  = Millimes::toFloat($finalM);
+        $amount = Millimes::toFloat($refM - $finalM);
 
         return [
-            'original_price'   => round($reference, 3),
+            'original_price'   => Millimes::toFloat($refM),
             'final_price'      => $final,
             'effective_price'  => $final,
             'discount_amount'  => $amount,
-            'discount_percent' => self::percentOff($promo, $reference, $amount),
+            'discount_percent' => self::percentOff($promo, Millimes::toFloat($refM), $amount),
             'promo_type'       => $promo->type === 'flash_sale' ? 'flash_sale' : 'promotion',
             'promo_label'      => $promo->name,
             'ends_at'          => $this->endsAt($promo)->toISOString(),
@@ -251,12 +255,18 @@ class PromotionService
         return $reference > 0 ? (int) round($amount / $reference * 100) : 0;
     }
 
-    private function applyDiscount(float $price, Promotion $promo): float
+    /**
+     * Final price in millimes, never below 0: reference × (1 − rate) rounded
+     * half-up once (the rate kept to the thousandth of a percent, as stored), or
+     * reference − fixed amount. finalPriceSql() is the same formula in MySQL.
+     */
+    public static function discountedMillimes(int $referenceM, Promotion $promo): int
     {
         if ($promo->discount_type === 'percentage') {
-            return $price * (1 - ((float) $promo->discount_value / 100));
+            $rate = Millimes::of($promo->discount_value); // percent × 1000
+            return max(0, Millimes::divRound($referenceM * (100000 - $rate), 100000));
         }
-        return $price - (float) $promo->discount_value;
+        return max(0, $referenceM - Millimes::of($promo->discount_value));
     }
 
     private function endsAt(Promotion $promo): Carbon
@@ -282,6 +292,9 @@ class PromotionService
             'flash_stock_remaining' => $promo->flashStockRemaining(),
             'is_flash_sale'         => $promo->type === 'flash_sale',
             'source'                => $promo->created_by ?? Promotion::SOURCE_SELLER,
+            // Who pays the discount (admin promotions may be platform-funded) and the flash limit per customer
+            'funded_by'             => $promo->isPlatformFunded() ? Promotion::FUNDED_PLATFORM : Promotion::FUNDED_SELLER,
+            'per_customer_limit'    => $promo->type === 'flash_sale' ? $promo->per_customer_limit : null,
         ];
     }
 
@@ -313,14 +326,71 @@ class PromotionService
      * Hold quota for an order line priced with $pricing (priceLine/getEffectivePrice).
      * Returns the units held (0 when the line's promotion has no quota), or null
      * when the flash sale is sold out — the caller must not sell at that price.
+     *
+     * With $productName (checkout), the flash sale's per-customer limit is checked
+     * first under a lock on the promotion row, so two orders of the same customer
+     * placed at the same time can't both pass (AUDIT L-4).
+     *
+     * @throws \App\Exceptions\FlashCustomerLimit
      */
-    public function reserveForLine(array $pricing, int $qty): ?int
+    public function reserveForLine(array $pricing, int $qty, ?int $userId = null, ?string $phone = null, ?string $productName = null): ?int
     {
         $promo = $pricing['promotion'] ?? null;
+        if ($productName !== null) {
+            $this->assertFlashCustomerLimit($pricing, $qty, $userId, $phone, $productName, true);
+        }
         if (!$promo || !$promo['is_flash_sale'] || $promo['flash_stock_remaining'] === null) {
             return 0;
         }
         return $this->reserveFlashStock($promo['id'], $qty) ? $qty : null;
+    }
+
+    /**
+     * Flash-priced units this customer already holds on orders still in play
+     * (cancelled / refused parcels don't count). Account: by user id. Guest: by
+     * delivery phone, on every order (guest or account) delivered to it.
+     * $lock: shared locking read inside the checkout transaction, so rows other
+     * orders committed a moment ago are counted.
+     */
+    public function flashUnitsBoughtBy(int $promotionId, ?int $userId, ?string $phone, bool $lock = false): int
+    {
+        if ($userId === null && !$phone) {
+            return 0;
+        }
+        $q = DB::table('order_items as oi')
+            ->join('orders as o', 'o.id', '=', 'oi.order_id')
+            ->leftJoin('seller_orders as so', 'so.id', '=', 'oi.seller_order_id')
+            ->where('oi.promotion_id', $promotionId)
+            ->where(fn ($w) => $w->whereNull('so.id')->orWhereNotIn('so.status', \App\Models\SellerOrder::NOT_SHIPPED))
+            ->where(fn ($w) => $userId !== null
+                ? $w->where('o.user_id', $userId)
+                : $w->where('o.phone', $phone)->orWhere('o.guest_phone', $phone));
+        if ($lock) {
+            $q->sharedLock();
+        }
+        return (int) $q->sum('oi.quantity');
+    }
+
+    /**
+     * Refuse more than the flash sale's per-customer limit at the flash price.
+     * $lock: inside the checkout transaction (locks the promotion row first).
+     *
+     * @throws \App\Exceptions\FlashCustomerLimit
+     */
+    public function assertFlashCustomerLimit(array $pricing, int $qty, ?int $userId, ?string $phone, string $productName, bool $lock = false): void
+    {
+        $promo = $pricing['promotion'] ?? null;
+        $limit = $promo['per_customer_limit'] ?? null;
+        if (!$promo || empty($promo['is_flash_sale']) || !$limit) {
+            return;
+        }
+        if ($lock) {
+            DB::table('promotions')->where('id', $promo['id'])->lockForUpdate()->first(['id']);
+        }
+        $bought = $this->flashUnitsBoughtBy((int) $promo['id'], $userId, $phone, $lock);
+        if ($bought + $qty > $limit) {
+            throw new \App\Exceptions\FlashCustomerLimit($productName, (int) $limit, $bought);
+        }
     }
 
     /** Give back the quota held by an order's lines (card payment failed). */
@@ -611,7 +681,7 @@ class PromotionService
             }
             foreach ($lines as [$variant, $price]) {
                 $reference = $this->referencePrice($product, $price, $variant?->id);
-                if (round(max(0, $this->applyDiscount($reference, $promo)), 3) <= 0) {
+                if (self::discountedMillimes(Millimes::of($reference), $promo) <= 0) {
                     $bad[] = $variant ? "{$product->name} ({$variant->label})" : $product->name;
                 }
             }

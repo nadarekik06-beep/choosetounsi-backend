@@ -118,7 +118,7 @@ class ProfitCenterController extends Controller
 
             $row([__('profit.export.title'), $month]);
             $row([]);
-            foreach (['gross', 'refunds', 'commission', 'shipping', 'ads', 'net', 'sales', 'delivered'] as $k) {
+            foreach (['gross', 'refunds', 'commission', 'platform_funded', 'shipping', 'ads', 'net', 'sales', 'delivered'] as $k) {
                 $row([__("profit.export.{$k}"), $num($totals[$k])]);
             }
             $row([__('profit.export.ads_credit'), $num($totals['ads_credit'])]);
@@ -128,10 +128,10 @@ class ProfitCenterController extends Controller
                 $row([__('profit.export.achieved'), round($totals['sales'] / max(0.001, $goal->goal_amount) * 100, 1) . ' %']);
             }
             $row([]);
-            $row(array_map(fn($k) => __("profit.export.col.{$k}"), ['order', 'date', 'status', 'amount', 'commission', 'shipping', 'net', 'payout']));
+            $row(array_map(fn($k) => __("profit.export.col.{$k}"), ['order', 'date', 'status', 'amount', 'commission', 'shipping', 'net', 'payout', 'platform_funded']));
             foreach ($lines as $l) {
                 $row([$l['order'], $l['date'], __("profit.export.status.{$l['status']}"), $num($l['amount']),
-                      $num($l['commission']), $num($l['shipping']), $num($l['net']), $l['payout']]);
+                      $num($l['commission']), $num($l['shipping']), $num($l['net']), $l['payout'], $num($l['platform_funded'])]);
             }
             fclose($out);
         }, "centre-de-profit-{$month}.csv", ['Content-Type' => 'text/csv; charset=UTF-8']);

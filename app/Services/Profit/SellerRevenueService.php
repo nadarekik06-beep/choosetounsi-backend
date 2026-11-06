@@ -94,7 +94,8 @@ class SellerRevenueService
                 COALESCE(SUM(subtotal - discount_amount), 0) as sales,
                 COALESCE(SUM(CASE WHEN status IN ({$delivered}) THEN subtotal - discount_amount ELSE 0 END), 0) as delivered,
                 COUNT(*) as orders,
-                COALESCE(SUM(commission_amount), 0) as commission,
+                COALESCE(SUM(commission_amount + platform_funded_amount), 0) as commission,
+                COALESCE(SUM(platform_funded_amount), 0) as platform_funded,
                 COALESCE(SUM(seller_shipping_charge), 0) as shipping")
             ->groupBy('ym')
             ->get()
@@ -116,7 +117,9 @@ class SellerRevenueService
     {
         $sales      = round((float) ($r['sales'] ?? 0), 3);
         $delivered  = round((float) ($r['delivered'] ?? 0), 3);
+        // Commission charged (platform-funded lines: on the original price); the funded discount is paid to the seller (AUDIT M-8)
         $commission = round((float) ($r['commission'] ?? 0), 3);
+        $funded     = round((float) ($r['platform_funded'] ?? 0), 3);
         $shipping   = round((float) ($r['shipping'] ?? 0), 3);
         $refunds    = round($refunds, 3);
         return [
@@ -126,12 +129,13 @@ class SellerRevenueService
             'in_progress' => round($sales - $delivered, 3),
             'orders'      => (int) ($r['orders'] ?? 0),
             'commission'  => $commission,
+            'platform_funded' => $funded,
             'shipping'    => $shipping,
             'refunds'     => $refunds,
             'ads'         => round($ads['cash'], 3),
             'ads_credit'  => round($ads['credit'], 3),
             'gross'       => round($sales + $refunds, 3),
-            'net'         => round($sales - $commission - $shipping - $ads['cash'], 3),
+            'net'         => round($sales + $funded - $commission - $shipping - $ads['cash'], 3),
         ];
     }
 
@@ -329,17 +333,21 @@ class SellerRevenueService
             ->where('so.created_at', '<', $this->utc($monthStart->addMonthNoOverflow()))
             ->orderBy('so.created_at')
             ->get(['o.order_number', 'so.created_at', 'so.status', 'so.subtotal', 'so.discount_amount',
-                   'so.commission_amount', 'so.seller_shipping_charge', 'so.seller_net_amount', 'so.payout_status'])
+                   'so.commission_amount', 'so.platform_funded_amount', 'so.seller_shipping_charge', 'so.seller_net_amount', 'so.payout_status'])
             ->map(function ($r) {
                 $amount = (float) $r->subtotal - (float) $r->discount_amount;
+                // Commission charged (platform-funded: on the original price) + the funded discount paid back (AUDIT M-8)
+                $funded = (float) ($r->platform_funded_amount ?? 0);
+                $charged = (float) $r->commission_amount + $funded;
                 $net    = in_array($r->status, \App\Models\SellerOrder::NOT_SHIPPED, true) ? 0.0
-                    : $amount - (float) $r->commission_amount - (float) $r->seller_shipping_charge;
+                    : $amount + $funded - $charged - (float) $r->seller_shipping_charge;
                 return [
                     'order'      => $r->order_number,
                     'date'       => CarbonImmutable::parse($r->created_at, 'UTC')->setTimezone($this->tz())->format('Y-m-d H:i'),
                     'status'     => $r->status,
                     'amount'     => round($amount, 3),
-                    'commission' => round((float) $r->commission_amount, 3),
+                    'commission' => round($charged, 3),
+                    'platform_funded' => round($funded, 3),
                     'shipping'   => round((float) $r->seller_shipping_charge, 3),
                     'net'        => round($net, 3),
                     'payout'     => $r->payout_status,

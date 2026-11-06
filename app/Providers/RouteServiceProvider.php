@@ -85,7 +85,9 @@ class RouteServiceProvider extends ServiceProvider
         // Guest orders (no login): per IP and per delivery phone, per hour.
         // Signed-in checkouts are not limited here (the 'api' limiter still applies).
         RateLimiter::for('guest-checkout', function (Request $request) {
-            if ($request->user()) {
+            // Middleware priority runs this limiter BEFORE auth.optional, so $request->user()
+            // is still empty for a signed-in buyer: resolve the bearer token here too.
+            if ($request->user() || ($request->bearerToken() && auth('sanctum')->user())) {
                 return Limit::none();
             }
             $tooMany = fn () => response()->json([

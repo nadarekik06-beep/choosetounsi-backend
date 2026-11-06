@@ -9,12 +9,18 @@ class Promotion extends Model
     protected $fillable = [
         'seller_id', 'created_by', 'created_by_admin_id', 'funded_by',
         'name', 'type', 'discount_type', 'discount_value',
-        'starts_at', 'ends_at', 'flash_stock', 'flash_stock_used',
+        'starts_at', 'ends_at', 'flash_stock', 'flash_stock_used', 'per_customer_limit',
         'status', 'priority',
     ];
 
     public const SOURCE_SELLER = 'seller';
     public const SOURCE_ADMIN  = 'admin';
+
+    public const FUNDED_SELLER   = 'seller';
+    public const FUNDED_PLATFORM = 'platform';
+
+    /** Flash sales: units one customer may buy at the flash price, unless set otherwise (AUDIT L-4). */
+    public const DEFAULT_PER_CUSTOMER_LIMIT = 2;
 
     protected $casts = [
         'starts_at'        => 'datetime',
@@ -22,6 +28,7 @@ class Promotion extends Model
         'discount_value'   => 'decimal:3',
         'flash_stock'      => 'integer',
         'flash_stock_used' => 'integer',
+        'per_customer_limit' => 'integer',
     ];
 
     // ── Relationships ─────────────────────────────────────────────────────
@@ -98,6 +105,12 @@ class Promotion extends Model
         return in_array($this->status, self::PRICING_STATUSES, true)
             && $this->starts_at <= now() && $this->ends_at > now()
             && $this->hasFlashStockRemaining();
+    }
+
+    /** The platform pays the discount back to the seller (admin promotions only, AUDIT M-8). */
+    public function isPlatformFunded(): bool
+    {
+        return $this->isAdminPromotion() && $this->funded_by === self::FUNDED_PLATFORM;
     }
 
     public function hasFlashStockRemaining(): bool

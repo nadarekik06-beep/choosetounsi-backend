@@ -38,6 +38,7 @@ return [
         'new_goal_suggested' => 'Fixez votre objectif de :month. Suggestion d’après vos derniers mois : :suggested.',
     ],
     'export' => [
+        'platform_funded' => "Remise payée par Choose'Tounsi",
         'title'      => 'Centre de profit — rapport mensuel',
         'gross'      => 'Ventes brutes',
         'refunds'    => 'Retours remboursés',
@@ -52,6 +53,7 @@ return [
         'goal'       => 'Objectif',
         'achieved'   => 'Atteint',
         'col' => [
+            'platform_funded' => "Remise payée par Choose'Tounsi",
             'order' => 'Commande', 'date' => 'Date', 'status' => 'Statut', 'amount' => 'Montant (DT)',
             'commission' => 'Commission (DT)', 'shipping' => 'Livraison (DT)', 'net' => 'Net (DT)', 'payout' => 'Versement',
         ],

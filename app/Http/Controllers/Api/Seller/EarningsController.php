@@ -28,7 +28,9 @@ class EarningsController extends Controller
         $totals = (clone $base)
             ->selectRaw(
                 'COALESCE(SUM(subtotal - discount_amount), 0) as gross_revenue,' .
-                'COALESCE(SUM(commission_amount), 0) as total_commission,' .
+                // Seller view: commission charged (platform-funded lines: on the original price), funded discount apart (AUDIT M-8)
+                'COALESCE(SUM(commission_amount + platform_funded_amount), 0) as total_commission,' .
+                'COALESCE(SUM(platform_funded_amount), 0) as total_platform_funded,' .
                 'COALESCE(SUM(seller_net_amount), 0) as total_net,' .
                 'COALESCE(SUM(seller_shipping_charge), 0) as total_shipping,' .
                 'COUNT(*) as orders_count,' .
@@ -47,7 +49,8 @@ class EarningsController extends Controller
                 'DATE(created_at) as day,' .
                 'COUNT(*) as orders,' .
                 'COALESCE(SUM(subtotal - discount_amount), 0) as gross,' .
-                'COALESCE(SUM(commission_amount), 0) as commission,' .
+                'COALESCE(SUM(commission_amount + platform_funded_amount), 0) as commission,' .
+                'COALESCE(SUM(platform_funded_amount), 0) as platform_funded,' .
                 'COALESCE(SUM(seller_shipping_charge), 0) as shipping,' .
                 'COALESCE(SUM(seller_net_amount), 0) as net_earnings'
             )
@@ -86,6 +89,7 @@ class EarningsController extends Controller
                     'pending_deductions'     => $pendingDeductions,
                     'gross_revenue'          => round((float) $totals->gross_revenue,          3),
                     'total_commission'       => round((float) $totals->total_commission,       3),
+                    'total_platform_funded'  => round((float) $totals->total_platform_funded, 3),
                     // Free-shipping orders: shipping the seller pays, already out of total_net
                     'total_shipping'         => round((float) $totals->total_shipping,         3),
                     'total_net'              => round((float) $totals->total_net + $adjustmentsTotal, 3),
@@ -121,7 +125,8 @@ class EarningsController extends Controller
         ->whereNotIn('status', \App\Models\SellerOrder::NOT_SHIPPED)
         ->selectRaw('
             COALESCE(SUM(subtotal - discount_amount), 0) as gross_revenue,
-            COALESCE(SUM(commission_amount), 0) as total_commission,
+            COALESCE(SUM(commission_amount + platform_funded_amount), 0) as total_commission,
+            COALESCE(SUM(platform_funded_amount), 0) as total_platform_funded,
             COALESCE(SUM(seller_net_amount), 0) as total_net,
             COALESCE(SUM(seller_shipping_charge), 0) as total_shipping,
             COUNT(*) as orders_count,
@@ -152,6 +157,7 @@ class EarningsController extends Controller
             'totals' => [
                 'gross_revenue'    => round((float) $totals->gross_revenue,    3),
                 'total_commission' => round((float) $totals->total_commission, 3),
+                'total_platform_funded' => round((float) $totals->total_platform_funded, 3),
                 'total_shipping'   => round((float) $totals->total_shipping,   3),
                 'total_net'        => round((float) $totals->total_net,        3),
                 'orders_count'     => (int) $totals->orders_count,
@@ -159,7 +165,7 @@ class EarningsController extends Controller
                 'total_ready'      => round((float) $totals->total_ready,      3),
                 'total_pending'    => round((float) $totals->total_pending,    3),
             ],
-            'batches'      => $batches,
+            'batches'      => self::sellerBatchView($batches),
             'generated_at' => now()->toIso8601String(),
         ],
     ]);
@@ -191,7 +197,8 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
             'o.order_number',
             DB::raw('(so.subtotal - so.discount_amount) as subtotal'),
             'so.discount_amount',
-            'so.commission_amount',
+            DB::raw('(so.commission_amount + so.platform_funded_amount) as commission_amount'),
+            'so.platform_funded_amount',
             'so.seller_net_amount',
             'so.delivery_fee',
             'so.seller_shipping_charge',
@@ -203,7 +210,7 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
 
     return response()->json([
         'success' => true,
-        'data'    => array_merge((array) $batch, ['orders' => $orders]),
+        'data'    => array_merge((array) self::sellerBatchView(collect([$batch]))->first(), ['orders' => $orders]),
     ]);
 }
     public function orders(Request $request): JsonResponse
@@ -223,7 +230,8 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
                 DB::raw('(so.subtotal - so.discount_amount) as original_gross'),
                 'so.discount_amount',
                 'so.coupon_code',
-                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.commission_amount END as commission_amount"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.commission_amount + so.platform_funded_amount END as commission_amount"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.platform_funded_amount END as platform_funded_amount"),
                 DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.seller_net_amount END as net_earnings"),
                 DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.seller_shipping_charge END as seller_shipping_charge"),
                 DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.delivery_fee END as delivery_fee"),
@@ -424,5 +432,27 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
             return [Carbon::now()->startOfMonth(), Carbon::now()->endOfMonth()];
         }
         return null;
+    }
+
+    /**
+     * Settlement batches as the seller sees them (AUDIT M-8): the stored
+     * total_commission is what the platform kept; the seller is shown the
+     * commission charged and the platform-funded discount apart.
+     */
+    private static function sellerBatchView($batches)
+    {
+        $funded = DB::table('seller_orders')
+            ->whereIn('settlement_batch_id', collect($batches)->pluck('id')->filter()->all())
+            ->groupBy('settlement_batch_id')
+            ->selectRaw('settlement_batch_id, SUM(platform_funded_amount) as funded')
+            ->pluck('funded', 'settlement_batch_id');
+
+        return collect($batches)->map(function ($b) use ($funded) {
+            $f = round((float) ($funded[$b->id] ?? 0), 3);
+            $b = clone $b;
+            $b->total_commission      = round((float) $b->total_commission + $f, 3);
+            $b->total_platform_funded = $f;
+            return $b;
+        })->values();
     }
 }

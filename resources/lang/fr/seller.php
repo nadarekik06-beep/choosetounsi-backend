@@ -67,6 +67,8 @@ return [
         'failed' => 'Le réapprovisionnement a échoué. Veuillez réessayer.',
     ],
     'pack' => [
+        'price_positive' => "Le prix du pack doit être supérieur à 0 DT.",
+        'price_below_items' => "Le prix du pack (:price DT) doit être inférieur au prix des articles achetés séparément (:items DT).",
         'created' => 'Pack créé ! Il sera examiné par un administrateur.',
         'create_failed' => 'Impossible de créer le pack.',
         'updated' => 'Pack mis à jour.',
@@ -102,6 +104,7 @@ return [
         'deleted' => 'Coupon supprimé.',
     ],
     'promotion' => [
+        'start_in_past' => "La date de début ne peut pas être dans le passé.",
         'flash_overlap' => 'Un ou plusieurs produits ont déjà une vente flash active sur cette période.',
         'created' => 'Promotion créée avec succès.',
         'expired' => 'Impossible de modifier une promotion expirée.',

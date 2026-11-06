@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Notifications\Sellers\AdminPromotionNotification;
 use App\Services\PromotionService;
 use App\Services\ShopOverview;
+use App\Support\TunisTime;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -36,7 +37,9 @@ use Illuminate\Validation\ValidationException;
  * variant, products active + approved. One promotion per product at a time:
  * an overlap answers 409 `promotion_conflict` with the list; sending again with
  * replace_conflicts=true moves the products out of the other promotions.
- * The seller pays the discount (funded_by = seller), so finance is unchanged.
+ * Who pays the discount (AUDIT M-8): funded_by = seller (default; commission on the
+ * final price) or platform (the seller is paid as if sold at the original price,
+ * the platform absorbs the discount). Flash sales: per_customer_limit (default 2).
  * The seller is notified (bell + e-mail) of every change on their products.
  */
 class AdminPromotionController extends Controller
@@ -170,12 +173,15 @@ class AdminPromotionController extends Controller
                 'starts_at'         => 'required|date',
                 'ends_at'           => 'required|date|after:starts_at',
                 'flash_stock'       => 'nullable|integer|min:1',
+                'per_customer_limit'=> 'nullable|integer|min:1|max:100',
+                'funded_by'         => 'sometimes|in:seller,platform',
                 'product_ids'       => 'required|array|min:1|max:200',
                 'product_ids.*'     => 'integer|distinct',
                 'replace_conflicts' => 'sometimes|boolean',
             ]);
-            $v['starts_at'] = Carbon::parse($v['starts_at'])->toDateTimeString();
-            $v['ends_at']   = Carbon::parse($v['ends_at'])->toDateTimeString();
+            // Typed in Tunis time, stored in UTC (AUDIT L-3)
+            $v['starts_at'] = TunisTime::toUtcString($v['starts_at']);
+            $v['ends_at']   = TunisTime::toUtcString($v['ends_at']);
             $productIds = array_values(array_unique(array_map('intval', $v['product_ids'])));
             $products   = $this->validProducts($productIds);
             $this->businessRules($v, $productIds);
@@ -198,7 +204,8 @@ class AdminPromotionController extends Controller
                     'seller_id'           => (int) $sellerId,
                     'created_by'          => Promotion::SOURCE_ADMIN,
                     'created_by_admin_id' => $request->user()->id,
-                    'funded_by'           => 'seller',
+                    // Who pays the discount (AUDIT M-8): seller (default) or platform
+                    'funded_by'           => $v['funded_by'] ?? Promotion::FUNDED_SELLER,
                     'name'                => $v['name'],
                     'type'                => $v['type'],
                     'discount_type'       => $v['discount_type'],
@@ -206,6 +213,7 @@ class AdminPromotionController extends Controller
                     'starts_at'           => $v['starts_at'],
                     'ends_at'             => $v['ends_at'],
                     'flash_stock'         => $v['type'] === 'flash_sale' ? ($v['flash_stock'] ?? null) : null,
+                    'per_customer_limit'  => $v['type'] === 'flash_sale' ? ($v['per_customer_limit'] ?? Promotion::DEFAULT_PER_CUSTOMER_LIMIT) : null,
                     'status'              => now()->lessThan($v['starts_at']) ? 'scheduled' : 'active',
                     'priority'            => $v['type'] === 'flash_sale' ? 10 : 5,
                 ]);
@@ -243,6 +251,8 @@ class AdminPromotionController extends Controller
                 'starts_at'         => 'sometimes|required|date',
                 'ends_at'           => 'sometimes|required|date',
                 'flash_stock'       => 'nullable|integer|min:1',
+                'per_customer_limit'=> 'nullable|integer|min:1|max:100',
+                'funded_by'         => 'sometimes|in:seller,platform',
                 'product_ids'       => 'sometimes|required|array|min:1|max:200',
                 'product_ids.*'     => 'integer|distinct',
                 'replace_conflicts' => 'sometimes|boolean',
@@ -253,9 +263,13 @@ class AdminPromotionController extends Controller
                 'type'           => $started ? $promo->type : $request->input('type', $promo->type),
                 'discount_type'  => $request->input('discount_type', $promo->discount_type),
                 'discount_value' => (float) $request->input('discount_value', $promo->discount_value),
-                'starts_at'      => $started || !$request->filled('starts_at') ? $promo->starts_at->toDateTimeString() : Carbon::parse($request->starts_at)->toDateTimeString(),
-                'ends_at'        => $request->filled('ends_at') ? Carbon::parse($request->ends_at)->toDateTimeString() : $promo->ends_at->toDateTimeString(),
+                'starts_at'      => $started || !$request->filled('starts_at') ? $promo->starts_at->toDateTimeString() : TunisTime::toUtcString($request->starts_at),
+                'ends_at'        => $request->filled('ends_at') ? TunisTime::toUtcString($request->ends_at) : $promo->ends_at->toDateTimeString(),
             ];
+            // Only Choose'Tounsi's own promotions can be platform-funded
+            if ($request->input('funded_by') === Promotion::FUNDED_PLATFORM && !$promo->isAdminPromotion()) {
+                throw ValidationException::withMessages(['funded_by' => 'Only admin promotions can be funded by the platform.']);
+            }
             if (Carbon::parse($v['ends_at']) <= now()) {
                 throw ValidationException::withMessages(['ends_at' => 'The end date must be in the future.']);
             }
@@ -288,6 +302,11 @@ class AdminPromotionController extends Controller
                 'starts_at'      => $v['starts_at'],
                 'ends_at'        => $v['ends_at'],
                 'flash_stock'    => $v['type'] === 'flash_sale' ? $request->input('flash_stock', $promo->flash_stock) : null,
+                'per_customer_limit' => $v['type'] === 'flash_sale'
+                    ? (int) $request->input('per_customer_limit', $promo->per_customer_limit ?? Promotion::DEFAULT_PER_CUSTOMER_LIMIT)
+                    : null,
+                // Snapshotted on each order line: a change only affects orders placed afterwards
+                'funded_by'      => $promo->isAdminPromotion() ? $request->input('funded_by', $promo->funded_by ?? Promotion::FUNDED_SELLER) : Promotion::FUNDED_SELLER,
                 'priority'       => $v['type'] === 'flash_sale' ? 10 : 5,
                 'status'         => $promo->status === 'paused' ? 'paused' : (now()->lessThan($v['starts_at']) ? 'scheduled' : 'active'),
             ]);
@@ -463,6 +482,7 @@ class AdminPromotionController extends Controller
             'source'                => $p->created_by ?? Promotion::SOURCE_SELLER,
             'created_by_admin'      => $p->createdByAdmin ? ['id' => $p->createdByAdmin->id, 'name' => $p->createdByAdmin->name] : null,
             'funded_by'             => $p->funded_by ?? 'seller',
+            'per_customer_limit'    => $p->per_customer_limit,
             'seller'                => [
                 'id'    => $p->seller_id,
                 'name'  => $shops[(int) $p->seller_id] ?? $p->seller?->name,
