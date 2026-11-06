@@ -128,9 +128,35 @@ class ProductImages
             }
         }
 
-        $product->loadMissing('images');
-        $cover = $product->images->firstWhere('is_primary', true) ?? $product->images->sortBy('order')->first();
+        $cover = self::coverOf($product);
         return $cover ? Storage::url($cover->image_path) : null;
+    }
+
+    /**
+     * The product's card / main image row: the cover (is_primary), else the first
+     * gallery image, else the first color (variant) image. Null only when the
+     * product has no image at all.
+     */
+    public static function coverOf(Product $product): ?ProductImage
+    {
+        $product->loadMissing('images');
+        return self::pickCover($product->images);
+    }
+
+    /** coverOf() on an already loaded image collection. */
+    public static function pickCover($images): ?ProductImage
+    {
+        return $images->firstWhere('is_primary', true)
+            ?? $images->sortBy(fn($i) => [($i->color_option_id || $i->variant_id) ? 1 : 0, $i->order, $i->id])->first();
+    }
+
+    /** Same fallback as coverOf() as an SQL expression, for query-builder card lists ($alias = products alias). */
+    public static function coverSql(string $alias = 'p'): string
+    {
+        return "COALESCE("
+            . "(SELECT ci.image_path FROM product_images ci WHERE ci.product_id = {$alias}.id AND ci.is_primary = 1 ORDER BY ci.id LIMIT 1), "
+            . "(SELECT ci.image_path FROM product_images ci WHERE ci.product_id = {$alias}.id "
+            . "ORDER BY (ci.color_option_id IS NOT NULL OR ci.variant_id IS NOT NULL), ci.`order`, ci.id LIMIT 1))";
     }
 
     /** sets(), computed once per product for this request. */

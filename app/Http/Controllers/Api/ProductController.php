@@ -352,8 +352,8 @@ class ProductController extends Controller
         })->keyBy('slug');
 
         // ── Primary image URL ──────────────────────────────────────────────
-        $product->primary_image_url = $product->primaryImage
-            ? Storage::url($product->primaryImage->image_path) : null;
+        $cover = \App\Services\ProductImages::pickCover($product->images);
+        $product->primary_image_url = $cover ? Storage::url($cover->image_path) : null;
 
         $product->images->each(fn($img) => $img->url = Storage::url($img->image_path));
 
@@ -604,13 +604,10 @@ class ProductController extends Controller
                 'c.name_fr as category_name_fr','c.name_ar as category_name_ar',
                 's.name as subcategory_name','s.slug as subcategory_slug',
                 's.name_fr as subcategory_name_fr','s.name_ar as subcategory_name_ar',
-                'pi.image_path as primary_image',
+                DB::raw(\App\Services\ProductImages::coverSql('p') . ' as primary_image'),
             ])
             ->leftJoin('categories as c',     'c.id',  '=', 'p.category_id')
             ->leftJoin('subcategories as s',   's.id',  '=', 'p.subcategory_id')
-            ->leftJoin('product_images as pi', fn($join) =>
-                $join->on('pi.product_id', '=', 'p.id')->where('pi.is_primary', '=', 1)
-            )
             ->whereIn('p.id', $ids)
             ->where('p.is_approved', 1)
             ->where('p.is_active', 1)
@@ -697,7 +694,8 @@ private function safeSessionId(Request $request): ?string
 
 private function transformProductItem($p, \Illuminate\Support\Collection $colorImagesMap, array $pricing): mixed
 {
-    $p->primary_image_url  = $p->primaryImage ? Storage::url($p->primaryImage->image_path) : null;
+    // Cover, else the card's first image (first gallery / color image): never empty when the product has images
+    $p->primary_image_url  = $p->primaryImage ? Storage::url($p->primaryImage->image_path) : ($p->card_images[0] ?? null);
     // Organic listing: never labelled as an ad (paid placements come from /api/ads).
     $p->is_sponsored       = false;
     unset($p->sponsored_priority);

@@ -74,7 +74,8 @@ class ProductCardPresenter
         return $products->map(function ($p) use ($colorImages, $pricing, $cardImages) {
             $p->card_images   = $cardImages[$p->id]['card_images'] ?? [];
             $p->card_swatches = $cardImages[$p->id]['card_swatches'] ?? [];
-            $p->primary_image_url  = $p->primaryImage ? Storage::url($p->primaryImage->image_path) : null;
+            // Never empty when the product has any image (cover, else first gallery / color image)
+            $p->primary_image_url  = $p->primaryImage ? Storage::url($p->primaryImage->image_path) : ($p->card_images[0] ?? null);
             $p->is_sponsored       = false;
             unset($p->sponsored_priority);
 

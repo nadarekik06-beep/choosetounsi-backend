@@ -348,15 +348,19 @@ class Product extends Model
         return (int) $this->variants()->sum('stock');
     }
 
+    /** Cover, else first gallery image, else first color image (same order as ProductImages::coverOf). */
     public function getPrimaryImageUrlAttribute(): ?string
     {
         if ($this->relationLoaded('images')) {
-            $primary = $this->images->firstWhere('is_primary', true)
-                     ?? $this->images->sortBy('order')->first();
-            return $primary ? Storage::url($primary->image_path) : null;
+            $cover = \App\Services\ProductImages::pickCover($this->images);
+        } else {
+            // primaryImage as before; the fallback query doesn't attach a relation (keeps API payloads unchanged)
+            $cover = $this->primaryImage ?? ($this->exists
+                ? $this->images()->reorder()
+                    ->orderByRaw('(color_option_id IS NOT NULL OR variant_id IS NOT NULL)')->orderBy('order')->orderBy('id')->first()
+                : null);
         }
-        $primary = $this->primaryImage;
-        return $primary ? Storage::url($primary->image_path) : null;
+        return $cover ? Storage::url($cover->image_path) : null;
     }
 
     // ── Other Helpers ──────────────────────────────────────────────────────────
@@ -401,8 +405,7 @@ class Product extends Model
 
     public function getPrimaryImageUrl(): ?string
     {
-        $primary = $this->primaryImage;
-        return $primary ? Storage::url($primary->image_path) : null;
+        return $this->primary_image_url;
     }
 
     public function incrementViews(): void { $this->increment('views'); }

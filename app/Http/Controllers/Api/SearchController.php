@@ -248,13 +248,10 @@ class SearchController extends Controller
                 'c.name_fr as category_name_fr', 'c.name_ar as category_name_ar',
                 'sub.name as subcategory_name', 'sub.slug as subcategory_slug',
                 'sub.name_fr as subcategory_name_fr', 'sub.name_ar as subcategory_name_ar',
-                'pi.image_path as primary_image',
+                DB::raw(\App\Services\ProductImages::coverSql('p') . ' as primary_image'),
             ])
             ->leftJoin('categories as c',     'c.id',   '=', 'p.category_id')
             ->leftJoin('subcategories as sub', 'sub.id', '=', 'p.subcategory_id')
-            ->leftJoin('product_images as pi', function ($join) {
-                $join->on('pi.product_id', '=', 'p.id')->where('pi.is_primary', '=', 1);
-            })
             ->whereIn('p.id', $productIds)
             ->where('p.is_approved', 1)->where('p.is_active', 1)->whereNull('p.deleted_at')
             ->get();
