@@ -7,9 +7,10 @@ use App\Http\Controllers\Controller;
 use App\Models\Order;
 use App\Models\SellerApplication;
 use App\Models\SellerOrder;
+use App\Services\Orders\GuestOrderAccess;
+use App\Services\Orders\GuestOrderClaimer;
 use App\Services\Payments\ManualPaymentSettings;
 use App\Support\GuestCheckout;
-use App\Support\TunisianPhone;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 
@@ -18,11 +19,17 @@ use Illuminate\Support\Facades\Storage;
  *
  *   GET  /api/orders/track/{token}   the link from the confirmation page / e-mail
  *   POST /api/orders/track           order number + phone (lost link) → the same payload
+ *                                    + a new token for this device
+ *   POST /api/orders/track/all       order number + phone → every guest order of that
+ *                                    phone (never by phone alone), each with a token
+ *
+ * Tokens are stored hashed only (GuestOrderAccess); wrong number / phone pairs
+ * are limited per IP and per order number, always with one generic message.
  *
  * Shows what the buyer needs and nothing more: items, each parcel's shop and
- * status, delivery status, totals, the city and a masked phone. No street,
- * no e-mail, no full phone. Account orders are never shown here (they live
- * under /orders, behind the login).
+ * status, delivery status, totals, the city, a masked street and a masked
+ * phone. No e-mail, no full phone. Account orders are never shown here (they
+ * live under /orders, behind the login).
  */
 class OrderTrackingController extends Controller
 {
@@ -41,9 +48,11 @@ class OrderTrackingController extends Controller
         'refunded'           => 'refunded',
     ];
 
+    public function __construct(private GuestOrderAccess $access) {}
+
     public function show(string $token)
     {
-        $order = Order::where('tracking_token', $token)->where('is_guest', true)->first();
+        $order = $this->access->resolve($token);
         if (!$order) {
             return $this->notFound();
         }
@@ -57,26 +66,71 @@ class OrderTrackingController extends Controller
             'phone'        => 'required|string|max:30',
         ]);
 
-        $phone  = TunisianPhone::normalize((string) $request->phone);
-        $number = strtoupper(trim((string) $request->order_number));
-
-        $order = TunisianPhone::isValid($phone)
-            ? Order::where('order_number', $number)->where('is_guest', true)
-                ->where(fn ($q) => $q->where('guest_phone', $phone)->orWhere('phone', $phone))
-                ->first()
-            : null;
-
-        if (!$order || !$order->tracking_token) {
+        [$order, $limited] = $this->access->match($request, (string) $request->order_number, (string) $request->phone);
+        if ($limited) {
+            return $this->tooMany();
+        }
+        if (!$order) {
             return $this->notFound();
         }
 
-        return response()->json(['success' => true, 'data' => $this->payload($order) + ['tracking_token' => $order->tracking_token]]);
+        $token = $this->access->issue($order, 'lookup');
+        return response()->json(['success' => true, 'data' => $this->payload($order) + ['tracking_token' => $token]]);
+    }
+
+    /**
+     * POST /api/orders/track/all — "find all my orders": proven by ONE order
+     * number + its phone, then every guest order of that phone not added to an
+     * account, newest first, each with a token for this device.
+     */
+    public function all(Request $request)
+    {
+        $request->validate([
+            'order_number' => 'required|string|max:40',
+            'phone'        => 'required|string|max:30',
+        ]);
+
+        [$order, $limited] = $this->access->match($request, (string) $request->order_number, (string) $request->phone);
+        if ($limited) {
+            return $this->tooMany();
+        }
+        if (!$order) {
+            return $this->notFound();
+        }
+
+        $orders = $this->access->ordersOfPhone((string) ($order->guest_phone ?: $order->phone));
+        if (!$orders->contains('id', $order->id)) {
+            $orders->prepend($order);
+        }
+
+        return response()->json(['success' => true, 'data' => $orders->map(fn (Order $o) => $this->summary($o) + [
+            'tracking_token' => $this->access->issue($o, 'lookup'),
+        ])->values()]);
+    }
+
+    /**
+     * POST /api/orders/guest/claimable (signed in) {tokens: [...]}: which guest
+     * orders saved on this device were placed with this account's phone / e-mail.
+     */
+    public function claimable(Request $request, GuestOrderClaimer $claimer)
+    {
+        return response()->json(['success' => true, 'data' => $claimer->claimable($request->user(), $this->tokensFrom($request))
+            ->map(fn (Order $o) => $this->summary($o))->values()]);
+    }
+
+    /**
+     * POST /api/orders/guest/claim (signed in) {tokens: [...]}: add them to my
+     * account — on the buyer's request only, and only orders with my phone / e-mail.
+     */
+    public function claimMany(Request $request, GuestOrderClaimer $claimer)
+    {
+        return response()->json(['success' => true, 'claimed' => $claimer->claimTokens($request->user(), $this->tokensFrom($request))]);
     }
 
     /** POST /api/orders/track/{token}/claim (signed in): add this guest order to my account. */
     public function claim(Request $request, string $token)
     {
-        $order = Order::where('tracking_token', $token)->where('is_guest', true)->first();
+        $order = $this->access->resolve($token);
         if (!$order) {
             return $this->notFound();
         }
@@ -131,13 +185,42 @@ class OrderTrackingController extends Controller
             'recipient'      => $this->firstName($order->recipient_name ?: $order->guest_name),
             'phone_masked'   => GuestCheckout::maskPhone($order->phone),
             'city'           => $order->city_name ?: $order->wilaya,
+            'address_masked' => GuestCheckout::maskAddress($order),
             'parcels'        => $parcels,
             // Returns for guests (v1): WhatsApp with the order number, once something was delivered
             // Signed-in viewers: whether "Add to my account" applies (claimed or not)
             'claimed'            => $order->user_id !== null,
             'can_request_return' => $delivered,
+            // Guest returns: /api/guest/complaints, same form and rules as accounts.
+            // WhatsApp stays as a help link.
+            'returns_count'      => \App\Models\Complaint::where('order_id', $order->id)->count(),
             'whatsapp'           => $delivered ? (app(ManualPaymentSettings::class)->whatsappDigits() ?: null) : null,
         ];
+    }
+
+    /** One line per order in "my orders on this phone". */
+    private function summary(Order $order): array
+    {
+        return [
+            'order_number' => $order->order_number,
+            'placed_at'    => optional($order->created_at)->toIso8601String(),
+            'status'       => $order->display_status,
+            'total'        => round((float) $order->total_amount, 3),
+            'items_count'  => (int) $order->items()->sum('quantity'),
+            'claimed'      => $order->user_id !== null,
+        ];
+    }
+
+    /** @return string[] */
+    private function tokensFrom(Request $request): array
+    {
+        $request->validate(['tokens' => 'required|array|max:50', 'tokens.*' => 'string|max:64']);
+        return array_values(array_filter($request->input('tokens', []), 'is_string'));
+    }
+
+    private function tooMany()
+    {
+        return response()->json(['success' => false, 'code' => 'rate_limited', 'message' => __('messages.guest.too_many_lookups')], 429);
     }
 
     /** seller_id → shop name ("ChooseTounsi" for the platform's own products). */

@@ -214,6 +214,48 @@ class Complaint extends Model
     public function events() { return $this->hasMany(ComplaintEvent::class)->orderBy('id'); }
     public function costs()  { return $this->hasMany(ComplaintCost::class); }
 
+    /** Asked without an account (guest checkout): no user, the order identifies the buyer. */
+    public function isGuest(): bool
+    {
+        return $this->user_id === null;
+    }
+
+    /**
+     * Who asked, for the seller and admin screens: the account, or the guest's
+     * name and phone from the order ("Guest" badge). The guest's e-mail only
+     * for admins (sellers never see buyer e-mails of guests).
+     *
+     * @return array{is_guest: bool, name: ?string, phone: ?string, email: ?string}
+     */
+    public function buyerInfo(bool $withGuestEmail = false): array
+    {
+        $order = $this->order;
+        return [
+            'is_guest' => $this->isGuest(),
+            'name'     => $this->user?->name ?? $order?->guest_name ?? $order?->recipient_name,
+            'phone'    => $order ? ($order->guest_phone ?: $order->phone) : null,
+            'email'    => $this->user?->email ?? ($withGuestEmail ? $order?->guest_email : null),
+        ];
+    }
+
+    /** Order columns buyerInfo() reads (for with('order:…')). */
+    public const BUYER_ORDER_COLUMNS = 'is_guest,guest_name,guest_phone,phone,recipient_name';
+
+    /**
+     * Sets `buyer` (buyerInfo) on each complaint — staff list / detail payloads.
+     *
+     * @param  self|iterable<self>|\Illuminate\Pagination\AbstractPaginator $complaints
+     */
+    public static function withBuyer($complaints, bool $withGuestEmail = false)
+    {
+        $list = $complaints instanceof self ? [$complaints]
+            : ($complaints instanceof \Illuminate\Pagination\AbstractPaginator ? $complaints->getCollection() : $complaints);
+        foreach ($list as $c) {
+            $c->setAttribute('buyer', $c->buyerInfo($withGuestEmail));
+        }
+        return $complaints;
+    }
+
     public function refundTask()
     {
         return $this->hasOne(RefundDeliveryTask::class, 'complaint_id');

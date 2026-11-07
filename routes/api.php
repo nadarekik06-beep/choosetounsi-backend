@@ -224,6 +224,20 @@ Route::get('/orders/track/{token}', [\App\Http\Controllers\Api\Client\OrderTrack
     ->where('token', '[A-Za-z0-9]{32,64}')->middleware('throttle:60,1');
 Route::post('/orders/track', [\App\Http\Controllers\Api\Client\OrderTrackingController::class, 'lookup'])
     ->middleware('throttle:guest-order-lookup');
+// "Find all my orders": one order number + its phone → every guest order of that phone
+Route::post('/orders/track/all', [\App\Http\Controllers\Api\Client\OrderTrackingController::class, 'all'])
+    ->middleware('throttle:guest-order-lookup');
+
+// Guest returns / exchanges: X-Order-Token opens ONE guest order (never by id alone).
+// Same controller logic as /client/complaints (GuestComplaintController extends it).
+Route::prefix('guest')->middleware(['throttle:60,1', 'guest.order'])->group(function () {
+    Route::get('/complaints/eligible-orders', [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'eligibleOrders']);
+    Route::get('/complaints',                 [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'index']);
+    Route::post('/complaints',                [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'store'])->middleware('throttle:guest-complaint');
+    Route::get('/complaints/{id}',            [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'show'])->whereNumber('id');
+    Route::patch('/complaints/{id}/escalate', [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'escalate'])->whereNumber('id');
+    Route::patch('/complaints/{id}/cancel',   [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'cancel'])->whereNumber('id');
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -276,6 +290,9 @@ Route::middleware('auth:sanctum')->group(function () {
     // A guest order placed with this account's e-mail / phone: added on the buyer's request (tracking link = proof)
     Route::post('/orders/track/{token}/claim', [\App\Http\Controllers\Api\Client\OrderTrackingController::class, 'claim'])
         ->where('token', '[A-Za-z0-9]{32,64}')->middleware('throttle:10,1');
+    // Guest orders saved on this device with my phone / e-mail: listed, then added on request
+    Route::post('/orders/guest/claimable', [\App\Http\Controllers\Api\Client\OrderTrackingController::class, 'claimable'])->middleware('throttle:20,1');
+    Route::post('/orders/guest/claim',     [\App\Http\Controllers\Api\Client\OrderTrackingController::class, 'claimMany'])->middleware('throttle:10,1');
 
     Route::prefix('favorites')->group(function () {
         Route::get('/',                  [FavoriteController::class, 'index'])->middleware('store.cards');

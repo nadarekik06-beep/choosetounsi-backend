@@ -71,6 +71,10 @@ class ComplaintNotification extends BuyerNotification
     /** The order's return tracking (storefront). */
     protected function link(): ?string
     {
+        // Guest return (no account): the order's public tracking page
+        if (!$this->complaint->user_id) {
+            return $this->complaint->order?->trackingPath() ?? '/track-order';
+        }
         return '/complaints?id=' . $this->complaint->id;
     }
 

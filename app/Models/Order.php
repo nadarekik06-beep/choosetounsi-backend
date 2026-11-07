@@ -68,6 +68,12 @@ class Order extends Model
     protected $appends = ['display_status'];
 
     /**
+     * Guest order: the device token issued in this request (GuestOrderAccess::issue).
+     * A plain PHP property, never saved — only its hash is stored.
+     */
+    public ?string $plainAccessToken = null;
+
+    /**
      * Status to show: a fully returned order is 'refunded' ("Returned
      * (Refunded)"); a partial return keeps the sale status (so revenue still
      * counts the kept items) and shows as 'partially_returned'.
@@ -166,10 +172,17 @@ public function complaints()
         return $this->user?->name ?: ($this->guest_name ?: $this->recipient_name);
     }
 
-    /** Public tracking page of a guest order (storefront path), null for account orders. */
+    /**
+     * Public tracking page of a guest order (storefront path), null for account orders:
+     * the direct link while the token is known (just issued, or a pre-hash order),
+     * else the lookup page with the order number filled in (the buyer types the phone).
+     */
     public function trackingPath(): ?string
     {
-        return $this->tracking_token ? '/order/track/' . $this->tracking_token : null;
+        if ($token = $this->plainAccessToken ?: $this->tracking_token) {
+            return '/order/track/' . $token;
+        }
+        return $this->is_guest ? '/track-order?order=' . rawurlencode((string) $this->order_number) : null;
     }
 
     /** "12 rue X, El Menzah, 1004 Tunis" — one line, empty parts skipped. */

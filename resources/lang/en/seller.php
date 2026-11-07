@@ -410,6 +410,7 @@ return [
             ],
         ],
         'complaint_created' => [
+            'guest' => 'guest, no account',
             'title' => 'New Complaint Filed',
             'body' => 'From :client — :type',
             'message' => 'New complaint from :client — :type',

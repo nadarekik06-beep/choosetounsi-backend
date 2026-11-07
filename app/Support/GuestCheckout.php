@@ -42,10 +42,19 @@ class GuestCheckout
         return preg_match(self::TOKEN_REGEX, $token) ? $token : null;
     }
 
-    /** Random token for the public tracking link (/order/track/{token}). */
-    public static function newTrackingToken(): string
+
+    /**
+     * "12 rue de la Liberté, El Mourouj, Ben Arous" → "12 r•••, El Mourouj, Ben Arous":
+     * the area in full, the street cut after 4 characters — the buyer recognises
+     * it, a stranger holding the link learns no exact address.
+     */
+    public static function maskAddress(\App\Models\Order $order): ?string
     {
-        return Str::random(40);
+        $street = trim((string) $order->address);
+        $street = $street === '' ? null
+            : (mb_strlen($street) <= 4 ? '•••' : rtrim(mb_substr($street, 0, 4)) . '•••');
+        $parts = array_filter([$street, $order->district_name ?: $order->delegation, $order->city_name ?: $order->wilaya], 'filled');
+        return $parts ? implode(', ', array_unique($parts)) : null;
     }
 
     /** "+216 98 123 456" → "** *** 456": enough for the buyer to recognise it. */

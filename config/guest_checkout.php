@@ -26,6 +26,12 @@ return [
     // Public order tracking lookups (by order number + phone), per IP
     'lookups_per_ip_per_hour' => (int) env('GUEST_CHECKOUT_LOOKUPS_PER_IP_PER_HOUR', 20),
 
+    // …and WRONG order number / phone pairs: at most N per IP and per order
+    // number every M minutes (right answers never count).
+    'lookup_failures_per_ip'    => (int) env('GUEST_LOOKUP_FAILURES_PER_IP', 5),
+    'lookup_failures_per_order' => (int) env('GUEST_LOOKUP_FAILURES_PER_ORDER', 5),
+    'lookup_decay_minutes'      => (int) env('GUEST_LOOKUP_DECAY_MINUTES', 10),
+
     // Guest carts nobody touched for this many days are deleted (daily job)
     'cart_ttl_days' => (int) env('GUEST_CART_TTL_DAYS', 30),
 ];

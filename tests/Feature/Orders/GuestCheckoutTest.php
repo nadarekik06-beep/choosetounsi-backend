@@ -173,7 +173,11 @@ class GuestCheckoutTest extends TestCase
         $res = $this->placedGuestOrder(['email' => 'Amel.Guest@Example.com', 'notes' => 'Près de la mosquée']);
 
         $this->assertTrue($res['is_guest']);
-        $this->assertSame(40, strlen($res['tracking_token']));
+        $this->assertSame(64, strlen($res['tracking_token']));
+        // Only the token's hash is stored
+        $this->assertNull(Order::find($res['order_id'])->tracking_token);
+        $this->assertTrue(DB::table('guest_order_tokens')->where('order_id', $res['order_id'])
+            ->where('token_hash', hash('sha256', $res['tracking_token']))->exists());
         $this->assertEquals(108.0, $res['total']); // 2 × 50 + 8 delivery
         $order = Order::find($res['order_id']);
         $this->assertNull($order->user_id);
@@ -394,9 +398,14 @@ class GuestCheckoutTest extends TestCase
             $this->assertStringNotContainsString($private, $json, "tracking page leaks {$private}");
         }
 
-        // Lost link: order number + phone (any format) → same order + the token
-        $this->postJson('/api/orders/track', ['order_number' => strtolower($order->order_number), 'phone' => '+216 22-333-444'])
-            ->assertOk()->assertJsonPath('data.tracking_token', $res['tracking_token']);
+        // Lost link: order number + phone (any format) → same order + a token for this device
+        $deviceToken = $this->postJson('/api/orders/track', ['order_number' => strtolower($order->order_number), 'phone' => '+216 22-333-444'])
+            ->assertOk()->assertJsonPath('data.order_number', $order->order_number)->json('data.tracking_token');
+        $this->assertSame(64, strlen($deviceToken));
+        $this->assertNotSame($res['tracking_token'], $deviceToken);
+        // Both open the order (the checkout link keeps working)
+        $this->getJson("/api/orders/track/{$deviceToken}")->assertOk();
+        $this->getJson("/api/orders/track/{$res['tracking_token']}")->assertOk();
         $this->postJson('/api/orders/track', ['order_number' => $order->order_number, 'phone' => '22999999'])->assertStatus(404);
         $this->getJson('/api/orders/track/' . Str::random(40))->assertStatus(404);
 
@@ -443,7 +452,9 @@ class GuestCheckoutTest extends TestCase
         $this->assertNull($show['user']);
         $this->assertSame('Amel Guest', $show['guest_name']);
         $this->assertSame('g@example.com', $show['guest_email']);
-        $this->assertStringContainsString('/order/track/' . $res['tracking_token'], $show['tracking_url']);
+        // Tokens are stored hashed: the admin gets the lookup page with the order number filled in
+        $this->assertStringContainsString('/track-order?order=' . Order::find($orderId)->order_number, $show['tracking_url']);
+        $this->assertStringNotContainsString($res['tracking_token'], json_encode($show));
         $this->assertNotNull($show['seller_orders'][0]['whatsapp']);
         $wa = app(SellerReminderPayload::class)->forParcel($this->so($so));
         $this->assertNotNull($wa);
@@ -472,7 +483,8 @@ class GuestCheckoutTest extends TestCase
     {
         $seller = $this->seller();
         $this->guestAdd($this->product($seller, 40));
-        $guestOrder = $this->placedGuestOrder(['email' => 'secret@example.com'])['order_id'];
+        $placed     = $this->placedGuestOrder(['email' => 'secret@example.com']);
+        $guestOrder = $placed['order_id'];
         $this->addToCart($this->product($seller, 30));
         $accountOrder = $this->checkout()['order_id'];
 
@@ -494,7 +506,7 @@ class GuestCheckoutTest extends TestCase
         $detail = $this->as($seller)->getJson("/api/seller/orders/{$so->id}")->assertOk();
         $this->assertSame('Amel Guest', $detail->json('data.order.customer.name'));
         $this->assertStringNotContainsString('secret@example.com', $detail->getContent());
-        $this->assertStringNotContainsString((string) Order::find($guestOrder)->tracking_token, $detail->getContent());
+        $this->assertStringNotContainsString($placed['tracking_token'], $detail->getContent());
         $drawer = $this->as($seller)->getJson("/api/seller/earnings/orders/{$so->id}/details")->assertOk();
         $this->assertSame('Amel Guest', $drawer->json('data.customer.name'));
     }

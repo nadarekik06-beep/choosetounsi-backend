@@ -48,7 +48,7 @@ class SellerComplaintController extends Controller
     public function index(Request $request)
     {
         $query = Complaint::forSeller($request->user()->id)
-            ->with(['user:id,name,email', 'order:id,order_number,total_amount,status,return_status']);
+            ->with(['user:id,name,email', 'order:id,order_number,total_amount,status,return_status,' . Complaint::BUYER_ORDER_COLUMNS]);
 
         if ($request->filled('status'))    $query->whereIn('status', explode(',', $request->status));
         if ($request->filled('from_date')) $query->whereDate('created_at', '>=', $request->from_date);
@@ -56,6 +56,7 @@ class SellerComplaintController extends Controller
 
         $complaints = $query->orderByDesc('created_at')->paginate((int) $request->query('per_page', 12));
         Complaint::withItemSnapshots($complaints);
+        Complaint::withBuyer($complaints);
 
         return response()->json(['success' => true, 'data' => $complaints]);
     }
@@ -63,10 +64,11 @@ class SellerComplaintController extends Controller
     public function show(Request $request, $id)
     {
         $complaint = Complaint::forSeller($request->user()->id)
-            ->with(['user:id,name,email', 'order:id,order_number,total_amount,status,return_status,created_at,wilaya,address,phone', 'refundTask'])
+            ->with(['user:id,name,email', 'order:id,order_number,total_amount,status,return_status,created_at,wilaya,address,' . Complaint::BUYER_ORDER_COLUMNS, 'refundTask'])
             ->findOrFail($id);
 
         Complaint::withItemSnapshots($complaint);
+        Complaint::withBuyer($complaint);
 
         return response()->json(['success' => true, 'data' => ReturnPresenter::forStaff($complaint)]);
     }
@@ -84,9 +86,7 @@ class SellerComplaintController extends Controller
         $this->returns->event($complaint, 'seller_note', $request->user(), 'seller', $request->seller_note);
 
         // Client: "the shop answered, your request is being examined"
-        app(\App\Services\Notifications\BuyerNotifier::class)->send(
-            $complaint->user, new \App\Notifications\Buyer\ComplaintNotification($complaint->fresh(), 'seller_replied')
-        );
+        $this->returns->notifyBuyer($complaint, 'seller_replied');
 
         return response()->json(['success' => true, 'message' => __('seller.complaint.note_submitted'), 'data' => $complaint->fresh()]);
     }

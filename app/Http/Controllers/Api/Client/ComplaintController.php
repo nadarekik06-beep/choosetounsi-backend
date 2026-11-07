@@ -9,6 +9,8 @@ use App\Models\OrderItem;
 use App\Http\Resources\Buyer\BuyerComplaintResource;
 use App\Services\Returns\ReturnPresenter;
 use App\Services\Returns\ReturnService;
+use App\Models\User;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 
 /**
@@ -21,6 +23,10 @@ use Illuminate\Http\Request;
  *   POST  /api/client/complaints                   request a return (whole order or items × qty)
  *   PATCH /api/client/complaints/{id}/escalate     contest the shop's refusal
  *   PATCH /api/client/complaints/{id}/cancel       withdraw a request the shop hasn't answered
+ *
+ * Who "my" means is in ownedOrders() / ownedComplaints() / client(): the signed-in
+ * account here; GuestComplaintController overrides them for a guest's one order,
+ * so both paths share every rule below (window, quantities, exchange, photos, fees).
  */
 class ComplaintController extends Controller
 {
@@ -32,10 +38,9 @@ class ComplaintController extends Controller
 
     public function eligibleOrders(Request $request)
     {
-        $user        = $request->user();
         $windowHours = Complaint::COMPLAINT_WINDOW_HOURS;
 
-        $orders = $this->eligibleQuery($user->id)
+        $orders = $this->eligibleQuery($this->ownedOrders($request))
             ->with([
                 'sellerOrders',
                 // Each line as bought: its snapshot, else its own variant's image
@@ -87,7 +92,7 @@ class ComplaintController extends Controller
 
     public function index(Request $request)
     {
-        $complaints = Complaint::where('user_id', $request->user()->id)
+        $complaints = $this->ownedComplaints($request)
             ->when($request->filled('order_id'), fn($q) => $q->where('order_id', (int) $request->order_id))
             ->with(['order:id,order_number,total_amount,status,return_status,payment_method', 'events'])
             ->orderByDesc('created_at')
@@ -105,7 +110,7 @@ class ComplaintController extends Controller
 
     public function show(Request $request, $id)
     {
-        $complaint = Complaint::where('user_id', $request->user()->id)
+        $complaint = $this->ownedComplaints($request)
             ->with(['order:id,order_number,total_amount,status,return_status,payment_method,created_at', 'events'])
             ->findOrFail($id);
 
@@ -120,8 +125,6 @@ class ComplaintController extends Controller
 
     public function store(Request $request)
     {
-        $user = $request->user();
-
         $validated = $request->validate([
             'order_id'           => 'required|integer|exists:orders,id',
             'complaint_type'     => 'required|string|in:' . implode(',', array_keys(Complaint::COMPLAINT_TYPES)),
@@ -145,11 +148,11 @@ class ComplaintController extends Controller
             'items.required_without_all' => __('messages.complaint.nothing_selected'),
         ]);
 
-        $order = Order::where('id', $validated['order_id'])->where('user_id', $user->id)->with('sellerOrders')->first();
+        $order = $this->ownedOrders($request)->where('id', $validated['order_id'])->with('sellerOrders')->first();
         if (!$order) {
             return response()->json(['success' => false, 'message' => __('messages.complaint.order_not_found')], 404);
         }
-        if (!$this->eligibleQuery($user->id)->whereKey($order->id)->exists()) {
+        if (!$this->eligibleQuery($this->ownedOrders($request))->whereKey($order->id)->exists()) {
             $delivered = $order->status === 'delivered' || $order->sellerOrders->contains('status', 'delivered');
             return response()->json([
                 'success' => false,
@@ -199,7 +202,7 @@ class ComplaintController extends Controller
         }
 
         $images = $request->file('images') ?: array_filter([$request->file('image')]);
-        $complaints = $this->returns->create($user, $order, $quantities, $validated, array_values($images));
+        $complaints = $this->returns->create($this->client($request), $order, $quantities, $validated, array_values($images));
 
         $first = $complaints->first()->load('order:id,order_number');
         Complaint::withItemSnapshots($complaints);
@@ -219,9 +222,9 @@ class ComplaintController extends Controller
     public function escalate(Request $request, $id)
     {
         $request->validate(['note' => 'nullable|string|max:1000']);
-        $complaint = Complaint::where('user_id', $request->user()->id)->findOrFail($id);
+        $complaint = $this->ownedComplaints($request)->findOrFail($id);
 
-        $c = $this->returns->escalate($complaint, $request->user(), $request->note);
+        $c = $this->returns->escalate($complaint, $this->client($request), $request->note);
 
         return response()->json(['success' => true, 'message' => __('messages.complaint.escalated'), 'data' => $this->present($c, $request)]);
     }
@@ -232,16 +235,35 @@ class ComplaintController extends Controller
 
     public function cancel(Request $request, $id)
     {
-        $complaint = Complaint::where('user_id', $request->user()->id)->findOrFail($id);
+        $complaint = $this->ownedComplaints($request)->findOrFail($id);
 
-        $c = $this->returns->clientCancel($complaint, $request->user());
+        $c = $this->returns->clientCancel($complaint, $this->client($request));
 
         return response()->json(['success' => true, 'message' => __('messages.complaint.cancelled'), 'data' => $this->present($c, $request)]);
     }
 
+    // ── Whose orders / returns ───────────────────────────────────────────
+
+    /** Orders this client may request a return on. */
+    protected function ownedOrders(Request $request): Builder
+    {
+        return Order::where('user_id', $request->user()->id);
+    }
+
+    /** Returns this client may see and act on. */
+    protected function ownedComplaints(Request $request): Builder
+    {
+        return Complaint::where('user_id', $request->user()->id);
+    }
+
+    /** The account asking (null for a guest). */
+    protected function client(Request $request): ?User
+    {
+        return $request->user();
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────
 
-    /** Delivered (whole order, or at least one sub-order) within the return window. */
     /** The buyer's view of a return (allow-list), as on GET /client/complaints/{id}. */
     private function present(Complaint $c, Request $request): array
     {
@@ -280,11 +302,12 @@ class ComplaintController extends Controller
         return ['exchange_options' => $options, 'exchange_same_product' => false, 'exchange_other_price' => $otherPrice];
     }
 
-    private function eligibleQuery(int $userId)
+    /** Delivered (whole order, or at least one sub-order) within the return window. */
+    private function eligibleQuery(Builder $orders)
     {
         $hours = Complaint::COMPLAINT_WINDOW_HOURS;
 
-        return Order::where('user_id', $userId)
+        return $orders
             ->where(function ($q) use ($hours) {
                 $q->where(fn($a) => $a->where('status', 'delivered')->where('updated_at', '>=', now()->subHours($hours)))
                   ->orWhere(fn($b) => $b->whereHas('sellerOrders', fn($so) => $so->where('status', 'delivered'))

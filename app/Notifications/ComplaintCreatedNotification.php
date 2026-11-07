@@ -28,13 +28,29 @@ class ComplaintCreatedNotification extends Notification
     /** @var Complaint */
     private $complaint;
 
-    /** @var User */
-    private $client;
+    /** @var string name shown to the seller / admin ("Guest" suffix for guest returns) */
+    private $clientName;
 
-    public function __construct(Complaint $complaint, User $client)
+    /** @var string|null account e-mail, or the guest's phone (admins only) */
+    private $clientContact;
+
+    /** @var string|null */
+    private $clientEmail;
+
+    /** $client null: a guest's return (no account) — name and phone come from the order. */
+    public function __construct(Complaint $complaint, ?User $client = null)
     {
         $this->complaint = $complaint;
-        $this->client    = $client;
+        if ($client) {
+            $this->clientName    = (string) $client->name;
+            $this->clientEmail   = $client->email;
+            $this->clientContact = $client->email;
+        } else {
+            $buyer = $complaint->loadMissing('order')->buyerInfo();
+            $this->clientName    = trim(($buyer['name'] ?: '—') . ' (' . __('seller.notif.complaint_created.guest') . ')');
+            $this->clientEmail   = null;
+            $this->clientContact = $buyer['phone'];
+        }
     }
 
     public function via($notifiable): array
@@ -52,7 +68,7 @@ class ComplaintCreatedNotification extends Notification
         return [
             // ── Fields read by NotificationBell.tsx ──────────────────────
             'title'  => __('seller.notif.complaint_created.title'),
-            'body'   => __('seller.notif.complaint_created.body', ['client' => $this->client->name, 'type' => $typeLabel]),
+            'body'   => __('seller.notif.complaint_created.body', ['client' => $this->clientName, 'type' => $typeLabel]),
             'icon'   => 'x-circle',
             'action' => 'created',
             'link'   => $isAdmin
@@ -62,12 +78,13 @@ class ComplaintCreatedNotification extends Notification
             'type'           => 'complaint_created',
             'complaint_id'   => $this->complaint->id,
             'order_id'       => $this->complaint->order_id,
-            'client_name'    => $this->client->name,
-            'client_email'   => $this->client->email,
+            'client_name'    => $this->clientName,
+            'client_email'   => $this->clientEmail,
+            'is_guest'       => $this->complaint->isGuest(),
             'complaint_type' => $this->complaint->complaint_type,
             'type_label'     => $typeLabel,
             'status'         => $this->complaint->status,
-            'message'        => __('seller.notif.complaint_created.message', ['client' => $this->client->name, 'type' => $typeLabel]),
+            'message'        => __('seller.notif.complaint_created.message', ['client' => $this->clientName, 'type' => $typeLabel]),
             'created_at'     => now()->format('Y-m-d\TH:i:s\Z'),
         ];
     }
@@ -88,7 +105,7 @@ class ComplaintCreatedNotification extends Notification
             ->greeting(__('seller.notif.complaint_created.greeting', ['name' => $notifiable->name]))
             ->line(
                 $isAdmin
-                    ? __('seller.notif.complaint_created.line_admin', ['client' => $this->client->name, 'email' => $this->client->email])
+                    ? __('seller.notif.complaint_created.line_admin', ['client' => $this->clientName, 'email' => $this->clientContact ?? '—'])
                     : __('seller.notif.complaint_created.line_seller')
             )
             ->line(__('seller.notif.complaint_created.type', ['type' => $label]))

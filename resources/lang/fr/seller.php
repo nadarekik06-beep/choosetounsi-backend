@@ -410,6 +410,7 @@ return [
             ],
         ],
         'complaint_created' => [
+            'guest' => 'invité, sans compte',
             'title' => 'Nouvelle réclamation',
             'body' => 'De :client — :type',
             'message' => 'Nouvelle réclamation de :client — :type',

@@ -72,7 +72,7 @@ class ReturnService
      * @param  UploadedFile[]      $images     proof photos (≥ 1)
      * @return Collection<int, Complaint>
      */
-    public function create(User $client, Order $order, array $quantities, array $data, array $images): Collection
+    public function create(?User $client, Order $order, array $quantities, array $data, array $images): Collection
     {
         $lines = OrderItem::where('order_id', $order->id)
             ->whereIn('id', array_keys($quantities))
@@ -105,7 +105,7 @@ class ReturnService
         return $complaints;
     }
 
-    private function createRows(User $client, Order $order, array $quantities, array $data, array $paths, Collection $lines): Collection
+    private function createRows(?User $client, Order $order, array $quantities, array $data, array $paths, Collection $lines): Collection
     {
         return DB::transaction(function () use ($client, $order, $quantities, $data, $paths, $lines) {
             $allLines = OrderItem::where('order_id', $order->id)->lockForUpdate()->get();
@@ -130,7 +130,8 @@ class ReturnService
                 $settings = app(\App\Services\Delivery\DeliverySettings::class);
 
                 $complaint = Complaint::create([
-                    'user_id'         => $client->id,
+                    // Guest (no account): the order's account if it was added to one since, else none
+                    'user_id'         => $client?->id ?? $order->user_id,
                     'order_id'        => $order->id,
                     'seller_id'       => $sellerId,
                     'order_item_ids'  => $group->pluck('id')->map(fn($v) => (int) $v)->values()->all(),
@@ -223,7 +224,7 @@ class ReturnService
         return $c;
     }
 
-    public function escalate(Complaint $complaint, User $client, ?string $note): Complaint
+    public function escalate(Complaint $complaint, ?User $client, ?string $note): Complaint
     {
         if (!$complaint->canEscalate()) {
             throw new ReturnException(__('messages.complaint.cannot_escalate'));
@@ -237,7 +238,7 @@ class ReturnService
         return $c;
     }
 
-    public function clientCancel(Complaint $complaint, User $client): Complaint
+    public function clientCancel(Complaint $complaint, ?User $client): Complaint
     {
         if ($complaint->status !== Complaint::STATUS_REQUESTED) {
             throw new ReturnException(__('messages.complaint.cannot_cancel'));
@@ -799,12 +800,14 @@ class ReturnService
     /** Refund methods offered for the order's payment method (first = default). */
     public function refundMethodsFor(Order $order): array
     {
-        return match ($order->payment_method ?? 'cod') {
+        $methods = match ($order->payment_method ?? 'cod') {
             'card'   => ['original', 'wallet'],
             'wallet' => ['wallet'],
             'd17'    => ['d17', 'wallet', 'bank_transfer'],
             default  => ['cash'],   // paid back by the courier at pick-up
         };
+        // Guest order (no account): there is no wallet to credit
+        return $order->user_id ? $methods : (array_values(array_diff($methods, ['wallet'])) ?: ['bank_transfer']);
     }
 
     public function refund(Complaint $complaint, User $admin, string $method, ?string $reference, ?string $note): Complaint
@@ -1232,8 +1235,29 @@ class ReturnService
 
     private function buyer(Complaint $complaint, string $event): void
     {
+        $this->notifyBuyer($complaint, $event);
+    }
+
+    /**
+     * The client hears about their return: the account (bell + e-mail, per its
+     * preferences) or, for a guest, an e-mail only if one was given at checkout.
+     * Guests without e-mail follow it on their tracking page.
+     */
+    public function notifyBuyer(Complaint $complaint, string $event): void
+    {
         $complaint->loadMissing('user');
-        app(BuyerNotifier::class)->send($complaint->user, new ComplaintNotification($complaint->fresh(), $event));
+        if ($complaint->user) {
+            app(BuyerNotifier::class)->send($complaint->user, new ComplaintNotification($complaint->fresh(), $event));
+            return;
+        }
+        try {
+            $email = $complaint->order()->value('guest_email');
+            if ($email) {
+                Notification::route('mail', $email)->notify((new ComplaintNotification($complaint->fresh(), $event))->locale(app()->getLocale()));
+            }
+        } catch (\Throwable $e) {
+            Log::error("[Return] guest notification {$event} failed: " . $e->getMessage());
+        }
     }
 
     private function admin(Complaint $complaint, string $event): void

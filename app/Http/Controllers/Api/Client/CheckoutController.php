@@ -320,13 +320,12 @@ class CheckoutController extends Controller
 
         $order = Order::create([
             'user_id'             => $user?->id,
-            // Guest checkout: who to call + the public tracking link (/order/track/{token})
+            // Guest checkout: who to call (+ the device token below, stored hashed)
             ...($user ? [] : [
                 'is_guest'       => true,
                 'guest_name'     => trim((string) $request->recipient_name),
                 'guest_phone'    => $guestPhone,
                 'guest_email'    => $request->filled('email') ? strtolower(trim((string) $request->email)) : null,
-                'tracking_token' => GuestCheckout::newTrackingToken(),
             ]),
             'order_number'        => 'ORD-' . strtoupper(Str::random(8)),
             // One order per checkout confirmation (unique: a repeated key cannot create a second one).
@@ -346,6 +345,12 @@ class CheckoutController extends Controller
             // Address snapshot: later address-book edits never touch this order.
             ...ShippingAddress::columns($request),
         ]);
+
+        // Guest: the token that opens this order on this phone (/order/track/{token}).
+        // Only its hash is stored; the plain value lives on $order for the response and e-mail.
+        if (!$user) {
+            app(\App\Services\Orders\GuestOrderAccess::class)->issue($order, 'checkout');
+        }
 
         $soldLines = [];
         foreach ($quote['parcels'] as $parcel) {
@@ -643,7 +648,7 @@ class CheckoutController extends Controller
             'needs_payment'   => $paymentMethod === 'card',
         ] + ($order->is_guest ? [
             'is_guest'       => true,
-            'tracking_token' => $order->tracking_token,
+            'tracking_token' => $order->plainAccessToken ?? $order->tracking_token,
             'phone'          => $order->phone,
             'email'          => $order->guest_email,
             // An account already uses this e-mail / phone: suggest logging in (never auto-attach)

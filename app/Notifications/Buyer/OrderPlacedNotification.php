@@ -13,9 +13,16 @@ class OrderPlacedNotification extends BuyerNotification
 {
     use DescribesOrder;
 
+    /**
+     * Guest order: its tracking link, captured now — the device token is only
+     * known in the checkout request (the queued job reloads the order from the DB).
+     */
+    public ?string $guestLink = null;
+
     public function __construct(public Order $order)
     {
         parent::__construct();
+        $this->guestLink = $order->is_guest ? $order->trackingPath() : null;
     }
 
     public function category(): string { return 'orders'; }
@@ -24,7 +31,7 @@ class OrderPlacedNotification extends BuyerNotification
     protected function type(): string { return 'order_placed'; }
     protected function icon(): string { return 'shopping-bag'; }
     protected function action(): string { return 'order'; }
-    protected function link(): ?string { return $this->orderLink($this->order); }
+    protected function link(): ?string { return $this->guestLink ?? $this->orderLink($this->order); }
 
     protected function title(): string
     {

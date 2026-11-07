@@ -103,6 +103,14 @@ class RouteServiceProvider extends ServiceProvider
             return $limits;
         });
 
+        // Guest return requests: per IP and per order token (photos are uploaded each time).
+        RateLimiter::for('guest-complaint', function (Request $request) {
+            return [
+                Limit::perHour(10)->by('guest-complaint-ip:' . $request->ip()),
+                Limit::perHour(10)->by('guest-complaint-token:' . sha1((string) $request->header(\App\Services\Orders\GuestOrderAccess::HEADER))),
+            ];
+        });
+
         // Order tracking by number + phone: stops anyone trying numbers one by one.
         RateLimiter::for('guest-order-lookup', function (Request $request) {
             return Limit::perHour((int) config('guest_checkout.lookups_per_ip_per_hour', 20))

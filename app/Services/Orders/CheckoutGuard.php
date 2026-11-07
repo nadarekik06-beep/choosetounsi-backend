@@ -224,7 +224,8 @@ class CheckoutGuard
             'needs_payment'   => $order->payment_method === 'card' && $order->payment_status !== 'paid',
         ] + ($order->is_guest ? [
             'is_guest'       => true,
-            'tracking_token' => $order->tracking_token,
+            // Replayed after the cache expired: a fresh device token (only hashes are stored)
+            'tracking_token' => $order->tracking_token ?: app(GuestOrderAccess::class)->issue($order, 'checkout'),
             'phone'          => $order->phone,
             'email'          => $order->guest_email,
             'has_account'    => false,

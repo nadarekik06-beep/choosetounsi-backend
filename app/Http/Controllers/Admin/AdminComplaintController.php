@@ -73,7 +73,7 @@ class AdminComplaintController extends Controller
         $query = Complaint::with([
             'user:id,name,email',
             'seller:id,name,email',
-            'order:id,order_number,total_amount,status,return_status,payment_method',
+            'order:id,order_number,total_amount,status,return_status,payment_method,guest_email,' . Complaint::BUYER_ORDER_COLUMNS,
         ]);
 
         if ($request->filled('status'))    $query->whereIn('status', explode(',', $request->status));
@@ -92,12 +92,15 @@ class AdminComplaintController extends Controller
             $query->where(function ($q) use ($s) {
                 $q->where('reference', 'like', "%{$s}%")
                   ->orWhereHas('user',  fn($u) => $u->where('name', 'like', "%{$s}%")->orWhere('email', 'like', "%{$s}%"))
-                  ->orWhereHas('order', fn($o) => $o->where('order_number', 'like', "%{$s}%"));
+                  // Guests: name / phone / e-mail given at checkout
+                  ->orWhereHas('order', fn($o) => $o->where(fn($w) => $w->where('order_number', 'like', "%{$s}%")
+                      ->orWhere('guest_name', 'like', "%{$s}%")->orWhere('guest_phone', 'like', "%{$s}%")->orWhere('guest_email', 'like', "%{$s}%")));
             });
         }
 
         $complaints = $query->orderByDesc('created_at')->paginate((int) $request->query('per_page', 15));
         Complaint::withItemSnapshots($complaints);
+        Complaint::withBuyer($complaints, true);
 
         return response()->json(['success' => true, 'data' => $complaints]);
     }
@@ -108,12 +111,13 @@ class AdminComplaintController extends Controller
             'user:id,name,email',
             'seller:id,name,email',
             'seller.sellerApplication',
-            'order:id,order_number,total_amount,status,return_status,payment_method,payment_status,shipping_fee,created_at,updated_at,wilaya,address,phone,phone_secondary,recipient_name,delegation,postal_code,notes,user_id',
+            'order:id,order_number,total_amount,status,return_status,payment_method,payment_status,shipping_fee,created_at,updated_at,wilaya,address,phone,phone_secondary,recipient_name,delegation,postal_code,notes,user_id,guest_email,' . Complaint::BUYER_ORDER_COLUMNS,
             'refundTask.deliveryGuy:id,name',
         ])->findOrFail($id);
 
         Complaint::withItemSnapshots($complaint);
         ReturnPresenter::forStaff($complaint);
+        Complaint::withBuyer($complaint, true);
 
         $complaint->setAttribute('client_address', $documents->recipient($complaint->order));
         $complaint->setAttribute('seller_pickup', SellerPickup::for($complaint->seller, $complaint->seller_id));
