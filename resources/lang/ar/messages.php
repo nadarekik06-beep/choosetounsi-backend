@@ -109,6 +109,7 @@ return [
     'discount' => [
         'percent_off' => '-:value%',
         'amount_off' => '-:value د.ت',
+        'fixed_above_price' => 'العرض ":promotion" يخصم :amount د.ت: يجب أن يبقى السعر الجديد لـ :product أعلى من هذا المبلغ. خفّض العرض أو أوقفه أولاً.',
     ],
     'contact' => [
         'sent'     => 'شكرًا! تم إرسال رسالتك. سنرد عليك عبر البريد الإلكتروني في أقرب وقت.',

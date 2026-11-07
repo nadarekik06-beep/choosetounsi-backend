@@ -22,8 +22,14 @@ use Illuminate\Support\Facades\Storage;
  *
  * When several apply: flash sale first, then higher `priority`, then newest.
  *
+ * Base price (single source of truth): the product's CURRENT price, or the
+ * variant's own price_override, read from the database at pricing time. A
+ * percentage promotion is applied to it at read time, so changing the price
+ * re-prices every active promotion at once; nothing is snapshotted on the
+ * promotion. Orders freeze their own prices at checkout (order_items).
+ *
  * Pricing block (see pricing()):
- *   original_price   crossed-out price: lowest price of the last 30 days when discounted
+ *   original_price   crossed-out price: the current base price
  *   final_price      what the customer pays (effective_price is the same number, kept for old callers)
  *   discount_amount, discount_percent
  *   promo_type       flash_sale | promotion | null
@@ -71,7 +77,7 @@ class PromotionService
 
     /**
      * Pricing blocks for a list of products (base price, no variant): one promotion
-     * query and two price-history queries whatever the list size.
+     * query whatever the list size.
      *
      * @param  iterable $products models or DB rows with `id` and `price`
      * @return array<int, array> product id => pricing block
@@ -84,13 +90,11 @@ class PromotionService
         }
         if (!$prices) return [];
 
-        $promos     = $this->activePromotionsFor(array_keys($prices));
-        $references = PriceHistory::lowestMany(array_intersect_key($prices, $promos));
+        $promos = $this->activePromotionsFor(array_keys($prices));
 
         $out = [];
         foreach ($prices as $id => $price) {
-            $promo    = $promos[$id] ?? null;
-            $out[$id] = $this->pricing($price, $promo ? $references[$id] : $price, $promo);
+            $out[$id] = $this->pricing($price, $promos[$id] ?? null);
         }
         return $out;
     }
@@ -116,13 +120,8 @@ class PromotionService
      */
     public function priceWith(object $product, ?float $basePrice, ?int $variantId, ?Promotion $promotion): array
     {
-        $currentPrice = $basePrice ?? (float) $product->price;
-
-        // Anti fake-discount: the crossed-out price is the lowest price of the
-        // last 30 days, so raising the price before a promotion gains nothing.
-        $reference = $promotion ? $this->referencePrice($product, $currentPrice, $variantId) : $currentPrice;
-
-        return $this->pricing($currentPrice, $reference, $promotion);
+        // Always the current price (product, or the variant's own): never an older one
+        return $this->pricing($basePrice ?? (float) $product->price, $promotion);
     }
 
     /** Pre-promotion unit price: the variant's override, else the product price. */
@@ -135,27 +134,21 @@ class PromotionService
      * The product's final price (base price, no variant) as a SQL expression, for
      * filtering and sorting paginated lists in the database. Same rules as
      * priceMany(): winning promotion (flash first, priority, newest; live
-     * status, inside its window, quota left), discount applied to the lowest
-     * price of the last 30 days. tests/Feature/Promotions checks both agree.
+     * status, inside its window, quota left), discount applied to the current
+     * price. tests/Feature/Promotions checks both agree.
      *
      * @return array{0: string, 1: array} [sql, bindings]
      */
     public function finalPriceSql(string $table = 'products'): array
     {
         $now      = now();
-        $since    = now()->subDays(PriceHistory::WINDOW_DAYS);
         $statuses = "'" . implode("','", Promotion::PRICING_STATUSES) . "'";
-        $history  = "FROM product_price_history h WHERE h.product_id = {$table}.id AND h.variant_id IS NULL AND h.price > 0";
+        $base     = "ROUND({$table}.price, 3)";
 
-        $reference = "LEAST({$table}.price,
-            COALESCE((SELECT MIN(h.price) {$history} AND h.changed_at >= ?), {$table}.price),
-            COALESCE((SELECT h.price {$history} AND h.changed_at < ? ORDER BY h.changed_at DESC, h.id DESC LIMIT 1), {$table}.price))";
-
-        // Correlated subqueries only (MariaDB has no LATERAL), so the reference is inlined twice
         // A promotion that would bring the price to 0 is ignored (same rule as pricing())
         $sql = "COALESCE(NULLIF((SELECT ROUND(GREATEST(0, CASE WHEN pr.discount_type = 'percentage'
-                        THEN ROUND({$reference}, 3) * (1 - pr.discount_value / 100)
-                        ELSE ROUND({$reference}, 3) - pr.discount_value END), 3)
+                        THEN {$base} * (1 - pr.discount_value / 100)
+                        ELSE {$base} - pr.discount_value END), 3)
                 FROM promotions pr
                 JOIN promotion_products pp ON pp.promotion_id = pr.id
                 WHERE pp.product_id = {$table}.id
@@ -165,7 +158,7 @@ class PromotionService
                 ORDER BY (pr.type = 'flash_sale') DESC, pr.priority DESC, pr.created_at DESC, pr.id DESC
                 LIMIT 1), 0), {$table}.price)";
 
-        return [$sql, [$since, $since, $since, $since, $now, $now]];
+        return [$sql, [$now, $now]];
     }
 
     /**
@@ -189,20 +182,7 @@ class PromotionService
         }
     }
 
-    /**
-     * Price a discount is computed from and shown crossed out: the lowest price
-     * of the last 30 days for this product (or this variant), capped at today's.
-     */
-    public function referencePrice(object $product, float $currentPrice, ?int $variantId = null): float
-    {
-        // A variant price passed without its id can't be matched to a timeline
-        if ($variantId === null && abs($currentPrice - (float) $product->price) > 0.0005) {
-            return $currentPrice;
-        }
-        return PriceHistory::lowest($product->id, $variantId, $currentPrice);
-    }
-
-    private function pricing(float $currentPrice, float $reference, ?Promotion $promo): array
+    private function pricing(float $currentPrice, ?Promotion $promo): array
     {
         if (!$promo) {
             return [
@@ -219,12 +199,12 @@ class PromotionService
         }
 
         // Integer millimes (AUDIT L-1): same result as finalPriceSql() to the millime
-        $refM   = Millimes::of($reference);
+        $refM   = Millimes::of($currentPrice);
         $finalM = self::discountedMillimes($refM, $promo);
         if ($finalM <= 0) {
-            // Never sell for free: a promotion that would (the price was lowered after
-            // it was created) is ignored. Creating one is refused (zeroPriceProducts).
-            return $this->pricing($currentPrice, $currentPrice, null);
+            // Never sell for free: a promotion that would is ignored. Creating one
+            // (zeroPriceProducts) or lowering a price under it (fixedDiscountConflicts) is refused.
+            return $this->pricing($currentPrice, null);
         }
         $final  = Millimes::toFloat($finalM);
         $amount = Millimes::toFloat($refM - $finalM);
@@ -661,11 +641,12 @@ class PromotionService
     }
 
     /**
-     * Products (or variants) this discount would bring to 0 DT or less, from the
-     * same reference price the storefront uses. Empty = every final price > 0.
+     * Products (or variants) this discount would bring to 0 DT or less, from
+     * their CURRENT price (fresh from the database). Empty = every final price > 0.
+     * A fixed amount must be lower than the current price of every line.
      *
      * @param  int[] $productIds
-     * @return string[] product labels ("Name" or "Name (variant)")
+     * @return string[] labels with the current price: "Name (50.000 DT)" or "Name — variant (50.000 DT)"
      */
     public function zeroPriceProducts(array $productIds, string $discountType, float $value): array
     {
@@ -673,20 +654,78 @@ class PromotionService
         $bad      = [];
         $products = Product::with(['variants' => fn ($q) => $q->where('is_active', true)])->whereIn('id', $productIds)->get();
         foreach ($products as $product) {
-            $lines = [[null, (float) $product->price]];
-            foreach ($product->variants as $variant) {
-                if ($variant->price_override !== null) {
-                    $lines[] = [$variant, (float) $variant->price_override];
-                }
-            }
-            foreach ($lines as [$variant, $price]) {
-                $reference = $this->referencePrice($product, $price, $variant?->id);
-                if (self::discountedMillimes(Millimes::of($reference), $promo) <= 0) {
-                    $bad[] = $variant ? "{$product->name} ({$variant->label})" : $product->name;
+            foreach (self::priceLines($product) as [$variant, $price]) {
+                if (self::discountedMillimes(Millimes::of($price), $promo) <= 0) {
+                    $bad[] = self::lineLabel($product->name, $variant?->label, $price);
                 }
             }
         }
         return $bad;
+    }
+
+    /**
+     * Live or upcoming FIXED-amount promotions on this product that the new
+     * prices would make free (amount ≥ price). Used before saving a price change
+     * (seller and admin edit), so a promotion never silently stops applying.
+     *
+     * @param  float $newBase      new product price
+     * @param  array<int, array{label: ?string, price: ?float}> $variantLines new variant prices
+     *         (price null = follows the base price)
+     * @return string[] readable conflicts, empty = the price change is fine
+     */
+    public function fixedDiscountConflicts(Product $product, float $newBase, array $variantLines = []): array
+    {
+        $promos = Promotion::query()
+            ->whereIn('status', Promotion::PRICING_STATUSES)
+            ->where('ends_at', '>', now())
+            ->where('discount_type', 'fixed')
+            ->whereHas('products', fn ($q) => $q->where('products.id', $product->id))
+            ->get();
+        if ($promos->isEmpty()) return [];
+
+        $lines = [[null, $newBase]];
+        foreach ($variantLines as $line) {
+            $price = $line['price'] ?? null;
+            if ($price !== null && abs((float) $price - $newBase) > 0.0005) {
+                $lines[] = [$line['label'] ?? 'variant', (float) $price];
+            }
+        }
+
+        $out = [];
+        foreach ($promos as $promo) {
+            foreach ($lines as [$label, $price]) {
+                if (self::discountedMillimes(Millimes::of($price), $promo) <= 0) {
+                    $out[] = __('messages.discount.fixed_above_price', [
+                        'promotion' => $promo->name,
+                        'amount'    => number_format((float) $promo->discount_value, 3, '.', ''),
+                        'product'   => self::lineLabel($product->name, $label, $price),
+                    ]);
+                }
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * [variant|null, current price] for the product's base price and each active
+     * variant with its own price (variants without one follow the base price).
+     *
+     * @return array<int, array{0: ?ProductVariant, 1: float}>
+     */
+    private static function priceLines(Product $product): array
+    {
+        $lines = [[null, (float) $product->price]];
+        foreach ($product->variants as $variant) {
+            if ($variant->price_override !== null) {
+                $lines[] = [$variant, (float) $variant->price_override];
+            }
+        }
+        return $lines;
+    }
+
+    private static function lineLabel(string $name, ?string $variant, float $price): string
+    {
+        return ($variant ? "{$name} — {$variant}" : $name) . ' (' . number_format($price, 3, '.', '') . ' DT)';
     }
 
     /**
@@ -702,9 +741,8 @@ class PromotionService
             ->whereIn('id', $productIds)->get();
 
         $row = function (Product $product, ?ProductVariant $variant) use ($promo): array {
-            $base      = self::basePrice($product, $variant);
-            $reference = $this->referencePrice($product, $base, $variant?->id);
-            $p         = $this->pricing($base, $reference, $promo);
+            $base = self::basePrice($product, $variant);
+            $p    = $this->pricing($base, $promo);
             return [
                 'current_price'    => round($base, 3),
                 'original_price'   => $p['original_price'],
@@ -792,6 +830,7 @@ class PromotionService
         foreach ($conflicts as $promo) {
             $ids = $promo->products->pluck('id')->map(fn ($id) => (int) $id)->all();
             $promo->products()->detach($ids);
+            \App\Support\PricingCache::bump();
             $ended = !$promo->products()->exists();
             if ($ended) {
                 $promo->update(['status' => 'expired']);

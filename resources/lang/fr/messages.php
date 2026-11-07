@@ -109,6 +109,7 @@ return [
     'discount' => [
         'percent_off' => '-:value %',
         'amount_off' => '-:value DT',
+        'fixed_above_price' => 'La promotion « :promotion » retire :amount DT : le nouveau prix de :product doit rester supérieur à ce montant. Réduisez ou arrêtez d’abord la promotion.',
     ],
     'contact' => [
         'sent'     => 'Merci ! Votre message a bien été envoyé. Nous vous répondons par e-mail au plus vite.',

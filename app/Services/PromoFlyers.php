@@ -26,7 +26,7 @@ class PromoFlyers
      */
     public function forPage(?int $categoryId, ?string $query, array $excludeProductIds = [], int $limit = 3): array
     {
-        $all = Cache::remember('promo-flyers:v2:' . app()->getLocale(), self::CACHE_SECONDS, fn () => $this->build());
+        $all = Cache::remember('promo-flyers:v2:pv' . \App\Support\PricingCache::version() . ':' . app()->getLocale(), self::CACHE_SECONDS, fn () => $this->build());
         if (!$all) return [];
 
         $exclude = array_flip(array_map('intval', $excludeProductIds));

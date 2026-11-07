@@ -193,7 +193,7 @@ class ProductChangesTest extends TestCase
         $this->edit($p, ['price' => 99])->assertStatus(422);
     }
 
-    public function test_raised_then_discounted_uses_the_30_day_lowest_price(): void
+    public function test_raised_then_discounted_uses_the_current_price(): void
     {
         $p = $this->liveProduct(100);
         $this->backdateHistory($p, 60);
@@ -208,18 +208,18 @@ class ProductChangesTest extends TestCase
 
         $page = $this->getJson('/api/products/' . $p->fresh()->slug)->assertOk()->json('data');
         $this->assertEquals(150, $page['price']);
-        $this->assertEquals(100, $page['original_price'], 'crossed-out price = lowest of the last 30 days');
-        $this->assertEquals(80, $page['effective_price'], '20% off 100, not off 150');
+        $this->assertEquals(150, $page['original_price'], 'crossed-out price = the current price');
+        $this->assertEquals(120, $page['effective_price'], '20% off the current 150, not off the old 100');
 
         // Cart charges the same price
         $customer = $this->makeUser('client');
         Cart::create(['user_id' => $customer->id, 'product_id' => $p->id, 'quantity' => 1]);
         Sanctum::actingAs($customer);
         $cart = $this->getJson('/api/cart')->assertOk()->json();
-        $this->assertStringContainsString('"price":80', json_encode($cart));
+        $this->assertStringContainsString('"price":120', json_encode($cart));
     }
 
-    public function test_variant_reference_price_on_product_page(): void
+    public function test_variant_promotion_uses_the_variant_current_price(): void
     {
         $p = $this->liveProduct(100);
         $v = ProductVariant::create(['product_id' => $p->id, 'stock' => 5, 'price_override' => 120, 'is_active' => true]);
@@ -234,8 +234,8 @@ class ProductChangesTest extends TestCase
         Cache::flush();
 
         $pricing = app(\App\Services\PromotionService::class)->getEffectivePrice($p->fresh(), 200.0, $v->id);
-        $this->assertEquals(120, $pricing['original_price']);
-        $this->assertEquals(108, $pricing['effective_price']);
+        $this->assertEquals(200, $pricing['original_price'], 'the variant new price');
+        $this->assertEquals(180, $pricing['effective_price'], '10 % off 200, not off the old 120');
     }
 
     public function test_plan_without_promotions_can_lower_price_directly(): void

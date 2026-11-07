@@ -26,10 +26,13 @@ class ProductVariant extends Model
 
     protected static function booted()
     {
-        // Price timeline for the 30-day "lowest price" discount rule
+        // Price timeline (seller rule: a live price is lowered through a discount)
         static::saved(function (ProductVariant $variant) {
             if ($variant->wasRecentlyCreated || $variant->wasChanged('price_override')) {
                 \App\Services\PriceHistory::variantPriceChanged($variant);
+            }
+            if ($variant->wasChanged('price_override')) {
+                \App\Support\PricingCache::bump();
             }
         });
     }

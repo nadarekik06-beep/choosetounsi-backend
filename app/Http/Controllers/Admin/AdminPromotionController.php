@@ -145,7 +145,7 @@ class AdminPromotionController extends Controller
         ])->values()]);
     }
 
-    /** Live preview with the exact checkout rules (30-day reference price, rounding). */
+    /** Live preview with the exact checkout rules (current price, rounding). */
     public function preview(Request $request): JsonResponse
     {
         $v = $request->validate([
@@ -218,6 +218,7 @@ class AdminPromotionController extends Controller
                     'priority'            => $v['type'] === 'flash_sale' ? 10 : 5,
                 ]);
                 $promo->products()->attach($own->pluck('id')->all());
+                \App\Support\PricingCache::bump();
                 return $promo;
             })->values();
         });
@@ -311,6 +312,7 @@ class AdminPromotionController extends Controller
                 'status'         => $promo->status === 'paused' ? 'paused' : (now()->lessThan($v['starts_at']) ? 'scheduled' : 'active'),
             ]);
             $promo->products()->sync($productIds);
+            \App\Support\PricingCache::bump();
         });
 
         $this->notify($promo->fresh(), 'updated');
@@ -414,7 +416,7 @@ class AdminPromotionController extends Controller
             throw ValidationException::withMessages($byField);
         }
         if ($zero = $this->promos->zeroPriceProducts($productIds, $v['discount_type'], (float) $v['discount_value'])) {
-            throw ValidationException::withMessages(['discount_value' => ['The final price would be 0 DT or less for: ' . implode(', ', $zero) . '.']]);
+            throw ValidationException::withMessages(['discount_value' => [__('seller.promotion.zero_price', ['products' => implode(', ', $zero)])]]);
         }
     }
 

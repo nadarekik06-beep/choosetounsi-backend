@@ -396,7 +396,7 @@ class ProductController extends Controller
 
                 $effectiveBase = PromotionService::basePrice($product, $v);
 
-                // With a promotion: discounted from this variant's lowest 30-day price
+                // With a promotion: discounted from this variant's current price
                 $variantPromo = $this->promoService->priceWith($product, $effectiveBase, $v->id, $activePromo);
 
                 return [
@@ -725,7 +725,7 @@ foreach ($colorImgs as $img) {
 $p->variant_images = $variantImages;
     $p->setRelation('variants', $p->variants->map(fn($v) => ['id' => $v->id, 'stock' => $v->stock])->values());
 
-    // Promotion pricing block (final_price, original_price = lowest 30-day price, badges…)
+    // Promotion pricing block (final_price, original_price = current price, badges…)
     return $this->promoService->attach($p, $pricing);
 }
 // Color-keyed images for a page of products, one query

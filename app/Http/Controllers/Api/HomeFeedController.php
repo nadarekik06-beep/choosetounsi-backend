@@ -30,7 +30,7 @@ class HomeFeedController extends Controller
         $actor  = $userId ? "u{$userId}" : ($sessionId ? "s{$sessionId}" : 'guest');
         $dirty  = (int) Cache::get(InteractionTracker::dirtyKey($userId, $sessionForProfile), 0);
         $bucket = intdiv(time(), HomeFeedBuilder::ROTATION_SECONDS);
-        $key    = "reco:feed:v1:{$actor}:{$bucket}:{$dirty}:" . app()->getLocale();
+        $key    = "reco:feed:v1:{$actor}:{$bucket}:{$dirty}:pv" . \App\Support\PricingCache::version() . ':' . app()->getLocale();
 
         $feed = Cache::remember($key, self::CACHE_SECONDS, fn () => $this->builder->build($userId, $sessionForProfile) + [
             'generated_at' => now()->toIso8601String(),

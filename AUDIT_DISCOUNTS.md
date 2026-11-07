@@ -227,3 +227,38 @@ Owner decisions: M-5 skip promoted items · M-7 bracket from the ORIGINAL price,
 | L-5 / L-6 / L-7 | Own pack refused; pack savings from current prices; coupon edit checks product status. |
 
 Tests: `tests/Feature/Discounts/*` (30 tests).
+
+---
+
+## Phase 3 — price change then promotion (2026-11-07)
+
+**Report:** a seller or admin changes a price, then adds a promotion → the promotion is computed on the OLD price.
+
+### Root cause
+
+`PromotionService` applied every discount to the **lowest price of the last 30 days** (`PriceHistory::lowest`, an anti fake-discount rule), not to the current price:
+
+| Place (before the fix) | Effect |
+|---|---|
+| `PromotionService::priceWith()` / `priceMany()` (`referencePrice()`, `PriceHistory::lowestMany`) | 100 → 150 DT, then 20 % → **80 DT** with 100 crossed out, instead of 120 |
+| `PromotionService::finalPriceSql()` (history subqueries) | list filters and sorting used the same old base |
+| `PromotionService::preview()` / `zeroPriceProducts()` | seller + admin form previews and the "0 DT" check used the old base, so a fixed amount valid on the new price was refused (and the reverse) |
+| `OrderPricing::productLine()` → `original_unit_m` / `tier_m` / `funded_m` | cart, checkout, order lines, seller_orders, Intigo COD, commission bracket and platform-funded payouts all inherited the old base |
+| Storefront `PriceDecreaseDialog::discountFor()` and `PromotionModal` fallback | the price-decrease redirect computed the discount from `reference_price` (30-day lowest), so the prefilled fixed amount could give the wrong final price |
+
+Checked and **not** a cause: price writes go straight to `products.price` / `product_variants.price_override` (seller direct edit, admin editor including pending products, legacy admin PUT); no pending-changes table; `promotions` stores only `discount_type` + `discount_value` (no price snapshot); the forms fetch products from the API each time they open. Secondary: deals / promo flyers / home feed display caches (60–120 s) could show an old price briefly.
+
+Side finding (not changed): `products.price` is `DECIMAL(10,2)` while forms accept millimes; 12.345 is stored as 12.35. The old pricing read 12.345 from `product_price_history` (DECIMAL 10,3) and disagreed with the stored price; pricing now always uses the stored value.
+
+### Fix
+
+- One base price: the current `products.price`, or the variant's `price_override`, read at pricing time. Percentage and fixed promotions are applied to it at read time, so changing a price re-prices every running promotion. Commission bracket, platform funding, cart, checkout, order snapshot and Intigo COD follow automatically (all go through `PromotionService` → `OrderPricing`).
+- Fixed amounts: creating one ≥ the current price of any product/variant is refused with the prices named (seller + admin); lowering a price to or under a running fixed amount is refused (seller edit, admin editor, legacy admin PUT).
+- `App\Support\PricingCache`: version in the deals / promo flyers / home feed cache keys, bumped on every price or promotion change.
+- Frontend: seller promotion form prices only from the server preview of the current price, `no-store` fetches, reload on tab focus, stale answers dropped; price-decrease popup computes the discount from the current price; admin form refreshes its server preview on tab focus.
+- `php artisan promotions:reprice [--apply]`: dry run lists promotions whose price changes with the new rule; `--apply` refreshes outdated cart `promo_price_snapshot` rows and the price caches. Orders are never touched.
+- The 30-day price history is kept only for the seller rule "a live price is lowered through a discount".
+
+Trade-off (follows the owner's request of 2026-11-07): the anti fake-discount protection is gone. A seller can raise a price and then discount it; the badge shows the discount from the raised price.
+
+Tests: `tests/Feature/Discounts/PriceChangePromotionTest.php` (scenarios 1–6 + reprice command); old-rule assertions updated in `PromotionPricingTest`, `PromotionRulesTest`, `ProductChangesTest`.

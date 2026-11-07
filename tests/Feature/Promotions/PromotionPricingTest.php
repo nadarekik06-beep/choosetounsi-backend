@@ -526,7 +526,7 @@ class PromotionPricingTest extends TestCase
         $this->flashSale($flash, ['discount_value' => 35]);
         $this->promotion($fixed, ['discount_type' => 'fixed', 'discount_value' => 7.5]);
         $this->flashSale($soldOut, ['flash_stock' => 1, 'flash_stock_used' => 1]);
-        // Price raised just before a promotion: discount computed from the 30-day lowest (100)
+        // Price raised just before a promotion: discount computed from the current price (150)
         $raised->update(['price' => 150]);
         $this->promotion($raised, ['discount_value' => 10]);
 
@@ -538,7 +538,7 @@ class PromotionPricingTest extends TestCase
         foreach ($rows as $r) {
             $this->assertEqualsWithDelta($php[$r->id]['final_price'], (float) $r->sql_final, 0.0005, "product {$r->id}");
         }
-        $this->assertEqualsWithDelta(90, (float) $rows->firstWhere('id', $raised->id)->sql_final, 0.0005);
+        $this->assertEqualsWithDelta(135, (float) $rows->firstWhere('id', $raised->id)->sql_final, 0.0005, '10 % off the current 150, not off the old 100');
         $this->assertEqualsWithDelta(52, (float) $rows->firstWhere('id', $flash->id)->sql_final, 0.0005);
     }
 

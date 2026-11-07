@@ -212,6 +212,28 @@ public function index(Request $request)
             $fieldsToUpdate['subcategory_id'] = null;
         }
 
+        // A fixed-amount promotion on this product must stay below every new price
+        if ($request->has('price') || $request->has('variants')) {
+            $labels = $product->variants()->get()->keyBy('id');
+            $input  = $request->input('variants');
+            $rows   = is_array($input) && $input
+                ? collect($input)->filter(fn($r) => is_array($r))
+                : $labels->map(fn($v) => ['id' => $v->id, 'price_override' => $v->price_override]);
+            $lines  = $rows->map(fn($r) => [
+                'label' => !empty($r['id']) ? optional($labels->get((int) $r['id']))->label : null,
+                'price' => isset($r['price_override']) && $r['price_override'] !== '' && $r['price_override'] !== null
+                    ? round((float) $r['price_override'], 3) : null,
+            ])->values()->all();
+            $newBase = round((float) ($fieldsToUpdate['price'] ?? $product->price), 3);
+            if ($conflicts = app(\App\Services\PromotionService::class)->fixedDiscountConflicts($product, $newBase, $lines)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $conflicts[0],
+                    'errors'  => ['price' => $conflicts],
+                ], 422);
+            }
+        }
+
         if (!empty($fieldsToUpdate)) {
             $product->update($fieldsToUpdate);
         }

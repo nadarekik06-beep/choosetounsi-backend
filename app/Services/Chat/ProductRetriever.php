@@ -19,7 +19,7 @@ use Illuminate\Support\Facades\Storage;
  * Price = what the customer pays:
  *   base  = lowest in-stock active variant price (price_override ?? price),
  *           or products.price when the product has no in-stock variants
- *   final = base priced by PromotionService (same promotion, 30-day reference
+ *   final = base priced by PromotionService (same promotion, current-price
  *           and flash quota rules as the storefront and checkout)
  * The best CANDIDATES rows are fetched by relevance, priced in one batch, then
  * min/max filters and price sorting apply to `final`.

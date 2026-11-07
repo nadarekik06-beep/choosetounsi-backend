@@ -79,10 +79,14 @@ class Product extends Model
 
         // Translate name / descriptions with Groq once the product is live or its text changed.
         // Runs after the response is sent; the storefront only ever reads the cached result.
-        // Price timeline for the 30-day "lowest price" discount rule
+        // Price timeline (seller rule: a live price is lowered through a discount)
         static::saved(function ($product) {
             if ($product->wasRecentlyCreated || $product->wasChanged('price')) {
                 \App\Services\PriceHistory::productPriceChanged($product, $product->wasRecentlyCreated);
+            }
+            // Display caches holding prices are rebuilt with the new price
+            if ($product->wasChanged('price')) {
+                \App\Support\PricingCache::bump();
             }
         });
 

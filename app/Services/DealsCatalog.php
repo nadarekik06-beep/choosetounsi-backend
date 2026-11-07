@@ -39,14 +39,14 @@ class DealsCatalog
      */
     public function products(?int $limit = null): array
     {
-        $key = 'deals:products:' . app()->getLocale() . ':' . ($limit ?? 'all');
+        $key = 'deals:products:pv' . \App\Support\PricingCache::version() . ':' . app()->getLocale() . ':' . ($limit ?? 'all');
         return Cache::remember($key, self::CACHE_SECONDS, fn () => $this->buildProducts($limit));
     }
 
     /** Pack cards: price, savings and percent, items (name + image), the shop. */
     public function packs(): array
     {
-        return Cache::remember('deals:packs:' . app()->getLocale(), self::CACHE_SECONDS, function () {
+        return Cache::remember('deals:packs:pv' . \App\Support\PricingCache::version() . ':' . app()->getLocale(), self::CACHE_SECONDS, function () {
             $packs = Pack::available()
                 ->with(['seller:id,name', 'items' => fn ($q) => $q->orderBy('order')->with([
                     'product:id,name,slug,price,stock,category_id', 'product.primaryImage',

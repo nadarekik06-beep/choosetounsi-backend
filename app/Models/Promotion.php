@@ -31,6 +31,13 @@ class Promotion extends Model
         'per_customer_limit' => 'integer',
     ];
 
+    protected static function booted()
+    {
+        // Display caches holding prices are rebuilt (deals, flyers, home feed)
+        static::saved(fn () => \App\Support\PricingCache::bump());
+        static::deleted(fn () => \App\Support\PricingCache::bump());
+    }
+
     // ── Relationships ─────────────────────────────────────────────────────
 
     public function seller()

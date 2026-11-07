@@ -37,14 +37,14 @@ class PromotionRulesTest extends TestCase
     {
         $seller  = $this->seller('black');
         $product = $this->product($seller, 100);
-        $product->update(['price' => 120]);   // raised this month: discounts start from 100
+        $product->update(['price' => 120]);   // raised this month: discounts start from the current 120
         PriceHistory::flush();
 
         $preview = $this->as($seller)->postJson('/api/seller/promotions/preview', [
             'product_ids' => [$product->id], 'discount_type' => 'percentage', 'discount_value' => 10,
         ])->assertOk()->json('data.0');
-        $this->assertEquals(100.0, $preview['original_price']);
-        $this->assertEquals(90.0, $preview['final_price'], 'not 108 (10 % off the current 120)');
+        $this->assertEquals(120.0, $preview['original_price']);
+        $this->assertEquals(108.0, $preview['final_price'], '10 % off the current 120, not off the old 100');
 
         $this->promo([$product], 'discount', 10);
         PriceHistory::flush();
@@ -54,8 +54,8 @@ class PromotionRulesTest extends TestCase
         $this->assertEquals($preview['original_price'], $line['original_unit_price']);
 
         // Commission preview: bracket from the original price
-        $calc = $this->as($seller)->postJson('/api/seller/commission/calculate', ['price' => 90, 'tier_price' => 100])->assertOk()->json('data');
-        $this->assertEquals(100.0, $calc['tier_price']);
+        $calc = $this->as($seller)->postJson('/api/seller/commission/calculate', ['price' => 108, 'tier_price' => 120])->assertOk()->json('data');
+        $this->assertEquals(120.0, $calc['tier_price']);
     }
 
     public function test_seller_preview_only_prices_the_sellers_own_products(): void
@@ -72,7 +72,7 @@ class PromotionRulesTest extends TestCase
     public function test_promotion_price_in_millimes_matches_the_sql_list_price_on_half_way_values(): void
     {
         $seller = $this->seller();
-        $cases = [[19.995, 'percentage', 33.333], [12.345, 'percentage', 50], [0.999, 'percentage', 12.5], [33.333, 'fixed', 0.001], [7.777, 'percentage', 10]];
+        $cases = [[19.995, 'percentage', 33.333], [12.30, 'percentage', 12.5], [0.999, 'percentage', 12.5], [33.333, 'fixed', 0.001], [7.777, 'percentage', 10]];
         $ids = [];
         foreach ($cases as [$price, $type, $value]) {
             $p = $this->product($seller, $price);
@@ -87,8 +87,8 @@ class PromotionRulesTest extends TestCase
         foreach ($rows as $r) {
             $this->assertSame(Millimes::of($r->sql_final), Millimes::of($php[$r->id]['final_price']), "product {$r->id}");
         }
-        // 12.345 × 50 % = 6.1725 → 6.173 (half-up, once)
-        $this->assertEquals(6.173, $php[$ids[1]]['final_price']);
+        // Priced from the stored price (products.price keeps 2 decimals): 12.30 × 87.5 % = 10.7625 → 10.763 (half-up, once)
+        $this->assertEquals(10.763, $php[$ids[1]]['final_price']);
     }
 
     // ── L-3 / L-8: Tunis time ──────────────────────────────────────────────────

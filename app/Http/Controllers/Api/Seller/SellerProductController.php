@@ -450,6 +450,16 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
             ], 422);
         }
 
+        // A fixed-amount promotion on this product must stay below every new price
+        if ($conflicts = $this->fixedDiscountConflicts($product, $request)) {
+            return response()->json([
+                'success' => false,
+                'code'    => 'PRICE_BELOW_FIXED_DISCOUNT',
+                'message' => $conflicts[0],
+                'errors'  => ['price' => $conflicts],
+            ], 422);
+        }
+
         $tracker = app(ProductChangeTracker::class);
         $before  = $tracker->snapshot($product);
 
@@ -755,6 +765,28 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         }
 
         return $out;
+    }
+
+    /** Fixed-amount promotions the requested prices would make free (see PromotionService). */
+    private function fixedDiscountConflicts(Product $product, Request $request): array
+    {
+        if (!$request->has('price') && !$request->has('variants')) return [];
+
+        $newBase  = $request->filled('price') ? round((float) $request->input('price'), 3) : round((float) $product->price, 3);
+        $existing = $product->variants()->get()->keyBy('id');
+        $input    = $request->input('variants');
+        // Same rule as saveVariants(): an empty list leaves the stored variants as they are
+        $rows     = is_array($input) && $input
+            ? collect($input)->filter(fn($r) => is_array($r))
+            : $existing->map(fn($v) => ['id' => $v->id, 'price_override' => $v->price_override]);
+
+        $lines = $rows->map(fn($r) => [
+            'label' => !empty($r['id']) ? optional($existing->get((int) $r['id']))->label : null,
+            'price' => isset($r['price_override']) && $r['price_override'] !== '' && $r['price_override'] !== null
+                ? round((float) $r['price_override'], 3) : null,
+        ])->values()->all();
+
+        return app(\App\Services\PromotionService::class)->fixedDiscountConflicts($product, $newBase, $lines);
     }
 
     /** Pricing info for the seller edit form (lower-price popup). */

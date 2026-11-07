@@ -21,7 +21,7 @@ class SellerPromotionController extends Controller
      * POST /api/seller/promotions/preview — what buyers would really pay with
      * this discount, per product and variant: the exact pricing checkout uses
      * (PromotionService::preview → the same pricing() OrderPricing charges,
-     * 30-day reference price, millime rounding). AUDIT M-6.
+     * current price read from the database, millime rounding). AUDIT M-6.
      */
     public function preview(Request $request)
     {
@@ -167,6 +167,7 @@ if (!empty($businessErrors)) {
             ]);
 
             $promo->products()->attach($productIds);
+            \App\Support\PricingCache::bump();
 
             // Opened from a Growth Radar card: remember it so the result can be measured
             if ($card = $actions->cardFromRequest($request)) {
@@ -280,6 +281,7 @@ if (!empty($businessErrors)) {
 
             if ($request->has('product_ids')) {
                 $promo->products()->sync($productIds);
+                \App\Support\PricingCache::bump();
             }
 
             DB::commit();

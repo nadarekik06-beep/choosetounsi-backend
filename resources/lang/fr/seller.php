@@ -111,7 +111,7 @@ return [
         'updated' => 'Promotion mise à jour.',
         'deleted' => 'Promotion supprimée.',
         'product_conflict' => 'Un produit ne peut avoir qu\'une seule promotion à la fois. Déjà en promotion sur ces dates : :products.',
-        'zero_price' => 'Cette réduction ramènerait le prix à 0 DT ou moins pour : :products.',
+        'zero_price' => 'La réduction doit être inférieure au prix actuel. Elle ramènerait le prix à 0 DT ou moins pour : :products.',
         'admin_read_only' => "Cette promotion a été créée par Choose'Tounsi et ne peut pas être modifiée depuis votre tableau de bord.",
         'ended_kept' => 'Promotion terminée (conservée car elle a des commandes).',
         'invalid_status' => 'Statut invalide.',

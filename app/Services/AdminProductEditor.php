@@ -549,6 +549,20 @@ class AdminProductEditor
                 $v->errors()->add('slug', 'This slug is already used by another product.');
             }
 
+            // A fixed-amount promotion on this product must stay below every new price
+            if (!$creating && $product->exists) {
+                $labels = $product->variants()->get()->pluck('label', 'id');
+                $lines  = collect($data['variants'])->map(fn($r) => [
+                    'label' => !empty($r['id']) ? ($labels[(int) $r['id']] ?? null) : null,
+                    'price' => isset($r['price_override']) && $r['price_override'] !== '' && $r['price_override'] !== null
+                        ? round((float) $r['price_override'], 3) : null,
+                ])->all();
+                foreach (app(\App\Services\PromotionService::class)
+                             ->fixedDiscountConflicts($product, round((float) $data['price'], 3), $lines) as $message) {
+                    $v->errors()->add('price', $message);
+                }
+            }
+
             if ($creating) {
                 $variants   = collect($data['variants']);
                 $totalStock = $variants->isNotEmpty()
