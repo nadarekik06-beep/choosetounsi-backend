@@ -12,6 +12,7 @@ use App\Models\User;
 use App\Notifications\NewSellerApplicationNotification;
 use App\Notifications\SellerApplicationReviewedNotification;
 use App\Services\SubscriptionService;
+use App\Support\SocialLink;
 use App\Support\TunisianPhone;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -55,22 +56,98 @@ class SellerApplicationService
             'sample_images.*'            => 'image|mimes:jpg,jpeg,png,webp|max:4096',
             'sample_captions'            => 'nullable|array|max:5',
             'sample_captions.*'          => 'nullable|string|max:200',
-            'facebook_url'               => 'nullable|url|max:500',
-            'instagram_url'              => 'nullable|url|max:500',
-            'website_url'                => 'nullable|url|max:500',
+            // Handles and links without "https://" are turned into full links by normalize()
+            'facebook_url'               => ['nullable', 'string', 'max:255', 'regex:' . SocialLink::PATTERN],
+            'instagram_url'              => ['nullable', 'string', 'max:255', 'regex:' . SocialLink::PATTERN],
+            'website_url'                => ['nullable', 'string', 'max:255', 'regex:' . SocialLink::PATTERN],
             'preferred_plan'             => 'nullable|in:green,red,black',
             'pricing_range'              => 'nullable|in:budget,mid,premium',
         ];
     }
 
-    /** Normalizes the request (phone, address fields) and validates it. */
+    /** Normalizes the request (phone, links, text, address fields) and validates it. */
     public static function validate(Request $request, bool $isUpdate = false): array
     {
         PickupAddressService::prepare($request);
+        self::normalize($request, $isUpdate);
+        return $request->validate(self::rules($isUpdate), self::messages());
+    }
+
+    /**
+     * Fixes what sellers type instead of refusing it (same rules as the storefront's
+     * lib/sellerApplication/normalize.ts): phone "+216 22-123-456" → "22123456",
+     * Instagram "@shop" → "https://instagram.com/shop", website "shop.tn" → "https://shop.tn",
+     * spaces trimmed.
+     */
+    public static function normalize(Request $request, bool $isUpdate = false): void
+    {
+        $merge = [];
         if (!$isUpdate || $request->has('phone_number')) {
-            $request->merge(['phone_number' => TunisianPhone::normalize($request->input('phone_number'))]);
+            $merge['phone_number'] = TunisianPhone::normalize($request->input('phone_number'));
         }
-        return $request->validate(self::rules($isUpdate), PickupAddressService::messages());
+        foreach (['full_name', 'business_name', 'business_description'] as $key) {
+            if (is_string($request->input($key))) {
+                $merge[$key] = trim($request->input($key));
+            }
+        }
+        foreach (['facebook_url' => 'facebook', 'instagram_url' => 'instagram'] as $key => $network) {
+            if ($request->has($key)) {
+                $merge[$key] = SocialLink::social($network, $request->input($key));
+            }
+        }
+        if ($request->has('website_url')) {
+            $merge['website_url'] = SocialLink::website($request->input('website_url'));
+        }
+        if (is_array($request->input('sample_captions'))) {
+            $merge['sample_captions'] = array_map(fn ($c) => is_string($c) ? trim($c) : $c, $request->input('sample_captions'));
+        }
+        $request->merge($merge);
+    }
+
+    /** Plain-language messages a seller understands, one per rule (seller.application_form.*). */
+    public static function messages(): array
+    {
+        $m = fn (string $key) => __("seller.application_form.{$key}");
+
+        return [
+            'full_name.required'          => $m('full_name_required'),
+            'full_name.max'               => $m('full_name_max'),
+            'phone_number.required'       => $m('phone_required'),
+            'phone_number.regex'          => $m('phone_invalid'),
+            'business_name.required'      => $m('business_name_required'),
+            'business_name.max'           => $m('business_name_max'),
+            'business_category.required'  => $m('category_required'),
+            'business_categories.max'     => $m('categories_max'),
+            'business_description.max'    => $m('description_max'),
+            'profile_picture.image'       => $m('picture_type'),
+            'profile_picture.mimes'       => $m('picture_type'),
+            'profile_picture.max'         => $m('picture_heavy'),
+            'profile_picture.uploaded'    => $m('picture_heavy'),
+            'sample_images.max'           => $m('samples_max'),
+            'sample_images.*.image'       => $m('sample_type'),
+            'sample_images.*.mimes'       => $m('sample_type'),
+            'sample_images.*.max'         => $m('sample_heavy'),
+            'sample_images.*.uploaded'    => $m('sample_heavy'),
+            'sample_captions.*.max'       => $m('caption_max'),
+            'facebook_url.regex'          => $m('facebook_invalid'),
+            'facebook_url.max'            => $m('link_too_long'),
+            'instagram_url.regex'         => $m('instagram_invalid'),
+            'instagram_url.max'           => $m('link_too_long'),
+            'website_url.regex'           => $m('website_invalid'),
+            'website_url.max'             => $m('link_too_long'),
+            'pricing_range.in'            => $m('pricing_invalid'),
+            'contact_name.required'       => $m('contact_required'),
+            'contact_name.min'            => $m('contact_required'),
+            'phone.required'              => $m('phone_required'),
+            'phone.regex'                 => $m('phone_invalid'),
+            'adresse_complete.required'   => $m('address_required'),
+            'adresse_complete.min'        => $m('address_required'),
+            'adresse_complete.max'        => $m('address_max'),
+            'intigo_zone_id.required'     => $m('zone_required'),
+            'code_postal.required'        => $m('postal_invalid'),
+            'code_postal.digits'          => $m('postal_invalid'),
+            ...PickupAddressService::messages(),
+        ];
     }
 
     public static function resolveCategories(array $validated): array
