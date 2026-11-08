@@ -68,11 +68,19 @@ class ParcelStatus
     public const BEFORE_COURIER = ['pending', 'confirmed'];
 
     /**
-     * What a seller may do: confirm, hand the parcel to the courier, or cancel
-     * it while the courier doesn't have it. Shipped / delivered / refused come
-     * from the admin (later the agency API); re-opening a cancel is admin-only.
+     * What a seller may do: hand an admin-confirmed parcel to the courier, or
+     * cancel it while the courier doesn't have it. Confirming is admin-only
+     * (ADMIN_ONLY_TARGETS); shipped / delivered / refused come from the admin
+     * or the agency API; re-opening a cancel is admin-only.
      */
-    public const SELLER_TARGETS = ['confirmed', 'handed_to_courier', 'cancelled'];
+    public const SELLER_TARGETS = ['handed_to_courier', 'cancelled'];
+
+    /**
+     * Moves only an admin makes (source 'admin'), whatever the caller: the
+     * admin calls the client before a parcel is confirmed, and only a confirmed
+     * parcel can be prepared and sent to Intigo.
+     */
+    public const ADMIN_ONLY_TARGETS = ['confirmed'];
 
     /** Settlement batches whose money is committed: their parcels are frozen. */
     private const COMMITTED_BATCHES = ['draft', 'confirmed', 'paid'];
@@ -117,6 +125,22 @@ class ParcelStatus
     }
 
     /**
+     * Confirmed by an admin (the client was called): the only state in which
+     * the seller may prepare the parcel or hand it over, and in which it may be
+     * sent to Intigo. A parcel a seller confirmed before this rule has no stamp.
+     */
+    public static function isAdminConfirmed(SellerOrder $parcel): bool
+    {
+        return $parcel->status === 'confirmed' && $parcel->getAttribute('admin_confirmed_at') !== null;
+    }
+
+    /** The seller's "Mark as prepared" (sends the Intigo parcel). */
+    public static function canMarkPrepared(SellerOrder $parcel): bool
+    {
+        return self::isAdminConfirmed($parcel) && $parcel->prepared_at === null;
+    }
+
+    /**
      * Next statuses this actor may set on this parcel: what the admin and
      * seller UIs build their buttons from, so they never offer a move the
      * backend would reject. A parcel whose payout is paid or batched is frozen.
@@ -131,6 +155,10 @@ class ParcelStatus
         $next = self::TRANSITIONS[$parcel->status] ?? [];
         if ($actor === 'seller') {
             $next = $parcel->status === 'cancelled' ? [] : array_intersect($next, self::SELLER_TARGETS);
+            // Not confirmed by an admin: nothing to hand over yet
+            if (!self::isAdminConfirmed($parcel)) {
+                $next = array_diff($next, ['handed_to_courier']);
+            }
             // Handed to Intigo: the carrier reports the pickup, not the seller
             if ($parcel->getAttribute('intigo_nid') || $parcel->getAttribute('intigo_sync_status') === 'pending') {
                 $next = array_diff($next, ['handed_to_courier']);
@@ -280,8 +308,18 @@ class ParcelStatus
     /** Validate, write and apply the effects of one move. Inside a transaction, $so locked. */
     private function apply(SellerOrder $so, string $to, array $options): void
     {
-        $from = $so->status;
-        self::assertTransition($from, $to, $so->id, $options['source'] ?? null);
+        $from   = $so->status;
+        $source = $options['source'] ?? null;
+        self::assertTransition($from, $to, $so->id, $source);
+
+        // Confirming is the admin's decision, from any code path
+        if (in_array($to, self::ADMIN_ONLY_TARGETS, true) && $source !== 'admin') {
+            throw IllegalTransition::adminOnly($so->id, $from, $to);
+        }
+        // A seller hands over only a parcel the admin confirmed
+        if ($to === 'handed_to_courier' && $source === 'seller' && !self::isAdminConfirmed($so)) {
+            throw IllegalTransition::notAdminConfirmed($so->id, $from, $to);
+        }
 
         // Money already settled: the status is frozen (a return goes through ReturnService)
         if ($batch = self::moneyCommitted($so)) {
@@ -290,6 +328,15 @@ class ParcelStatus
 
         $now    = now();
         $fields = ['status' => $to];
+
+        // Admin confirmation stamp: set on confirm, cleared when the parcel goes back
+        if ($to === 'confirmed') {
+            $fields['admin_confirmed_at'] = $now;
+            $fields['admin_confirmed_by'] = $this->actorId($options);
+        } elseif ($to === 'pending' || $to === 'cancelled') {
+            $fields['admin_confirmed_at'] = null;
+            $fields['admin_confirmed_by'] = null;
+        }
 
         // Re-opened after a cancel: its lines take their stock and flash-sale
         // units back first; anything sold meanwhile rejects the re-open (the

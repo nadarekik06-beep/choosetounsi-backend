@@ -76,7 +76,7 @@ return [
     ],
     'order' => [
         'status_updated' => 'Order status updated.',
-        'status_admin_only' => 'You can confirm your parcel or hand it to the courier. Only CHOOSE\'Tounsi marks a parcel delivered or refused.',
+        'status_admin_only' => 'You can hand your confirmed parcel to the courier or cancel it before pickup. Only CHOOSE\'Tounsi confirms an order or marks a parcel delivered or refused.',
         'status_locked' => 'This change is not possible at this stage: a parcel can only be cancelled before the courier has it, and a shipped, delivered, refused or returned parcel can no longer be changed from the seller space.',
         'payment_locked' => 'Payment has already been confirmed by admin and cannot be changed.',
         'refund_after_delivery' => 'Can only mark as refunded after order is delivered or completed.',
@@ -666,7 +666,8 @@ return [
         'invalid_number' => 'Invalid WhatsApp number: enter a Tunisian mobile number (8 digits after +216).',
     ],
     'order_prepared'     => 'Order marked as prepared.',
-    'order_not_preparable' => 'Only a confirmed order, not yet handed to the courier, can be marked as prepared.',
+    'order_not_preparable' => 'Only an order confirmed by CHOOSE\'Tounsi, not yet handed to the courier, can be marked as prepared.',
+    'order_awaiting_admin_confirmation' => 'This order is awaiting confirmation by CHOOSE\'Tounsi. You can prepare it as soon as it is confirmed: you will be notified.',
     // Intigo bordereau download (SellerBordereauController)
     'bordereau_not_found' => 'Order not found.',
     'bordereau_forbidden' => 'This order does not belong to your shop.',

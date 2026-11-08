@@ -76,7 +76,7 @@ return [
     ],
     'order' => [
         'status_updated' => 'Statut de la commande mis à jour.',
-        'status_admin_only' => 'Vous pouvez confirmer votre colis ou le remettre au livreur. Seul CHOOSE\'Tounsi marque un colis livré ou refusé.',
+        'status_admin_only' => 'Vous pouvez remettre votre colis confirmé au livreur ou l\'annuler avant l\'enlèvement. Seul CHOOSE\'Tounsi confirme une commande ou marque un colis livré ou refusé.',
         'status_locked' => 'Ce changement n\'est pas possible à ce stade : un colis ne peut être annulé qu\'avant sa remise au livreur, et un colis expédié, livré, refusé ou retourné ne peut plus être modifié depuis l\'espace vendeur.',
         'payment_locked' => 'Le paiement a déjà été confirmé par l\'administration et ne peut plus être modifié.',
         'refund_after_delivery' => 'Le remboursement n\'est possible qu\'après la livraison ou la finalisation de la commande.',
@@ -666,7 +666,8 @@ return [
         'invalid_number' => 'Numéro WhatsApp invalide : saisissez un numéro mobile tunisien (8 chiffres après +216).',
     ],
     'order_prepared'     => 'Commande marquée comme préparée.',
-    'order_not_preparable' => 'Seule une commande confirmée, pas encore remise au livreur, peut être marquée comme préparée.',
+    'order_not_preparable' => 'Seule une commande confirmée par CHOOSE\'Tounsi, pas encore remise au livreur, peut être marquée comme préparée.',
+    'order_awaiting_admin_confirmation' => 'Cette commande est en attente de confirmation par CHOOSE\'Tounsi. Vous pourrez la préparer dès sa confirmation : vous serez notifié.',
     // Intigo bordereau download (SellerBordereauController)
     'bordereau_not_found' => 'Commande introuvable.',
     'bordereau_forbidden' => "Cette commande n'appartient pas à votre boutique.",

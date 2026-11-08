@@ -225,10 +225,13 @@ class SellerWhatsAppRemindersTest extends TestCase
         $order  = $this->checkout([$this->makeProduct($seller)]);
         $so     = $this->subOrderOf($order, $seller);
 
-        $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => 'confirmed'])->assertOk();
+        // A seller can't confirm (admin only): still pending, no reminders
+        $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => 'confirmed'])->assertStatus(422);
+        $this->assertSame('pending', $so->fresh()->status);
         $this->assertSame(0, SellerOrderReminder::where('seller_order_id', $so->id)->count());
 
         // Confirmed before reminders existed: the drawer still offers the initial notice
+        \Illuminate\Support\Facades\DB::table('seller_orders')->where('id', $so->id)->update(['status' => 'confirmed', 'admin_confirmed_at' => now()]);
         $admin = $this->makeUser('admin');
         $wa = collect($this->as($admin)->getJson("/api/admin/orders/{$order->id}")->json('data.seller_orders'))->firstWhere('id', $so->id)['whatsapp'];
         $this->assertSame(0, $wa['current']['attempt']);

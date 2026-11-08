@@ -86,7 +86,7 @@ class ParcelWorkflowTest extends TestCase
         $this->addToCart($product, 2);
         $so = $this->parcel($this->checkout()['order_id'], $seller);
 
-        $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => 'confirmed'])->assertOk();
+        // Still pending (only the admin confirms): the seller may cancel it
         $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => 'cancelled'])->assertOk();
 
         $so = $this->fresh($so);

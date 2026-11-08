@@ -49,6 +49,7 @@ class SellerOrder extends Model
         'returned_to_seller_at' => 'datetime',
         'carrier_status_at'     => 'datetime',
         'prepared_at'           => 'datetime',
+        'admin_confirmed_at'    => 'datetime',
         'overdue_at'            => 'datetime',
         // Intigo parcel (App\Services\Intigo)
         'intigo_status_code'       => 'integer',

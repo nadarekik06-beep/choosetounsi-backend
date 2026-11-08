@@ -210,10 +210,13 @@ class ParcelLifecycleTest extends TestCase
         foreach (['delivered', 'completed', 'refused', 'out_for_delivery', 'returned_to_seller'] as $status) {
             $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => $status])->assertStatus(422);
         }
-        // Handing it to the courier is fine, once confirmed
+        // Handing it to the courier is fine, once the ADMIN confirmed it (a seller can't confirm)
         $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => 'handed_to_courier'])->assertStatus(422);
-        $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => 'confirmed'])->assertOk()
-            ->assertJsonPath('data.allowed_next', ['handed_to_courier', 'cancelled']);
+        $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => 'confirmed'])->assertStatus(422);
+        $this->assertSame('pending', $this->fresh($so)->status);
+        $this->as($this->admin)->patchJson("/api/admin/orders/{$res['order_id']}/confirm-order", ['action' => 'confirmed'])->assertOk();
+        $this->as($seller)->getJson("/api/seller/orders/{$so->id}")->assertOk()
+            ->assertJsonPath('data.order.allowed_next', ['handed_to_courier', 'cancelled']);
         $this->as($seller)->patchJson("/api/seller/orders/{$so->id}/status", ['status' => 'handed_to_courier'])->assertOk()
             ->assertJsonPath('data.allowed_next', []);
         $so = $this->fresh($so);

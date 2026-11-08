@@ -347,6 +347,9 @@ class OrderController extends Controller
                     app(SellerOrderNotifier::class)->orderCancelled($order, $ids);
                 } elseif ($status === 'confirmed') {
                     app(SellerOrderNotifier::class)->orderConfirmed($order, $ids);
+                    if ($ids) {
+                        DB::table('orders')->where('id', $id)->whereNull('confirmed_at')->update(['confirmed_at' => now()]);
+                    }
                 }
                 return $ids;
             });

@@ -215,7 +215,9 @@ $netAfterShipping = $totalSellerNet !== null ? round($totalSellerNet - $shipping
                     'allowed_next'    => ParcelStatus::allowedNext($sellerOrder, 'seller'),
                     // Confirmed parcels: "Mark as prepared" stops the WhatsApp reminders
                     'prepared_at'     => $sellerOrder->prepared_at,
-                    'can_mark_prepared' => $sellerOrder->status === 'confirmed' && $sellerOrder->prepared_at === null,
+                    'can_mark_prepared' => ParcelStatus::canMarkPrepared($sellerOrder),
+                    // Waiting for the admin's call to the client: nothing to prepare yet
+                    'awaiting_admin_confirmation' => $sellerOrder->status === 'pending',
                     // Intigo parcel reference (write it on the package) and request state
                     'delivery'        => self::deliveryInfo($sellerOrder),
                     'return_status'   => $sellerOrder->return_status,
@@ -328,8 +330,12 @@ public function updateStatus(Request $request, $id)
         $sellerOrder = SellerOrder::where('seller_id', auth()->id())->findOrFail($id);
 
         if ($sellerOrder->prepared_at === null) {
-            if ($sellerOrder->status !== 'confirmed') {
-                return response()->json(['success' => false, 'message' => __('seller.order_not_preparable')], 422);
+            // Only once the admin confirmed the order (the click sends the Intigo parcel)
+            if ($sellerOrder->status === 'pending') {
+                return response()->json(['success' => false, 'code' => 'awaiting_admin_confirmation', 'message' => __('seller.order_awaiting_admin_confirmation')], 403);
+            }
+            if (!ParcelStatus::canMarkPrepared($sellerOrder)) {
+                return response()->json(['success' => false, 'code' => 'not_preparable', 'message' => __('seller.order_not_preparable')], 422);
             }
             app(\App\Services\Orders\WhatsApp\SellerReminderService::class)->markPrepared($sellerOrder, auth()->id());
 

@@ -151,6 +151,9 @@ class IntigoController extends Controller
         if ($so->status !== 'confirmed') {
             return response()->json(['success' => false, 'message' => "Only a confirmed parcel can be sent (this one is {$so->status})."], 422);
         }
+        if (!\App\Services\Orders\ParcelStatus::isAdminConfirmed($so)) {
+            return response()->json(['success' => false, 'message' => 'This order was never confirmed by an admin: confirm it first (back to pending, then Confirm).'], 422);
+        }
         Log::info("[Intigo] retry send of seller_order {$id} by admin {$request->user()->id}");
         $result = $sender->retry($id);
 
@@ -343,7 +346,7 @@ class IntigoController extends Controller
             'previous_nids'            => $so->intigo_previous_nids ?? [],
             'pickup_index'             => ParcelPayload::pickupIndex($so),
             'cod_amount'               => Millimes::toFloat(ParcelPayload::codMillimes($so)),
-            'can_retry'                => $so->status === 'confirmed'
+            'can_retry'                => \App\Services\Orders\ParcelStatus::isAdminConfirmed($so)
                 && (!$so->intigo_nid || $so->intigo_sync_status === ParcelSender::CANCELLED || IntigoStatusMap::isCancelled($so->intigo_status_code))
                 && $so->intigo_sync_status !== ParcelSender::SENT,
             'can_cancel'               => (bool) $so->intigo_nid

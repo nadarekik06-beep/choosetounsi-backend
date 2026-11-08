@@ -101,7 +101,12 @@ class SellerReminderService
     /** The seller prepared the parcel: reminders stop. Idempotent. */
     public function markPrepared(SellerOrder $parcel, ?int $by): void
     {
-        DB::table('seller_orders')->where('id', $parcel->id)->whereNull('prepared_at')
+        // Only a parcel an admin confirmed (same rule as the endpoint: never prepare an unconfirmed order)
+        if (!\App\Services\Orders\ParcelStatus::isAdminConfirmed($parcel)) {
+            throw \App\Services\Orders\IllegalTransition::notAdminConfirmed($parcel->id, (string) $parcel->status, 'prepared');
+        }
+        DB::table('seller_orders')->where('id', $parcel->id)->where('status', 'confirmed')
+            ->whereNotNull('admin_confirmed_at')->whereNull('prepared_at')
             ->update(['prepared_at' => now(), 'prepared_by' => $by, 'overdue_at' => null, 'updated_at' => now()]);
         $this->cancel([$parcel->id]);
     }

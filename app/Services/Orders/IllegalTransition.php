@@ -30,6 +30,16 @@ class IllegalTransition extends \DomainException
         return new self("Parcel #{$parcelId} can't become {$to}: its payout is already settled ({$batch}). A return goes through the return flow.", $from, $to);
     }
 
+    public static function adminOnly(int $parcelId, string $from, string $to): self
+    {
+        return new self("Parcel #{$parcelId} can't become {$to}: only an admin can confirm an order.", $from, $to);
+    }
+
+    public static function notAdminConfirmed(int $parcelId, string $from, string $to): self
+    {
+        return new self("Parcel #{$parcelId} can't become {$to}: the order is awaiting admin confirmation.", $from, $to);
+    }
+
     public static function reopenUnavailable(int $parcelId, string $to, string $why): self
     {
         return new self("Parcel #{$parcelId} can't be re-opened: {$why}. Nothing was reserved.", 'cancelled', $to);

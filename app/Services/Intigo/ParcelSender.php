@@ -140,6 +140,13 @@ class ParcelSender
                 }
                 return ['result' => 'skipped', 'message' => "Not sent: the parcel is {$so->status}.", 'nid' => null];
             }
+            // Never a parcel the admin didn't confirm (the client wasn't called)
+            if (!\App\Services\Orders\ParcelStatus::isAdminConfirmed($so)) {
+                if ($so->intigo_sync_status === self::PENDING) {
+                    $so->forceFill(['intigo_sync_status' => null, 'intigo_locked_at' => null, 'intigo_error' => 'Not sent: the order was not confirmed by an admin.'])->save();
+                }
+                return ['result' => 'skipped', 'message' => 'Not sent: the order was not confirmed by an admin.', 'nid' => null];
+            }
 
             // Automatic sends never override a failure (the admin retries it) nor exceed the attempts
             if (!$manual && $so->intigo_sync_status === self::FAILED) {
