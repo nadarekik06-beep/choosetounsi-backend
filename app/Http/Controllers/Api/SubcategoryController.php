@@ -20,7 +20,8 @@ class SubcategoryController extends Controller
             ->where('is_active', true)
             ->orderBy('order')
             ->orderBy('name')
-            ->get(['id', 'category_id', 'name', 'name_ar', 'slug', 'icon', 'order']);
+            // name_fr is needed too: HasTranslations falls back to it, and French is the default locale
+            ->get(['id', 'category_id', 'name', 'name_fr', 'name_ar', 'slug', 'icon', 'order']);
 
         return response()->json([
             'success' => true,
