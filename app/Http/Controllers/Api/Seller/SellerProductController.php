@@ -20,6 +20,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use App\Support\ProductIdentifiers;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -328,10 +329,11 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         DB::beginTransaction();
         try {
             try {
-                $product = $seller->products()->create([
+                // Slug and SKU are always made here: a slug/sku sent by the seller (old app, old draft) is ignored
+                $product = ProductIdentifiers::createWithUniqueSlug($request->name, fn(string $slug) => $seller->products()->create([
                     'name'              => $request->name,
-                    'slug'              => $this->uniqueSlug($request->slug ?: $request->name),
-                    'sku'               => $request->sku ?: null,
+                    'slug'              => $slug,
+                    'sku'               => null,
                     'description'       => $request->description ?? null,
                     'short_description' => $request->short_description ?? null,
                     'price'             => $request->price,
@@ -348,7 +350,8 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                     'delivery_fee' => $this->parseDeliveryFee($request, null),
                     'parcel_size'  => $request->input('parcel_size'),
                     'low_stock_threshold' => $request->filled('low_stock_threshold') ? (int) $request->low_stock_threshold : null,
-                ]);
+                ]));
+                ProductIdentifiers::assignSku($product);
                 $product->syncOccasions($merch['occasions']);
                 Log::info('[SellerProduct::store] Product created', ['id' => $product->id]);
             } catch (\Throwable $e) {
@@ -473,8 +476,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         try {
             $product->update([
                 'name'              => $request->name              ?? $product->name,
-                'slug'              => $this->uniqueSlug($request->slug ?: ($request->name ?? $product->name), $product->id),
-                'sku'               => $request->sku               ?? $product->sku,
+                // Slug and SKU never change on a seller edit (product URLs keep working)
                 'description'       => $request->description       ?? $product->description,
                 'short_description' => $request->short_description ?? $product->short_description,
                 'price'             => $request->price             ?? $product->price,
@@ -1215,24 +1217,6 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
             $existing = $existing->whereNull('color_option_id');
         }
         return $existing->unique('image_path')->count() + $incoming;
-    }
-
-    private function uniqueSlug(string $base, ?int $excludeId = null): string
-    {
-        $slug     = Str::slug($base);
-        $original = $slug;
-        $counter  = 2;
-
-        while (true) {
-            $query = DB::table('products')->where('slug', $slug);
-            if ($excludeId) {
-                $query->where('id', '!=', $excludeId);
-            }
-            if (!$query->exists()) break;
-            $slug = $original . '-' . $counter++;
-        }
-
-        return $slug;
     }
 
     
