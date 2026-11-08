@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Models\SellerApplication;
 use App\Services\ProductScoringService;
+use App\Services\Recommendation\RelatedProducts;
 use App\Services\UserPreferenceService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -100,49 +101,14 @@ class ProductRecommendationController extends Controller
     // GET /api/products/{slug}/similar
     // =========================================================================
 
+    /** Same kind of product (subcategory → family), gender and price nearby. See RelatedProducts. */
     public function similar(Request $request, string $slug): JsonResponse
     {
-        $limit = min((int) $request->query('limit', 8), 20);
-        $user  = $request->user();
-
-        $source = Product::available()
-            ->where('slug', $slug)
-            ->select('id', 'category_id', 'seller_id')
-            ->first();
-
-        if (!$source) {
-            return response()->json(['success' => true, 'data' => []]);
-        }
-
-        $candidates = Product::available()
-            ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name',
-                    'variants' => fn($q) => $q->where('is_active', true),
-                    'attributeValues.attribute'])
-            ->where('category_id', $source->category_id)
-            ->where('id', '!=', $source->id)
-            ->limit(80)
-            ->get();
-
-        if ($candidates->count() < $limit) {
-            $existingIds  = $candidates->pluck('id')->push($source->id)->toArray();
-            $supplemental = Product::available()
-                ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name',
-                        'variants' => fn($q) => $q->where('is_active', true),
-                        'attributeValues.attribute'])
-                ->whereNotIn('id', $existingIds)
-                ->orderByDesc('views')
-                ->limit(40)
-                ->get();
-            $candidates = $candidates->concat($supplemental);
-        }
-
-        $prefs           = $user ? $this->preferenceService->getCombinedPreferences($user->id) : null;
-        $activityWeights = $user ? $this->preferenceService->getActivityWeights($user->id) : [];
-        $scored          = $this->scoringService->scoreAndSort($candidates, $prefs, $activityWeights);
+        $limit = max(1, min((int) $request->query('limit', 8), 20));
 
         return response()->json([
             'success' => true,
-            'data'    => $this->transformCollection($scored->take($limit)),
+            'data'    => $this->transformCollection(app(RelatedProducts::class)->similar($slug, $limit)),
         ]);
     }
 
@@ -150,63 +116,14 @@ class ProductRecommendationController extends Controller
     // GET /api/products/{slug}/complementary
     // =========================================================================
 
+    /** Products that complete an outfit (fashion only); empty when nothing fits. See RelatedProducts. */
     public function complementary(Request $request, string $slug): JsonResponse
     {
-        $limit = min((int) $request->query('limit', 4), 12);
-        $user  = $request->user();
-
-        $source = Product::available()
-            ->where('slug', $slug)
-            ->select('id', 'category_id')
-            ->first();
-
-        if (!$source) {
-            return response()->json(['success' => true, 'data' => []]);
-        }
-
-        // If explicit complementary pairs exist, use them
-        if (Schema::hasTable('product_complementary')) {
-            $explicitIds = DB::table('product_complementary')
-                ->where('product_id', $source->id)
-                ->orderBy('order')
-                ->pluck('complement_id')
-                ->toArray();
-
-            if (!empty($explicitIds)) {
-                $products = Product::available()
-                    ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name',
-                            'variants' => fn($q) => $q->where('is_active', true)])
-                    ->whereIn('id', $explicitIds)
-                    ->get()
-                    ->sortBy(fn($p) => array_search($p->id, $explicitIds))
-                    ->values();
-
-                return response()->json([
-                    'success' => true,
-                    'data'    => $this->transformCollection($products->take($limit)),
-                ]);
-            }
-        }
-
-        // Fallback: cross-sell from different categories, scored by user interest
-        $candidates = Product::available()
-            ->with(['category:id,name,name_fr,name_ar,slug', 'primaryImage', 'seller:id,name',
-                    'variants' => fn($q) => $q->where('is_active', true),
-                    'attributeValues.attribute'])
-            ->where('category_id', '!=', $source->category_id)
-            ->where('id', '!=', $source->id)
-            ->orderByDesc('featured')
-            ->orderByDesc('views')
-            ->limit(40)
-            ->get();
-
-        $prefs           = $user ? $this->preferenceService->getCombinedPreferences($user->id) : null;
-        $activityWeights = $user ? $this->preferenceService->getActivityWeights($user->id) : [];
-        $scored          = $this->scoringService->scoreAndSort($candidates, $prefs, $activityWeights);
+        $limit = max(1, min((int) $request->query('limit', 4), 12));
 
         return response()->json([
             'success' => true,
-            'data'    => $this->transformCollection($scored->take($limit)),
+            'data'    => $this->transformCollection(app(RelatedProducts::class)->complementary($slug, $limit)),
         ]);
     }
 

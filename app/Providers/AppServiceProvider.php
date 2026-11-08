@@ -62,6 +62,10 @@ class AppServiceProvider extends ServiceProvider
         // Subcategory bar on category pages: product visibility / stock / images clear its cache
         Product::observe(\App\Observers\SubcategoryBarObserver::class);
         \App\Models\ProductImage::observe(\App\Observers\SubcategoryBarObserver::class);
+        // Product page "similaires" / "complétez le look": cached lists cleared on relevant changes
+        Product::observe(\App\Observers\RelatedProductsObserver::class);
+        // Suspended seller → products hidden from the storefront; reactivated → restored
+        \App\Models\User::observe(\App\Observers\SellerSuspensionObserver::class);
         Order::observe(OrderObserver::class);
         // Cancelled seller orders give their flash-sale units back
         SellerOrder::observe(SellerOrderObserver::class);

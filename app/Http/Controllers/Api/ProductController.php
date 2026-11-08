@@ -308,6 +308,9 @@ class ProductController extends Controller
                         'images',
                     ]),
             ])
+            // Rating line on the product page: approved reviews only, same as the listings
+            ->withAvg(['reviews as avg_rating' => fn ($q) => $q->where('status', 'approved')], 'rating')
+            ->withCount(['reviews as reviews_count' => fn ($q) => $q->where('status', 'approved')])
             ->first();
 
         if (!$product) {
@@ -534,6 +537,8 @@ class ProductController extends Controller
         $data['selectable_axes'] = $selectableAxes;
         $data['attribute_data']  = $product->attribute_data;
         $data['color_images']    = $colorImages;
+        $data['avg_rating']      = $product->avg_rating !== null ? round((float) $product->avg_rating, 1) : null;
+        $data['reviews_count']   = (int) $product->reviews_count;
         $data                    = $promoData + $data;   // pricing block wins over raw columns
 
         return response()->json(['success' => true, 'data' => $data]);

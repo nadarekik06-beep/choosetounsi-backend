@@ -88,7 +88,11 @@ class PlanDowngradeService
             ->whereNull('deleted_at')
             ->where('hidden_reason', 'over_plan_limit');
 
+        // A suspended seller gets nothing back on the storefront (SuspendedSellerProducts restores later)
+        $canRestore = \App\Services\Sellers\SuspendedSellerProducts::sellerIsSuspended($sellerId) === false;
+
         if ($limit === null) {
+            if (!$canRestore) return;
             $hidden()->update(['hidden_reason' => null, 'is_active' => true, 'updated_at' => now()]);
             return;
         }
@@ -107,7 +111,7 @@ class PlanDowngradeService
         }
 
         $capacity = $limit - $count;
-        if ($capacity > 0) {
+        if ($capacity > 0 && $canRestore) {
             $ids = $hidden()->orderByDesc('created_at')->limit($capacity)->pluck('id');
             if ($ids->isNotEmpty()) {
                 DB::table('products')->whereIn('id', $ids)

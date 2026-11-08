@@ -65,6 +65,15 @@ class Product extends Model
             }
         });
 
+        // A suspended seller's product never goes live (admin approval, admin-created product…)
+        static::saving(function ($product) {
+            if ($product->is_active && ($product->isDirty('is_active') || !$product->exists)
+                && \App\Services\Sellers\SuspendedSellerProducts::sellerIsSuspended($product->seller_id)) {
+                $product->is_active     = false;
+                $product->hidden_reason = \App\Services\Sellers\SuspendedSellerProducts::REASON;
+            }
+        });
+
         // Every product has at least one occasion; callers that know better sync over it
         static::created(function ($product) {
             if (!$product->occasionRows()->exists()) $product->syncOccasions([\App\Support\Occasions::DEFAULT]);
@@ -401,6 +410,8 @@ class Product extends Model
         $totalVariants = $this->variants()->count();
         if ($totalVariants === 0) return;
         $shouldBeActive = $this->variants()->where('is_active', true)->count() > 0;
+        // Hidden on purpose (plan limit, suspended seller): a variant edit never brings it back
+        if ($shouldBeActive && $this->hidden_reason) return;
         if ($this->is_active !== $shouldBeActive) {
             $this->is_active = $shouldBeActive;
             $this->saveQuietly();
