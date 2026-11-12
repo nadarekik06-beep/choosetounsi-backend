@@ -145,7 +145,7 @@ class BuyerOrderPrivacyTest extends TestCase
         $this->assertStringStartsWith('FAKE-', $order['seller_groups'][0]['delivery']['tracking_ref']);
         $this->assertTrue($order['seller_groups'][1]['is_free_delivery']);
         $this->assertEquals(0, $order['seller_groups'][1]['delivery_fee']);
-        $this->assertEquals(158, $order['total_amount']);   // 100 − 10 + 8 + 60 + 0
+        $this->assertEquals(166, $order['total_amount']);   // 100 − 10 + 8 + 60 + 8 (delivery inside the prices)
         foreach (['product_name', 'variant_label', 'resolved_image_url', 'quantity', 'unit_price', 'total', 'discount_amount', 'seller_order_status', 'return_state'] as $key) {
             $this->assertArrayHasKey($key, $order['items'][0]);
         }

@@ -192,7 +192,7 @@ class ParcelLifecycleTest extends TestCase
         $slips = $docs->slipsFor($order);
         $this->assertCount(1, $slips);
         $this->assertSame(58000, self::m($slips[0]['money']['cod']));
-        $this->assertSame(8000, self::m($slips[0]['money']['shipping']));
+        $this->assertSame(0, self::m($slips[0]['money']['shipping']), 'delivery is free: its fee is inside the prices');
         $this->assertSame(self::m($pa->cod_amount), self::m($slips[0]['money']['cod']));
 
         // The client's view says the same

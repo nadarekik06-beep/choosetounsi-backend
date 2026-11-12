@@ -115,16 +115,17 @@ class PackParcelsTest extends TestCase
         $this->as($this->customer)->postJson('/api/checkout/quote')->assertStatus(422);
     }
 
-    public function test_free_pack_only_when_all_its_products_are_free(): void
+    public function test_pack_of_products_with_the_old_free_delivery_flag_is_a_normal_pack(): void
     {
+        // Seller-offered free delivery is gone: the old flag is ignored, the pack is one unit with one included fee
         $seller = $this->seller('free');
         $this->addPack($this->pack($seller, 40, [[$this->product($seller, 30, true), 1], [$this->product($seller, 20, true), 1]]));
         $res = $this->checkout();
         $this->assertParcel($this->parcel($res['order_id'], $seller), [
-            'items' => '40', 'delivery_fee' => '0', 'cod' => '40', 'contribution' => '6', 'payout' => '28', 'margin' => '-1', 'free' => true,
+            'items' => '40', 'delivery_fee' => '8', 'cod' => '48', 'contribution' => '0', 'payout' => '34', 'margin' => '1', 'free' => false,
         ]);
 
-        // One paid product inside → the pack (and its parcel) pays delivery
+        // Same with one product that never had the flag
         $this->addPack($this->pack($seller, 40, [[$this->product($seller, 30, true), 1], [$this->product($seller, 20), 1]]));
         $res = $this->checkout();
         $this->assertParcel($this->parcel($res['order_id'], $seller), ['delivery_fee' => '8', 'cod' => '48', 'contribution' => '0', 'free' => false]);

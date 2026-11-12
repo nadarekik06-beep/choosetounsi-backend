@@ -23,10 +23,11 @@ class PublicPackController extends Controller
             ->with([
                 'seller:id,name',
                 'items' => fn($q) => $q->orderBy('order')->with([
-                    'product:id,name,slug,price',
+                    'product:id,name,slug,price,seller_id,parcel_size',
                     'product.primaryImage',
                 ]),
             ])
+            // (sorting on the seller's pack price = sorting on the displayed one for same-size packs)
             ->when($sort === 'savings_desc', fn($q) =>
                 $q->orderByRaw('(original_price - pack_price) DESC')
             )
@@ -54,7 +55,7 @@ class PublicPackController extends Controller
             ->with([
                 'seller:id,name',
                 'items' => fn($q) => $q->orderBy('order')->with([
-                    'product:id,name,slug,price,stock,delivery_fee',
+                    'product:id,name,slug,price,stock,seller_id,parcel_size',
                     'product.primaryImage',
                     'product.variants' => fn($q) => $q
                         ->where('is_active', true)
@@ -86,9 +87,8 @@ class PublicPackController extends Controller
             'slug'              => $pack->slug,
             'short_description' => $pack->short_description,
             'image_url'         => $pack->image_url,   // accessor on Pack model
-            'pack_price'        => (float) $pack->pack_price,
-            'original_price'    => (float) $pack->original_price,
-            'savings'           => (float) $pack->savings,
+            // pack_price / original_price / savings / discount_percent as the client sees them
+            ...app(\App\Services\Pricing\PricingService::class)->packClient($pack),
             'items_count'       => $pack->items->count(),
             'seller'            => $pack->seller ? [
                 'id'   => $pack->seller->id,
@@ -117,21 +117,20 @@ class PublicPackController extends Controller
             'description'       => $pack->description,
             'short_description' => $pack->short_description,
             'image_url'         => $pack->image_url,
-            'pack_price'        => (float) $pack->pack_price,
-            'original_price'    => (float) $pack->original_price,
-            'savings'           => (float) $pack->savings,
+            // pack_price / original_price / savings / discount_percent as the client sees them:
+            // a pack is one unit, its price includes one delivery (free for the client)
+            ...app(\App\Services\Pricing\PricingService::class)->packClient($pack),
             'is_active'         => $pack->is_active,
             'items_count'       => $pack->items->count(),
-            // Same rule as checkout (OrderPricing): a pack ships free only if all its products do
-            'is_free_delivery'  => $pack->items->isNotEmpty()
-                && $pack->items->every(fn($item) => $item->product && $item->product->isFreeDelivery()),
             'seller'            => $pack->seller ? [
                 'id'   => $pack->seller->id,
                 'name' => $pack->seller->name,
             ] : null,
         ];
 
-        $data['items'] = $pack->items->map(function ($item) {
+        $pricing = app(\App\Services\Pricing\PricingService::class);
+
+        $data['items'] = $pack->items->map(function ($item) use ($pricing) {
             $allVariants = $item->product?->variants ?? collect();
             $allowedIds  = $item->allowed_variant_ids; // cast to array on model
 
@@ -141,7 +140,8 @@ class PublicPackController extends Controller
                     'id'             => $v->id,
                     'label'          => $v->label,
                     'stock'          => $v->stock,
-                    'price_override' => $v->price_override,
+                    // The variant's own price as displayed (never the seller's base price)
+                    'price_override' => $v->price_override !== null ? $pricing->display($v->price_override, $pricing->sizeOf($item->product)) : null,
                     'option_map'     => $v->option_map,
                 ])
                 ->values();
@@ -156,7 +156,8 @@ class PublicPackController extends Controller
                     'id'                => $item->product->id,
                     'name'              => $item->product->name,
                     'slug'              => $item->product->slug,
-                    'price'             => (float) $item->product->price,
+                    // Its price when bought alone, as displayed on its own page
+                    'price'             => $pricing->display($item->product->price, $pricing->sizeOf($item->product)),
                     'primary_image_url' => $item->product->primary_image_url,
                     'has_variants'      => $allVariants->isNotEmpty(),
                 ] : null,

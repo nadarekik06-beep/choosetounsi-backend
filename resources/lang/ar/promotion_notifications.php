@@ -3,6 +3,13 @@
 // Seller notifications about promotions created by Choose'Tounsi (App\Notifications\Sellers\AdminPromotionNotification)
 return [
     'greeting'  => 'مرحباً :name،',
+    // Sent once to the sellers whose products offered free delivery (pricing:notify-free-delivery-sellers)
+    'free_delivery_everywhere' => [
+        'title' => 'التوصيل أصبح مجانياً على كامل المنصة',
+        'body' => 'التوصيل أصبح مجانياً على كامل المنصة ومشمولاً في السعر المعروض للحريف. تواصل الحصول على سعرك ناقص العمولة.',
+        'detail' => 'خيار «التوصيل المجاني» في منتجاتك لم يعد موجوداً: لا يُخصم أي مبلغ من أرباحك مقابل التوصيل. تأكد فقط من أن حجم طرد كل منتج صحيح.',
+        'cta' => 'عرض منتجاتي',
+    ],
     'details'   => 'التخفيض: :discount · من :starts إلى :ends.',
     'funding'   => 'كما في عروضك الخاصة، تُحسب أرباحك والعمولة على السعر بعد التخفيض.',
     'read_only' => "العروض التي تنشئها Choose'Tounsi تظهر في لوحة التحكم (العروض) للاطلاع فقط.",

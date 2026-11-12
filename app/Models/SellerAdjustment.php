@@ -20,7 +20,12 @@ class SellerAdjustment extends Model
     public const TYPE_EXCHANGE_SHIPPING = 'exchange_shipping';
     /** Agency fee of a parcel the client refused at the door, when the admin setting bills the seller. */
     public const TYPE_REFUSED_PARCEL  = 'refused_parcel';
-    /** Free-delivery contribution still owed on a fully returned parcel (the delivery was made). */
+    /**
+     * Parcel fee given back to the client on a FULL return when the seller was at
+     * fault (defective, wrong item…): the seller pays it, with the return shipping.
+     */
+    public const TYPE_RETURN_PARCEL_FEE = 'return_parcel_fee';
+    /** Legacy: free-delivery contribution still owed on a fully returned parcel (orders placed before delivery was included). */
     public const TYPE_FREE_DELIVERY   = 'free_delivery_contribution';
 
     protected $fillable = [

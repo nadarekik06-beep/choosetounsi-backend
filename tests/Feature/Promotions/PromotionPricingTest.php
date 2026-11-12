@@ -29,7 +29,9 @@ use Tests\TestCase;
  * exactly that price. Flash quotas are reserved atomically and released on
  * cancellation / failed payment.
  *
- * Mirrors the "Jean à jambes larges" case: 98 DT, back-to-school promotion -45% → 53.90 DT.
+ * Mirrors the "Jean à jambes larges" case: 98 DT, back-to-school promotion -45% → 53.90 DT for
+ * the seller. The client sees delivery included (S fee 8.000): 106.000 → 61.900, badge -41 %
+ * (computed from the displayed prices, rounded down).
  *
  * Run only this file:  php vendor/bin/phpunit tests/Feature/Promotions/PromotionPricingTest.php
  */
@@ -132,11 +134,11 @@ class PromotionPricingTest extends TestCase
         return null;
     }
 
-    private function assertPromoPriced(?array $p, string $where, float $final = 53.9, int $pct = 45, string $type = 'promotion'): void
+    private function assertPromoPriced(?array $p, string $where, float $final = 61.9, int $pct = 41, string $type = 'promotion'): void
     {
         $this->assertNotNull($p, "{$where}: product missing from response");
         $this->assertEqualsWithDelta($final, (float) $p['final_price'], 0.0005, "{$where}: final_price");
-        $this->assertEqualsWithDelta(98, (float) $p['original_price'], 0.0005, "{$where}: original_price");
+        $this->assertEqualsWithDelta(106, (float) $p['original_price'], 0.0005, "{$where}: original_price");
         $this->assertSame($pct, $p['discount_percent'], "{$where}: discount_percent");
         $this->assertSame($type, $p['promo_type'], "{$where}: promo_type");
         $this->assertNotNull($p['ends_at'], "{$where}: ends_at");
@@ -145,7 +147,7 @@ class PromotionPricingTest extends TestCase
     private function assertFullPrice(?array $p, string $where): void
     {
         $this->assertNotNull($p, "{$where}: product missing from response");
-        $this->assertEqualsWithDelta(98, (float) $p['final_price'], 0.0005, "{$where}: final_price");
+        $this->assertEqualsWithDelta(106, (float) $p['final_price'], 0.0005, "{$where}: final_price");
         $this->assertNull($p['promo_type'], "{$where}: promo_type");
         $this->assertNull($p['promotion'], "{$where}: promotion");
     }
@@ -175,13 +177,13 @@ class PromotionPricingTest extends TestCase
 
         $detail = $this->getJson("/api/products/{$this->jeans->slug}")->assertOk()->json('data');
         $this->assertPromoPriced($detail, 'product detail');
-        $this->assertEqualsWithDelta(53.9, (float) $detail['effective_price'], 0.0005, 'detail effective_price (old key)');
+        $this->assertEqualsWithDelta(61.9, (float) $detail['effective_price'], 0.0005, 'detail effective_price (old key)');
 
         $cards = app(ProductCardPresenter::class)->present(Product::whereKey($id)->with('primaryImage')->get());
         $this->assertPromoPriced($cards[0], 'home feed card');
 
-        // Price filters use the price paid: 53.90 is under 60
-        $filtered = $this->postJson('/api/search/text', ['query' => $this->token, 'max_price' => 60])->assertOk()->json();
+        // Price filters use the price paid (delivery included): 61.90 is under 70
+        $filtered = $this->postJson('/api/search/text', ['query' => $this->token, 'max_price' => 70])->assertOk()->json();
         $this->assertNotNull($this->findIn($filtered['sections'] ?? $filtered, $id), 'search max_price uses final price');
     }
 
@@ -192,13 +194,13 @@ class PromotionPricingTest extends TestCase
         $row = Cart::create(['user_id' => $this->customer->id, 'product_id' => $this->jeans->id, 'quantity' => 2]);
 
         $fav = $this->asCustomer()->getJson('/api/favorites')->assertOk()->json('data.0');
-        $this->assertEqualsWithDelta(53.9, (float) $fav['final_price'], 0.0005);
-        $this->assertSame(45, $fav['discount_percent']);
+        $this->assertEqualsWithDelta(61.9, (float) $fav['final_price'], 0.0005);
+        $this->assertSame(41, $fav['discount_percent']);
 
         $cart = $this->asCustomer()->getJson('/api/cart')->assertOk()->json('data');
-        $this->assertEqualsWithDelta(53.9, (float) $cart['items'][0]['price'], 0.0005);
-        $this->assertEqualsWithDelta(98, (float) $cart['items'][0]['original_price'], 0.0005);
-        $this->assertEqualsWithDelta(107.8, (float) $cart['subtotal'], 0.0005);
+        $this->assertEqualsWithDelta(61.9, (float) $cart['items'][0]['price'], 0.0005);
+        $this->assertEqualsWithDelta(106, (float) $cart['items'][0]['original_price'], 0.0005);
+        $this->assertEqualsWithDelta(123.8, (float) $cart['subtotal'], 0.0005);
         $this->assertSame($row->id, $cart['items'][0]['id']);
     }
 
@@ -276,7 +278,7 @@ class PromotionPricingTest extends TestCase
         $flash = $this->flashSale($this->jeans, ['discount_value' => 30]);
 
         $p = $this->getJson("/api/products/{$this->jeans->slug}")->json('data');
-        $this->assertPromoPriced($p, 'flash detail', 68.6, 30, 'flash_sale');
+        $this->assertPromoPriced($p, 'flash detail', 76.6, 27, 'flash_sale');
         $this->assertSame($flash->ends_at->toISOString(), $p['ends_at']);
         $this->assertTrue($p['promotion']['is_flash_sale']);
     }
@@ -457,7 +459,7 @@ class PromotionPricingTest extends TestCase
         return $this->asCustomer()->postJson('/api/checkout', $this->address())->assertCreated()->json();
     }
 
-    public function test_cart_checkout_charges_one_admin_delivery_fee_per_seller_parcel(): void
+    public function test_cart_checkout_charges_one_included_delivery_fee_per_seller_parcel(): void
     {
         $fee = \App\Support\Millimes::toFloat(app(\App\Services\Delivery\DeliverySettings::class)->clientFee());
         // A stray custom value (custom fees no longer exist) is never charged
@@ -470,23 +472,25 @@ class PromotionPricingTest extends TestCase
         $free2->update(['delivery_fee' => 0]);
 
         $res = $this->cartTotalFor([$legacy->fresh()]);
-        $this->assertEqualsWithDelta($fee, $res['shipping_fee'], 0.0005, 'the admin fee, never a custom one');
+        // Delivery is free for the client: the admin fee sits inside the prices, never a custom one
+        $this->assertEqualsWithDelta(0, $res['shipping_fee'], 0.0005);
         $this->assertEqualsWithDelta(20 + $fee, $res['total'], 0.0005);
 
-        $this->assertEqualsWithDelta($fee, $this->cartTotalFor([$legacy, $other])['shipping_fee'], 0.0005, 'one seller = one parcel = one fee');
-        $this->assertEqualsWithDelta($fee, $this->cartTotalFor([$free, $other])['shipping_fee'], 0.0005, 'free only when ALL items are free');
-        $this->assertEqualsWithDelta(0, $this->cartTotalFor([$free, $free2])['shipping_fee'], 0.0005);
+        $this->assertEqualsWithDelta(50 + $fee, $this->cartTotalFor([$legacy, $other])['total'], 0.0005, 'one seller = one parcel = one fee');
+        $this->assertEqualsWithDelta(40 + $fee, $this->cartTotalFor([$free, $other])['total'], 0.0005, 'the old free flag changes nothing');
+        $this->assertEqualsWithDelta(22 + $fee, $this->cartTotalFor([$free, $free2])['total'], 0.0005);
 
         // Buy-now uses the same rule
         $buy = $this->asCustomer()->postJson('/api/checkout/buy-now', $this->address() + ['product_id' => $other->id, 'quantity' => 1])
             ->assertCreated()->json();
         $this->assertEqualsWithDelta(30 + $fee, $buy['total'], 0.0005);
 
-        // Cart lines only flag free delivery; the fee comes from the checkout quote
+        // Cart lines only say delivery is free; there is no fee line
         Cart::create(['user_id' => $this->customer->id, 'product_id' => $free->id, 'quantity' => 1]);
         $line = collect($this->asCustomer()->getJson('/api/cart')->json('data.items'))->firstWhere('product_id', $free->id);
-        $this->assertTrue($line['is_free_delivery']);
+        $this->assertTrue($line['free_delivery']);
         $this->assertArrayNotHasKey('delivery_fee', $line);
+        $this->assertEqualsWithDelta(10 + $fee, (float) $line['price'], 0.0005);
     }
 
     // ── Paginated lists filter and sort on the final price, in SQL ─────────
@@ -499,17 +503,18 @@ class PromotionPricingTest extends TestCase
         $ids   = fn ($res) => collect($res->json('data.data'))->pluck('id')->all();
         $base  = "/api/products?seller_id={$this->seller->id}";
 
-        $this->assertEqualsCanonicalizing([$this->jeans->id, $cheap->id], $ids($this->getJson("{$base}&price_max=55")));
-        $this->assertSame([$mid->id], $ids($this->getJson("{$base}&price_min=55")));
+        // Displayed prices (delivery included): 58, 61.90, 68
+        $this->assertEqualsCanonicalizing([$this->jeans->id, $cheap->id], $ids($this->getJson("{$base}&price_max=65")));
+        $this->assertSame([$mid->id], $ids($this->getJson("{$base}&price_min=65")));
 
-        // Sorted by price paid, one per page: 50, 53.90, 60
+        // Sorted by price paid, one per page: 58, 61.90, 68
         $page2 = $this->getJson("{$base}&sort=price_asc&per_page=1&page=2")->assertOk();
         $this->assertSame([$this->jeans->id], $ids($page2));
         $this->assertSame(3, $page2->json('data.total'));
         $this->assertSame([$mid->id], $ids($this->getJson("{$base}&sort=price_desc&per_page=1&page=1")));
 
         $cat = "/api/categories/{$this->category->slug}/products";
-        $this->assertEqualsCanonicalizing([$this->jeans->id, $cheap->id], $ids($this->getJson("{$cat}?price_max=55")));
+        $this->assertEqualsCanonicalizing([$this->jeans->id, $cheap->id], $ids($this->getJson("{$cat}?price_max=65")));
         $this->assertSame([$cheap->id, $this->jeans->id, $mid->id], $ids($this->getJson("{$cat}?sort=price&order=asc")));
     }
 
@@ -548,12 +553,13 @@ class PromotionPricingTest extends TestCase
     {
         $this->promotion($this->jeans);
 
-        $out = app(ProductRetriever::class)->search(['keywords' => [$this->token], 'max_price' => 60]);
+        // The chatbot quotes the prices the client sees (delivery included)
+        $out = app(ProductRetriever::class)->search(['keywords' => [$this->token], 'max_price' => 70]);
         $hit = collect($out['products'])->firstWhere('id', $this->jeans->id);
 
-        $this->assertNotNull($hit, 'max 60 DT finds the jeans at 53.90');
-        $this->assertEqualsWithDelta(53.9, $hit['price'], 0.0005);
-        $this->assertEqualsWithDelta(98, $hit['old_price'], 0.0005);
+        $this->assertNotNull($hit, 'max 70 DT finds the jeans at 61.90');
+        $this->assertEqualsWithDelta(61.9, $hit['price'], 0.0005);
+        $this->assertEqualsWithDelta(106, $hit['old_price'], 0.0005);
         $this->assertFalse($hit['flash_sale']);
     }
 }

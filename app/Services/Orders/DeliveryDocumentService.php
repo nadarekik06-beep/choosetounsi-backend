@@ -71,6 +71,21 @@ class DeliveryDocumentService
      */
     public function money(Order $order, SellerOrder $sellerOrder): array
     {
+        // Delivery included in the displayed prices: the slip goes in the parcel, so it shows
+        // what the client saw (displayed prices, multi-item discount, free delivery)
+        if ($sellerOrder->isIncludedPricing()) {
+            $c = $sellerOrder->clientMoney();
+            return [
+                'subtotal'            => $c['subtotal'],
+                'discount'            => $c['discount'],
+                'multi_item_discount' => $c['multi_item_discount'],
+                'shipping'            => 0.0,
+                'is_free_delivery'    => true,
+                'total'               => $c['total'],
+                'cod'                 => $this->isPrepaid($order) ? 0.0 : $c['total'],
+            ];
+        }
+
         $m        = fn ($v) => Millimes::of($v ?? 0);
         $subtotal = $m($sellerOrder->subtotal);
         $discount = $m($sellerOrder->discount_amount);
@@ -86,6 +101,7 @@ class DeliveryDocumentService
         return [
             'subtotal'         => $f($subtotal),
             'discount'         => $f($discount),
+            'multi_item_discount' => 0.0,
             'shipping'         => $f($shipping),
             'is_free_delivery' => $order->shipping_per_parcel && $shipping === 0,
             'total'            => $f($total),
@@ -174,8 +190,8 @@ class DeliveryDocumentService
                 'name'       => $i->product_name ?? 'Product #' . $i->product_id,
                 'variant'    => $i->variant_label,
                 'quantity'   => (int) $i->quantity,
-                'unit_price' => round((float) $i->unit_price, 3),
-                'total'      => round((float) $i->total, 3),
+                'unit_price' => $i->clientUnitPrice(),
+                'total'      => $i->clientTotal(),
                 'in_bundle'  => (float) $i->unit_price == 0.0 && Str::contains((string) $i->product_name, '(Bundle:'),
             ])->all(),
             'money'          => $this->money($order, $sellerOrder),

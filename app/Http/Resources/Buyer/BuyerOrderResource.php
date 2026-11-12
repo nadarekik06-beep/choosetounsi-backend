@@ -39,7 +39,9 @@ class BuyerOrderResource extends JsonResource
 
         // subtotal − discount + shipping, live from the active parcels; a
         // cancelled order owes 0 (original_amounts keep the checkout figures)
-        $money = $order->moneySummary();
+        // As the client sees it: displayed prices, multi-item discount, free delivery
+        // (orders placed before delivery was included keep their real delivery amount)
+        $money = $order->clientMoneySummary();
 
         return [
             'id'               => $order->id,
@@ -53,6 +55,8 @@ class BuyerOrderResource extends JsonResource
             'discount_amount'  => $money['discount_amount'],
             'coupon_codes'     => $money['coupon_codes'],
             'shipping_fee'     => $money['shipping_fee'],
+            'multi_item_discount' => $money['multi_item_discount'],
+            'free_delivery'    => $money['free_delivery'],
             'total_amount'     => $money['total'],
             'amount_due'       => $money['total'],
             'is_cancelled'     => $money['is_cancelled'],
@@ -91,6 +95,7 @@ class BuyerOrderResource extends JsonResource
     {
         $assignment = $so->relationLoaded('deliveryAssignment') ? $so->deliveryAssignment : null;
         $sent       = (bool) $so->intigo_nid && $so->intigo_sync_status !== 'cancelled';
+        $money      = $so->clientMoney();
 
         return [
             'seller_order_id'  => $so->id,
@@ -101,12 +106,14 @@ class BuyerOrderResource extends JsonResource
             'display_status'   => $so->display_status,
             'return_status'    => $so->return_status,
             'payment_status'   => $so->payment_status,
-            'subtotal'         => round((float) $so->subtotal, 3),
+            'subtotal'         => $money['subtotal'],
             'coupon_code'      => $so->coupon_code,
-            'discount_amount'  => round((float) ($so->discount_amount ?? 0), 3),
-            // What the buyer pays for this parcel's delivery (0 when the shop offers it)
-            'delivery_fee'     => round((float) ($so->getAttribute('delivery_fee') ?? 0), 3),
-            'is_free_delivery' => (bool) $so->getAttribute('is_free_delivery'),
+            'discount_amount'  => $money['discount'],
+            // Delivery: free (inside the prices) on current orders; older orders keep their amount
+            'delivery_fee'     => $money['shipping'],
+            'is_free_delivery' => $money['free_delivery'],
+            'multi_item_discount' => $money['multi_item_discount'],
+            'total'            => $money['total'],
             'items'            => BuyerOrderItemResource::collection($items->where('seller_order_id', $so->id)->values())->resolve($request),
             'tracking'         => [
                 'assigned_at'  => $assignment?->assigned_at?->toISOString(),

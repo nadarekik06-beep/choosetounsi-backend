@@ -68,10 +68,12 @@ class ProductCardPresenter
             ->get()
             ->groupBy('product_id');
 
-        $pricing    = $this->promotions->priceMany($products);
+        // Storefront cards: the prices the client sees (delivery included)
+        $clientPricing = app(\App\Services\Pricing\PricingService::class);
+        $pricing    = $clientPricing->priceMany($products);
         $cardImages = \App\Services\ProductCardImages::forIds($products->pluck('id')->all());
 
-        return $products->map(function ($p) use ($colorImages, $pricing, $cardImages) {
+        return $products->map(function ($p) use ($colorImages, $pricing, $cardImages, $clientPricing) {
             $p->card_images   = $cardImages[$p->id]['card_images'] ?? [];
             $p->card_swatches = $cardImages[$p->id]['card_swatches'] ?? [];
             // Never empty when the product has any image (cover, else first gallery / color image)
@@ -88,7 +90,7 @@ class ProductCardPresenter
             }
             $p->variant_images = $variantImages;
 
-            $this->promotions->attach($p, $pricing[$p->id]);
+            $clientPricing->attach($p, $pricing[$p->id]);
 
             if ($p->relationLoaded('variants')) {
                 $p->setRelation('variants', $p->variants->map(fn ($v) => ['id' => $v->id, 'stock' => $v->stock])->values());

@@ -21,6 +21,12 @@ use Illuminate\Http\Request;
  *   - customer name only (no email — privacy)
  *   - items with full variant attributes + resolved image
  *   - totals (subtotal, coupon discount, shipping_fee, grand total)
+ *
+ * Sellers may print this invoice and put it in the parcel, so it shows the
+ * CLIENT's amounts only (owner's decision Q6): the prices the client saw
+ * (delivery included), the multi-item discount, a free delivery and the total
+ * collected. Never the seller's base prices. Orders placed before delivery was
+ * included keep their own figures (their prices were the displayed ones).
  */
 class SellerInvoiceController extends Controller
 {
@@ -72,10 +78,11 @@ class SellerInvoiceController extends Controller
                 'id'                 => $item->id,
                 'product_name'       => $productName,
                 'quantity'           => (int) $item->quantity,
-                'unit_price'         => (float) $item->unit_price,
-                'total'              => (float) $item->total,
+                // As displayed to the client (delivery included on current orders)
+                'unit_price'         => $item->clientUnitPrice(),
+                'total'              => $item->clientTotal(),
                 'discount_amount'    => round((float) $item->discount_amount, 3),
-                'net_total'          => round((float) ($item->net_total ?? $item->total), 3),
+                'net_total'          => round((float) ($item->net_total ?? $item->total) + $item->includedFeeTotal(), 3),
                 'variant_id'         => $item->variant_id,
                 'variant_label'      => $variantLabel,
                 'variant_attributes' => $variantAttributes,
@@ -87,10 +94,11 @@ class SellerInvoiceController extends Controller
         // Shipping is charged once per order and booked on the first seller_order
         // (see FinancialSnapshotService::deliveryFeeFor), so a multi-seller order
         // doesn't bill the customer's shipping on every seller's invoice.
-        $subtotal    = round((float) $sellerOrder->subtotal, 3);
-        $discount    = round((float) ($sellerOrder->discount_amount ?? 0), 3);
-        $shippingFee = round((float) ($sellerOrder->delivery_fee ?? 0), 3);
-        $grandTotal  = round($subtotal - $discount + $shippingFee, 3);
+        $money       = $sellerOrder->clientMoney();   // client amounts: displayed prices, multi-item discount, free delivery
+        $subtotal    = $money['subtotal'];
+        $discount    = $money['discount'];
+        $shippingFee = $money['shipping'];
+        $grandTotal  = $money['total'];
         // Cancelled: nothing is billed (no shipping either); original_total keeps the history
         $cancelled   = $sellerOrder->status === 'cancelled';
 
@@ -125,6 +133,9 @@ class SellerInvoiceController extends Controller
                 'discount_amount' => $discount,
                 'coupon_code'     => $sellerOrder->coupon_code,
                 'shipping_fee'    => $cancelled ? 0.0 : $shippingFee,
+                'free_delivery'   => $money['free_delivery'],
+                'multi_item_discount' => $cancelled ? 0.0 : $money['multi_item_discount'],
+                'client_amounts'  => $sellerOrder->isIncludedPricing(),
                 'grand_total'     => $cancelled ? 0.0 : $grandTotal,
                 'original_total'  => $grandTotal,
                 'is_cancelled'    => $cancelled,

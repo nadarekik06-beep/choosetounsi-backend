@@ -259,7 +259,7 @@ class SearchController extends Controller
             return [];
         }
 
-        $pricing = app(PromotionService::class)->priceMany($products);
+        $pricing = app(\App\Services\Pricing\PricingService::class)->priceMany($products);
         $indexed = $products->filter(fn ($p) => $this->withinPrice($pricing[$p->id], $filters))->keyBy('id');
 
         $ordered = [];
@@ -283,7 +283,7 @@ class SearchController extends Controller
             'name'             => $product->name,
             'slug'             => $product->slug,
             'description'      => $product->description,
-            'price'            => (float) $product->price,
+            'price'            => $pricing['price'],
             'stock'            => (int)   $product->stock,
             'views'            => (int)   ($product->views ?? 0),
             'featured'         => (bool)  ($product->featured ?? false),

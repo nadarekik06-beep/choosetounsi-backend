@@ -347,8 +347,9 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                     'is_pack'           => $merch['is_pack'],
                     'pack_quantity'     => $merch['pack_quantity'],
                     'pack_contents'     => $merch['pack_contents'],
-                    'delivery_fee' => $this->parseDeliveryFee($request, null),
+                    // Delivery is included in the displayed price (ChooseTounsi handles it): no seller option
                     'parcel_size'  => $request->input('parcel_size'),
+                    'parcel_size_confirmed_at' => now(),
                     'low_stock_threshold' => $request->filled('low_stock_threshold') ? (int) $request->low_stock_threshold : null,
                 ]));
                 ProductIdentifiers::assignSku($product);
@@ -487,9 +488,9 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                 'is_pack'           => $merch['is_pack'],
                 'pack_quantity'     => $merch['pack_quantity'],
                 'pack_contents'     => $merch['pack_contents'],
-                'delivery_fee' => $this->parseDeliveryFee($request, $product->delivery_fee),
                 'parcel_size'  => $request->input('parcel_size', $product->parcel_size ?? 'S'),
-            ] + ($request->exists('low_stock_threshold')
+            ] + ($request->filled('parcel_size') ? ['parcel_size_confirmed_at' => now()] : [])   // the seller chose (or confirmed) it
+              + ($request->exists('low_stock_threshold')
                 ? ['low_stock_threshold' => $request->filled('low_stock_threshold') ? (int) $request->low_stock_threshold : null]
                 : []
             ) + ($resubmitting ? ['changes_requested_at' => null] : []));
@@ -847,23 +848,6 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                 : null,
             'occasions'     => $occasions,
         ];
-    }
-
-    private function parseDeliveryFee(\Illuminate\Http\Request $request, mixed $existingValue): ?float
-    {
-        if (!$request->has('delivery_fee')) {
-            return $existingValue; // preserve on update; null on create
-        }
- 
-        $raw = $request->input('delivery_fee');
- 
-        // Explicit null / empty string → platform default
-        if ($raw === null || $raw === '' || $raw === 'null') {
-            return null;
-        }
- 
-        // No custom fee: 0 = free delivery, anything else = the admin's client fee (null)
-        return is_numeric($raw) && (float) $raw === 0.0 ? 0.0 : null;
     }
 
     private function saveAttributes(Product $product, Request $request): void

@@ -195,7 +195,9 @@ class ProductRetriever
         return $rows->each(function ($r) use ($promotions, $active) {
             $variantId = $r->variant_min !== null ? (int) $r->variant_min_id : null;
             $base      = (float) ($r->variant_min ?? $r->price);
-            $pricing   = $promotions->priceWith($r, $base, $variantId, $active[$r->id] ?? null);
+            // The chatbot quotes the prices the client sees (delivery included)
+            $pricing   = app(\App\Services\Pricing\PricingService::class)->priceWith($r, $base, $variantId, $active[$r->id] ?? null);
+            $base      = $pricing['price'];
 
             $r->base_price    = $base;
             $r->final_price   = $pricing['final_price'];

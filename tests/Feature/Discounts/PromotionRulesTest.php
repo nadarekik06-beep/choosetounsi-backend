@@ -50,8 +50,10 @@ class PromotionRulesTest extends TestCase
         PriceHistory::flush();
         $this->addToCart($product);
         $line = collect($this->quote()['parcels'][0]['lines'])->firstWhere('product_id', $product->id);
-        $this->assertEquals($preview['final_price'], $line['unit_price']);
-        $this->assertEquals($preview['original_price'], $line['original_unit_price']);
+        // Checkout shows what the client sees: the seller's preview prices + the delivery included
+        $this->assertEquals($preview['client_final_price'], $line['unit_price']);
+        $this->assertEquals($preview['client_original_price'], $line['original_unit_price']);
+        $this->assertEquals($preview['final_price'] + 8, $line['unit_price']);
 
         // Commission preview: bracket from the original price
         $calc = $this->as($seller)->postJson('/api/seller/commission/calculate', ['price' => 108, 'tier_price' => 120])->assertOk()->json('data');

@@ -146,7 +146,7 @@ class OrderTrackingController extends Controller
     private function payload(Order $order): array
     {
         $order->loadMissing(['items', 'sellerOrders' => fn ($q) => $q->orderBy('id'), 'sellerOrders.seller:id,name']);
-        $money = $order->moneySummary();
+        $money = $order->clientMoneySummary();
         $shops = $this->shopNames($order->sellerOrders);
 
         $parcels = $order->sellerOrders->map(function (SellerOrder $so) use ($order, $shops) {
@@ -163,7 +163,7 @@ class OrderTrackingController extends Controller
                     'name'     => $i->product_name,
                     'variant'  => $i->variant_label,
                     'quantity' => (int) $i->quantity,
-                    'total'    => round((float) ($i->net_total ?? $i->total ?? 0), 3),
+                    'total'    => round((float) ($i->net_total ?? $i->total ?? 0) + $i->includedFeeTotal(), 3),
                     'image'    => $this->imageUrl($i->image_url),
                 ])->all(),
             ];
@@ -180,6 +180,8 @@ class OrderTrackingController extends Controller
             'subtotal'       => $money['subtotal'],
             'discount'       => $money['discount_amount'],
             'shipping_fee'   => $money['shipping_fee'],
+            'multi_item_discount' => $money['multi_item_discount'],
+            'free_delivery'  => $money['free_delivery'],
             'total'          => $money['total'],
             'is_cancelled'   => $money['is_cancelled'],
             'recipient'      => $this->firstName($order->recipient_name ?: $order->guest_name),

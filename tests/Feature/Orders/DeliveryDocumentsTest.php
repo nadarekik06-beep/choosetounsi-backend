@@ -241,8 +241,9 @@ class DeliveryDocumentsTest extends TestCase
         $fee = \App\Support\Millimes::toFloat(app(\App\Services\Delivery\DeliverySettings::class)->clientFee());
         $this->assertGreaterThan(0, $fee);
         $this->assertEquals($fee * 2, (float) $order->shipping_fee);
-        $this->assertEquals($fee, $slips[0]['money']['shipping']);
-        $this->assertEquals($fee, $slips[1]['money']['shipping']);
+        // The slips go in the parcels: delivery is shown as free, its fee is inside the prices
+        $this->assertEquals(0.0, $slips[0]['money']['shipping']);
+        $this->assertEquals(0.0, $slips[1]['money']['shipping']);
         $this->assertEqualsWithDelta(100 + $fee, $slips[0]['money']['cod'], 0.0005);
         $this->assertEqualsWithDelta(45.5 + $fee, $slips[1]['money']['cod'], 0.0005);
 

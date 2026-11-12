@@ -111,8 +111,10 @@ class FavoriteController extends Controller
         $product = $fav->product;
         $variant = $fav->variant;
 
-        $price   = PromotionService::basePrice($product, $variant);
-        $pricing = app(PromotionService::class)->priceWith($product, $price, $variant?->id, $promotion);
+        // Client block: the prices shown include the delivery of the product's size
+        $pricing = app(\App\Services\Pricing\PricingService::class)
+            ->priceWith($product, PromotionService::basePrice($product, $variant), $variant?->id, $promotion);
+        $price   = $pricing['price'];
 
         $stock = $variant ? $variant->stock : $product->stock;
 

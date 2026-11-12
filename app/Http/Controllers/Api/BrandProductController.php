@@ -88,7 +88,7 @@ class BrandProductController extends Controller
 
         $product->incrementViews();
 
-        $data                    = $this->transformListItem($product, app(PromotionService::class)->getEffectivePrice($product));
+        $data                    = $this->transformListItem($product, app(\App\Services\Pricing\PricingService::class)->getEffectivePrice($product));
         $data['description']     = $product->description;
         $data['sku']             = $product->sku;
         $data['images']          = $product->images->map(fn($img) => [
@@ -104,7 +104,7 @@ class BrandProductController extends Controller
 
     private function transformList($products)
     {
-        $pricing = app(PromotionService::class)->priceMany($products);
+        $pricing = app(\App\Services\Pricing\PricingService::class)->priceMany($products);
         return collect(\App\Services\ProductCardImages::attach(
             $products->map(fn($p) => $this->transformListItem($p, $pricing[$p->id]))->values()->all()
         ));
@@ -118,7 +118,7 @@ class BrandProductController extends Controller
             'name'              => $p->name,
             'slug'              => $p->slug,
             'short_description' => $p->short_description,
-            'price'             => (float) $p->price,
+            'price'             => $pricing['price'],
             'stock'             => $p->stock,
             'featured'          => $p->featured,
             'views'             => $p->views,

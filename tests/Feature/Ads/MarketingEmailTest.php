@@ -154,7 +154,13 @@ class MarketingEmailTest extends TestCase
     {
         $cat = $this->makeCategory();
         $sub = $this->subcategory($cat);
-        $c   = $this->campaignFor($cat, ['subcategory_id' => $sub, 'delivery_fee' => 0]);
+        $c   = $this->campaignFor($cat, ['subcategory_id' => $sub]);
+        // A deal is a product discounted right now (delivery is free on every product, so it is no longer one)
+        $promo = \App\Models\Promotion::create([
+            'seller_id' => $c->seller_id, 'name' => 'Deal', 'type' => 'discount', 'discount_type' => 'percentage', 'discount_value' => 20,
+            'status' => 'active', 'priority' => 5, 'starts_at' => now()->subHour(), 'ends_at' => now()->addDays(2),
+        ]);
+        $promo->products()->attach($c->product_id);
         $viewed = $this->readyProduct($this->makeUser('seller'), $cat, ['subcategory_id' => $sub]);
         $user = $this->optedIn();
         $this->views($user, $viewed, 3);

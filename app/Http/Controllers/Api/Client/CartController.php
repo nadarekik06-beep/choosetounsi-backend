@@ -21,12 +21,17 @@ class CartController extends Controller
     private UserPreferenceService $preferenceService;
     private PromotionService $promotionService;         // ← PROMO FIX: declare property
 
+    /** The prices the client sees (delivery included): every amount of the cart payload. */
+    private \App\Services\Pricing\PricingService $pricing;
+
     public function __construct(
         UserPreferenceService $preferenceService,
-        PromotionService $promotionService              // ← PROMO FIX: inject
+        PromotionService $promotionService,             // ← PROMO FIX: inject
+        \App\Services\Pricing\PricingService $pricing
     ) {
         $this->preferenceService = $preferenceService;
         $this->promotionService  = $promotionService;  // ← PROMO FIX: assign
+        $this->pricing           = $pricing;
     }
 
     /**
@@ -44,7 +49,7 @@ class CartController extends Controller
                 'variant.attributeOptions.attribute',
                 'variant.images',
                 // Pack row relation (only loaded when pack_id is set)
-                'pack',
+                'pack.items.product',
             ])
             ->get();
 
@@ -66,8 +71,29 @@ class CartController extends Controller
                 'subtotal' => round($mapped->sum('line_total'), 3),
                 'savings'  => round($mapped->sum(fn ($i) => $i['line_savings'] ?? 0), 3),
                 'promo_ended' => $mapped->filter(fn ($i) => $i['promo_ended'] ?? false)->pluck('name')->values(),
+                // Per shop: multi-item discount / "add another item" hint, and the cart total
+                'summary'     => $this->pricing->cartSummary($items),
+                'free_delivery' => true,
             ],
         ]);
+    }
+
+    /**
+     * POST /api/cart/summary  { item_ids: [...] }
+     *
+     * The same per-shop summary for the rows the buyer ticked in the cart
+     * drawer (the storefront never computes a discount itself).
+     */
+    public function summary(Request $request)
+    {
+        $request->validate(['item_ids' => 'required|array|max:200', 'item_ids.*' => 'integer']);
+
+        $rows = $this->cartQuery($request)
+            ->whereIn('id', $request->input('item_ids'))
+            ->with(['product', 'variant', 'pack.items.product'])
+            ->get();
+
+        return response()->json(['success' => true, 'data' => $this->pricing->cartSummary($rows)]);
     }
 
     /**
@@ -436,9 +462,12 @@ private function safeSessionId(Request $request): ?string
         $product = $item->product;
         $variant = $item->variant;
  
-        // Same pricing block (and rounding) as checkout's order lines
-        $promoData = $this->promotionService->priceLine($product, $variant);
+        // Same promotion and rounding as checkout's order lines, shown as the client's
+        // prices (delivery of the product's size included)
+        $base      = $this->promotionService->priceLine($product, $variant);
+        $promoData = $this->pricing->toClient($base, $this->pricing->sizeOf($product));
         $price     = $promoData['final_price'];
+        $ended     = \App\Services\Orders\OrderPricing::promotionEnded($item, $base);
  
         $imageUrl = $this->resolveImageUrl($product, $variant);
         $stock    = $variant ? $variant->stock : $product->stock;
@@ -477,8 +506,8 @@ private function safeSessionId(Request $request): ?string
             'discount_amount'  => $promoData['discount_amount'],
             'line_savings'     => \App\Support\Millimes::toFloat(\App\Support\Millimes::of($promoData['discount_amount']) * (int) $item->quantity),
             // Added during a promotion that has ended: normal price now, tell the buyer
-            'promo_ended'       => \App\Services\Orders\OrderPricing::promotionEnded($item, $promoData),
-            'promo_ended_price' => \App\Services\Orders\OrderPricing::promotionEnded($item, $promoData) ? (float) $item->promo_price_snapshot : null,
+            'promo_ended'       => $ended,
+            'promo_ended_price' => $ended ? $this->pricing->display($item->promo_price_snapshot, $this->pricing->sizeOf($product)) : null,
             'quantity'         => $item->quantity,
             'stock'            => $stock,
             'line_total'       => \App\Support\Millimes::toFloat(\App\Support\Millimes::of($price) * (int) $item->quantity),
@@ -486,8 +515,8 @@ private function safeSessionId(Request $request): ?string
             'variant_label'    => $variantLabel,
             'variant_options'  => $variantOptions,
             'is_pack'          => false,
-            // Delivery is charged per seller parcel at checkout (POST /checkout/quote)
-            'is_free_delivery' => $product->isFreeDelivery(),
+            // Delivery is free everywhere (included in the price above)
+            'free_delivery'    => true,
         ];
     }
 
@@ -504,6 +533,11 @@ private function safeSessionId(Request $request): ?string
         if ($pack) {
             $imageUrl = $pack->image_url ?? null;
         }
+        // The pack's CURRENT price as the client sees it (one included delivery per pack):
+        // carts saved earlier refresh to it; checkout prices the same way
+        $priceM = $pack
+            ? \App\Support\Millimes::of($pack->pack_price) + $this->pricing->packFeeM($pack)
+            : \App\Support\Millimes::of($item->pack_price_snapshot);
 
         return [
             'id'              => $item->id,
@@ -518,11 +552,11 @@ private function safeSessionId(Request $request): ?string
             'category'        => 'Bundle',
             'seller_id'       => null,
             'seller_name'     => null,
-            // Display only: checkout re-prices the pack at its current price (409 if changed)
-            'price'           => $item->pack_price_snapshot,
+            'price'           => \App\Support\Millimes::toFloat($priceM),
             'quantity'        => max(1, (int) $item->quantity),
             'stock'           => 999, // checked per product at checkout
-            'line_total'      => \App\Support\Millimes::toFloat(\App\Support\Millimes::of($item->pack_price_snapshot) * max(1, (int) $item->quantity)),
+            'line_total'      => \App\Support\Millimes::toFloat($priceM * max(1, (int) $item->quantity)),
+            'free_delivery'   => true,
             'image_url'       => $imageUrl,
             'variant_label'   => null,
             'variant_options' => [],

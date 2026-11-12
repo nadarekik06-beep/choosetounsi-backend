@@ -154,9 +154,11 @@ class AdminPromotionTest extends TestCase
     private function assertHalfPrice(?array $p, string $where): void
     {
         $this->assertNotNull($p, "{$where}: product missing");
-        $this->assertEqualsWithDelta(50, (float) $p['final_price'], 0.0005, "{$where}: final_price");
-        $this->assertEqualsWithDelta(100, (float) $p['original_price'], 0.0005, "{$where}: original_price");
-        $this->assertSame(50, $p['discount_percent'], "{$where}: discount_percent");
+        // The seller's 100 → 50 as the client sees it: delivery (S fee 8.000) included and never
+        // discounted, so 108 → 58 and the badge is floor(50 / 108) = 46 %
+        $this->assertEqualsWithDelta(58, (float) $p['final_price'], 0.0005, "{$where}: final_price");
+        $this->assertEqualsWithDelta(108, (float) $p['original_price'], 0.0005, "{$where}: original_price");
+        $this->assertSame(46, $p['discount_percent'], "{$where}: discount_percent");
         $this->assertSame('admin', $p['promotion']['source'] ?? null, "{$where}: promotion source");
     }
 
@@ -183,21 +185,21 @@ class AdminPromotionTest extends TestCase
         $this->assertHalfPrice($cards[0], 'home feed card');
         $chat = collect(app(\App\Services\Chat\ProductRetriever::class)->search(['keywords' => [$this->token]])['products'])->firstWhere('id', $id);
         $this->assertNotNull($chat, 'AI chat finds it');
-        $this->assertEqualsWithDelta(50, $chat['price'], 0.0005, 'AI chat price');
-        $this->assertSame(50, $chat['discount_percent'], 'AI chat card -X%');
+        $this->assertEqualsWithDelta(58, $chat['price'], 0.0005, 'AI chat price');
+        $this->assertSame(46, $chat['discount_percent'], 'AI chat card -X%');
 
         $cart = $this->addToCart($this->robe, null, 2);
-        $this->assertEqualsWithDelta(50, (float) $cart['items'][0]['price'], 0.0005);
-        $this->assertEqualsWithDelta(100, (float) $cart['items'][0]['original_price'], 0.0005);
-        $this->assertSame(50, $cart['items'][0]['discount_percent']);
+        $this->assertEqualsWithDelta(58, (float) $cart['items'][0]['price'], 0.0005);
+        $this->assertEqualsWithDelta(108, (float) $cart['items'][0]['original_price'], 0.0005);
+        $this->assertSame(46, $cart['items'][0]['discount_percent']);
         $this->assertEqualsWithDelta(100, (float) $cart['savings'], 0.0005, 'cart total savings');
 
         $quote = $this->as($this->customer)->postJson('/api/checkout/quote', ['payment_method' => 'cod'])->assertOk()->json('data');
         $line  = $quote['parcels'][0]['lines'][0];
-        $this->assertEqualsWithDelta(100, $line['original_unit_price'], 0.0005);
-        $this->assertEqualsWithDelta(50, $line['unit_price'], 0.0005);
+        $this->assertEqualsWithDelta(108, $line['original_unit_price'], 0.0005);
+        $this->assertEqualsWithDelta(58, $line['unit_price'], 0.0005);
         $this->assertEqualsWithDelta(100, $line['promo_discount'], 0.0005);
-        $this->assertSame(50, $line['discount_percent']);
+        $this->assertSame(46, $line['discount_percent']);
         $this->assertEqualsWithDelta(100, $quote['promo_savings'], 0.0005);
 
         // Seller: notified, sees it labelled and read-only
@@ -315,8 +317,8 @@ class AdminPromotionTest extends TestCase
 
         $cart = $this->as($this->customer)->getJson('/api/cart')->assertOk()->json('data');
         $this->assertTrue($cart['items'][0]['promo_ended']);
-        $this->assertEqualsWithDelta(50, $cart['items'][0]['promo_ended_price'], 0.0005);
-        $this->assertEqualsWithDelta(100, (float) $cart['items'][0]['price'], 0.0005);
+        $this->assertEqualsWithDelta(58, $cart['items'][0]['promo_ended_price'], 0.0005);
+        $this->assertEqualsWithDelta(108, (float) $cart['items'][0]['price'], 0.0005);
         $this->assertSame([$this->robe->name], $cart['promo_ended']);
 
         $quote = $this->as($this->customer)->postJson('/api/checkout/quote', ['payment_method' => 'cod'])->assertOk()->json('data');
@@ -352,7 +354,7 @@ class AdminPromotionTest extends TestCase
         $this->assertFalse($sellerPromo->products()->where('products.id', $this->robe->id)->exists());
         $detail = $this->getJson("/api/products/{$this->robe->slug}")->json('data');
         $this->assertSame($adminId, $detail['promotion']['id']);
-        $this->assertEqualsWithDelta(50, (float) $detail['final_price'], 0.0005);
+        $this->assertEqualsWithDelta(58, (float) $detail['final_price'], 0.0005);
         Notification::assertSentTo($this->seller, AdminPromotionNotification::class, fn ($n) => $n->event === 'replaced');
 
         // A seller can't add a promotion on top of the admin one either
@@ -372,7 +374,7 @@ class AdminPromotionTest extends TestCase
         $this->adminPromo([$this->robe->id], ['replace_conflicts' => true])->assertCreated();
         $this->assertSame('active', $sellerPromo->fresh()->status);
         $this->assertSame([$other->id], $sellerPromo->products()->pluck('products.id')->map(fn ($i) => (int) $i)->all());
-        $this->assertEqualsWithDelta(32, (float) $this->getJson("/api/products/{$other->slug}")->json('data.final_price'), 0.0005);
+        $this->assertEqualsWithDelta(40, (float) $this->getJson("/api/products/{$other->slug}")->json('data.final_price'), 0.0005, '32 for the seller + 8 delivery');
     }
 
     // ── 7. Seller coupon + promoted product ──────────────────────────────
@@ -456,7 +458,7 @@ class AdminPromotionTest extends TestCase
         $admin = $this->as($this->admin);
 
         $admin->postJson("/api/admin/promotions/{$id}/pause")->assertOk()->assertJsonPath('data.display_status', 'paused');
-        $this->assertEqualsWithDelta(100, (float) $this->getJson("/api/products/{$this->robe->slug}")->json('data.final_price'), 0.0005);
+        $this->assertEqualsWithDelta(108, (float) $this->getJson("/api/products/{$this->robe->slug}")->json('data.final_price'), 0.0005);
 
         // While paused the seller may start their own; resuming then conflicts
         $sp = $this->sellerPromo($this->robe);
@@ -465,7 +467,7 @@ class AdminPromotionTest extends TestCase
         $this->assertSame('expired', $sp->fresh()->status);
 
         $this->as($this->admin)->putJson("/api/admin/promotions/{$id}", ['discount_value' => 30])->assertOk()->assertJsonPath('data.discount_value', 30);
-        $this->assertEqualsWithDelta(70, (float) $this->getJson("/api/products/{$this->robe->slug}")->json('data.final_price'), 0.0005);
+        $this->assertEqualsWithDelta(78, (float) $this->getJson("/api/products/{$this->robe->slug}")->json('data.final_price'), 0.0005);
 
         $this->as($this->admin)->deleteJson("/api/admin/promotions/{$id}")->assertOk();
         $this->assertNull(Promotion::find($id));
@@ -512,7 +514,7 @@ class AdminPromotionTest extends TestCase
         ])->assertCreated()->json('data');
         $this->assertSame('seller', $res['created_by']);
         $this->assertFalse($res['read_only']);
-        $this->assertEqualsWithDelta(80, (float) $this->getJson("/api/products/{$this->robe->slug}")->json('data.final_price'), 0.0005);
+        $this->assertEqualsWithDelta(88, (float) $this->getJson("/api/products/{$this->robe->slug}")->json('data.final_price'), 0.0005);
         $this->assertSame('seller', $this->getJson("/api/products/{$this->robe->slug}")->json('data.promotion.source'));
 
         // Same payload the dashboard modal sends on edit

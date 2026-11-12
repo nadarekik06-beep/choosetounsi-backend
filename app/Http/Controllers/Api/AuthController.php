@@ -62,11 +62,12 @@ class AuthController extends Controller
                 ->inRandomOrder()
                 ->limit(4)
                 ->with(['primaryImage'])
-                ->get(['id', 'name', 'slug', 'price'])
+                ->get(['id', 'name', 'slug', 'price', 'parcel_size'])
                 ->map(fn($p) => [
                     'name'  => $p->name,
                     'slug'  => $p->slug,
-                    'price' => $p->price,
+                    // The price the client sees on the site (delivery included)
+                    'price' => app(\App\Services\Pricing\PricingService::class)->display($p->price, $p->parcel_size),
                     'image' => $p->primaryImage
                         ? asset('storage/' . $p->primaryImage->image_path)
                         : null,

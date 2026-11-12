@@ -85,8 +85,12 @@ class AdminProductEditor
                 'pack_contents'     => $product->pack_contents,
                 'featured'          => (bool) $product->featured,
                 'occasions'         => $product->occasions,
-                'free_delivery'     => $product->isFreeDelivery(),
                 'parcel_size'       => $product->parcel_size ?? 'S',
+                // Older products silently got S: false until a seller or an admin chooses the size
+                'parcel_size_confirmed' => $product->parcelSizeConfirmed(),
+                // What the client sees: base price + the delivery included for the saved size
+                'display_price'     => app(\App\Services\Pricing\PricingService::class)->display($product->price, $product->parcel_size),
+                'included_fees'     => array_map(fn ($m) => \App\Support\Millimes::toFloat($m), app(\App\Services\Pricing\PricingService::class)->fees()),
                 'admin_note'        => $product->admin_note,
                 'admin_edited_at'   => optional($product->admin_edited_at)->toISOString(),
                 'admin_edited_by'   => $editor ? ['id' => $editor->id, 'name' => $editor->name] : null,
@@ -158,7 +162,7 @@ class AdminProductEditor
                 // No defaults: the admin enters the real price and quantity
                 'price' => null, 'stock' => null, 'category_id' => null, 'subcategory_id' => null,
                 'is_active' => true, 'is_approved' => false, 'is_pack' => false, 'pack_quantity' => null, 'pack_contents' => null,
-                'featured' => false, 'occasions' => [Occasions::DEFAULT], 'free_delivery' => false, 'parcel_size' => 'S',
+                'featured' => false, 'occasions' => [Occasions::DEFAULT], 'parcel_size' => 'S', 'parcel_size_confirmed' => false,
                 'admin_note' => null, 'admin_edited_at' => null, 'admin_edited_by' => null, 'status' => 'new',
                 'rejection_reason' => null, 'created_at' => null, 'updated_at' => null, 'storefront_url' => null,
                 'multicolor_label' => null, 'created_by_admin' => null,
@@ -501,7 +505,6 @@ class AdminProductEditor
             'is_pack'           => 'required|boolean',
             'pack_quantity'     => 'nullable|required_if:is_pack,true|integer|min:2|max:1000',
             'pack_contents'     => 'nullable|string|max:500',
-            'free_delivery'     => 'required|boolean',
             'parcel_size'       => 'nullable|in:' . implode(',', \App\Support\ParcelSize::ALL),
             'occasions'         => 'required|array|min:1',
             'occasions.*'       => 'string|in:' . implode(',', Occasions::keys()),
@@ -696,9 +699,9 @@ class AdminProductEditor
             'is_pack'           => (bool) $data['is_pack'],
             'pack_quantity'     => $data['is_pack'] ? (int) $data['pack_quantity'] : null,
             'pack_contents'     => $data['is_pack'] ? (trim((string) ($data['pack_contents'] ?? '')) ?: null) : null,
-            // Same mapping as the seller form: free → 0, otherwise platform default (null)
-            'delivery_fee'      => $data['free_delivery'] ? 0 : null,
             'parcel_size'       => $data['parcel_size'] ?? ($product->parcel_size ?? 'S'),
+            // The admin chose the size: confirmed (it sets the delivery included in the displayed price)
+            'parcel_size_confirmed_at' => !empty($data['parcel_size']) ? now() : $product->parcel_size_confirmed_at,
             'admin_note'        => trim((string) ($data['admin_note'] ?? '')) ?: null,
         ]);
         $product->save();
@@ -837,7 +840,6 @@ class AdminProductEditor
                 'pack_quantity'     => $product->pack_quantity,
                 'pack_contents'     => $product->pack_contents,
                 'occasions'         => implode(', ', $product->occasions),
-                'free_delivery'     => $product->isFreeDelivery(),
                 'parcel_size'       => $product->parcel_size ?? 'S',
                 'admin_note'        => $product->admin_note,
             ],

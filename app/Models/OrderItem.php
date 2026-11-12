@@ -46,6 +46,13 @@ class OrderItem extends Model
         'pack_group',              // one group per pack row of the order
         'pack_allocation',         // this line's share of the pack price × pack quantity
         'pack_original_value',     // this line's items at their original price
+        // ── Delivery included in the displayed price (PricingService, NULL on older orders) ──
+        'parcel_size',                 // the item's size (S / L / XL)
+        'included_fee',                // fee inside ONE unit's display price (null on pack lines)
+        'included_fee_total',          // fee inside the whole line (pack lines: their share of the pack's fee)
+        'pack_units',                  // pack lines: packs bought (a pack = one unit)
+        'display_unit_price',          // unit price the client saw
+        'display_original_unit_price', // crossed-out unit price the client saw
         'commission_tier_price',   // original unit price the commission bracket was chosen from
         'funded_by',               // seller | platform
         'platform_funded_amount',  // discount paid back to the seller by the platform
@@ -113,6 +120,28 @@ class OrderItem extends Model
         $u = (float) ($this->attributes['unit_price'] ?? 0);
         $q = (int)   ($this->attributes['quantity']   ?? 1);
         return round($u * $q, 3);
+    }
+
+    // ── What the client saw (delivery included in the price) ───────────────
+    // Orders placed before delivery was included have no fee: these equal the base amounts.
+
+    /** Delivery fee included in this line's displayed price. */
+    public function includedFeeTotal(): float
+    {
+        return (float) ($this->attributes['included_fee_total'] ?? 0);
+    }
+
+    /** Unit price as displayed to the client. */
+    public function clientUnitPrice(): float
+    {
+        $display = $this->attributes['display_unit_price'] ?? null;
+        return round((float) ($display ?? $this->unit_price), 3);
+    }
+
+    /** Line total as displayed to the client (before the coupon). */
+    public function clientTotal(): float
+    {
+        return round((float) $this->total + $this->includedFeeTotal(), 3);
     }
 
     /**

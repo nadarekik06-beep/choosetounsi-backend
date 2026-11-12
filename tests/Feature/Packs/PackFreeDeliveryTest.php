@@ -47,15 +47,12 @@ class PackFreeDeliveryTest extends TestCase
         return $pack;
     }
 
-    public function test_pack_is_free_delivery_only_when_all_products_are(): void
+    public function test_every_pack_is_free_delivery_whatever_the_old_flag_says(): void
     {
-        $this->getJson('/api/packs/' . $this->pack([0, 0])->slug)
-            ->assertOk()->assertJsonPath('data.is_free_delivery', true);
-
-        $this->getJson('/api/packs/' . $this->pack([0, null])->slug)
-            ->assertOk()->assertJsonPath('data.is_free_delivery', false);
-
-        $this->getJson('/api/packs/' . $this->pack([null])->slug)
-            ->assertOk()->assertJsonPath('data.is_free_delivery', false);
+        // Seller-offered free delivery is gone: delivery is free for the client on every pack
+        foreach ([[0, 0], [0, null], [null]] as $fees) {
+            $this->getJson('/api/packs/' . $this->pack($fees)->slug)
+                ->assertOk()->assertJsonPath('data.free_delivery', true);
+        }
     }
 }

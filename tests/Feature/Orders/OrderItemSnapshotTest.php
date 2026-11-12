@@ -212,7 +212,7 @@ class OrderItemSnapshotTest extends TestCase
         $this->assertSame("Rouge{$this->r} / M", $items[$red->id]['variant_label']);
         $this->assertSame("Bleu{$this->r} / M", $items[$blue->id]['variant_label']);
         $this->assertSame(2, $items[$blue->id]['quantity']);
-        $this->assertEquals(30, $items[$red->id]['unit_price']);
+        $this->assertEquals(38, $items[$red->id]['unit_price'], 'as displayed to the buyer: 30 + delivery 8');
         $this->assertSame('#ff0000', collect($items[$red->id]['variant_attributes'])->firstWhere('slug', 'color')['color_hex']);
 
         $line = $this->line($order, $red);

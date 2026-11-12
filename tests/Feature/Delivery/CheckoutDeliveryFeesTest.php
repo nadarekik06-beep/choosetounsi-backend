@@ -36,7 +36,9 @@ class CheckoutDeliveryFeesTest extends TestCase
         $order = $docs->query()->findOrFail($orderId);
         foreach ($docs->activeSellerOrders($order) as $so) {
             $this->assertSame(self::m($so->cod_amount), self::m($docs->money($order, $so)['cod']), "slip COD of parcel {$so->id}");
-            $this->assertSame(self::m($so->delivery_fee), self::m($docs->money($order, $so)['shipping']));
+            // Delivery included in the prices: the slip shows it as free (the parcel fee is inside the prices)
+            $this->assertSame(0, self::m($docs->money($order, $so)['shipping']));
+            $this->assertTrue($docs->money($order, $so)['is_free_delivery']);
         }
         $this->assertSame(self::m($order->total_amount), collect($docs->slipsFor($order))->sum(fn ($s) => self::m($s['money']['cod'])));
     }
@@ -49,8 +51,10 @@ class CheckoutDeliveryFeesTest extends TestCase
 
         $res = $this->checkout();
         $this->assertEquals(58.0, $res['total']);
-        $this->assertEquals(8.0, $res['parcels'][0]['delivery_fee']);
-        $this->assertFalse($res['parcels'][0]['is_free_delivery']);
+        // Delivery is free for the client: the 8.000 parcel fee sits inside the displayed 58.000
+        $this->assertEquals(0.0, $res['parcels'][0]['delivery_fee']);
+        $this->assertTrue($res['parcels'][0]['is_free_delivery']);
+        $this->assertEquals(58.0, $res['parcels'][0]['lines'][0]['unit_price']);
 
         // 15% of 50 (free plan, ≤ 100 DT tier)
         $this->assertParcel($this->parcel($res['order_id'], $seller), [
@@ -60,25 +64,27 @@ class CheckoutDeliveryFeesTest extends TestCase
         $order = Order::find($res['order_id']);
         $this->assertTrue($order->shipping_per_parcel);
         $this->assertSame('customer', $order->getAttribute('shipping_paid_by'));
+        $this->assertSame('included', $order->getAttribute('pricing_model'));
         $this->assertSlipsMatch($res['order_id']);
     }
 
     // 2 ─────────────────────────────────────────────────────────────────────
-    public function test_2_single_product_free_delivery(): void
+    public function test_2_a_legacy_seller_free_delivery_flag_changes_nothing(): void
     {
+        // Seller-offered free delivery no longer exists: the old flag is ignored like any product
         $seller = $this->seller('free');
         $this->addToCart($this->product($seller, 50, true));
 
         $res = $this->checkout();
-        $this->assertEquals(50.0, $res['total']);
-        $this->assertTrue($res['parcels'][0]['is_free_delivery']);
+        $this->assertEquals(58.0, $res['total']);
+        $this->assertTrue($res['parcels'][0]['is_free_delivery'], 'shown as free for the client');
 
-        // Seller pays the 6.000 contribution; platform margin 6 − 7 = −1
+        // Nothing is charged to the seller: payout = 50 − 15 %
         $this->assertParcel($this->parcel($res['order_id'], $seller), [
-            'items' => '50', 'delivery_fee' => '0', 'cod' => '50', 'commission' => '7.5',
-            'contribution' => '6', 'payout' => '36.5', 'agency' => '7', 'margin' => '-1', 'to_remit' => '43', 'free' => true,
+            'items' => '50', 'delivery_fee' => '8', 'cod' => '58', 'commission' => '7.5',
+            'contribution' => '0', 'payout' => '42.5', 'agency' => '7', 'margin' => '1', 'to_remit' => '51', 'free' => false,
         ]);
-        $this->assertSame('seller', Order::find($res['order_id'])->getAttribute('shipping_paid_by'));
+        $this->assertSame('customer', Order::find($res['order_id'])->getAttribute('shipping_paid_by'));
         $this->assertSlipsMatch($res['order_id']);
     }
 
@@ -197,22 +203,23 @@ class CheckoutDeliveryFeesTest extends TestCase
         $this->addToCart($flash);
 
         $quote = $this->quote();
-        $this->assertSame(['8', '0', '8'], array_map(fn ($p) => rtrim(rtrim(number_format($p['delivery_fee'], 3, '.', ''), '0'), '.'), $quote['parcels']));
+        // Delivery is free for the client in every parcel (the three fees are inside the prices)
+        $this->assertSame([0.0, 0.0, 0.0], array_map(fn ($p) => (float) $p['delivery_fee'], $quote['parcels']));
         $res = $this->checkout();
-        $this->assertEquals(286.0, $res['total']);
-        $this->assertEquals(16.0, $res['delivery_fee']);
+        $this->assertEquals(294.0, $res['total']);   // 98 + 128 + 68
+        $this->assertEquals(0.0, $res['delivery_fee']);
         $this->assertCount(3, $res['parcels']);
 
         $this->assertParcel($pa = $this->parcel($res['order_id'], $a), [
             'items' => '90', 'cod' => '98', 'commission' => '13.5', 'payout' => '76.5', 'agency' => '7', 'margin' => '1', 'to_remit' => '91', 'free' => false,
         ]);
         $this->assertParcel($pb = $this->parcel($res['order_id'], $b), [
-            'items' => '120', 'cod' => '120', 'commission' => '10.8', 'contribution' => '6', 'payout' => '103.2', 'agency' => '7', 'margin' => '-1', 'to_remit' => '113', 'free' => true,
+            'items' => '120', 'cod' => '128', 'commission' => '10.8', 'contribution' => '0', 'payout' => '109.2', 'agency' => '7', 'margin' => '1', 'to_remit' => '121', 'free' => false,
         ]);
         $this->assertParcel($pc = $this->parcel($res['order_id'], $c), [
             'items' => '60', 'cod' => '68', 'commission' => '5.4', 'payout' => '54.6', 'agency' => '7', 'margin' => '1', 'to_remit' => '61', 'free' => false,
         ]);
-        $this->assertSame('mixed', Order::find($res['order_id'])->getAttribute('shipping_paid_by'));
+        $this->assertSame('customer', Order::find($res['order_id'])->getAttribute('shipping_paid_by'));
         $this->assertSlipsMatch($res['order_id']);
 
         // Delivered + remitted: the finance section reconciles to the millime
@@ -238,12 +245,12 @@ class CheckoutDeliveryFeesTest extends TestCase
             $sum['commission'] += self::m($k['commission']);
             $sum['margin'] += self::m($k['platform_delivery_margin']);
         }
-        $this->assertSame(286000, $sum['cash']);
+        $this->assertSame(294000, $sum['cash']);
         $this->assertSame(21000, $sum['agency']);
-        $this->assertSame(265000, $sum['remit']);
-        $this->assertSame(234300, $sum['payout']);
+        $this->assertSame(273000, $sum['remit']);
+        $this->assertSame(240300, $sum['payout']);
         $this->assertSame(29700, $sum['commission']);
-        $this->assertSame(1000, $sum['margin']);
+        $this->assertSame(3000, $sum['margin']);
         $this->assertSame($sum['remit'], $sum['payout'] + $sum['commission'] + $sum['margin']);
         $this->assertSame(0, self::m($kpis['reconciliation']['difference']));
     }

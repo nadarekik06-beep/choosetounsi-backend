@@ -66,7 +66,8 @@ class PackDiscountTest extends TestCase
         $this->addPack($this->bundle, 2);
         $quote = $this->quote();
         $this->assertCount(1, $quote['parcels'][0]['lines'], 'the storefront still shows one pack line');
-        $this->assertEquals(100.0, $quote['parcels'][0]['lines'][0]['total']);
+        // Displayed: 2 packs × 50 + ONE included delivery (8) per pack = 116
+        $this->assertEquals(116.0, $quote['parcels'][0]['lines'][0]['total']);
 
         $res = $this->place();
         $la = $this->line($res['order_id'], $this->a);
@@ -140,7 +141,9 @@ class PackDiscountTest extends TestCase
         $orderId = $this->deliveredPackOrder();
         $la = OrderItem::where('order_id', $orderId)->where('product_id', $this->a->id)->firstOrFail();
         $lb = OrderItem::where('order_id', $orderId)->where('product_id', $this->b->id)->firstOrFail();
-        // Shape of an order placed before the fix: no pack_id, all the money on the first line
+        // Shape of an order placed before the fix: no pack_id, all the money on the first line,
+        // and before delivery was included in the prices (nothing of the delivery is refunded)
+        DB::table('seller_orders')->where('order_id', $orderId)->update(['pricing_model' => null]);
         DB::table('order_items')->where('id', $la->id)->update(['pack_id' => null, 'pack_group' => null, 'total' => 100, 'net_total' => 100, 'commission_amount' => 15, 'seller_amount' => 85]);
         DB::table('order_items')->where('id', $lb->id)->update(['pack_id' => null, 'pack_group' => null, 'total' => 0, 'net_total' => 0, 'commission_amount' => 0, 'seller_amount' => 0]);
 

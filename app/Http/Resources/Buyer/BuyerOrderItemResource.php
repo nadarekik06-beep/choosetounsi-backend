@@ -32,8 +32,9 @@ class BuyerOrderItemResource extends JsonResource
             'returned_quantity'    => (int) ($item->getAttribute('returned_quantity') ?? 0),
             'return_state'         => $item->return_state,               // returned | partially_returned | null
             'is_returned'          => $item->return_state === 'returned',
-            'unit_price'           => round((float) $item->unit_price, 3),
-            'total'                => round((float) $item->total, 3),
+            // As displayed to the buyer (delivery included); equal to the stored amounts on older orders
+            'unit_price'           => $item->clientUnitPrice(),
+            'total'                => $item->clientTotal(),
             'discount_amount'      => round((float) ($item->discount_amount ?? 0), 3),   // the buyer's coupon share
             'seller_order_id'      => $item->seller_order_id,
             'seller_order_status'  => $so?->status,

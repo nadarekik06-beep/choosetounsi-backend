@@ -157,6 +157,9 @@
                     @if ($m['discount'] > 0)
                         <tr><td>Remise / Discount{{ $slip['coupon_code'] ? ' (' . $slip['coupon_code'] . ')' : '' }}</td><td class="num">−{{ $dt($m['discount']) }}</td></tr>
                     @endif
+                    @if (($m['multi_item_discount'] ?? 0) > 0)
+                        <tr><td>Remise multi-articles / Multi-item discount</td><td class="num">−{{ $dt($m['multi_item_discount']) }}</td></tr>
+                    @endif
                     <tr><td>Livraison / Shipping</td><td class="num">{{ $m['shipping'] > 0 ? $dt($m['shipping']) : (!empty($m['is_free_delivery']) ? 'Gratuite / Free' : ($loop->count > 1 ? 'sur 1er bordereau' : $dt(0))) }}</td></tr>
                     <tr><td style="border-top: 1pt solid #222;"><b>Total</b></td><td class="num" style="border-top: 1pt solid #222;"><b>{{ $dt($m['total']) }}</b></td></tr>
                 </table>

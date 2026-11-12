@@ -149,7 +149,6 @@ class AdminProductEditorTest extends TestCase
             'subcategory_id'    => $p['subcategory_id'],
             'is_active'         => $p['is_active'],
             'is_pack'           => $p['is_pack'],
-            'free_delivery'     => $p['free_delivery'],
             'occasions'         => $p['occasions'],
             'pack_quantity'     => $p['pack_quantity'],
             'pack_contents'     => $p['pack_contents'],

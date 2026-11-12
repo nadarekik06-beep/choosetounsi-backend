@@ -28,10 +28,11 @@ class DeliverySettingsAdminTest extends TestCase
         $data = $this->as($this->admin)->getJson('/api/admin/delivery-settings')->assertOk()->json('data');
         $this->assertEquals(8, $data['settings']['client_delivery_fee']);
         $this->assertEquals(7, $data['settings']['agency_delivery_cost']);
-        $this->assertEquals(6, $data['settings']['seller_free_delivery_contribution']);
+        // Seller-offered free delivery is gone: no contribution, one margin (client fee − Intigo cost)
+        $this->assertArrayNotHasKey('seller_free_delivery_contribution', $data['settings']);
         $this->assertEquals(1, $data['margins']['normal']);
-        $this->assertEquals(-1, $data['margins']['free_delivery']);
-        $this->assertCount(3, $data['warnings']);   // negative margin (S, L, XL alike): warned, not blocked
+        $this->assertArrayNotHasKey('free_delivery', $data['margins']);
+        $this->assertCount(0, $data['warnings']);
         $this->assertEquals(8, $data['sizes']['L']['client_fee']);
         $this->assertSame(4, $data['sizes']['L']['package_size']);
         $this->assertNotEmpty($data['history']);
@@ -39,7 +40,7 @@ class DeliverySettingsAdminTest extends TestCase
 
     public function test_validation_rejects_negatives_and_more_than_three_decimals(): void
     {
-        foreach ([['client_delivery_fee' => -1], ['agency_delivery_cost' => '7.0001'], ['seller_free_delivery_contribution' => 'abc'], ['refused_parcel_fee_paid_by' => 'client']] as $bad) {
+        foreach ([['client_delivery_fee' => -1], ['agency_delivery_cost' => '7.0001'], ['refused_parcel_agency_fee' => 'abc'], ['refused_parcel_fee_paid_by' => 'client']] as $bad) {
             $this->as($this->admin)->putJson('/api/admin/delivery-settings', $bad + self::VALID)->assertStatus(422);
         }
         $this->as($this->seller('free'))->putJson('/api/admin/delivery-settings', self::VALID)->assertStatus(403);
@@ -61,11 +62,16 @@ class DeliverySettingsAdminTest extends TestCase
         $this->assertSame($this->admin->id, (int) $log->changed_by);
         $this->assertNotNull($log->created_at);
 
-        // Seller sees the new cost of free delivery; storefront products the new fee
+        // Nothing is charged to sellers for delivery any more (endpoint kept for older dashboards);
+        // storefront products show the new fee inside their price at once
         $seller = $this->seller('free');
         $this->as($seller)->getJson('/api/seller/shipping-cost')->assertOk()
-            ->assertJsonPath('data.free_delivery_contribution', 6)
-            ->assertJsonPath('data.customer_delivery_fee', 9.5);
+            ->assertJsonPath('data.free_delivery_contribution', 0)
+            ->assertJsonPath('data.delivery_included', true);
+        $product = $this->product($seller, 50);
+        $this->flushHeaders();
+        $this->app['auth']->forgetGuards();
+        $this->getJson("/api/products/{$product->slug}")->assertOk()->assertJsonPath('data.final_price', 59.5);
     }
 
     public function test_exchange_parcel_switch_is_off_by_default_saved_and_logged(): void
@@ -128,11 +134,13 @@ class DeliverySettingsAdminTest extends TestCase
     {
         $seller  = $this->seller('free');
         $product = $this->product($seller, 50);
-        $this->as($this->admin)->putJson("/api/admin/products/{$product->id}", ['delivery_fee' => 12])->assertStatus(422);
+        // No per-product fee and no seller-offered free delivery: the field is ignored
+        $this->as($this->admin)->putJson("/api/admin/products/{$product->id}", ['delivery_fee' => 12])->assertOk();
         $this->as($this->admin)->putJson("/api/admin/products/{$product->id}", ['delivery_fee' => 0])->assertOk();
-        $this->assertTrue($product->fresh()->isFreeDelivery());
-        $this->assertEquals(0, $product->fresh()->effective_delivery_fee);
-        $this->assertEquals(8, $this->product($seller, 10)->effective_delivery_fee);
+        $this->assertNull($product->fresh()->delivery_fee);
+        $this->assertFalse($product->fresh()->isFreeDelivery());
+        $this->assertArrayNotHasKey('effective_delivery_fee', $product->fresh()->toArray());
+        $this->assertArrayNotHasKey('is_free_delivery', $product->fresh()->toArray());
     }
 
     public function test_per_size_prices_are_saved_and_priced_at_checkout(): void

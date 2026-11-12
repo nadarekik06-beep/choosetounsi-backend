@@ -51,7 +51,11 @@ class ComplaintController extends Controller
             ->get();
 
         $result = $orders->map(function (Order $order) use ($windowHours) {
-            $items = $this->returnableLines($order)->map(fn(array $l) => $l['line']->purchaseSnapshot() + [
+            $items = $this->returnableLines($order)->map(fn(array $l) => [
+                // What the buyer saw (delivery included on current orders), never the seller's base price
+                'unit_price' => $l['line']->clientUnitPrice(),
+                'total'      => round($l['line']->clientUnitPrice() * $l['line']->ordered_quantity, 3),
+            ] + $l['line']->purchaseSnapshot() + [
                 'returnable_quantity' => $l['returnable'],
                 'paid_unit_price'     => $l['paid_unit_price'],
                 'parcel_size'         => \App\Support\ParcelSize::normalize($l['line']->product?->parcel_size),
@@ -117,6 +121,39 @@ class ComplaintController extends Controller
         Complaint::withItemSnapshots($complaint);
 
         return response()->json(['success' => true, 'data' => (new BuyerComplaintResource(ReturnPresenter::forClient($complaint)))->resolve($request)]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // POST /api/client/complaints/preview
+    // What the chosen units would refund (the form shows it before filing).
+    // ─────────────────────────────────────────────────────────────────────
+
+    public function preview(Request $request)
+    {
+        $validated = $request->validate([
+            'order_id'              => 'required|integer|exists:orders,id',
+            'complaint_type'        => 'required|string|in:' . implode(',', array_keys(Complaint::COMPLAINT_TYPES)),
+            'return_all'            => 'nullable|boolean',
+            'items'                 => 'required_without:return_all|array|min:1',
+            'items.*.order_item_id' => 'required_with:items|integer',
+            'items.*.quantity'      => 'required_with:items|integer|min:1',
+        ]);
+
+        $order = $this->ownedOrders($request)->where('id', $validated['order_id'])->with(['sellerOrders', 'items'])->first();
+        if (!$order) {
+            return response()->json(['success' => false, 'message' => __('messages.complaint.order_not_found')], 404);
+        }
+        $returnable = $this->returnableLines($order)->mapWithKeys(fn($l) => [$l['line']->id => $l['returnable']]);
+        $quantities = !empty($validated['return_all'])
+            ? $returnable->filter()->all()
+            : collect($validated['items'] ?? [])
+                ->mapWithKeys(fn($i) => [(int) $i['order_item_id'] => min((int) $i['quantity'], (int) ($returnable[(int) $i['order_item_id']] ?? 0))])
+                ->filter()->all();
+
+        return response()->json([
+            'success' => true,
+            'data'    => $this->returns->previewRefund($order, $quantities, $validated['complaint_type']),
+        ]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -331,6 +368,7 @@ class ComplaintController extends Controller
             ->map(function (OrderItem $line) use ($reserved) {
                 $qty = (int) $line->quantity;
                 $net = $line->net_total !== null ? (float) $line->net_total : (float) $line->total - (float) $line->discount_amount;
+                $net += $line->includedFeeTotal();   // as displayed; the exact refund comes from POST …/complaints/preview
                 return [
                     'line'            => $line,
                     'returnable'      => max(0, $qty - (int) ($reserved[$line->id] ?? 0)),

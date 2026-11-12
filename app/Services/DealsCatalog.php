@@ -49,7 +49,7 @@ class DealsCatalog
         return Cache::remember('deals:packs:pv' . \App\Support\PricingCache::version() . ':' . app()->getLocale(), self::CACHE_SECONDS, function () {
             $packs = Pack::available()
                 ->with(['seller:id,name', 'items' => fn ($q) => $q->orderBy('order')->with([
-                    'product:id,name,slug,price,stock,category_id', 'product.primaryImage',
+                    'product:id,name,slug,price,stock,category_id,seller_id,parcel_size', 'product.primaryImage',
                 ])])
                 ->orderByDesc('created_at')
                 ->limit(self::MAX_PACKS)
@@ -57,9 +57,11 @@ class DealsCatalog
 
             $shops = ShopOverview::shopsFor($packs->pluck('seller_id')->filter()->all());
 
-            return $packs->map(function (Pack $pack) use ($shops) {
-                $original = (float) $pack->original_price;
-                $savings  = (float) $pack->savings;
+            $pricing = app(\App\Services\Pricing\PricingService::class);
+
+            return $packs->map(function (Pack $pack) use ($shops, $pricing) {
+                // What the client sees: pack price + one included delivery (a pack = one unit)
+                $shown    = $pricing->packClient($pack);
                 // The pack's category: the one most of its items share
                 $category = $pack->items->pluck('product.category_id')->filter()->countBy()->sortDesc()->keys()->first();
                 return [
@@ -68,10 +70,11 @@ class DealsCatalog
                     'slug'              => $pack->slug,
                     'short_description' => $pack->short_description,
                     'image_url'         => $pack->image_url,
-                    'pack_price'        => (float) $pack->pack_price,
-                    'original_price'    => $original,
-                    'savings'           => $savings,
-                    'discount_percent'  => $original > 0 && $savings > 0 ? (int) round($savings / $original * 100) : 0,
+                    'pack_price'        => $shown['pack_price'],
+                    'original_price'    => $shown['original_price'],
+                    'savings'           => $shown['savings'],
+                    'discount_percent'  => $shown['discount_percent'],
+                    'free_delivery'     => true,
                     'items_count'       => $pack->items->count(),
                     'available_stock'   => $pack->available_stock,
                     'category_id'       => $category ? (int) $category : null,
@@ -178,7 +181,7 @@ class DealsCatalog
             ->with(['primaryImage', 'seller:id,name'])
             ->orderByDesc('views')
             ->get();
-        $pricing = $this->promotions->priceMany($products);
+        $pricing = app(\App\Services\Pricing\PricingService::class)->priceMany($products);
         $images  = ProductImage::whereIn('product_id', $products->pluck('id'))->whereNotNull('color_option_id')
             ->get(['product_id', 'image_path'])->groupBy('product_id');
 
@@ -193,7 +196,6 @@ class DealsCatalog
                 'id'                => $product->id,
                 'name'              => $product->name,
                 'slug'              => $product->slug,
-                'price'             => (float) $product->price,
                 'primary_image_url' => $product->primary_image_url,
                 'variant_images'    => $variantImages,
                 'stock'             => $product->stock,

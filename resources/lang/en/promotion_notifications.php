@@ -3,6 +3,13 @@
 // Seller notifications about promotions created by Choose'Tounsi (App\Notifications\Sellers\AdminPromotionNotification)
 return [
     'greeting'  => 'Hello :name,',
+    // Sent once to the sellers whose products offered free delivery (pricing:notify-free-delivery-sellers)
+    'free_delivery_everywhere' => [
+        'title' => 'Delivery is now free on the whole platform',
+        'body' => 'Delivery is now free on the whole platform and included in the price shown to the customer. You keep receiving your price minus the commission.',
+        'detail' => 'The "free delivery" option of your products no longer exists: nothing is deducted from your earnings for delivery any more. Just check that the parcel size of each product is right.',
+        'cta' => 'See my products',
+    ],
     'details'   => 'Discount: :discount · from :starts to :ends.',
     'funding'   => 'As with your own promotions, your earnings and the commission are calculated on the discounted price.',
     'read_only' => "Promotions created by Choose'Tounsi appear in your dashboard (Promotions) as read-only.",

@@ -82,6 +82,51 @@ class SellerOrder extends Model
         return "'" . implode("','", self::NOT_SHIPPED) . "'";
     }
 
+    /** Placed with delivery included in the displayed prices (App\Services\Pricing\PricingService). */
+    public function isIncludedPricing(): bool
+    {
+        return ($this->attributes['pricing_model'] ?? null) === \App\Services\Pricing\PricingService::MODEL_INCLUDED;
+    }
+
+    /**
+     * This parcel's money as the CLIENT sees it (order screens, e-mails, the slip
+     * and the invoice in the parcel). Never a base price or a fee.
+     *
+     *   delivery included   subtotal = Σ displayed prices, delivery free,
+     *                       total = subtotal − coupon − multi-item discount
+     *   older orders        their real delivery amount, exactly as before
+     *
+     * @return array{subtotal: float, discount: float, multi_item_discount: float, shipping: float, free_delivery: bool, total: float}
+     */
+    public function clientMoney(): array
+    {
+        $m        = fn ($v) => \App\Support\Millimes::of($v ?? 0);
+        $f        = fn (int $v) => \App\Support\Millimes::toFloat($v);
+        $subtotal = $m($this->subtotal);
+        $discount = $m($this->discount_amount);
+        $fee      = $m($this->getAttribute('delivery_fee'));
+        $total    = $subtotal - $discount + $fee;
+
+        if ($this->isIncludedPricing()) {
+            return [
+                'subtotal'            => $f($subtotal + $m($this->getAttribute('included_fees_total'))),
+                'discount'            => $f($discount),
+                'multi_item_discount' => $f($m($this->getAttribute('multi_item_discount'))),
+                'shipping'            => 0.0,
+                'free_delivery'       => true,
+                'total'               => $f($total),
+            ];
+        }
+        return [
+            'subtotal'            => $f($subtotal),
+            'discount'            => $f($discount),
+            'multi_item_discount' => 0.0,
+            'shipping'            => $f($fee),
+            'free_delivery'       => (bool) $this->getAttribute('is_free_delivery'),
+            'total'               => $f($total),
+        ];
+    }
+
     /** CHOOSE'Tounsi's own products: its net is platform revenue, never a seller payout. */
     public function isPlatformParcel(): bool
     {

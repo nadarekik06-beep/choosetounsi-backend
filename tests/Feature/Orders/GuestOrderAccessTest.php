@@ -121,7 +121,8 @@ class GuestOrderAccessTest extends TestCase
         $this->assertSame('** *** 576', $data['phone_masked']);
         $this->assertSame('5 ru•••, Bab Bhar, Tunis', $data['address_masked']);
         $this->assertEquals(108.0, $data['total']);
-        $this->assertEquals(8.0, $data['shipping_fee']);
+        $this->assertEquals(0.0, $data['shipping_fee'], 'delivery is free: its 8.000 is inside the prices');
+        $this->assertTrue($data['free_delivery']);
         $this->assertStringNotContainsString('57252576', json_encode($data));
         $this->assertStringNotContainsString('5 rue de la Kasbah', json_encode($data));
     }

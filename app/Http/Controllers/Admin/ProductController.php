@@ -81,12 +81,19 @@ public function index(Request $request)
         $query->where('category_id', $categoryId);
     if ($sellerId = $request->query('seller_id'))
         $query->where('seller_id', $sellerId);
+    // ?size_unconfirmed=1: products whose parcel size was never chosen (older products silently got S)
+    if ($request->boolean('size_unconfirmed'))
+        $query->whereNull('parcel_size_confirmed_at');
 
     $products = $query->orderByDesc('created_at')
         ->paginate((int) $request->query('per_page', 15));
 
-    $products->getCollection()->transform(function ($product) {
+    $pricing = app(\App\Services\Pricing\PricingService::class);
+    $products->getCollection()->transform(function ($product) use ($pricing) {
         $product->status = $this->deriveStatus($product);
+        // Admin view: the seller's price (price) AND what the client sees (delivery included)
+        $product->display_price         = $pricing->display($product->price, $product->parcel_size);
+        $product->parcel_size_confirmed = $product->parcelSizeConfirmed();
         $product->primary_image_url = $product->primaryImage
             ? Storage::disk('public')->url($product->primaryImage->image_path)
             : null;
@@ -177,17 +184,19 @@ public function index(Request $request)
             'is_active'         => 'sometimes|boolean',
             'is_approved'       => 'sometimes|boolean',
             'featured'          => 'sometimes|boolean',
-            // No custom fee: 0 = free delivery, null = the admin client fee
-            'delivery_fee'      => 'sometimes|nullable|numeric|min:0|max:0',
             'parcel_size'       => 'sometimes|required|in:' . implode(',', \App\Support\ParcelSize::ALL),
         ]);
 
         $fieldsToUpdate = [];
         foreach (['name', 'description', 'short_description', 'price', 'stock',
-                  'category_id', 'subcategory_id', 'is_approved', 'featured', 'delivery_fee', 'parcel_size'] as $field) {
+                  'category_id', 'subcategory_id', 'is_approved', 'featured', 'parcel_size'] as $field) {
             if ($request->has($field)) {
                 $fieldsToUpdate[$field] = $request->input($field);
             }
+        }
+        // An admin choosing the parcel size confirms it (it sets the delivery included in the displayed price)
+        if ($request->has('parcel_size')) {
+            $fieldsToUpdate['parcel_size_confirmed_at'] = now();
         }
 
         if ($request->has('is_active') && $request->boolean('is_active')) {

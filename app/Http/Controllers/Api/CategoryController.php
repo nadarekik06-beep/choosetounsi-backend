@@ -41,7 +41,7 @@ class CategoryController extends Controller
             ])
             ->get();
 
-        app(\App\Services\PromotionService::class)->attachMany($categories->flatMap->activeProducts);
+        app(\App\Services\Pricing\PricingService::class)->attachMany($categories->flatMap->activeProducts);
 
         return response()->json(['success' => true, 'data' => $categories]);
     }
@@ -191,12 +191,12 @@ class CategoryController extends Controller
         $products = $query->paginate($perPage);
 
         // Append primary image URL + promotion pricing
-        $pricing = app(\App\Services\PromotionService::class)->priceMany($products->getCollection());
+        $pricing = app(\App\Services\Pricing\PricingService::class)->priceMany($products->getCollection());
         $products->getCollection()->transform(function ($product) use ($pricing) {
             $product->primary_image_url = $product->primaryImage
                 ? Storage::url($product->primaryImage->image_path)
                 : null;
-            return app(\App\Services\PromotionService::class)->attach($product, $pricing[$product->id]);
+            return app(\App\Services\Pricing\PricingService::class)->attach($product, $pricing[$product->id]);
         });
 
         return response()->json([

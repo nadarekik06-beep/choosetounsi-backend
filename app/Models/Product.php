@@ -23,7 +23,7 @@ class Product extends Model
     protected $fillable = [
         'seller_id', 'category_id', 'subcategory_id',
         'name', 'slug', 'description', 'short_description',
-        'price', 'delivery_fee', 'parcel_size', 'stock', 'low_stock_threshold', 'sku',
+        'price', 'delivery_fee', 'parcel_size', 'parcel_size_confirmed_at', 'stock', 'low_stock_threshold', 'sku',
         'is_approved', 'is_active', 'is_platform_product', 'featured', 'views',
         'is_pack', 'pack_quantity', 'pack_contents', 'rejection_reason', 'deleted_by_seller',
         'changes_requested_at',
@@ -36,7 +36,8 @@ class Product extends Model
         'featured'            => 'boolean',
         'is_platform_product' => 'boolean',
         'price'               => 'decimal:3',
-        'delivery_fee'        => 'decimal:3',   // 0 = free delivery, null = admin client fee
+        'delivery_fee'        => 'decimal:3',   // legacy (seller-offered free delivery): no longer read
+        'parcel_size_confirmed_at' => 'datetime',
         'is_pack'             => 'boolean',
         'pack_quantity'       => 'integer',
         'low_stock_threshold' => 'integer',
@@ -50,8 +51,9 @@ class Product extends Model
     // Occasions live in product_occasions (see App\Support\Occasions); exposed as `occasions`.
     protected $with   = ['occasionRows'];
 
-    // ── NEW: expose computed delivery fields in all toArray() / API responses ──
-    protected $appends = ['primary_image_url', 'is_free_delivery', 'effective_delivery_fee', 'occasions'];
+    // Delivery is free everywhere and included in the displayed price
+    // (App\Services\Pricing\PricingService): no per-product delivery field is exposed.
+    protected $appends = ['primary_image_url', 'occasions'];
 
     // ── Boot ──────────────────────────────────────────────────────────────────
 
@@ -236,19 +238,22 @@ class Product extends Model
         return $query->whereIn($query->getModel()->getTable() . '.gender', $resolver->matchingValues($gender));
     }
 
-    /** Filter on the price the customer pays (after promotion), in SQL so pagination stays exact. */
+    /**
+     * Filter on the price the customer sees and pays (after promotion, delivery
+     * included), in SQL so pagination stays exact. Storefront listings only.
+     */
     public function scopeWhereFinalPrice($query, string $operator, float $value)
     {
         abort_unless(in_array($operator, ['>=', '<=', '>', '<', '='], true), 500);
-        [$sql, $bindings] = app(\App\Services\PromotionService::class)->finalPriceSql($this->getTable());
+        [$sql, $bindings] = app(\App\Services\Pricing\PricingService::class)->displayPriceSql($this->getTable());
         return $query->whereRaw("({$sql}) {$operator} ?", [...$bindings, $value]);
     }
 
-    /** Sort on the price the customer pays (after promotion). */
+    /** Sort on the price the customer sees and pays (after promotion, delivery included). */
     public function scopeOrderByFinalPrice($query, string $direction = 'asc')
     {
         $direction = strtolower($direction) === 'desc' ? 'DESC' : 'ASC';
-        [$sql, $bindings] = app(\App\Services\PromotionService::class)->finalPriceSql($this->getTable());
+        [$sql, $bindings] = app(\App\Services\Pricing\PricingService::class)->displayPriceSql($this->getTable());
         return $query->orderByRaw("({$sql}) {$direction}", $bindings);
     }
     public function scopePlatform($query)       { return $query->where('is_platform_product', true); }
@@ -310,39 +315,20 @@ class Product extends Model
     // ── Delivery ────────────────────────────────────────────────────────────────
 
     /**
-     * Two states only (no custom per-product fee):
-     *   delivery_fee = 0     → free delivery, offered by the seller (who pays the
-     *                          admin's seller_free_delivery_contribution per parcel)
-     *   delivery_fee = NULL  → the client pays the admin's client_delivery_fee
-     *
-     * Delivery is charged per parcel (one seller = one parcel), never per
-     * product: see App\Services\Orders\OrderPricing.
+     * Delivery is free for every client and included in the displayed price:
+     * display price = price + the admin client fee of parcel_size, read live
+     * (App\Services\Pricing\PricingService). Seller-offered free delivery
+     * (delivery_fee = 0) no longer exists; the column is kept, unread.
      */
     public function isFreeDelivery(): bool
     {
-        return $this->delivery_fee !== null && (float) $this->delivery_fee === 0.0;
+        return false;
     }
 
-    /** The parcel fee the client pays when this product ships alone (admin setting for its size). */
-    public function getEffectiveDeliveryFee(): float
+    /** The seller or an admin chose the parcel size (older products silently got S). */
+    public function parcelSizeConfirmed(): bool
     {
-        return $this->isFreeDelivery()
-            ? 0.0
-            : \App\Support\Millimes::toFloat(app(\App\Services\Delivery\DeliverySettings::class)->clientFee($this->parcel_size));
-    }
-
-    // ── Accessors (auto-appended to API responses) ─────────────────────────────
-
-    /** Whether this product has free delivery. Exposed in all API responses. */
-    public function getIsFreeDeliveryAttribute(): bool
-    {
-        return $this->isFreeDelivery();
-    }
-
-    /** The resolved delivery fee (never null). Exposed in all API responses. */
-    public function getEffectiveDeliveryFeeAttribute(): float
-    {
-        return $this->getEffectiveDeliveryFee();
+        return $this->parcel_size_confirmed_at !== null;
     }
 
     public function getHasVariantsAttribute(): bool

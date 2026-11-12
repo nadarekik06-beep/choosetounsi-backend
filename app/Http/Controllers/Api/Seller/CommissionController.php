@@ -62,21 +62,19 @@ class CommissionController extends Controller
     /**
      * GET /api/seller/shipping-cost
      *
-     * What free delivery costs the seller per parcel (admin setting), and
-     * what the client pays otherwise. shipping_cost = the seller's cost (kept
-     * for older clients of this endpoint).
+     * Kept for older builds of the seller dashboard only. Sellers no longer
+     * offer (or pay for) free delivery: it is included in the displayed price
+     * and handled by ChooseTounsi, so nothing is ever charged to them here.
      */
     public function shippingCost(): JsonResponse
     {
-        $settings = app(\App\Services\Delivery\DeliverySettings::class);
-        $contribution = \App\Support\Millimes::toFloat($settings->sellerContribution());
-
         return response()->json([
             'success' => true,
             'data'    => [
-                'free_delivery_contribution' => $contribution,
-                'shipping_cost'              => $contribution,
-                'customer_delivery_fee'      => \App\Support\Millimes::toFloat($settings->clientFee()),
+                'free_delivery_contribution' => 0.0,
+                'shipping_cost'              => 0.0,
+                'customer_delivery_fee'      => 0.0,
+                'delivery_included'          => true,
             ],
         ]);
     }

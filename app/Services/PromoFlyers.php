@@ -84,8 +84,10 @@ class PromoFlyers
                 'id'             => $promo['id'],
                 'type'           => $promo['type'] === 'flash_sale' ? 'flash_sale' : 'discount',
                 'name'           => $promo['name'],
-                'discount_type'  => $promo['discount_type'],
+                // "Jusqu'à −X %" from the prices the client sees (never the seller's own rate)
+                'discount_type'  => 'percentage',
                 'discount_value' => (float) $promo['discount_value'],
+                'up_to_percent'  => (int) ($promo['up_to_percent'] ?? $promo['discount_value']),
                 'ends_at'        => $promo['ends_at'],
                 'products_count' => count($products),
                 'images'         => array_slice(array_column($products, 'primary_image_url'), 0, 3),

@@ -301,10 +301,15 @@ class ProductReviewResource extends JsonResource
                 'label'          => $c->discount_label,
                 'min_order_amount' => $c->min_order_amount !== null ? (float) $c->min_order_amount : null,
             ])->values(),
+            // Delivery is free for the client and included in the price they see:
+            // display = seller price + the client fee of the product's parcel size
             'delivery' => [
-                'fee'        => $p->getEffectiveDeliveryFee(),
-                'is_free'    => $p->isFreeDelivery(),
-                'is_default' => $p->delivery_fee === null,
+                'included'            => true,
+                'fee'                 => $this->includedFee($p),
+                'is_free'             => false,
+                'is_default'          => true,
+                'display_price'       => app(\App\Services\Pricing\PricingService::class)->display($priced['original_price'], $p->parcel_size),
+                'display_final_price' => app(\App\Services\Pricing\PricingService::class)->display($effective, $p->parcel_size),
             ],
             'commission' => [
                 'plan'             => $plan,
@@ -371,12 +376,23 @@ class ProductReviewResource extends JsonResource
             ->values();
 
         return [
-            'delivery_fee'        => $p->getEffectiveDeliveryFee(),
-            'is_free_delivery'    => $p->isFreeDelivery(),
-            'uses_platform_default' => $p->delivery_fee === null,
+            // The delivery included in the displayed price for this size (never charged apart)
+            'delivery_fee'        => $this->includedFee($p),
+            'is_free_delivery'    => false,
+            'uses_platform_default' => true,
+            'delivery_included'   => true,
             'parcel_size'         => $p->parcel_size ?? 'S',
+            // false: the size was never chosen by the seller or an admin (older products got S)
+            'parcel_size_confirmed'    => $p->parcelSizeConfirmed(),
+            'parcel_size_confirmed_at' => optional($p->parcel_size_confirmed_at)->toISOString(),
             'fields'              => $fields,
         ];
+    }
+
+    private function includedFee(Product $p): float
+    {
+        $pricing = app(\App\Services\Pricing\PricingService::class);
+        return \App\Support\Millimes::toFloat($pricing->feeM($p->parcel_size));
     }
 
     // ── Seller ───────────────────────────────────────────────────────────────

@@ -341,6 +341,10 @@ class CheckoutController extends Controller
             'shipping_cost'       => $dec($quote['agency_cost_m']),    // Σ agency costs
             'shipping_paid_by'    => $quote['shipping_paid_by'],       // customer | seller | mixed
             'shipping_per_parcel' => true,
+            // Delivery is inside the displayed prices: Σ display − coupon − multi-item discount = total
+            'pricing_model'       => \App\Services\Pricing\PricingService::MODEL_INCLUDED,
+            'included_fees_total' => $dec($quote['included_fees_total_m']),
+            'multi_item_discount' => $dec($quote['multi_item_discount_m']),
             'total_amount'        => $dec($quote['total_m']),
             // Address snapshot: later address-book edits never touch this order.
             ...ShippingAddress::columns($request),
@@ -439,6 +443,12 @@ class CheckoutController extends Controller
             'commission_amount'     => Millimes::toDecimal($c['commission_amount_m']),
             'seller_amount'         => Millimes::toDecimal($c['seller_amount_m']),
             'plan_used'             => $c['plan_used'],
+            // What the client saw: the columns above stay the seller's (base) amounts
+            'parcel_size'                 => $line['size'],
+            'included_fee'                => Millimes::toDecimal($line['included_fee_m']),
+            'included_fee_total'          => Millimes::toDecimal($line['included_fee_total_m']),
+            'display_unit_price'          => Millimes::toDecimal($line['unit_m'] + $line['included_fee_m']),
+            'display_original_unit_price' => Millimes::toDecimal($line['original_unit_m'] + $line['included_fee_m']),
         ]);
 
         $this->orderStock->reserve($variant?->id, $product->id, $qty, $this->stockLabel($product, $variant));
@@ -482,6 +492,11 @@ class CheckoutController extends Controller
             'pack_group'            => $line['pack_group'],
             'pack_allocation'       => Millimes::toDecimal($totalM),
             'pack_original_value'   => Millimes::toDecimal($line['original_value_m']),
+            // A pack is ONE unit: its fee is spread over its lines like its price
+            'parcel_size'           => $line['size'],
+            'included_fee_total'    => Millimes::toDecimal($line['included_fee_total_m']),
+            'pack_units'            => $line['pack_quantity'],
+            'display_unit_price'    => Millimes::toDecimal(Millimes::divRound($totalM + $line['included_fee_total_m'], max(1, $qty))),
             'commission_percentage' => $c['commission_percentage'],
             'commission_tier_price' => Millimes::toDecimal($line['tier_m']),
             'commission_source'     => $c['commission_source'],
@@ -640,6 +655,8 @@ class CheckoutController extends Controller
             'order_id'        => $order->id,
             'subtotal'        => $shown['subtotal'],
             'discount_amount' => $shown['discount_amount'],
+            'multi_item_discount' => $shown['multi_item_discount'],
+            'free_delivery'   => true,
             'delivery_fee'    => $shown['delivery_fee'],
             'shipping_fee'    => $shown['shipping_fee'],
             'total'           => $shown['total'],

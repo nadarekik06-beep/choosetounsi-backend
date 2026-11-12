@@ -253,7 +253,7 @@ class IntigoSafetyTest extends TestCase
         $sent = collect($client->calls['create'])->keyBy('pickup_index');
         $this->assertSame([3, 4], $sent->keys()->sort()->values()->all(), "each parcel carries its own seller's pickup");
         $this->assertEquals(98.0, $sent[3]['price'], 'A: 100 − 10 coupon + 8 delivery');
-        $this->assertEquals(120.0, $sent[4]['price'], 'B: 120, delivery offered by the seller');
+        $this->assertEquals(128.0, $sent[4]['price'], 'B: 120 + 8 delivery (the old "offered" flag is ignored)');
         $this->assertEquals($quote['total'], $sent->sum('price'), 'Σ COD = what the client was shown');
         $this->assertEquals((float) $res['total'], $sent->sum('price'));
         $this->assertEquals((float) DB::table('orders')->where('id', $orderId)->value('total_amount'), $sent->sum('price'));

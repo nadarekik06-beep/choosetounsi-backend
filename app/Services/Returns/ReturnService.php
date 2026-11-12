@@ -38,6 +38,13 @@ use Illuminate\Support\Facades\Notification;
  *     share and flash price included), minus the return shipping when the
  *     client pays it ("other" reason = changed mind); the seller pays it when
  *     the item was wrong or defective;
+ *   - orders with delivery included in the prices (PricingService): the parcel
+ *     is recomputed as if the returned units had never been ordered, refund =
+ *     what the client paid − the recomputed total. A full return gives back
+ *     everything paid, parcel fee included; the seller's payout and commission
+ *     still move by the base price only. Seller at fault on a full return: the
+ *     seller is charged that parcel fee (and the return shipping) on the next
+ *     settlements; changed mind: only the return shipping comes off the refund;
  *   - cash on delivery → the courier checks the item against the proof
  *     photos and pays the client back in cash at pick-up, out of the cash
  *     he holds for the platform (refund_method 'cash'); the sale is reversed
@@ -166,6 +173,9 @@ class ReturnService
                 $shopLines  = $allLines->where('seller_order_id', $soId ?: null);
                 $isFull     = $shopLines->every(fn($l) => (int) ($quantities[$l->id] ?? 0) + (int) ($reserved[$l->id] ?? 0) >= (int) $l->quantity);
                 $fresh      = $complaint->fresh();
+                // Delivery included in the prices: the parcel fee the returned units free up is refunded too
+                $amount += $this->deliveryRefundPreview((int) $soId, $group, $quantities);
+
                 $complaint->update([
                     'return_scope'       => $isFull ? 'full' : 'partial',
                     'items_amount'       => round($amount, 3),
@@ -179,6 +189,48 @@ class ReturnService
 
             return $created;
         });
+    }
+
+    /**
+     * What a return of these units would give back, before it is filed (the
+     * return form shows it; the storefront never computes a refund itself).
+     * Same rules as create(): one return per shop, its fee at the largest size,
+     * paid by the client only when the return is their choice.
+     *
+     * @param  array<int,int> $quantities order_item_id => units to return
+     * @return array{items_amount: float, client_fee: float, refund_amount: float, shipping_payer: string}
+     */
+    public function previewRefund(Order $order, array $quantities, string $complaintType): array
+    {
+        $lines = OrderItem::where('order_id', $order->id)->whereIn('id', array_keys($quantities))->get();
+        $payer = Complaint::payerFor($complaintType);
+        $settings = app(\App\Services\Delivery\DeliverySettings::class);
+
+        $items = $fees = $refund = 0;
+        foreach ($lines->groupBy(fn ($l) => $l->seller_order_id ?? 0) as $soId => $group) {
+            $amount = 0;
+            foreach ($group as $line) {
+                $qty = min((int) $quantities[$line->id], (int) $line->quantity);
+                if ($qty > 0) {
+                    $amount += Millimes::of($this->share($line, $qty)['net_amount']);
+                }
+            }
+            $amount += Millimes::of($this->deliveryRefundPreview((int) $soId, $group, $quantities));
+            $size = \App\Support\ParcelSize::largest(
+                DB::table('products')->whereIn('id', $group->pluck('product_id'))->pluck('parcel_size')->all() ?: ['S']
+            );
+            $fee = $payer === 'client' ? $settings->afterSaleReturnFee($size) : 0;
+            $items  += $amount;
+            $fees   += $fee;
+            $refund += max(0, $amount - $fee);
+        }
+
+        return [
+            'items_amount'   => Millimes::toFloat($items),
+            'client_fee'     => Millimes::toFloat($fees),
+            'refund_amount'  => Millimes::toFloat($refund),
+            'shipping_payer' => $payer,
+        ];
     }
 
     /** Units already in a live return, per order line (so they can't be returned twice). */
@@ -914,8 +966,13 @@ class ReturnService
             app(PromotionService::class)->releaseForOrderItems($fullyReturned);
         }
 
+        // Parcel fee given back with the items (orders with delivery included in the prices)
+        $deliveryRefundM = 0;
         foreach ($bySellerOrder as $soId => $sum) {
-            if ($soId) $this->reverseSellerOrder((int) $soId, $sum, $complaint, $admin);
+            if ($soId) {
+                $this->reverseSellerOrder((int) $soId, $sum, $complaint, $admin);
+                $deliveryRefundM += $this->refundIncludedDelivery((int) $soId, $complaint, $admin);
+            }
         }
 
         // Return shipping charged to the seller when the item was wrong / defective
@@ -934,7 +991,7 @@ class ReturnService
 
         $this->syncOrder((int) $complaint->order_id);
 
-        $items_amount = round($rev['net'], 3);
+        $items_amount = round($rev['net'] + Millimes::toFloat($deliveryRefundM), 3);
         $complaint->update([
             'items_amount'       => $items_amount,
             'refund_amount'      => $this->refundFor($complaint, $items_amount),
@@ -951,7 +1008,62 @@ class ReturnService
                 min($complaint->clientFee(), $items_amount), $complaint->sellerFee(), $complaint->intigo_return_ref);
         }
 
-        $this->event($complaint, 'finance_applied', $admin, 'system', null, array_map(fn($v) => round($v, 3), $rev));
+        $this->event($complaint, 'finance_applied', $admin, 'system', null,
+            array_map(fn($v) => round($v, 3), $rev) + ['delivery_refund' => Millimes::toFloat($deliveryRefundM)]);
+    }
+
+    /**
+     * Delivery part of a refund, before it happens (the amount shown when the
+     * return is requested): 0 for orders placed before delivery was included.
+     */
+    private function deliveryRefundPreview(int $soId, Collection $lines, array $quantities): float
+    {
+        if (!$soId) {
+            return 0.0;
+        }
+        $minus = [];
+        foreach ($lines as $line) {
+            $minus[$line->id] = (int) ($quantities[$line->id] ?? 0);
+        }
+        $r = app(\App\Services\Pricing\PricingService::class)->recomputeParcel($soId, $minus);
+        return $r ? Millimes::toFloat($r['fee_delta_m']) : 0.0;
+    }
+
+    /**
+     * The parcel recomputed without the returned units (already reversed on its
+     * lines): its included delivery, multi-item discount and client total follow.
+     * Returns the parcel fee given back to the client, in millimes.
+     *
+     * Full return with the seller at fault: that fee is charged to the seller
+     * (next settlements); otherwise the platform carries it.
+     */
+    private function refundIncludedDelivery(int $soId, Complaint $complaint, ?User $admin): int
+    {
+        $r = app(\App\Services\Pricing\PricingService::class)->recomputeParcel($soId, [], true);
+        if (!$r) {
+            return 0;   // placed before delivery was included: the delivery fee is never refunded
+        }
+        $deltaM = $r['fee_delta_m'];
+        $so     = SellerOrder::find($soId);
+
+        if ($deltaM > 0 && $r['units'] === 0 && $complaint->shipping_payer === 'seller'
+            && $so && $so->seller_id && !$so->isPlatformParcel()
+            && !SellerAdjustment::where('complaint_id', $complaint->id)->where('seller_order_id', $soId)
+                ->where('type', SellerAdjustment::TYPE_RETURN_PARCEL_FEE)->exists()) {
+            SellerAdjustment::create([
+                'seller_id'       => $so->seller_id,
+                'seller_order_id' => $soId,
+                'complaint_id'    => $complaint->id,
+                'type'            => SellerAdjustment::TYPE_RETURN_PARCEL_FEE,
+                'amount'          => '-' . Millimes::toDecimal($deltaM),
+                'description'     => "Delivery of order {$complaint->order?->order_number} refunded to the client, full return {$complaint->reference} (" . $complaint->getTypeLabel() . ')',
+                'created_by'      => $admin?->id,
+            ]);
+        }
+        if ($so && $so->getAttribute('settlement_batch_id') && $so->getAttribute('payout_status') !== 'paid') {
+            Settlements::recomputeDraft((int) $so->getAttribute('settlement_batch_id'));
+        }
+        return $deltaM;
     }
 
     private function reverseSellerOrder(int $soId, array $sum, Complaint $complaint, ?User $admin): void

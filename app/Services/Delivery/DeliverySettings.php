@@ -12,14 +12,18 @@ use Illuminate\Support\Facades\DB;
  * amount (checkout, finance, returns, refused parcels, Intigo). No fee lives
  * in .env or in code.
  *
- *   delivery_size_rates (S, L, XL)  client_fee, agency_cost, return_fee (refused parcel),
- *                                   seller_contribution, after-sale fees: after_sale_return_fee
+ *   delivery_size_rates (S, L, XL)  client_fee (included in every displayed price of that size, read
+ *                                   live by App\Services\Pricing\PricingService), agency_cost,
+ *                                   return_fee (refused parcel), after-sale fees: after_sale_return_fee
  *                                   (follows agency_cost while after_sale_use_agency_cost is on)
  *                                   and exchange_fee (Intigo's exchange parcel price)
  *   delivery_settings (row id 1)    who pays a refused parcel's return fee, intigo_can_open,
  *                                   intigo_is_exchange (both sent with every new Intigo parcel);
  *                                   its flat client / agency / contribution / refused columns
  *                                   mirror S (its old return_shipping_fee is no longer read)
+ *
+ * Seller-offered free delivery no longer exists: seller_contribution (column kept for the
+ * orders that used it) is still read for old screens but never written and never charged.
  *
  * Amounts are integer millimes. Cached forever, flushed on every update.
  * Orders snapshot the values at checkout, so an update never touches them.
@@ -36,8 +40,11 @@ class DeliverySettings
         'refused_parcel_agency_fee',
     ];
 
-    /** Per-size delivery money fields. */
+    /** Per-size delivery money fields (read). */
     public const SIZE_AMOUNTS = ['client_fee', 'agency_cost', 'return_fee', 'seller_contribution'];
+
+    /** Per-size delivery money fields the admin can still change. */
+    public const EDITABLE_SIZE_AMOUNTS = ['client_fee', 'agency_cost', 'return_fee'];
 
     /** Per-size after-sale money fields (complaints). */
     public const AFTER_SALE_AMOUNTS = ['after_sale_return_fee', 'exchange_fee'];
@@ -127,9 +134,9 @@ class DeliverySettings
         $v   = $values ?? $this->all();
         $out = [];
         foreach ($v['sizes'] as $size => $r) {
+            // One margin per parcel: what the client's price includes − what Intigo charges
             $out[$size] = [
-                'normal'        => $r['client_fee'] - $r['agency_cost'],
-                'free_delivery' => $r['seller_contribution'] - $r['agency_cost'],
+                'normal' => $r['client_fee'] - $r['agency_cost'],
             ];
         }
         // Flat S figures, as before
@@ -165,7 +172,7 @@ class DeliverySettings
                 if (!ParcelSize::isValid($size)) continue;
                 $current = $rates->get($size);
                 $update  = [];
-                foreach (self::SIZE_AMOUNTS as $field) {
+                foreach (self::EDITABLE_SIZE_AMOUNTS as $field) {
                     if (!array_key_exists($field, $fields)) continue;
                     $old = $current ? Millimes::of($current->{$field}) : null;
                     $new = (int) $fields[$field];
@@ -221,6 +228,9 @@ class DeliverySettings
         });
 
         $this->flush();
+        // The client fee is part of every displayed price: the short display caches
+        // (deals, flyers, home feed) are rebuilt with the new fee at once
+        \App\Support\PricingCache::bump();
         return $changes;
     }
 

@@ -14,10 +14,11 @@ use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
- * Free delivery is a seller's marketing choice, not a free service: the
- * client pays 0 for that seller's parcel, the agency still bills it, and the
- * seller pays the admin's free-delivery contribution out of their earnings.
- * Admin values here: client fee 8, agency cost 7, seller contribution 6.
+ * Delivery is free for every client and included in the displayed price
+ * (App\Services\Pricing\PricingService). The agency still bills each parcel,
+ * the platform keeps the parcel fee (client fee) and nothing is ever charged to
+ * the seller for delivery. The old per-product "free delivery" flag changes
+ * nothing. Admin values here: client fee 8, agency cost 7.
  *
  * Run only this folder:  php vendor/bin/phpunit tests/Feature/Shipping
  */
@@ -97,23 +98,25 @@ class FreeShippingFinanceTest extends TestCase
         return [(float) $row->c, (float) $row->s, (float) $row->n];
     }
 
-    public function test_normal_parcel_customer_pays_delivery_and_seller_is_not_charged(): void
+    public function test_normal_parcel_customer_pays_delivery_inside_the_price_and_seller_is_not_charged(): void
     {
         $seller   = $this->makeUser('seller');
         $customer = $this->makeUser('client');
         $res = $this->checkout($customer, [$this->makeProduct($seller, 100, false)]);
 
-        $this->assertEquals(self::FEE, $res['shipping_fee']);
+        // Shown as free: the 8.000 sits inside the displayed 108.000
+        $this->assertEquals(0.0, $res['shipping_fee']);
         $this->assertEquals(100 + self::FEE, $res['total']);
 
         $order = DB::table('orders')->find($res['order_id']);
         $this->assertSame('customer', $order->shipping_paid_by);
+        $this->assertSame('included', $order->pricing_model);
         $this->assertEquals(self::AGENCY, (float) $order->shipping_cost);
 
         $so = $this->sellerOrder($order->id, $seller->id);
         [$commission, $itemsNet, $base] = $this->itemsCommission($so->id);
 
-        // Commission on the item price only, never on delivery
+        // Commission on the seller's price only, never on delivery
         $this->assertEquals(100.0, $base);
         $this->assertGreaterThan(0, $commission);
         $this->assertEqualsWithDelta(100 - $commission, $itemsNet, 0.001);
@@ -121,84 +124,39 @@ class FreeShippingFinanceTest extends TestCase
         $this->assertEquals(0.0, (float) $so->seller_shipping_charge);
         $this->assertEqualsWithDelta($itemsNet, (float) $so->seller_net_amount, 0.001);
 
-        // Platform: commission + delivery margin (8 − 7)
+        // Platform: commission + delivery margin (parcel fee 8 - Intigo 7)
         $this->assertEquals(self::FEE, (float) $so->delivery_fee);
         $this->assertEquals(self::AGENCY, (float) $so->shipping_cost);
         $this->assertEqualsWithDelta($commission + self::FEE - self::AGENCY, (float) $so->platform_profit, 0.001);
     }
 
-    public function test_free_delivery_parcel_customer_pays_nothing_and_seller_pays_the_contribution(): void
+    public function test_the_old_free_delivery_flag_charges_the_seller_nothing(): void
     {
         $seller   = $this->makeUser('seller');
         $customer = $this->makeUser('client');
         $res = $this->checkout($customer, [$this->makeProduct($seller, 100, true)]);
 
-        $this->assertEquals(0, $res['shipping_fee']);
-        $this->assertEquals(100, $res['total']);
-
-        $order = DB::table('orders')->find($res['order_id']);
-        $this->assertSame('seller', $order->shipping_paid_by);
-
-        $so = $this->sellerOrder($order->id, $seller->id);
-        [$commission, , $base] = $this->itemsCommission($so->id);
-        $this->assertEquals(100.0, $base);
-
-        // Seller: sale − commission − contribution
-        $net = 100 - $commission - self::CONTRIBUTION;
-        $this->assertEquals(self::CONTRIBUTION, (float) $so->seller_shipping_charge);
-        $this->assertEqualsWithDelta($net, (float) $so->seller_net_amount, 0.001);
-
-        // Platform: commission + (contribution − agency cost)
-        $this->assertEquals(0.0, (float) $so->delivery_fee);
-        $this->assertEqualsWithDelta($commission + self::CONTRIBUTION - self::AGENCY, (float) $so->platform_profit, 0.001);
-
-        // Seller-facing endpoints show the deduction and the cost of free delivery
-        $this->app['auth']->forgetGuards();
-        $token = $seller->createToken('t')->plainTextToken;
-        $get = fn(string $url) => $this->withHeaders(['Authorization' => "Bearer {$token}"])->getJson($url)->assertOk();
-
-        $overview = $get('/api/seller/earnings/overview?period=all');
-        $this->assertEqualsWithDelta(self::CONTRIBUTION, $overview->json('data.kpis.total_shipping'), 0.001);
-        $this->assertEqualsWithDelta($net, $overview->json('data.kpis.total_net'), 0.001);
-
-        $detail = $get("/api/seller/orders/{$so->id}");
-        $this->assertEqualsWithDelta(self::CONTRIBUTION, $detail->json('data.commission.shipping_paid_by_seller'), 0.001);
-        $this->assertEqualsWithDelta($net, $detail->json('data.commission.net_after_shipping'), 0.001);
-
-        $this->assertEqualsWithDelta(self::CONTRIBUTION, $get('/api/seller/shipping-cost')->json('data.free_delivery_contribution'), 0.001);
-
-        // Customer never sees the internal cost split
-        $this->assertArrayNotHasKey('shipping_paid_by', Order::find($order->id)->toArray());
-    }
-
-    public function test_each_free_delivery_seller_pays_its_own_parcel(): void
-    {
-        $sellerA  = $this->makeUser('seller');
-        $sellerB  = $this->makeUser('seller');
-        $customer = $this->makeUser('client');
-
-        $res = $this->checkout($customer, [$this->makeProduct($sellerA, 60, true), $this->makeProduct($sellerB, 40, true)]);
-        $this->assertEquals(0, $res['shipping_fee']);
-
-        $a = $this->sellerOrder($res['order_id'], $sellerA->id);
-        $b = $this->sellerOrder($res['order_id'], $sellerB->id);
-        // Two parcels: each seller pays one contribution, the agency bills each parcel
-        $this->assertEqualsWithDelta(self::CONTRIBUTION, (float) $a->seller_shipping_charge, 0.0005);
-        $this->assertEqualsWithDelta(self::CONTRIBUTION, (float) $b->seller_shipping_charge, 0.0005);
-        $this->assertEqualsWithDelta(self::AGENCY, (float) $a->shipping_cost, 0.0005);
-        $this->assertEqualsWithDelta(self::AGENCY, (float) $b->shipping_cost, 0.0005);
-    }
-
-    public function test_a_parcel_mixing_free_and_paid_products_is_customer_paid(): void
-    {
-        $seller   = $this->makeUser('seller');
-        $customer = $this->makeUser('client');
-        $res = $this->checkout($customer, [$this->makeProduct($seller, 30, true), $this->makeProduct($seller, 20, false)]);
-
-        $this->assertEquals(self::FEE, $res['shipping_fee']);
+        $this->assertEquals(100 + self::FEE, $res['total']);
         $so = $this->sellerOrder($res['order_id'], $seller->id);
         $this->assertEquals(0.0, (float) $so->seller_shipping_charge);
+        $this->assertEquals(self::FEE, (float) $so->delivery_fee);
+        $this->assertEqualsWithDelta(self::FEE - self::AGENCY, (float) $so->platform_delivery_margin, 0.001);
         $this->assertSame('customer', DB::table('orders')->where('id', $res['order_id'])->value('shipping_paid_by'));
+    }
+
+    public function test_each_seller_has_its_own_parcel_with_its_own_fee(): void
+    {
+        $a = $this->makeUser('seller');
+        $b = $this->makeUser('seller');
+        $res = $this->checkout($this->makeUser('client'), [$this->makeProduct($a, 100, true), $this->makeProduct($b, 100, false)]);
+
+        $this->assertEquals(216.0, $res['total']);   // 108 + 108
+        foreach ([$a, $b] as $seller) {
+            $so = $this->sellerOrder($res['order_id'], $seller->id);
+            $this->assertEquals(self::FEE, (float) $so->delivery_fee);
+            $this->assertEquals(0.0, (float) $so->seller_shipping_charge);
+            $this->assertEquals(self::AGENCY, (float) $so->shipping_cost);
+        }
     }
 
     public function test_admin_finance_accounts_for_each_parcel_once(): void
@@ -207,8 +165,8 @@ class FreeShippingFinanceTest extends TestCase
         $customer = $this->makeUser('client');
         $admin    = $this->makeUser('admin');
 
-        $free   = $this->checkout($customer, [$this->makeProduct($seller, 100, true)]);
-        $normal = $this->checkout($customer, [$this->makeProduct($seller, 100, false)]);
+        $first  = $this->checkout($customer, [$this->makeProduct($seller, 100, true)]);
+        $second = $this->checkout($customer, [$this->makeProduct($seller, 100, false)]);
 
         $this->app['auth']->forgetGuards();
         $rows = collect($this->withHeaders(['Authorization' => 'Bearer ' . $admin->createToken('t')->plainTextToken])
@@ -216,24 +174,24 @@ class FreeShippingFinanceTest extends TestCase
             ->assertOk()
             ->json('data.data'))->keyBy('order_id');
 
-        foreach ([$free['order_id'], $normal['order_id']] as $orderId) {
+        foreach ([$first['order_id'], $second['order_id']] as $orderId) {
             $r = $rows[$orderId];
             $this->assertEqualsWithDelta(self::AGENCY, (float) $r['shipping_cost'], 0.001);
-            // margin = what came in for delivery (client fee or seller contribution) − agency cost
-            $this->assertEqualsWithDelta((float) $r['delivery_fee'] + (float) $r['seller_shipping_charge'] - self::AGENCY, (float) $r['platform_delivery_margin'], 0.001);
+            // margin = parcel fee collected - Intigo cost; per order: client paid, discount given
+            $this->assertEqualsWithDelta((float) $r['delivery_fee'] - self::AGENCY, (float) $r['platform_delivery_margin'], 0.001);
             $this->assertEqualsWithDelta((float) $r['commission_amount'] + (float) $r['platform_delivery_margin'], (float) $r['platform_profit'], 0.001);
+            $this->assertSame('included', $r['pricing_model']);
+            $this->assertEqualsWithDelta(100 + self::FEE, (float) $r['client_paid'], 0.001);
+            $this->assertEqualsWithDelta(0.0, (float) $r['multi_item_discount'], 0.001);
+            $this->assertSame('customer', $r['shipping_paid_by']);
         }
-        $this->assertSame('seller', $rows[$free['order_id']]['shipping_paid_by']);
-        $this->assertSame('customer', $rows[$normal['order_id']]['shipping_paid_by']);
 
-        // Order detail modal: seller net after the contribution on the free order only
+        // Order detail: the seller's net is never reduced for delivery
         $summary = fn(int $id) => $this->getJson("/api/admin/orders/{$id}")->assertOk()->json('data.commission_summary');
-        $s = $summary($free['order_id']);
-        $this->assertSame('seller', $s['shipping_paid_by']);
-        $this->assertEqualsWithDelta(self::CONTRIBUTION, $s['seller_shipping'], 0.001);
-        $this->assertEqualsWithDelta($s['total_seller'] - self::CONTRIBUTION, $s['total_seller_net'], 0.001);
-        $n = $summary($normal['order_id']);
-        $this->assertEqualsWithDelta(0, $n['seller_shipping'], 0.001);
-        $this->assertEqualsWithDelta($n['total_seller'], $n['total_seller_net'], 0.001);
+        foreach ([$first['order_id'], $second['order_id']] as $orderId) {
+            $s = $summary($orderId);
+            $this->assertEqualsWithDelta(0, $s['seller_shipping'], 0.001);
+            $this->assertEqualsWithDelta($s['total_seller'], $s['total_seller_net'], 0.001);
+        }
     }
 }

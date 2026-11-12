@@ -27,7 +27,7 @@ class IntigoSendPayloadTest extends TestCase
 
     public function test_multi_seller_order_sends_one_parcel_per_shop_with_the_amount_the_client_saw(): void
     {
-        // A: coupon −10 · B: flash sale −25% · C: free shipping offered by the shop
+        // A: coupon −10 · B: flash sale −25% · C: the old "free shipping" flag (ignored now)
         $a = $this->sellerWithPickup(3);
         $b = $this->sellerWithPickup(4, 'red');
         $c = $this->sellerWithPickup(5, 'black');
@@ -44,7 +44,7 @@ class IntigoSendPayloadTest extends TestCase
         [, $orderId] = $this->placeAndConfirm(['coupon_codes' => [$coupon->code]]);
 
         $shown = collect($quote['parcels'])->keyBy('seller_id');
-        $expected = [$a->id => 98.0, $b->id => 128.0, $c->id => 120.0];   // 100−10+8 · 2×60+8 · 120+0
+        $expected = [$a->id => 98.0, $b->id => 128.0, $c->id => 128.0];   // 100−10+8 · 2×60+8 · 120+8
         foreach ([$a, $b, $c] as $seller) {
             $so = $this->parcel($orderId, $seller);
             $this->prepare($so, $seller);
@@ -90,7 +90,10 @@ class IntigoSendPayloadTest extends TestCase
 
         $quote = $this->quote();
         $this->assertSame('L', $quote['parcels'][0]['parcel_size']);
-        $this->assertEquals(12, $quote['parcels'][0]['delivery_fee']);
+        // Free for the client; the parcel fee (12) is inside the prices: 2×38 + 62 − (2×8 + 12 − 12) = 122
+        $this->assertEquals(0, $quote['parcels'][0]['delivery_fee']);
+        $this->assertEquals(16, $quote['parcels'][0]['multi_item_discount']);
+        $this->assertEquals(122, $quote['parcels'][0]['total']);
 
         [, $orderId] = $this->placeAndConfirm();
         $so = $this->parcel($orderId, $seller);
@@ -103,7 +106,7 @@ class IntigoSendPayloadTest extends TestCase
         $this->assertEquals(122.0, $this->sentPayload($so)['price']);
     }
 
-    public function test_free_shipping_on_an_xl_parcel_charges_the_xl_seller_contribution(): void
+    public function test_the_old_free_shipping_flag_on_an_xl_parcel_charges_the_seller_nothing(): void
     {
         $this->setSizeFees(['S' => [8, 7, 4, 6], 'L' => [12, 10, 6, 9], 'XL' => [20, 17, 9, 15]]);
         $seller = $this->sellerWithPickup();
@@ -113,11 +116,12 @@ class IntigoSendPayloadTest extends TestCase
 
         [, $orderId] = $this->placeAndConfirm();
         $so = $this->parcel($orderId, $seller);
-        $this->assertParcel($so, ['delivery_fee' => '0', 'cod' => '300', 'contribution' => '15', 'agency' => '17', 'margin' => '-2', 'free' => true]);
+        // XL parcel fee 20 inside the price, Intigo 17: margin 3, nothing charged to the seller
+        $this->assertParcel($so, ['delivery_fee' => '20', 'cod' => '320', 'contribution' => '0', 'agency' => '17', 'margin' => '3', 'free' => false]);
 
         $this->prepare($so, $seller);
         $this->assertSame(5, $this->sentPayload($so)['package_size']);
-        $this->assertEquals(300.0, $this->sentPayload($so)['price']);
+        $this->assertEquals(320.0, $this->sentPayload($so)['price']);
     }
 
     public function test_a_pack_takes_the_size_of_its_largest_product(): void
@@ -131,21 +135,25 @@ class IntigoSendPayloadTest extends TestCase
 
         $quote = $this->quote();
         $this->assertSame('XL', $quote['parcels'][0]['parcel_size']);
-        $this->assertEquals(20, $quote['parcels'][0]['delivery_fee']);
+        $this->assertEquals(0, $quote['parcels'][0]['delivery_fee']);
+        $this->assertEquals(70, $quote['parcels'][0]['total'], 'pack 50 + ONE XL fee of 20');
     }
 
     public function test_a_parcel_with_nothing_to_collect_is_never_sent(): void
     {
         $client = $this->scripted();
         $seller = $this->sellerWithPickup();
-        $product = $this->product($seller, 40, true);   // free shipping
+        $product = $this->product($seller, 40);
         $coupon = Coupon::create(['seller_id' => $seller->id, 'code' => 'FREE' . Str::upper(Str::random(5)), 'discount_type' => 'percentage', 'discount_value' => 100, 'is_active' => true]);
         $coupon->products()->attach($product->id);
         $this->addToCart($product);
 
         [, $orderId] = $this->placeAndConfirm(['coupon_codes' => [$coupon->code]]);
         $so = $this->parcel($orderId, $seller);
-        $this->assertSame(0, self::m($so->cod_amount));
+        // The coupon takes the whole base price, never the delivery: the client still owes the parcel fee
+        $this->assertSame(self::m('8'), self::m($so->cod_amount));
+        // A parcel with nothing to collect (COD 0) is never sent: force that state
+        DB::table('seller_orders')->where('id', $so->id)->update(['cod_amount' => 0]);
 
         $this->prepare($so, $seller)->assertJsonPath('data.delivery.state', 'failed');
         $this->assertCount(0, $client->calls['create'], 'no API call');

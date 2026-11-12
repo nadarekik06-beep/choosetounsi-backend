@@ -109,6 +109,7 @@ return [
     'discount' => [
         'percent_off' => '-:value %',
         'amount_off' => '-:value DT',
+        'up_to' => "Jusqu'à −:value %",
         'fixed_above_price' => 'La promotion « :promotion » retire :amount DT : le nouveau prix de :product doit rester supérieur à ce montant. Réduisez ou arrêtez d’abord la promotion.',
     ],
     'contact' => [

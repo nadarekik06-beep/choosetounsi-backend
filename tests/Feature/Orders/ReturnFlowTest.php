@@ -212,7 +212,8 @@ class ReturnFlowTest extends TestCase
         $c = Complaint::findOrFail($res->json('data.id'));
         $this->assertSame('full', $c->return_scope);
         $this->assertSame('seller', $c->shipping_payer, 'damaged item: the seller pays the return shipping');
-        $this->assertEqualsWithDelta($paid, (float) $c->refund_amount, 0.001);
+        // Whole parcel back: everything the client paid, the included delivery (8) too
+        $this->assertEqualsWithDelta($paid + 8.0, (float) $c->refund_amount, 0.001);
         $this->assertStringStartsWith('RET-', $c->reference);
         Notification::assertSentTo($order->user, ComplaintNotification::class, fn($n) => $n->event === 'received');
 
@@ -264,7 +265,7 @@ class ReturnFlowTest extends TestCase
         // Inspected: the return is complete (the client was already paid back)
         $c->refresh();
         $this->assertSame(Complaint::STATUS_REFUNDED, $c->status);
-        $this->assertEqualsWithDelta($paid, (float) $c->refund_amount, 0.001);
+        $this->assertEqualsWithDelta($paid + 8.0, (float) $c->refund_amount, 0.001);
         $this->assertDatabaseMissing('wallet_transactions', ['user_id' => $order->user_id, 'reason' => 'return_refund']);
 
         // Order + sub-order: "Returned (Refunded)", sale reversed
@@ -282,6 +283,8 @@ class ReturnFlowTest extends TestCase
 
         // Return shipping charged to the seller as an adjustment (seller at fault)
         $this->assertEquals(-8.0, (float) SellerAdjustment::where('complaint_id', $c->id)->where('type', 'return_shipping')->value('amount'));
+        // ... and the parcel fee given back to the client with the items (whole parcel, seller at fault)
+        $this->assertEquals(-8.0, (float) SellerAdjustment::where('complaint_id', $c->id)->where('type', 'return_parcel_fee')->value('amount'));
 
         // Refund is final
         $this->as($this->admin)->patchJson("/api/admin/complaints/{$c->id}/refund", ['method' => 'wallet'])->assertStatus(422);
@@ -519,11 +522,17 @@ class ReturnFlowTest extends TestCase
         $this->as($this->seller)->get("/api/admin/complaints/{$c->id}/return-slip")->assertForbidden();
     }
 
-    public function test_full_return_of_a_free_delivery_parcel_keeps_the_contribution_charged(): void
+    public function test_full_return_of_an_old_free_delivery_parcel_keeps_the_contribution_charged(): void
     {
+        // An order placed BEFORE delivery was included in the prices, when a seller could offer free
+        // delivery (and paid the contribution): rebuilt in its old shape. Such orders are never recalculated.
         [$p, $a] = $this->product(40);
-        $p->update(['delivery_fee' => 0]);   // the seller offers free delivery
         $order = $this->deliveredOrder([[$p, $a, 1]]);
+        DB::table('orders')->where('id', $order->id)->update(['pricing_model' => null]);
+        DB::table('seller_orders')->where('order_id', $order->id)->update([
+            'pricing_model' => null, 'delivery_fee' => 0, 'is_free_delivery' => 1, 'seller_shipping_charge' => 6,
+            'seller_net_amount' => DB::raw('seller_net_amount - 6'),
+        ]);
         $so    = \App\Models\SellerOrder::where('order_id', $order->id)->firstOrFail();
         $contribution = (float) $so->getAttribute('seller_shipping_charge');
         $this->assertGreaterThan(0, $contribution);
@@ -604,7 +613,7 @@ class ReturnFlowTest extends TestCase
         $debit = SellerAdjustment::where('complaint_id', $c->id)->where('type', SellerAdjustment::TYPE_RETURN_DEBIT)->sole();
         $this->assertEqualsWithDelta(-$paidNet, (float) $debit->amount, 0.001);
         $owed = (float) SellerAdjustment::where('seller_id', $this->seller->id)->whereNull('applied_at')->sum('amount');
-        $this->assertEqualsWithDelta(-$paidNet - 8.0, $owed, 0.001, 'debit + return shipping, nothing lost');
+        $this->assertEqualsWithDelta(-$paidNet - 8.0 - 8.0, $owed, 0.001, 'debit + return shipping + the parcel fee refunded to the client, nothing lost');
 
         // …deducted from the next settlement, once
         [$p2, $a2] = $this->product(100);

@@ -127,10 +127,10 @@ class IntigoDryRunScenarioTest extends TestCase
         $this->assertSame(3, $by[$a->id]['payload']['pickup_index']);
         $this->assertSame(4, $by[$b->id]['payload']['pickup_index']);
         $this->assertEquals(71.0, $by[$a->id]['payload']['price'], '70 − 7 (10 %) + 8 delivery');
-        $this->assertEquals(84.0, $by[$b->id]['payload']['price'], '3 × 28, delivery offered');
-        $this->assertEquals(155.0, $r['check']['sum_cod']);
+        $this->assertEquals(92.0, $by[$b->id]['payload']['price'], '3 × 28 + 8 delivery (the old "offered" flag is ignored)');
+        $this->assertEquals(163.0, $r['check']['sum_cod']);
         $this->assertTrue($r['check']['sum_cod_equals_order_total']);
-        $this->assertEquals(155.0, (float) DB::table('orders')->where('id', $orderId)->value('total_amount'));
+        $this->assertEquals(163.0, (float) DB::table('orders')->where('id', $orderId)->value('total_amount'));
         foreach ($r['parcels'] as $p) {
             $this->assertSame('15 Rue de Marseille, 2e étage — Face à la pharmacie', $p['payload']['destination_address'], 'same client address on both');
             $this->assertOnlyTestAccountProblems($p['problems']);

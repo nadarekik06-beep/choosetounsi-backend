@@ -12,6 +12,7 @@ use App\Exceptions\FlashCustomerLimit;
 use App\Services\CommissionService;
 use App\Services\CouponService;
 use App\Services\Delivery\DeliverySettings;
+use App\Services\Pricing\PricingService;
 use App\Services\PromotionService;
 use App\Support\Millimes;
 use App\Support\ParcelSize;
@@ -28,25 +29,37 @@ use Illuminate\Support\Collection;
  *   seller coupon → only that seller's coupon products WITHOUT a promotion; promoted
  *                   ones are skipped, the coupon is refused only if none remains
  *
+ * Delivery is free for the client and included in the price they see ("free
+ * delivery everywhere", App\Services\Pricing\PricingService): every unit's display
+ * price = its base price + the admin client fee of its size, and a parcel with
+ * several units gives the extra fees back as the multi-item discount. The money
+ * is unchanged: the client pays Σ base prices − coupon + ONE parcel fee, which
+ * is exactly Σ display prices − coupon − multi-item discount. Every figure
+ * below stays a BASE (seller) amount; the display figures sit next to them.
+ * Discounts, commission and the seller payout never touch the delivery part.
+ *
  * One seller = one parcel = one pickup. Per parcel:
  *   items_subtotal  Σ line totals (post pack price / discount / flash sale)
  *   promo_savings   Σ (original − final unit price) × qty of promoted lines: shown to
  *                   the buyer only, the money above is already the final price
  *   coupon_discount the seller's coupon (one per seller, never on promoted lines or packs)
- *   is_free         every item of the parcel is free delivery (a pack: all its products)
  *   parcel_size     the largest size of its items (S / L / XL, App\Support\ParcelSize);
  *                   every delivery amount below is the admin's figure for that size
- *   delivery_fee    0 when free, else the admin client fee for the size
+ *   delivery_fee    the admin client fee for the size (the "parcel fee" the platform keeps)
+ *   included_fees   Σ units × client fee of the unit's size (a pack = ONE unit of its largest item)
+ *   multi_item_discount  included_fees − delivery_fee (0 for a single unit)
+ *   display_subtotal     items_subtotal + included_fees (Σ of the prices the client saw)
  *   parcel_total    items_subtotal − coupon_discount + delivery_fee
+ *                   = display_subtotal − coupon_discount − multi_item_discount
  *   cod_amount      parcel_total for cash on delivery (0 when prepaid)
  *   commission      Σ line commissions: bracket from the ORIGINAL unit price, rate on
  *                   the final amount (line − coupon share), never on delivery (AUDIT M-7)
  *   platform_funded Σ discounts of platform-funded admin promotions, paid back to the
  *                   seller (AUDIT M-8); commission is then what the platform keeps
- *   contribution    seller_free_delivery_contribution when free, else 0
- *   seller_payout   Σ line seller amounts − contribution
+ *   seller_payout   Σ line seller amounts (never anything about delivery)
  *   agency_cost     admin agency_delivery_cost (the courier keeps it from the cash)
- *   delivery_margin free ? contribution − agency_cost : delivery_fee − agency_cost
+ *   delivery_margin delivery_fee − agency_cost
+ *   (seller-offered free delivery no longer exists: is_free / contribution are always false / 0)
  *
  * Always: parcel_total = seller_payout + commission + agency_cost + delivery_margin.
  *
@@ -63,6 +76,7 @@ class OrderPricing
         private CommissionService $commission,
         private CouponService     $coupons,
         private DeliverySettings  $delivery,
+        private PricingService    $pricing,
     ) {}
 
     // ── Entry points ─────────────────────────────────────────────────────────
@@ -164,7 +178,7 @@ class OrderPricing
             'funded_m'         => $platform ? $promoM : 0,          // paid back to the seller (AUDIT M-8)
             'promo_ended'      => $ended,
             'promo_ended_price_m' => $ended ? Millimes::of($row->promo_price_snapshot) : null,
-            'is_free'   => $product->isFreeDelivery(),
+            'is_free'   => false,
             'size'      => ParcelSize::normalize($product->parcel_size),
         ];
     }
@@ -234,7 +248,7 @@ class OrderPricing
         }
 
         $snapshotM = Millimes::of($row->pack_price_snapshot);
-        $isFree    = collect($components)->every(fn ($c) => $c['product']->isFreeDelivery());
+        $isFree    = false;
         $shares    = $this->splitByWeight($priceM, array_column($components, 'weight_m'));
 
         $lines = [];
@@ -409,16 +423,19 @@ class OrderPricing
                 $fundedM      += $c['platform_funded_m'];
             }
 
-            // One parcel, one size: the largest of its items, priced by the admin per size
+            // One parcel, one size: the largest of its items, priced by the admin per size.
+            // The fee is included in the displayed prices; several units give the extra fees back.
+            $feeRates      = $this->pricing->fees();
+            [$lineOut, $units] = $this->withIncludedFees($lineOut, $feeRates);
+            $fees          = $this->pricing->parcelFees($units, $feeRates);
             $size          = ParcelSize::largest(array_column($lineOut, 'size'));
             $rates         = $this->delivery->forSize($size);
             $clientFee     = $rates['client_fee'];
             $agencyCost    = $rates['agency_cost'];
-            $contribution  = $rates['seller_contribution'];
-            $isFree        = collect($lineOut)->every(fn ($l) => $l['is_free']);
-            $feeM          = $isFree ? 0 : $clientFee;
-            $contributionM = $isFree ? $contribution : 0;
-            $marginM       = $isFree ? $contribution - $agencyCost : $clientFee - $agencyCost;
+            $isFree        = false;
+            $feeM          = $clientFee;                  // = $fees['parcel_fee_m']
+            $contributionM = 0;
+            $marginM       = $clientFee - $agencyCost;
             $netM          = $itemsM - $discountM;
             $totalM        = $netM + $feeM;
             $codM          = $isCod ? $totalM : 0;
@@ -435,6 +452,13 @@ class OrderPricing
                 'coupon_discount_m'  => $discountM,
                 'is_free_delivery'   => $isFree,
                 'delivery_fee_m'     => $feeM,
+                // Delivery included in the displayed prices
+                'units'                 => $fees['units'],
+                'included_fees_total_m' => $fees['included_fees_total_m'],
+                'multi_item_discount_m' => $fees['multi_item_discount_m'],
+                'display_subtotal_m'    => $itemsM + $fees['included_fees_total_m'],
+                'upsell_min_saving_m'   => $fees['units'] === 1 ? $this->pricing->upsellMinSavingM() : null,
+                'fee_rates'             => $feeRates,
                 'parcel_total_m'     => $totalM,
                 'cod_amount_m'       => $codM,
                 'commission_m'       => $commissionM,
@@ -449,7 +473,7 @@ class OrderPricing
                 'settings'           => [
                     'client_delivery_fee'               => $clientFee,
                     'agency_delivery_cost'              => $agencyCost,
-                    'seller_free_delivery_contribution' => $contribution,
+                    'seller_free_delivery_contribution' => 0,
                 ],
             ];
         }
@@ -459,8 +483,8 @@ class OrderPricing
         foreach ($lines as $l) {
             $promoM += $l['promo_discount_m'] ?? 0;
         }
-        $paidBy = collect($out)->every(fn ($p) => $p['is_free_delivery']) ? 'seller'
-            : (collect($out)->contains(fn ($p) => $p['is_free_delivery']) ? 'mixed' : 'customer');
+        // The client pays one parcel fee per shop, inside the displayed prices
+        $paidBy = 'customer';
 
         return [
             'payment_method'     => $paymentMethod,
@@ -471,6 +495,9 @@ class OrderPricing
             'promo_ended'        => collect($lines)->filter(fn ($l) => $l['promo_ended'] ?? false)
                 ->map(fn ($l) => $l['product']->name)->values()->all(),
             'delivery_fee_m'     => $sum('delivery_fee_m'),
+            'included_fees_total_m' => $sum('included_fees_total_m'),
+            'multi_item_discount_m' => $sum('multi_item_discount_m'),
+            'display_subtotal_m'    => $sum('display_subtotal_m'),
             'total_m'            => $sum('parcel_total_m'),
             'agency_cost_m'      => $sum('agency_cost_m'),
             'shipping_paid_by'   => $paidBy,
@@ -478,9 +505,52 @@ class OrderPricing
         ];
     }
 
+    /**
+     * Included delivery fee of every line, and the parcel's units.
+     *   product line  each unit carries the fee of its size
+     *   pack          ONE unit per pack bought, at the size of its largest item in this
+     *                 parcel; that fee is spread over the pack's lines like its price
+     *
+     * @param  array<string, int> $rates size => fee in millimes
+     * @return array{0: array, 1: array<int, array{size: string, quantity: int}>} [lines, units]
+     */
+    private function withIncludedFees(array $lines, array $rates): array
+    {
+        $units  = [];
+        $groups = [];
+        foreach ($lines as $i => $line) {
+            if ($line['kind'] === 'pack') {
+                $groups[$line['pack_group']][] = $i;
+                continue;
+            }
+            $fee = $rates[$line['size']];
+            $lines[$i]['included_fee_m']       = $fee;
+            $lines[$i]['included_fee_total_m'] = $fee * $line['quantity'];
+            $lines[$i]['unit_size']            = $line['size'];
+            $units[] = ['size' => $line['size'], 'quantity' => $line['quantity']];
+        }
+        foreach ($groups as $indexes) {
+            $size    = ParcelSize::largest(array_map(fn ($i) => $lines[$i]['size'], $indexes));
+            $packQty = $lines[$indexes[0]]['pack_quantity'];
+            $shares  = $this->splitByWeight($rates[$size] * $packQty, array_map(fn ($i) => $lines[$i]['total_m'], $indexes));
+            foreach ($indexes as $k => $i) {
+                $lines[$i]['included_fee_m']       = null;          // the fee belongs to the pack, not to a unit
+                $lines[$i]['included_fee_total_m'] = $shares[$k];
+                $lines[$i]['unit_size']            = $size;
+                $lines[$i]['pack_fee_m']           = $rates[$size];
+            }
+            $units[] = ['size' => $size, 'quantity' => $packQty];
+        }
+        return [$lines, $units];
+    }
+
     // ── Presentation ─────────────────────────────────────────────────────────
 
-    /** What the storefront displays (never internal figures: commission, payouts, agency). */
+    /**
+     * What the storefront displays: the prices the client sees (delivery
+     * included), the multi-item discount per shop and a free delivery. Never an
+     * internal figure: base prices, fees, commission, payouts, agency cost.
+     */
     public function present(array $quote): array
     {
         $f = fn (int $m) => Millimes::toFloat($m);
@@ -491,64 +561,81 @@ class OrderPricing
                 'seller_id'        => $p['seller_id'],
                 'seller_name'      => $p['seller_name'],
                 'parcel_size'      => $p['parcel_size'],
-                'items_subtotal'   => $f($p['items_subtotal_m']),
+                'items_subtotal'   => $f($p['display_subtotal_m']),
                 'coupon_code'      => $p['coupon']?->code,
                 'coupon_discount'  => $f($p['coupon_discount_m']),
                 // Which items the coupon applied to, and the promoted ones it skipped (AUDIT M-5)
                 'coupon_product_ids'         => $p['coupon_product_ids'] ?? [],
                 'coupon_skipped_product_ids' => $p['coupon_skipped_product_ids'] ?? [],
-                'is_free_delivery' => $p['is_free_delivery'],
-                'delivery_fee'     => $f($p['delivery_fee_m']),
+                // Delivery is always shown as free: it is inside the prices
+                'is_free_delivery' => true,
+                'delivery_fee'     => 0.0,
+                'units'               => $p['units'],
+                'multi_item_discount' => $f($p['multi_item_discount_m']),
+                // Exactly one unit from this shop: what a second one would save at least
+                'upsell_min_saving'   => $p['upsell_min_saving_m'] !== null ? $f($p['upsell_min_saving_m']) : null,
                 'total'            => $f($p['parcel_total_m']),
                 'cod_amount'       => $f($p['cod_amount_m']),
-                'lines'            => array_map(fn ($l) => $l['kind'] === 'pack' ? [
-                    'cart_id'    => $l['cart_id'],
-                    'kind'       => 'pack',
-                    'name'       => $l['pack']->name,
-                    'quantity'   => $l['pack_quantity'],
-                    'unit_price' => $f($l['unit_m']),
-                    'total'      => $f($l['total_m']),
-                    'discount'   => 0.0,
-                    'product_id' => null, 'variant_id' => null,
-                    'original_unit_price' => $f($l['unit_m']),
-                    'promo_discount'      => 0.0,
-                    'discount_percent'    => 0,
-                    'promo_type'          => null,
-                    'promotion_source'    => null,
-                    'promo_ended'         => false,
-                    'promo_ended_price'   => null,
-                    'coupon_applied'      => false,
-                ] : [
-                    'cart_id'    => $l['cart_id'],
-                    'kind'       => $l['kind'],
-                    'name'       => $l['product']->name,
-                    'quantity'   => $l['quantity'],
-                    'unit_price' => $f($l['unit_m']),
-                    'total'      => $f($l['total_m']),
-                    'discount'   => $f($l['discount_m']),
-                    // Promotion breakdown: original → final, same numbers as the order
-                    'product_id'          => $l['product']->id,
-                    'variant_id'          => $l['variant']?->id,
-                    'original_unit_price' => $f($l['original_unit_m'] ?? $l['unit_m']),
-                    'promo_discount'      => $f($l['promo_discount_m'] ?? 0),
-                    'discount_percent'    => (int) $l['pricing']['discount_percent'],
-                    'promo_type'          => $l['pricing']['promo_type'],
-                    'promotion_source'    => $l['promotion_source'] ?? null,
-                    'promo_ended'         => (bool) ($l['promo_ended'] ?? false),
-                    'promo_ended_price'   => isset($l['promo_ended_price_m']) ? $f($l['promo_ended_price_m']) : null,
-                    'coupon_applied'      => $l['discount_m'] > 0,
-                ], self::mergePackLines($p['lines'])),
+                'lines'            => array_map(function ($l) use ($f) {
+                    $qty = max(1, $l['kind'] === 'pack' ? $l['pack_quantity'] : $l['quantity']);
+                    if ($l['kind'] === 'pack') {
+                        $unit = $l['unit_m'] + intdiv($l['included_fee_total_m'], $qty);
+                        return [
+                            'cart_id'    => $l['cart_id'],
+                            'kind'       => 'pack',
+                            'name'       => $l['pack']->name,
+                            'quantity'   => $l['pack_quantity'],
+                            'unit_price' => $f($unit),
+                            'total'      => $f($l['total_m'] + $l['included_fee_total_m']),
+                            'discount'   => 0.0,
+                            'product_id' => null, 'variant_id' => null,
+                            'original_unit_price' => $f($unit),
+                            'promo_discount'      => 0.0,
+                            'discount_percent'    => 0,
+                            'promo_type'          => null,
+                            'promotion_source'    => null,
+                            'promo_ended'         => false,
+                            'promo_ended_price'   => null,
+                            'coupon_applied'      => false,
+                        ];
+                    }
+                    $fee       = $l['included_fee_m'];
+                    $unit      = $l['unit_m'] + $fee;
+                    $original  = ($l['original_unit_m'] ?? $l['unit_m']) + $fee;
+                    return [
+                        'cart_id'    => $l['cart_id'],
+                        'kind'       => $l['kind'],
+                        'name'       => $l['product']->name,
+                        'quantity'   => $l['quantity'],
+                        'unit_price' => $f($unit),
+                        'total'      => $f($l['total_m'] + $l['included_fee_total_m']),
+                        'discount'   => $f($l['discount_m']),
+                        // Promotion breakdown: original → final, as displayed
+                        'product_id'          => $l['product']->id,
+                        'variant_id'          => $l['variant']?->id,
+                        'original_unit_price' => $f($original),
+                        'promo_discount'      => $f($l['promo_discount_m'] ?? 0),
+                        'discount_percent'    => $l['pricing']['promotion'] !== null ? PricingService::badgePercent($original, $unit) : 0,
+                        'promo_type'          => $l['pricing']['promo_type'],
+                        'promotion_source'    => $l['promotion_source'] ?? null,
+                        'promo_ended'         => (bool) ($l['promo_ended'] ?? false),
+                        'promo_ended_price'   => isset($l['promo_ended_price_m']) ? $f($l['promo_ended_price_m'] + $fee) : null,
+                        'coupon_applied'      => $l['discount_m'] > 0,
+                    ];
+                }, self::mergePackLines($p['lines'])),
             ], $quote['parcels'])),
-            'subtotal'           => $f($quote['items_subtotal_m']),
-            'discount_amount'    => $f($quote['discount_m']),
-            'promo_savings'      => $f($quote['promo_savings_m']),
-            'total_savings'      => $f($quote['promo_savings_m'] + $quote['discount_m']),
-            'promo_ended'        => $quote['promo_ended'],
-            'delivery_fee'       => $f($quote['delivery_fee_m']),
-            'shipping_fee'       => $f($quote['delivery_fee_m']),
-            'total'              => $f($quote['total_m']),
-            'parcel_count'       => count($quote['parcels']),
-            'pack_price_changed' => $quote['pack_price_changed'],
+            'subtotal'            => $f($quote['display_subtotal_m']),
+            'discount_amount'     => $f($quote['discount_m']),
+            'multi_item_discount' => $f($quote['multi_item_discount_m']),
+            'promo_savings'       => $f($quote['promo_savings_m']),
+            'total_savings'       => $f($quote['promo_savings_m'] + $quote['discount_m']),
+            'promo_ended'         => $quote['promo_ended'],
+            'free_delivery'       => true,
+            'delivery_fee'        => 0.0,
+            'shipping_fee'        => 0.0,
+            'total'               => $f($quote['total_m']),
+            'parcel_count'        => count($quote['parcels']),
+            'pack_price_changed'  => $quote['pack_price_changed'],
         ];
     }
 
@@ -570,6 +657,7 @@ class OrderPricing
             $i = $packAt[$l['cart_id']];
             $out[$i]['unit_m']  += $l['unit_m'];
             $out[$i]['total_m'] += $l['total_m'];
+            $out[$i]['included_fee_total_m'] += $l['included_fee_total_m'];
         }
         return $out;
     }

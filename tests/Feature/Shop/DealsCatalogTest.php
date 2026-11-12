@@ -66,7 +66,7 @@ class DealsCatalogTest extends TestCase
         $this->assertTrue($flash['deal']['is_flash_sale']);
         $this->assertSame(10, $flash['deal']['flash_stock']);
         $this->assertSame($category->id, $flash['category']['id']);
-        $this->assertEquals(40, $flash['final_price']);
+        $this->assertEquals(48, $flash['final_price'], '40 for the seller + 8 delivery included');
         $this->assertNull($flash['coupon']);
     }
 
@@ -102,7 +102,8 @@ class DealsCatalogTest extends TestCase
 
         $row = collect($this->deals()['packs'])->firstWhere('id', $pack->id);
 
-        $this->assertSame(25, $row['discount_percent']);
+        // Prices as the client sees them (one included delivery on each side): not the seller's 25 %
+        $this->assertSame(23, $row['discount_percent']);
         $this->assertSame(1, $row['items_count']);
         $this->assertSame($product->category_id, $row['category_id']);
         $this->assertSame($seller->id, $row['seller']['id']);

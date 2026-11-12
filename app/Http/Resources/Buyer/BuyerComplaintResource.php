@@ -88,12 +88,34 @@ class BuyerComplaintResource extends JsonResource
             'resolved_at'         => $date($c->resolved_at),
             'created_at'          => $date($c->created_at),
             'updated_at'          => $date($c->updated_at),
-            'complained_items'    => array_map(
-                fn ($line) => array_intersect_key((array) $line, array_flip(self::ITEM_FIELDS)),
-                (array) ($c->getAttribute('complained_items') ?? [])
-            ),
+            'complained_items'    => $this->items((array) ($c->getAttribute('complained_items') ?? [])),
             'timeline'            => $c->getAttribute('timeline'),
             'public_events'       => $c->getAttribute('public_events'),
         ];
+    }
+
+    /**
+     * Each returned line as the buyer saw it. Orders with delivery included in
+     * the prices: the displayed unit price, never the seller's base price; the
+     * amount given back is the return's items_amount / refund_amount above.
+     */
+    private function items(array $lines): array
+    {
+        $ids  = array_filter(array_map(fn ($l) => ((array) $l)['id'] ?? null, $lines));
+        $rows = $ids
+            ? \App\Models\OrderItem::whereIn('id', $ids)->whereNotNull('display_unit_price')->get()->keyBy('id')
+            : collect();
+
+        return array_map(function ($line) use ($rows) {
+            $line = array_intersect_key((array) $line, array_flip(self::ITEM_FIELDS));
+            if ($row = $rows->get($line['id'] ?? 0)) {
+                $unit = $row->clientUnitPrice();
+                $line['unit_price']        = $unit;
+                $line['total']             = round($unit * (int) ($line['quantity'] ?? 0), 3);
+                $line['return_unit_price'] = $unit;
+                $line['return_amount']     = null;
+            }
+            return $line;
+        }, $lines);
     }
 }

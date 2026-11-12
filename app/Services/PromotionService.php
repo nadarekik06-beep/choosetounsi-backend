@@ -516,7 +516,8 @@ class PromotionService
             ->get();
 
         $allProducts = $promotions->flatMap(fn ($promo) => $promo->products)->unique('id')->values();
-        $pricing     = $this->priceMany($allProducts);
+        // Public listing: the prices the client sees (delivery included, real "-X %")
+        $pricing     = app(\App\Services\Pricing\PricingService::class)->priceMany($allProducts);
         $winners     = $this->activePromotionsFor($allProducts->pluck('id')->all());
 
         $allColorImages = ProductImage::whereIn('product_id', $allProducts->pluck('id'))
@@ -546,7 +547,6 @@ class PromotionService
                         'id'                => $product->id,
                         'name'              => $product->name,
                         'slug'              => $product->slug,
-                        'price'             => (float) $product->price,
                         'primary_image_url' => $product->primary_image_url,
                         'variant_images'    => $variantImages,
                         'stock'             => $product->stock,
@@ -561,15 +561,18 @@ class PromotionService
 
             if ($products->isEmpty()) return null;
 
+            // "Jusqu'à −X %": the best discount the client really sees on its products
+            // (the seller's own rate applies to the base price, so it is never shown)
+            $upTo = (int) $products->max('discount_percent');
+
             return [
                 'id'                    => $promo->id,
                 'name'                  => $promo->name,
                 'type'                  => $promo->type,
-                'discount_type'         => $promo->discount_type,
-                'discount_value'        => (float) $promo->discount_value,
-                'discount_label'        => $promo->discount_type === 'percentage'
-                                             ? (int) $promo->discount_value . '% OFF'
-                                             : number_format($promo->discount_value, 3) . ' DT OFF',
+                'discount_type'         => 'percentage',
+                'discount_value'        => (float) $upTo,
+                'up_to_percent'         => $upTo,
+                'discount_label'        => __('messages.discount.up_to', ['value' => $upTo]),
                 'ends_at'               => $promo->ends_at->toISOString(),
                 'flash_stock'           => $promo->flash_stock,
                 'flash_stock_remaining' => $promo->flashStockRemaining(),
@@ -743,6 +746,11 @@ class PromotionService
         $row = function (Product $product, ?ProductVariant $variant) use ($promo): array {
             $base = self::basePrice($product, $variant);
             $p    = $this->pricing($base, $promo);
+            // What the client will see: delivery is included in the displayed prices and never
+            // discounted, so the real "-X %" (rounded down) is lower than the seller's own rate
+            $pricing   = app(\App\Services\Pricing\PricingService::class);
+            $originalM = $pricing->displayM(Millimes::of($p['original_price']), $product->parcel_size);
+            $finalM    = $pricing->displayM(Millimes::of($p['final_price']), $product->parcel_size);
             return [
                 'current_price'    => round($base, 3),
                 'original_price'   => $p['original_price'],
@@ -750,6 +758,9 @@ class PromotionService
                 'discount_amount'  => $p['discount_amount'],
                 'discount_percent' => $p['discount_percent'],
                 'valid'            => $p['promotion'] !== null,
+                'client_original_price' => Millimes::toFloat($originalM),
+                'client_final_price'    => Millimes::toFloat($finalM),
+                'client_percent'        => $p['promotion'] !== null ? \App\Services\Pricing\PricingService::badgePercent($originalM, $finalM) : 0,
             ];
         };
 

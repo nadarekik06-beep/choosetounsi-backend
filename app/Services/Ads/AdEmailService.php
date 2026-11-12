@@ -139,7 +139,7 @@ class AdEmailService
             ->orderByRaw('COUNT(*) DESC')->first(['p.subcategory_id', DB::raw('COUNT(*) AS views')]);
     }
 
-    /** Available products in the subcategory that are discounted right now or ship free. */
+    /** Available products in the subcategory that are discounted right now. */
     private function dealProductIds(int $subcategoryId): array
     {
         $promoted = DB::table('promotion_products as pp')->join('promotions as pr', 'pr.id', '=', 'pp.promotion_id')
@@ -148,7 +148,7 @@ class AdEmailService
 
         return DB::table('products')->where('subcategory_id', $subcategoryId)
             ->where('is_approved', true)->where('is_active', true)->whereNull('deleted_at')
-            ->where(fn ($q) => $q->whereIn('id', $promoted ?: [0])->orWhere('delivery_fee', 0))
+            ->whereIn('id', $promoted ?: [0])
             ->pluck('id')->map(fn ($i) => (int) $i)->all();
     }
 
@@ -174,7 +174,8 @@ class AdEmailService
             'image'         => $img ? (str_starts_with($img, 'http') ? $img : url($img)) : null,
             'price'         => $price,
             'original'      => $orig,
-            'free_delivery' => isset($card['delivery_fee']) && $card['delivery_fee'] !== null && (float) $card['delivery_fee'] === 0.0,
+            // Delivery is free on the whole platform (included in the price shown)
+            'free_delivery' => true,
             'copy'          => $sponsored ? ($card['sponsor_data']['ai_ad_copy'] ?? null) : null,
             'sponsored'     => $sponsored,
             'url'           => $sponsored

@@ -134,9 +134,31 @@ class FinancialSnapshotService
             'amount_to_remit'                   => $dec($parcel['amount_to_remit_m']),
             'payout_status'                     => 'pending',
             'updated_at'                        => now(),
-        ]);
+        ] + $this->includedDelivery($parcel));
 
         self::checkParcel($sellerOrderId);
+    }
+
+    /**
+     * Delivery included in the displayed prices (App\Services\Pricing\PricingService):
+     *   client_total = Σ display prices − coupon − multi_item_discount = parcel total
+     * and the per-size fees in force, so a return recomputes the parcel with them.
+     */
+    private function includedDelivery(array $parcel): array
+    {
+        if (!isset($parcel['included_fees_total_m'])) {
+            return [];
+        }
+        $dec = fn (int $m) => Millimes::toDecimal($m);
+
+        return [
+            'pricing_model'       => \App\Services\Pricing\PricingService::MODEL_INCLUDED,
+            'included_fees_total' => $dec($parcel['included_fees_total_m']),
+            'parcel_fee'          => $dec($parcel['delivery_fee_m']),
+            'multi_item_discount' => $dec($parcel['multi_item_discount_m']),
+            'client_total'        => $dec($parcel['parcel_total_m']),
+            'fee_rates'           => json_encode(array_map($dec, $parcel['fee_rates'])),
+        ];
     }
 
     /**

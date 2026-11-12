@@ -28,6 +28,10 @@ class Order extends Model
         'shipping_cost',     // agency cost, frozen at checkout
         'shipping_paid_by',  // customer | seller | mixed (legacy: platform)
         'shipping_per_parcel', // true: delivery charged per parcel (seller_orders.delivery_fee)
+        // 'included': delivery inside the displayed prices (App\Services\Pricing\PricingService); NULL on older orders
+        'pricing_model',
+        'included_fees_total',
+        'multi_item_discount',
         'status',
         'return_status',   // null | partial | full (returns refunded)
         'payment_status',
@@ -247,6 +251,52 @@ public function complaints()
             'is_cancelled'    => false,
             'original'        => $original,
         ];
+    }
+
+    /** Placed with delivery included in the displayed prices (App\Services\Pricing\PricingService). */
+    public function isIncludedPricing(): bool
+    {
+        return ($this->attributes['pricing_model'] ?? null) === \App\Services\Pricing\PricingService::MODEL_INCLUDED;
+    }
+
+    /**
+     * moneySummary() as the CLIENT sees it (order screens, tracking, e-mails).
+     * Delivery-included orders: subtotal = Σ displayed prices, a "multi-item
+     * discount" line, delivery free; the total is the same number. Older orders
+     * keep their real delivery amount (multi_item_discount 0, free_delivery false).
+     */
+    public function clientMoneySummary(): array
+    {
+        $money = $this->moneySummary();
+        if (!$this->isIncludedPricing()) {
+            return $money + ['multi_item_discount' => 0.0, 'free_delivery' => false];
+        }
+
+        $m = fn ($v) => \App\Support\Millimes::of($v ?? 0);
+        $f = fn (int $v) => \App\Support\Millimes::toFloat($v);
+
+        // As placed (history line of a cancelled order)
+        $original = $money['original'];
+        $original['subtotal']            = $f($m($original['subtotal']) + $m($this->attributes['included_fees_total'] ?? 0));
+        $original['multi_item_discount'] = $f($m($this->attributes['multi_item_discount'] ?? 0));
+        $original['shipping_fee']        = 0.0;
+
+        $fees = $discount = 0;
+        if (!$money['is_cancelled']) {
+            $sellerOrders = $this->relationLoaded('sellerOrders') ? $this->sellerOrders : $this->sellerOrders()->get();
+            foreach ($sellerOrders->whereNotIn('status', SellerOrder::NOT_SHIPPED) as $so) {
+                $fees     += $m($so->getAttribute('included_fees_total'));
+                $discount += $m($so->getAttribute('multi_item_discount'));
+            }
+        }
+
+        return [
+            'subtotal'            => $f($m($money['subtotal']) + $fees),
+            'shipping_fee'        => 0.0,
+            'multi_item_discount' => $f($discount),
+            'free_delivery'       => true,
+            'original'            => $original,
+        ] + $money;
     }
 
     /** Amounts frozen at checkout — kept as history, cancelled or not. */

@@ -264,6 +264,11 @@ class FinanceController extends Controller
                 DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.cod_amount END as cod_amount"),
                 DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.amount_to_remit END as amount_to_remit"),
                 'so.cod_amount as original_cod_amount',
+                // Delivery included in the displayed prices: what the client paid for the parcel now
+                // (after returns), and the multi-item discount given (NULL on older orders)
+                'so.pricing_model',
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE COALESCE(so.client_total, so.subtotal - so.discount_amount + so.delivery_fee) END as client_paid"),
+                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE COALESCE(so.multi_item_discount, 0) END as multi_item_discount"),
                 'so.cash_collected_at',
                 'so.refused_at',
                 'so.refused_agency_fee',
@@ -447,6 +452,12 @@ class FinanceController extends Controller
                     'seller_free_delivery_contribution' => $so->getAttribute('seller_free_delivery_contribution') !== null ? $num($so->getAttribute('seller_free_delivery_contribution')) : null,
                     'platform_delivery_margin'          => $live($so->getAttribute('platform_delivery_margin')),
                     'cod_amount'                        => $live($so->getAttribute('cod_amount')),
+                    // R6, per order: client paid, delivery collected (delivery_fee), Intigo cost
+                    // (shipping_cost), delivery margin, multi-item discount given
+                    'pricing_model'                     => $so->getAttribute('pricing_model'),
+                    'client_paid'                       => $live($so->getAttribute('client_total') ?? ((float) $so->subtotal - (float) $so->discount_amount + (float) $so->getAttribute('delivery_fee'))),
+                    'included_fees_total'               => $live($so->getAttribute('included_fees_total')),
+                    'multi_item_discount'               => $live($so->getAttribute('multi_item_discount')),
                     'amount_to_remit'                   => $live($so->getAttribute('amount_to_remit')),
                     'cash_collected_at'                 => $so->getAttribute('cash_collected_at'),
                     'remittance_received_at'            => $so->getAttribute('money_received_at'),

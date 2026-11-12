@@ -95,15 +95,19 @@ class OrderPlacedNotification extends BuyerNotification
         $order = $this->order;
         $rows  = [];
 
-        foreach ($order->items()->get(['product_name', 'variant_label', 'quantity', 'total']) as $item) {
+        foreach ($order->items()->get(['product_name', 'variant_label', 'quantity', 'unit_price', 'price', 'total', 'included_fee_total']) as $item) {
             // "|" would break the Markdown table
             $name = str_replace('|', '/', trim($item->product_name . ($item->variant_label ? " ({$item->variant_label})" : '')));
-            $rows[] = ["{$item->quantity} × {$name}", (float) $item->total > 0 ? self::money($item->total) : '—'];
+            // The amounts the client saw (delivery included)
+            $rows[] = ["{$item->quantity} × {$name}", (float) $item->total > 0 ? self::money($item->clientTotal()) : '—'];
         }
 
-        $money = $order->moneySummary();
+        $money = $order->clientMoneySummary();
         if ($money['discount_amount'] > 0) {
             $rows[] = [__('buyer_notifications.order.placed.discount'), '-' . self::money($money['discount_amount'])];
+        }
+        if ($money['multi_item_discount'] > 0) {
+            $rows[] = [__('buyer_notifications.order.placed.multi_item_discount'), '-' . self::money($money['multi_item_discount'])];
         }
         $rows[] = [
             __('buyer_notifications.order.placed.shipping'),

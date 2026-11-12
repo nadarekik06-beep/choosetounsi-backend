@@ -205,6 +205,8 @@ Route::middleware('auth.optional')->group(function () {
         Route::put('/{id}',    [CartController::class, 'update']);
         Route::delete('/',     [CartController::class, 'clear']);
         Route::delete('/{id}', [CartController::class, 'destroy']);
+        // Per-shop multi-item discount and totals for the rows ticked in the cart
+        Route::post('/summary', [CartController::class, 'summary'])->middleware('throttle:120,1');
     });
 
     Route::post('/coupons/validate', [\App\Http\Controllers\Api\Client\CouponController::class, 'preview']);
@@ -234,6 +236,7 @@ Route::prefix('guest')->middleware(['throttle:60,1', 'guest.order'])->group(func
     Route::get('/complaints/eligible-orders', [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'eligibleOrders']);
     Route::get('/complaints',                 [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'index']);
     Route::post('/complaints',                [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'store'])->middleware('throttle:guest-complaint');
+    Route::post('/complaints/preview',        [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'preview'])->middleware('throttle:60,1');
     Route::get('/complaints/{id}',            [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'show'])->whereNumber('id');
     Route::patch('/complaints/{id}/escalate', [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'escalate'])->whereNumber('id');
     Route::patch('/complaints/{id}/cancel',   [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'cancel'])->whereNumber('id');
@@ -547,6 +550,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/complaints/eligible-orders', [ClientComplaintController::class, 'eligibleOrders']);
         Route::get('/complaints',                 [ClientComplaintController::class, 'index']);
         Route::post('/complaints',                [ClientComplaintController::class, 'store']);
+        Route::post('/complaints/preview',        [ClientComplaintController::class, 'preview']);
         Route::get('/complaints/{id}',            [ClientComplaintController::class, 'show']);
         Route::patch('/complaints/{id}/escalate', [ClientComplaintController::class, 'escalate']);
         Route::patch('/complaints/{id}/cancel',   [ClientComplaintController::class, 'cancel']);

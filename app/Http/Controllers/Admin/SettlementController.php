@@ -125,8 +125,12 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
             $adjustments = DB::table('seller_adjustments')
                 ->where('seller_id', $sellerId)
                 ->whereNull('settlement_batch_id')
+                ->orderBy('id')
                 ->lockForUpdate()
                 ->get();
+            // A payout never goes below 0: debits it cannot cover stay pending (the
+            // seller's debt) and come off the next payouts
+            $adjustments = $this->carryOverDebt($adjustments, (float) $orders->sum('seller_net_amount'));
             $totalAdjustments = round((float) $adjustments->sum('amount'), 3);
 
             // Compute batch totals
@@ -192,6 +196,52 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
                 'message' => 'Failed to create settlement batch.',
             ], 500);
         }
+    }
+
+    /**
+     * Debits (negative adjustments) larger than this payout: the newest ones stay
+     * pending for the next batch. One debit may be split in two rows (the part
+     * settled now, the part carried over); their sum never changes.
+     *
+     * @param  \Illuminate\Support\Collection $adjustments pending rows, oldest first (locked)
+     * @return \Illuminate\Support\Collection the rows this batch settles
+     */
+    private function carryOverDebt($adjustments, float $payout)
+    {
+        $m        = fn ($v) => \App\Support\Millimes::of($v ?? 0);
+        $deficitM = -($m(number_format($payout, 3, '.', '')) + $adjustments->sum(fn ($a) => $m($a->amount)));
+        if ($deficitM <= 0) {
+            return $adjustments;
+        }
+
+        $keep = $adjustments->keyBy('id');
+        foreach ($adjustments->sortByDesc('id') as $a) {
+            $owedM = -$m($a->amount);
+            if ($deficitM <= 0 || $owedM <= 0) continue;
+
+            if ($owedM <= $deficitM) {
+                $keep->forget($a->id);                      // whole debit waits for the next payout
+                $deficitM -= $owedM;
+                continue;
+            }
+            // Part of it is settled now, the rest is carried over as its own pending row
+            DB::table('seller_adjustments')->where('id', $a->id)
+                ->update(['amount' => \App\Support\Millimes::toDecimal(-($owedM - $deficitM)), 'updated_at' => now()]);
+            DB::table('seller_adjustments')->insert([
+                'seller_id'       => $a->seller_id,
+                'seller_order_id' => $a->seller_order_id,
+                'complaint_id'    => $a->complaint_id,
+                'type'            => $a->type,
+                'amount'          => \App\Support\Millimes::toDecimal(-$deficitM),
+                'description'     => \Illuminate\Support\Str::limit((string) $a->description, 200, '') . ' (carried over)',
+                'created_by'      => $a->created_by,
+                'created_at'      => now(),
+                'updated_at'      => now(),
+            ]);
+            $a->amount = \App\Support\Millimes::toDecimal(-($owedM - $deficitM));
+            $deficitM  = 0;
+        }
+        return $keep->values();
     }
 
     // ─────────────────────────────────────────────────────────────────────────

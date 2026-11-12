@@ -21,6 +21,8 @@ class ProductController extends Controller
         private ProductScoringService $scoringService,
         private UserPreferenceService $preferenceService,
         private PromotionService      $promoService,
+        // Storefront payloads show the client's prices (delivery included)
+        private \App\Services\Pricing\PricingService $pricing,
     ) {}
 
     public function index(Request $request)
@@ -114,11 +116,7 @@ class ProductController extends Controller
             [$finalSql, $finalBindings] = $this->promoService->finalPriceSql($query->getModel()->getTable());
             $query->whereRaw("({$finalSql}) < products.price", $finalBindings);
         }
-        if ($request->boolean('free_delivery')) {
-            // 0 = explicitly free; null means "platform default", NOT free — same
-            // rule Product::isFreeDelivery() already documents.
-            $query->where('delivery_fee', 0);
-        }
+        // ?free_delivery=1 (older storefront builds): every product ships free now, nothing to filter
         if ($request->boolean('has_coupon')) {
             $query->whereHas('coupons', fn ($q) => $q
                 ->where('is_active', true)
@@ -205,7 +203,6 @@ class ProductController extends Controller
             || $this->sellerPlanParam($request) !== []
             || filter_var($request->query('in_stock'), FILTER_VALIDATE_BOOLEAN)
             || $request->boolean('on_sale')
-            || $request->boolean('free_delivery')
             || $request->boolean('has_coupon');
     }
 
@@ -399,22 +396,24 @@ class ProductController extends Controller
 
                 $effectiveBase = PromotionService::basePrice($product, $v);
 
-                // With a promotion: discounted from this variant's current price
-                $variantPromo = $this->promoService->priceWith($product, $effectiveBase, $v->id, $activePromo);
+                // With a promotion: discounted from this variant's current price.
+                // Client block: every price below includes the delivery of the product's size.
+                $variantPromo = $this->pricing->priceWith($product, $effectiveBase, $v->id, $activePromo);
 
                 return [
                     'id'              => $v->id,
                     'sku'             => $v->sku,
                     'stock'           => $v->stock,
                     'is_active'       => $v->is_active,
-                    // Effective price = variant override OR product base price
-                    'price'           => $effectiveBase,
+                    // Display price before promotion (variant override or product price, delivery included)
+                    'price'           => $variantPromo['price'],
                     'effective_price' => $variantPromo['effective_price'],
                     'final_price'     => $variantPromo['final_price'],
                     'discount_percent' => $variantPromo['discount_percent'],
                     // Crossed-out price when discounted (equals price otherwise)
                     'original_price'  => $variantPromo['original_price'],
-                    'price_override'  => $v->price_override !== null ? (float) $v->price_override : null,
+                    // Set when this variant has its own price (the display one: never the seller's base price)
+                    'price_override'  => $v->price_override !== null ? $variantPromo['price'] : null,
                     'label'           => $v->label,
                     // option_map is the accessor on ProductVariant — handles color group grouping
                     'option_map'      => $v->option_map,
@@ -528,10 +527,10 @@ class ProductController extends Controller
         }
 
         // ── Promotion data ─────────────────────────────────────────────────
-        $promoData = $this->promoService->priceWith($product, null, null, $activePromo);
+        $promoData = $this->pricing->priceWith($product, null, null, $activePromo);
 
         // ── Assemble response ──────────────────────────────────────────────
-        $data                    = $product->toArray();
+        $data                    = $product->makeHidden(['delivery_fee', 'parcel_size', 'parcel_size_confirmed_at'])->toArray();
         $data['has_variants']    = $hasVariants;
         $data['variants']        = $variantsPayload;
         $data['selectable_axes'] = $selectableAxes;
@@ -619,7 +618,7 @@ class ProductController extends Controller
             ->whereNull('p.deleted_at')
             ->get();
 
-        $pricing   = $this->promoService->priceMany($rows);
+        $pricing   = $this->pricing->priceMany($rows);
         $indexed   = $rows->keyBy('id');
         $occasions = DB::table('product_occasions')->whereIn('product_id', $rows->pluck('id'))
             ->get()->groupBy('product_id')->map(fn($g) => $g->pluck('occasion')->all());
@@ -634,7 +633,7 @@ class ProductController extends Controller
                 'name'             => $p->name,
                 'slug'             => $p->slug,
                 'description'      => $p->description,
-                'price'            => (float) $p->price,
+                'price'            => $pricing[$p->id]['price'],
                 'stock'            => (int) $p->stock,
                 'views'            => (int) ($p->views ?? 0),
                 'featured'         => (bool) ($p->featured ?? false),
@@ -662,7 +661,7 @@ private function transformProductCollection($products): array
 {
     $productIds = $products->pluck('id')->toArray();
     $colorImagesMap = $this->batchLoadColorImages($productIds);
-    $pricing        = $this->promoService->priceMany($products);
+    $pricing        = $this->pricing->priceMany($products);
     $cardImages     = \App\Services\ProductCardImages::forIds($productIds);
     $shops          = \App\Services\ShopOverview::shopsFor($products->pluck('seller_id')->filter()->unique()->all());
 
@@ -731,7 +730,7 @@ $p->variant_images = $variantImages;
     $p->setRelation('variants', $p->variants->map(fn($v) => ['id' => $v->id, 'stock' => $v->stock])->values());
 
     // Promotion pricing block (final_price, original_price = current price, badges…)
-    return $this->promoService->attach($p, $pricing);
+    return $this->pricing->attach($p, $pricing);
 }
 // Color-keyed images for a page of products, one query
 private function batchLoadColorImages(array $productIds): \Illuminate\Support\Collection

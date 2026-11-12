@@ -120,9 +120,25 @@ class PriceChangePromotionTest extends TestCase
         ]);
     }
 
-    /** Card (list endpoint), product page and /deals show final / original / -X%. */
+    /** Admin client fee of size S (DeliveryTestHelpers): included in every price the storefront shows. */
+    private const FEE = 8;
+
+    /** The storefront shows the seller's price + the delivery fee; the badge is computed from those displayed prices. */
+    private function displayed(float $final, float $original): array
+    {
+        $f = $final + self::FEE;
+        $o = $original + self::FEE;
+        return [$f, $o, $o > $f ? (int) floor(round(($o - $f) * 100 / $o, 6)) : 0];
+    }
+
+    /**
+     * Card (list endpoint), product page and /deals show final / original / -X%.
+     * $final / $original are the seller's prices: the helper adds the included delivery, and
+     * recomputes the badge from the displayed prices ($percent is the seller's own rate).
+     */
     private function assertShownEverywhere(Product $product, float $final, float $original, int $percent): void
     {
+        [$final, $original, $percent] = $this->displayed($final, $original);
         $detail = $this->getJson("/api/products/{$product->slug}")->assertOk()->json('data');
         $this->assertMoney($final, $detail['final_price'], 'product page final');
         $this->assertMoney($original, $detail['original_price'], 'product page crossed-out');
@@ -144,14 +160,15 @@ class PriceChangePromotionTest extends TestCase
     private function assertChargedEverywhere(Product $product, User $seller, float $final, float $original, array $parcel): array
     {
         $this->addToCart($product);
+        [$shownFinal, $shownOriginal] = $this->displayed($final, $original);
         $cart = $this->as($this->customer)->getJson('/api/cart')->assertOk()->json('data.items');
         $item = collect($cart)->firstWhere('product_id', $product->id);
-        $this->assertMoney($final, $item['price'], 'cart price');
-        $this->assertMoney($original, $item['original_price'], 'cart crossed-out');
+        $this->assertMoney($shownFinal, $item['price'], 'cart price (delivery included)');
+        $this->assertMoney($shownOriginal, $item['original_price'], 'cart crossed-out (delivery included)');
 
         $quoteLine = collect($this->quote()['parcels'][0]['lines'])->firstWhere('product_id', $product->id);
-        $this->assertMoney($final, $quoteLine['unit_price'], 'checkout unit price');
-        $this->assertMoney($original, $quoteLine['original_unit_price'], 'checkout original price');
+        $this->assertMoney($shownFinal, $quoteLine['unit_price'], 'checkout unit price (delivery included)');
+        $this->assertMoney($shownOriginal, $quoteLine['original_unit_price'], 'checkout original price (delivery included)');
 
         $res  = $this->place();
         $line = $this->line($res['order_id'], $product);
@@ -247,14 +264,15 @@ class PriceChangePromotionTest extends TestCase
         $this->sellerPromotion($seller, [$product->id], 'percentage', 25)->assertCreated();
 
         $variants = collect($this->getJson("/api/products/{$product->slug}")->assertOk()->json('data.variants'))->keyBy('id');
-        $this->assertMoney(90, $variants[$small->id]['final_price'], 'S: 25 % off its new 120, not off the old 80 (60)');
-        $this->assertMoney(120, $variants[$small->id]['original_price']);
-        $this->assertSame(25, $variants[$small->id]['discount_percent']);
-        $this->assertMoney(75, $variants[$medium->id]['final_price'], 'M: 25 % off the base 100');
+        // Displayed prices: the seller's price + the 8.000 delivery included
+        $this->assertMoney(98, $variants[$small->id]['final_price'], 'S: 25 % off its new 120 (90), not off the old 80 (60), + delivery');
+        $this->assertMoney(128, $variants[$small->id]['original_price']);
+        $this->assertSame(23, $variants[$small->id]['discount_percent'], 'badge from the displayed 128 → 98');
+        $this->assertMoney(83, $variants[$medium->id]['final_price'], 'M: 25 % off the base 100 (75), + delivery');
 
         $this->as($this->customer)->postJson('/api/cart', ['product_id' => $product->id, 'variant_id' => $small->id, 'quantity' => 1])->assertOk();
         $item = collect($this->as($this->customer)->getJson('/api/cart')->json('data.items'))->firstWhere('variant_id', $small->id);
-        $this->assertMoney(90, $item['price'], 'cart');
+        $this->assertMoney(98, $item['price'], 'cart (90 + delivery)');
 
         $res  = $this->place();
         $line = DB::table('order_items')->where('order_id', $res['order_id'])->where('variant_id', $small->id)->first();

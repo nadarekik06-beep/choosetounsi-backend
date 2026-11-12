@@ -217,12 +217,15 @@ class ExchangeFlowTest extends TestCase
         $this->assertSame('seller', $c->shipping_payer);
         $this->assertSame('L', $c->fee_size);
         $this->assertEquals(10.7, (float) $c->return_shipping_fee);
-        $this->assertEquals(30.0, (float) $c->refund_amount);
+        // Whole parcel back, seller at fault: the client gets everything they paid, delivery (8) included
+        $this->assertEquals(38.0, (float) $c->refund_amount);
 
         $c = $this->refundCash($c);
-        $this->assertEquals(30.0, (float) $c->refund_amount);
+        $this->assertEquals(38.0, (float) $c->refund_amount);
         $adj = SellerAdjustment::where('complaint_id', $c->id)->where('type', SellerAdjustment::TYPE_RETURN_SHIPPING)->firstOrFail();
         $this->assertEquals(-10.7, (float) $adj->amount);
+        // ... and the seller is charged that parcel fee on top of the return shipping
+        $this->assertEquals(-8.0, (float) SellerAdjustment::where('complaint_id', $c->id)->where('type', SellerAdjustment::TYPE_RETURN_PARCEL_FEE)->value('amount'));
 
         $cost = ComplaintCost::where('complaint_id', $c->id)->where('kind', 'return')->firstOrFail();
         $this->assertEquals(10.7, (float) $cost->intigo_cost);
@@ -239,10 +242,11 @@ class ExchangeFlowTest extends TestCase
 
             $this->assertSame('client', $c->shipping_payer, $size);
             $this->assertSame($size, $c->fee_size);
-            $this->assertEquals(round(50 - $fee, 3), (float) $c->refund_amount, "size {$size}");
+            // 50 + the parcel fee (8) paid, minus the client-paid return fee of the size
+            $this->assertEquals(round(58 - $fee, 3), (float) $c->refund_amount, "size {$size}");
 
             $c = $this->refundCash($c);
-            $this->assertEquals(round(50 - $fee, 3), (float) $c->refund_amount, "size {$size} after refund");
+            $this->assertEquals(round(58 - $fee, 3), (float) $c->refund_amount, "size {$size} after refund");
             $this->assertFalse(SellerAdjustment::where('complaint_id', $c->id)->where('type', SellerAdjustment::TYPE_RETURN_SHIPPING)->exists());
             $this->assertEquals($fee, (float) ComplaintCost::where('complaint_id', $c->id)->value('recovered_client'));
         }
@@ -262,12 +266,12 @@ class ExchangeFlowTest extends TestCase
         $this->assertSame(1, Complaint::where('order_id', $order->id)->count(), 'one shop = one parcel = one complaint');
         $this->assertSame('XL', $c->fee_size);
         $this->assertEquals(16.05, (float) $c->return_shipping_fee);
-        $this->assertEquals(round(100 - 16.05, 3), (float) $c->refund_amount);
+        $this->assertEquals(round(108 - 16.05, 3), (float) $c->refund_amount, '100 + ONE parcel fee (8), minus the XL return fee');
     }
 
     public function test_return_fee_above_the_items_value_refunds_zero_and_flags_the_admin(): void
     {
-        [$p, $a] = $this->product('XL', 12);
+        [$p, $a] = $this->product('XL', 3);   // 3 + the parcel fee 8 = 11 paid, under the 16.05 return fee
         $order = $this->deliveredOrder([[$p, $a, 1]]);
         $c = $this->complaint($this->ask($order, 'changed_mind', [['order_item_id' => $this->line($order, $a)->id, 'quantity' => 1]]));
 
@@ -279,7 +283,7 @@ class ExchangeFlowTest extends TestCase
         $c = $this->refundCash($c);
         $this->assertEquals(0.0, (float) $c->refund_amount);
         // Only what the items were worth could be recovered
-        $this->assertEquals(12.0, (float) ComplaintCost::where('complaint_id', $c->id)->value('recovered_client'));
+        $this->assertEquals(11.0, (float) ComplaintCost::where('complaint_id', $c->id)->value('recovered_client'));
     }
 
     public function test_admin_can_switch_the_payer_before_approving_and_it_is_logged(): void
@@ -287,12 +291,12 @@ class ExchangeFlowTest extends TestCase
         [$p, $a] = $this->product('L', 50);
         $order = $this->deliveredOrder([[$p, $a, 1]]);
         $c = $this->complaint($this->ask($order, 'other', [['order_item_id' => $this->line($order, $a)->id, 'quantity' => 1]]));
-        $this->assertEquals(39.3, (float) $c->refund_amount);
+        $this->assertEquals(47.3, (float) $c->refund_amount);   // 50 + 8 − 10.7
 
         $this->approve($c, 'seller')->assertOk();
         $c->refresh();
         $this->assertSame('seller', $c->shipping_payer);
-        $this->assertEquals(50.0, (float) $c->refund_amount);
+        $this->assertEquals(58.0, (float) $c->refund_amount);
         $event = ComplaintEvent::where('complaint_id', $c->id)->where('status', 'payer_overridden')->firstOrFail();
         $this->assertSame(['from' => 'client', 'to' => 'seller'], array_intersect_key($event->meta, ['from' => 1, 'to' => 1]));
 
@@ -429,7 +433,7 @@ class ExchangeFlowTest extends TestCase
         $this->assertSame(Complaint::RESOLUTION_RETURN_REFUND, $c->resolution_type);
         $this->assertSame(Complaint::STATUS_ADMIN_APPROVED, $c->status);
         $this->assertSame(10, (int) $b->fresh()->stock, 'replacement back in stock');
-        $this->assertEquals(round(40 - 8.56, 3), (float) $c->refund_amount, 'now a return: the return fee applies');
+        $this->assertEquals(round(48 - 8.56, 3), (float) $c->refund_amount, 'now a return: 40 + the parcel fee 8, minus the return fee');
     }
 
     public function test_lost_intigo_answer_needs_a_check_is_never_retried_and_the_pasted_nid_ships_it(): void

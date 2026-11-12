@@ -303,7 +303,7 @@ class ProductChangeTracker
         if ($value === null || $value === '' || $value === []) return '—';
         if ($field === 'category_id')    return Category::find($value)?->name ?? "#$value";
         if ($field === 'subcategory_id') return Subcategory::find($value)?->name ?? "#$value";
-        if ($field === 'delivery_fee')   return (float) $value === 0.0 ? 'Free delivery' : number_format((float) $value, 3) . ' TND';
+        if ($field === 'delivery_fee')   return (float) $value === 0.0 ? 'Free delivery (old seller option)' : number_format((float) $value, 3) . ' TND';
         if ($field === 'price' || str_ends_with($field, '.price_override')) return number_format((float) $value, 3) . ' TND';
         // 'season' = change logs written before occasions replaced products.season
         if ($field === 'occasions' || $field === 'season') return implode(', ', (array) json_decode($value, true));

@@ -207,16 +207,17 @@ class ProductChangesTest extends TestCase
         Cache::flush();
 
         $page = $this->getJson('/api/products/' . $p->fresh()->slug)->assertOk()->json('data');
-        $this->assertEquals(150, $page['price']);
-        $this->assertEquals(150, $page['original_price'], 'crossed-out price = the current price');
-        $this->assertEquals(120, $page['effective_price'], '20% off the current 150, not off the old 100');
+        // Displayed prices: the seller's price + the 8.000 delivery included (never discounted)
+        $this->assertEquals(158, $page['price']);
+        $this->assertEquals(158, $page['original_price'], 'crossed-out price = the current price');
+        $this->assertEquals(128, $page['effective_price'], '20% off the current 150 (120), not off the old 100, + delivery');
 
         // Cart charges the same price
         $customer = $this->makeUser('client');
         Cart::create(['user_id' => $customer->id, 'product_id' => $p->id, 'quantity' => 1]);
         Sanctum::actingAs($customer);
         $cart = $this->getJson('/api/cart')->assertOk()->json();
-        $this->assertStringContainsString('"price":120', json_encode($cart));
+        $this->assertStringContainsString('"price":128', json_encode($cart));
     }
 
     public function test_variant_promotion_uses_the_variant_current_price(): void

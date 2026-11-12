@@ -15,9 +15,11 @@ use Illuminate\Http\Request;
  *   GET /api/admin/delivery-settings  — per-size prices, margins, payment methods, Intigo switches, history
  *   PUT /api/admin/delivery-settings  — save (TND, ≥ 0, max 3 decimals); every change is logged
  *
- * Prices are per parcel size (S / L / XL): client fee, Intigo delivery cost,
- * Intigo return fee, seller contribution for free shipping. The flat fields
- * (client_delivery_fee…) are still accepted and mean size S.
+ * Prices are per parcel size (S / L / XL): client fee (included in the displayed
+ * price of every product of that size: delivery is shown as free), Intigo
+ * delivery cost, Intigo return fee. The flat fields (client_delivery_fee…) are
+ * still accepted and mean size S. The old seller contribution for free shipping
+ * is accepted and ignored (older admin builds still send it).
  *
  * New values apply to orders placed afterwards only: each parcel keeps the
  * values frozen at its checkout.
@@ -27,7 +29,7 @@ class DeliverySettingsController extends Controller
     private const AMOUNT = ['regex:/^\d{1,9}(\.\d{1,3})?$/'];
 
     /** Flat (size S) fields, accepted when `sizes` isn't sent. */
-    private const FLAT_SIZE_FIELDS = ['client_delivery_fee', 'agency_delivery_cost', 'seller_free_delivery_contribution', 'refused_parcel_agency_fee'];
+    private const FLAT_SIZE_FIELDS = ['client_delivery_fee', 'agency_delivery_cost', 'refused_parcel_agency_fee'];
 
     public function __construct(
         private DeliverySettings       $settings,
@@ -53,7 +55,7 @@ class DeliverySettingsController extends Controller
             $rules[$field] = array_merge(['required_without:sizes'], self::AMOUNT);
         }
         foreach (ParcelSize::ALL as $size) {
-            foreach (DeliverySettings::SIZE_AMOUNTS as $field) {
+            foreach (DeliverySettings::EDITABLE_SIZE_AMOUNTS as $field) {
                 $rules["sizes.{$size}.{$field}"] = array_merge(['required_with:sizes'], self::AMOUNT);
             }
             // After-sale fees (complaints): optional, so older clients keep working
@@ -77,7 +79,7 @@ class DeliverySettingsController extends Controller
         }
         if ($request->has('sizes')) {
             foreach (ParcelSize::ALL as $size) {
-                foreach (DeliverySettings::SIZE_AMOUNTS as $field) {
+                foreach (DeliverySettings::EDITABLE_SIZE_AMOUNTS as $field) {
                     $values['sizes'][$size][$field] = Millimes::of((string) $request->input("sizes.{$size}.{$field}"));
                 }
                 foreach (DeliverySettings::AFTER_SALE_AMOUNTS as $field) {
@@ -103,7 +105,7 @@ class DeliverySettingsController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => $changes ? 'Delivery settings saved. They apply to new orders only.' : 'Saved.',
+            'message' => $changes ? 'Delivery settings saved. Displayed prices follow at once; existing orders keep their amounts.' : 'Saved.',
             'data'    => $this->payload(),
         ]);
     }
@@ -117,16 +119,15 @@ class DeliverySettingsController extends Controller
         $warnings = [];
         foreach ($margins['sizes'] as $size => $m) {
             if ($m['normal'] < 0) {
-                $warnings[] = "Size {$size}: normal shipments lose " . Millimes::toDecimal(-$m['normal']) . ' TND each: the client fee is below the Intigo cost.';
-            }
-            if ($m['free_delivery'] < 0) {
-                $warnings[] = "Size {$size}: free-delivery shipments lose " . Millimes::toDecimal(-$m['free_delivery']) . ' TND each: the seller contribution is below the Intigo cost.';
+                $warnings[] = "Size {$size}: parcels lose " . Millimes::toDecimal(-$m['normal']) . ' TND each: the client fee is below the Intigo cost.';
             }
         }
 
         $settings = [];
         foreach (DeliverySettings::AMOUNTS as $field) {
-            $settings[$field] = $f($v[$field]);
+            if ($field !== 'seller_free_delivery_contribution') {
+                $settings[$field] = $f($v[$field]);
+            }
         }
         $settings['refused_parcel_fee_paid_by'] = $v['refused_parcel_fee_paid_by'];
         $settings['intigo_can_open']            = $v['intigo_can_open'];
@@ -134,18 +135,18 @@ class DeliverySettingsController extends Controller
 
         $sizes = [];
         foreach ($v['sizes'] as $size => $r) {
+            unset($r['seller_contribution']);
             $sizes[$size] = array_map($f, $r) + [
                 DeliverySettings::AFTER_SALE_SYNC => $v['after_sale_sync'][$size] ?? true,
                 'package_size'  => ParcelSize::packageSize($size),
                 'margin_normal' => $f($margins['sizes'][$size]['normal']),
-                'margin_free'   => $f($margins['sizes'][$size]['free_delivery']),
             ];
         }
 
         return [
             'settings'        => $settings,
             'sizes'           => $sizes,
-            'margins'         => ['normal' => $f($margins['normal']), 'free_delivery' => $f($margins['free_delivery'])],
+            'margins'         => ['normal' => $f($margins['normal'])],
             'warnings'        => $warnings,
             'payment_methods' => $this->paymentMethods->all(),
             'intigo'          => ['mode' => config('intigo.mode'), 'can_open' => $v['intigo_can_open'], 'is_exchange' => $v['intigo_is_exchange']],

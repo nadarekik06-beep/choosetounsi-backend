@@ -80,9 +80,10 @@ class ShopOverviewTest extends TestCase
         $this->assertSame(Review::approved()->count(), $stats['reviews']);
         $this->assertGreaterThanOrEqual(1, $stats['sellers']);
         $this->assertGreaterThanOrEqual(1, $stats['categories']);
-        // The admin's client delivery fee (Delivery & Fees), read live
-        $this->assertEquals(\App\Support\Millimes::toFloat(app(\App\Services\Delivery\DeliverySettings::class)->clientFee()), $stats['delivery_fee']);
-        $this->assertSame(Product::available()->where('delivery_fee', 0)->count(), $stats['free_delivery_products']);
+        // Delivery is free on the whole platform: no fee, no "N products ship free" count
+        $this->assertTrue($stats['free_delivery']);
+        $this->assertEquals(0, $stats['delivery_fee']);
+        $this->assertSame(0, $stats['free_delivery_products']);
     }
 
     public function test_categories_without_products_are_left_out(): void
