@@ -416,6 +416,7 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
             ->where('seller_id', $sellerId)
             ->orderByDesc('batch_date')
             ->paginate((int) $request->query('per_page', 10));
+        $batches->setCollection($batches->getCollection()->map(fn ($b) => self::sellerProofView($b)));
 
         return response()->json(['success' => true, 'data' => $batches]);
     }
@@ -452,7 +453,37 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
             $b = clone $b;
             $b->total_commission      = round((float) $b->total_commission + $f, 3);
             $b->total_platform_funded = $f;
-            return $b;
+            return self::sellerProofView($b);
         })->values();
+    }
+
+    /**
+     * Payment details + whether a receipt exists. The seller only sees a proof once
+     * the batch is paid; the storage path and the uploader never leave the server.
+     */
+    private static function sellerProofView(object $b): object
+    {
+        if (($b->status ?? null) !== 'paid') {
+            $b = clone $b;
+            $b->proof_path = null;
+        }
+        return \App\Support\SettlementProof::present($b, false);
+    }
+
+    /** GET /api/seller/earnings/settlement/{id}/proof — the receipt of one of the seller's own batches. */
+    public function settlementProof(int $id)
+    {
+        $batch = DB::table('settlement_batches')->where('id', $id)->first();
+        if (!$batch) {
+            return response()->json(['success' => false, 'message' => __('seller.earnings.settlement_not_found')], 404);
+        }
+        if ((int) $batch->seller_id !== (int) auth()->id()) {
+            return response()->json(['success' => false, 'message' => __('seller.earnings.settlement_not_found')], 403);
+        }
+        if ($batch->status !== 'paid' || !$batch->proof_path) {
+            return response()->json(['success' => false, 'message' => __('seller.earnings.settlement_not_found')], 404);
+        }
+
+        return \App\Support\SettlementProof::response($batch);
     }
 }

@@ -532,6 +532,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('history',  [EarningsController::class, 'history']);
         Route::get('receipt',           [EarningsController::class, 'fullReceipt']);   // ← nouveau
         Route::get('settlement/{id}',   [EarningsController::class, 'settlementReceipt']); // ← nouveau
+        Route::get('settlement/{id}/proof', [EarningsController::class, 'settlementProof'])->whereNumber('id');
     });
 
     }); // ← seller group ends HERE
@@ -874,6 +875,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('{id}',         [SettlementController::class, 'show']);
         Route::post('{id}/confirm',[SettlementController::class, 'confirm']);
         Route::post('{id}/cancel', [SettlementController::class, 'cancel']);
+        // Proof of payment (private file, streamed to admins only)
+        Route::get('{id}/payment-proof',    [SettlementController::class, 'showProof'])->whereNumber('id');
+        Route::post('{id}/payment-proof',   [SettlementController::class, 'storeProof'])->whereNumber('id');
+        Route::delete('{id}/payment-proof', [SettlementController::class, 'destroyProof'])->whereNumber('id');
     });
 
     // ── Subscription Management ──────────────────────────────────────────

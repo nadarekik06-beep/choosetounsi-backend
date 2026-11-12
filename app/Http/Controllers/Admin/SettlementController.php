@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\SellerOrder;
+use App\Support\SettlementProof;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -35,8 +36,10 @@ class SettlementController extends Controller
         $join->on('sa.user_id', '=', 'sb.seller_id')
              ->where('sa.status', '=', 'approved');
     })
+    ->leftJoin('users as pu', 'pu.id', '=', 'sb.proof_uploaded_by')
     ->select([
         'sb.*',
+        'pu.name as proof_uploaded_by_name',
         'u.name as seller_name',
         'u.email as seller_email',
         'sa.phone_number as seller_phone',
@@ -62,6 +65,8 @@ class SettlementController extends Controller
         }
 
 $results = $query->orderByDesc('sb.batch_date')->paginate(15);
+        // the storage path stays server-side; rows get has_proof
+        $results->setCollection($results->getCollection()->map(fn ($r) => SettlementProof::present($r, true)));
 
         return response()->json(['success' => true, 'data' => $results]);
     }
@@ -76,7 +81,7 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
             'seller_id'  => 'required|integer|exists:users,id',
             'batch_date' => 'required|date',
             'notes'      => 'nullable|string|max:500',
-        ]);
+        ] + SettlementProof::rules());
 
         $sellerId  = (int) $request->seller_id;
         $batchDate = Carbon::parse($request->batch_date)->toDateString();
@@ -117,6 +122,8 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
                 'message' => 'A settlement batch for this seller and date already exists.',
             ], 422);
         }
+
+        $proof = $request->hasFile('proof') ? SettlementProof::store($request->file('proof'), (int) auth()->id()) : [];
 
         DB::beginTransaction();
         try {
@@ -165,7 +172,7 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
                 'notes'                => $request->notes,
                 'created_at'           => now(),
                 'updated_at'           => now(),
-            ]);
+            ] + SettlementProof::paymentFields($request) + $proof);
 
             // Link orders to batch
             DB::table('seller_orders')
@@ -185,11 +192,12 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
             return response()->json([
                 'success' => true,
                 'message' => "Batch {$ref} created with {$orders->count()} order(s).",
-                'data'    => DB::table('settlement_batches')->where('id', $batchId)->first(),
+                'data'    => SettlementProof::present(DB::table('settlement_batches')->where('id', $batchId)->first(), true),
             ]);
 
         } catch (\Throwable $e) {
             DB::rollBack();
+            SettlementProof::delete($proof['proof_path'] ?? null);
             Log::error('[SettlementController::create] ' . $e->getMessage());
             return response()->json([
                 'success' => false,
@@ -288,7 +296,12 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
 
         return response()->json([
             'success' => true,
-            'data'    => array_merge((array) $batch, ['orders' => $orders, 'adjustments' => $adjustments]),
+            'data'    => array_merge((array) SettlementProof::present($batch, true), [
+                'orders'      => $orders,
+                'adjustments' => $adjustments,
+                'proof_uploaded_by_name' => $batch->proof_uploaded_by
+                    ? DB::table('users')->where('id', $batch->proof_uploaded_by)->value('name') : null,
+            ]),
         ]);
     }
 
@@ -296,8 +309,10 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
     // POST /api/admin/settlements/{id}/confirm
     // ─────────────────────────────────────────────────────────────────────────
 
-    public function confirm(int $id): JsonResponse
+    public function confirm(Request $request, int $id): JsonResponse
     {
+        $request->validate(SettlementProof::rules());
+
         $batch = DB::table('settlement_batches')->where('id', $id)->first();
 
         if (!$batch) {
@@ -311,6 +326,8 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
             ], 422);
         }
 
+        $proof = $request->hasFile('proof') ? SettlementProof::store($request->file('proof'), (int) auth()->id()) : [];
+
         DB::beginTransaction();
         try {
             $now = now();
@@ -322,7 +339,7 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
                 'confirmed_at' => $now,
                 'paid_at'      => $now,
                 'updated_at'   => $now,
-            ]);
+            ] + SettlementProof::paymentFields($request) + $proof);
 
             // Mark all orders in batch as paid (a refunded return keeps its payment_status)
             DB::table('seller_orders')
@@ -340,6 +357,11 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
 
             DB::commit();
 
+            // A receipt exists (uploaded now, or attached while the batch was a draft)
+            if ($proof || $batch->proof_path) {
+                $this->notifySeller($id);
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => "Batch {$batch->batch_reference} confirmed. Seller marked as paid.",
@@ -347,6 +369,7 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
 
         } catch (\Throwable $e) {
             DB::rollBack();
+            SettlementProof::delete($proof['proof_path'] ?? null);
             Log::error('[SettlementController::confirm] ' . $e->getMessage());
             return response()->json(['success' => false, 'message' => 'Confirmation failed.'], 500);
         }
@@ -373,7 +396,7 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
             DB::table('settlement_batches')->where('id', $id)->update([
                 'status'     => 'cancelled',
                 'updated_at' => $now,
-            ]);
+            ] + SettlementProof::emptyColumns());
 
             // Orders and seller debits go back to the queue for the next batch
             DB::table('seller_orders')->where('settlement_batch_id', $id)
@@ -382,9 +405,101 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
                 ->update(['settlement_batch_id' => null, 'updated_at' => $now]);
         });
 
+        SettlementProof::delete($batch->proof_path);
+
         return response()->json([
             'success' => true,
             'message' => "Batch {$batch->batch_reference} cancelled. Its orders are ready for a new batch.",
         ]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Proof of payment: GET | POST | DELETE /api/admin/settlements/{id}/payment-proof
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public function showProof(int $id)
+    {
+        $batch = DB::table('settlement_batches')->where('id', $id)->first();
+        abort_unless($batch, 404, 'Batch not found.');
+
+        return SettlementProof::response($batch);
+    }
+
+    /** Adds or replaces the proof and/or edits the payment details (method, reference, date). */
+    public function storeProof(Request $request, int $id): JsonResponse
+    {
+        $request->validate(SettlementProof::rules());
+
+        $batch = DB::table('settlement_batches')->where('id', $id)->first();
+        if (!$batch) {
+            return response()->json(['success' => false, 'message' => 'Batch not found.'], 404);
+        }
+        if ($batch->status === 'cancelled') {
+            return response()->json(['success' => false, 'message' => 'A cancelled batch cannot take a payment proof.'], 422);
+        }
+
+        $fields = SettlementProof::paymentFields($request);
+        if (!$request->hasFile('proof') && !$fields) {
+            return response()->json(['success' => false, 'message' => 'Nothing to save: send a proof file or payment details.'], 422);
+        }
+
+        $proof = $request->hasFile('proof') ? SettlementProof::store($request->file('proof'), (int) auth()->id()) : [];
+
+        try {
+            DB::table('settlement_batches')->where('id', $id)->update($fields + $proof + ['updated_at' => now()]);
+        } catch (\Throwable $e) {
+            SettlementProof::delete($proof['proof_path'] ?? null);
+            Log::error('[SettlementController::storeProof] ' . $e->getMessage());
+            return response()->json(['success' => false, 'message' => 'Could not save the proof.'], 500);
+        }
+
+        if ($proof) {
+            SettlementProof::delete($batch->proof_path);          // the replaced file
+            if ($batch->status === 'paid') {
+                $this->notifySeller($id);
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Payment proof saved.',
+            'data'    => SettlementProof::present(DB::table('settlement_batches')->where('id', $id)->first(), true),
+        ]);
+    }
+
+    public function destroyProof(int $id): JsonResponse
+    {
+        $batch = DB::table('settlement_batches')->where('id', $id)->first();
+        if (!$batch) {
+            return response()->json(['success' => false, 'message' => 'Batch not found.'], 404);
+        }
+        if (!$batch->proof_path) {
+            return response()->json(['success' => false, 'message' => 'This batch has no proof.'], 404);
+        }
+
+        DB::table('settlement_batches')->where('id', $id)
+            ->update(SettlementProof::emptyColumns() + ['updated_at' => now()]);
+        SettlementProof::delete($batch->proof_path);
+        Log::info('[SettlementController] proof removed', ['batch' => $id, 'admin' => auth()->id()]);
+
+        return response()->json(['success' => true, 'message' => 'Payment proof removed.']);
+    }
+
+    /** In-app + e-mail notice to the seller; a failure here never undoes the payment. */
+    private function notifySeller(int $batchId): void
+    {
+        try {
+            $batch  = DB::table('settlement_batches')->where('id', $batchId)->first();
+            $seller = \App\Models\User::find($batch->seller_id);
+            if ($seller) {
+                $seller->notify(new \App\Notifications\Sellers\SettlementPaidNotification(
+                    $batchId,
+                    $batch->batch_reference,
+                    \App\Services\Payments\Money::plain($batch->total_seller_payout),
+                ));
+            }
+        } catch (\Throwable $e) {
+            Log::error('[SettlementController::notifySeller] ' . $e->getMessage());
+        }
     }
 }

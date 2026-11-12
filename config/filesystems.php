@@ -35,6 +35,14 @@ return [
             'root' => storage_path('app'),
         ],
 
+        // Never exposed through a URL or the storage symlink: files here are only
+        // served by authenticated endpoints (e.g. settlement payment proofs).
+        'private' => [
+            'driver' => 'local',
+            'root' => storage_path('app/private'),
+            'visibility' => 'private',
+        ],
+
         'public' => [
             'driver' => 'local',
             'root' => storage_path('app/public'),
