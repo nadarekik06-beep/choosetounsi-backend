@@ -317,6 +317,10 @@ class ProductController extends Controller
         // Multicolore variants show the seller's description ("Noir / Blanc")
         \App\Support\Multicolor::applyToProduct($product);
 
+        // Exchange-first policy line under the free-delivery badge (null while the policy is off)
+        $returnsPolicy = app(\App\Services\Returns\ReturnPolicy::class);
+        $product->setAttribute('returns_mode', $returnsPolicy->enabled() ? $returnsPolicy->returnsMode($product) : null);
+
         if ($product->seller) {
             $branding = $product->seller->storefrontBranding();
             $product->seller->business_name = $branding['business_name'];

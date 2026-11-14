@@ -7,6 +7,7 @@ use App\Models\Complaint;
 use App\Models\Order;
 use App\Models\OrderItem;
 use App\Http\Resources\Buyer\BuyerComplaintResource;
+use App\Services\Returns\ReturnPolicy;
 use App\Services\Returns\ReturnPresenter;
 use App\Services\Returns\ReturnService;
 use App\Models\User;
@@ -39,6 +40,7 @@ class ComplaintController extends Controller
     public function eligibleOrders(Request $request)
     {
         $windowHours = Complaint::COMPLAINT_WINDOW_HOURS;
+        $policy = app(ReturnPolicy::class);
 
         $orders = $this->eligibleQuery($this->ownedOrders($request))
             ->with([
@@ -50,7 +52,7 @@ class ComplaintController extends Controller
             ->orderByDesc('updated_at')
             ->get();
 
-        $result = $orders->map(function (Order $order) use ($windowHours) {
+        $result = $orders->map(function (Order $order) use ($windowHours, $policy) {
             $items = $this->returnableLines($order)->map(fn(array $l) => [
                 // What the buyer saw (delivery included on current orders), never the seller's base price
                 'unit_price' => $l['line']->clientUnitPrice(),
@@ -59,15 +61,28 @@ class ComplaintController extends Controller
                 'returnable_quantity' => $l['returnable'],
                 'paid_unit_price'     => $l['paid_unit_price'],
                 'parcel_size'         => \App\Support\ParcelSize::normalize($l['line']->product?->parcel_size),
-            ] + $this->exchangeOptions($l['line']))->values();
+            ] + $this->exchangeOptions($l['line']) + [
+                // Policy v2 (additive): the form renders these, it decides nothing
+                'exchange_impossible' => $policy->exchangeImpossible($l['line']),
+                'returns_mode'        => $policy->returnsMode($l['line']->product),
+            ])->values();
 
             $hoursLeft = max(0, $windowHours - (int) $order->updated_at->diffInHours(now()));
+            $deliveredAt = $order->updated_at;
+
+            // Policy v2: each parcel has its own window, from its real delivered date
+            if ($policy->enabled()) {
+                $open = $order->sellerOrders->where('status', 'delivered')->filter(fn($so) => $policy->windowOpen($so));
+                $end  = $open->map(fn($so) => $policy->windowEndsAt($so))->max();
+                $hoursLeft   = $end ? max(0, (int) ceil(now()->diffInMinutes($end, false) / 60)) : 0;
+                $deliveredAt = $open->map(fn($so) => $policy->deliveredAt($so))->max() ?? $deliveredAt;
+            }
 
             return [
                 'id'             => $order->id,
                 'order_number'   => $order->order_number,
                 'payment_method' => $order->payment_method ?? 'cod',
-                'delivered_at'   => $order->updated_at->format('d M Y · H:i'),
+                'delivered_at'   => $deliveredAt->format('d M Y · H:i'),
                 'hours_left'     => $hoursLeft,
                 'days_left'      => max(0, (int) ceil($hoursLeft / 24)),
                 'total_amount'   => (float) $order->total_amount,
@@ -87,6 +102,15 @@ class ComplaintController extends Controller
             // Older storefront builds: the size S return fee
             'return_shipping_fee' => $this->returns->afterSaleFees()['S']['return'],
             'data'                => $result,
+            // Exchange-first policy (v2): off until the admin switches it on
+            'policy'              => [
+                'v2'         => $policy->enabled(),
+                'promise'    => __('returns_policy.promise'),
+                'reasons'    => ReturnPolicy::REASONS,
+                'min_photos' => $policy->enabled() ? ReturnPolicy::MIN_PHOTOS : 1,
+                'max_photos' => $policy->enabled() ? ReturnPolicy::MAX_PHOTOS : 5,
+            ],
+            'closed_orders'       => $policy->enabled() ? $this->closedOrders($request, $policy, $result->pluck('id')->all()) : [],
         ]);
     }
 
@@ -133,6 +157,7 @@ class ComplaintController extends Controller
         $validated = $request->validate([
             'order_id'              => 'required|integer|exists:orders,id',
             'complaint_type'        => 'required|string|in:' . implode(',', array_keys(Complaint::COMPLAINT_TYPES)),
+            'resolution_type'       => 'nullable|string|in:' . implode(',', Complaint::RESOLUTIONS),
             'return_all'            => 'nullable|boolean',
             'items'                 => 'required_without:return_all|array|min:1',
             'items.*.order_item_id' => 'required_with:items|integer',
@@ -150,10 +175,17 @@ class ComplaintController extends Controller
                 ->mapWithKeys(fn($i) => [(int) $i['order_item_id'] => min((int) $i['quantity'], (int) ($returnable[(int) $i['order_item_id']] ?? 0))])
                 ->filter()->all();
 
-        return response()->json([
-            'success' => true,
-            'data'    => $this->returns->previewRefund($order, $quantities, $validated['complaint_type']),
-        ]);
+        $data = $this->returns->previewRefund($order, $quantities, $validated['complaint_type'], $validated['resolution_type'] ?? null);
+
+        // Policy v2: what is allowed for this selection and reason, and why (the form only renders it)
+        $policy = app(ReturnPolicy::class);
+        if ($policy->enabled() && $quantities) {
+            $lines = $order->items->whereIn('id', array_keys($quantities))->values();
+            $lines->load(['product' => fn($q) => $q->withTrashed()->with(['variants.attributeOptions.attribute']), 'variant']);
+            $data['policy'] = $policy->optionsForLines($lines);
+        }
+
+        return response()->json(['success' => true, 'data' => $data]);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -162,6 +194,10 @@ class ComplaintController extends Controller
 
     public function store(Request $request)
     {
+        $policyOn = app(ReturnPolicy::class)->enabled();
+        $imageRules = $policyOn
+            ? ['images' => 'required|array|min:' . ReturnPolicy::MIN_PHOTOS . '|max:' . ReturnPolicy::MAX_PHOTOS, 'image' => 'prohibited']
+            : ['images' => 'required_without:image|array|min:1|max:5', 'image' => 'required_without:images|nullable|image|mimes:jpeg,png,jpg,webp|max:5120'];
         $validated = $request->validate([
             'order_id'           => 'required|integer|exists:orders,id',
             'complaint_type'     => 'required|string|in:' . implode(',', array_keys(Complaint::COMPLAINT_TYPES)),
@@ -176,12 +212,14 @@ class ComplaintController extends Controller
             'items.*.replacement_variant_id' => 'nullable|integer',
             'item_ids'           => 'nullable|array|min:1',   // legacy form: whole lines
             'item_ids.*'         => 'integer',
-            'images'             => 'required_without:image|array|min:1|max:5',
             'images.*'           => 'image|mimes:jpeg,png,jpg,webp|max:5120',
-            'image'              => 'required_without:images|nullable|image|mimes:jpeg,png,jpg,webp|max:5120',
-        ], [
+            'item_unused_confirmed' => 'nullable|boolean',
+        ] + $imageRules, [
             'images.required_without' => __('messages.complaint.photo_required'),
             'image.required_without'  => __('messages.complaint.photo_required'),
+            'images.required'         => __('returns_policy.photos_range'),
+            'images.min'              => __('returns_policy.photos_range'),
+            'images.max'              => __('returns_policy.photos_range'),
             'items.required_without_all' => __('messages.complaint.nothing_selected'),
         ]);
 
@@ -318,31 +356,58 @@ class ComplaintController extends Controller
      */
     private function exchangeOptions(OrderItem $line): array
     {
-        $product = $line->product;
-        if (!$product || $product->trashed() || !$product->is_active) {
-            return ['exchange_options' => [], 'exchange_same_product' => false, 'exchange_other_price' => false];
-        }
-        $variants = $product->variants->where('is_active', true);
-        if ($variants->isEmpty()) {
-            return ['exchange_options' => [], 'exchange_same_product' => (int) $product->stock > 0, 'exchange_other_price' => false];
-        }
-        $original = $line->variant_id ? $product->variants->firstWhere('id', (int) $line->variant_id) : null;
-        $price    = $original ? $original->effective_price : (float) $line->unit_price;
+        // The rule lives in ReturnPolicy (also used to tell when an exchange is impossible)
+        return app(ReturnPolicy::class)->exchangeOptions($line);
+    }
 
-        $options = $variants
-            ->filter(fn($v) => (int) $v->stock > 0 && abs($v->effective_price - $price) < 0.0005)
-            ->map(fn($v) => ['id' => (int) $v->id, 'label' => $v->label ?: ('#' . $v->id), 'stock' => (int) $v->stock, 'current' => (int) $v->id === (int) $line->variant_id])
-            ->values()->all();
-        // Variants left out only for their price, so the form can say why
-        $otherPrice = $variants->contains(fn($v) => (int) $v->stock > 0 && abs($v->effective_price - $price) >= 0.0005);
+    /**
+     * PATCH /api/client/complaints/{id}/switch-to-refund (guest: same path under /guest)
+     * The shop said the exchange is impossible: one click turns the request into a refund.
+     */
+    public function switchToRefund(Request $request, $id)
+    {
+        $request->validate(['item_unused_confirmed' => 'nullable|boolean']);
+        $complaint = $this->ownedComplaints($request)->findOrFail($id);
 
-        return ['exchange_options' => $options, 'exchange_same_product' => false, 'exchange_other_price' => $otherPrice];
+        $c = $this->returns->clientSwitchToRefund($complaint, $this->client($request), $request->has('item_unused_confirmed') ? $request->boolean('item_unused_confirmed') : null);
+
+        return response()->json(['success' => true, 'message' => __('messages.complaint.submitted'), 'data' => $this->present($c, $request)]);
+    }
+
+    /** Delivered parcels whose 48 h are over (last 30 days): the orders page says why the button is closed. */
+    private function closedOrders(Request $request, ReturnPolicy $policy, array $openIds): array
+    {
+        $orders = $this->ownedOrders($request)->whereNotIn('id', $openIds ?: [0])
+            ->whereHas('sellerOrders', fn($so) => $so->where('status', 'delivered'))
+            ->with('sellerOrders')->orderByDesc('updated_at')->limit(30)->get();
+
+        return $orders->map(function (Order $o) use ($policy) {
+            $parcels = $o->sellerOrders->where('status', 'delivered');
+            $deliveredAt = $parcels->map(fn($so) => $policy->deliveredAt($so))->filter()->max();
+            if (!$deliveredAt || $deliveredAt->lt(now()->subDays(30))) {
+                return null;
+            }
+            return [
+                'id'               => $o->id,
+                'order_number'     => $o->order_number,
+                'delivered_at'     => $deliveredAt->toIso8601String(),
+                'window_ended_at'  => $deliveredAt->copy()->addHours(Complaint::COMPLAINT_WINDOW_HOURS)->toIso8601String(),
+                'closed_reason'    => __('returns_policy.window_closed', ['date' => $deliveredAt->format('d/m/Y')]),
+            ];
+        })->filter()->values()->all();
     }
 
     /** Delivered (whole order, or at least one sub-order) within the return window. */
     private function eligibleQuery(Builder $orders)
     {
         $hours = Complaint::COMPLAINT_WINDOW_HOURS;
+
+        // Policy v2: the 48 h count from each parcel's real delivered date (Intigo), not from the order's last update
+        if (app(ReturnPolicy::class)->enabled()) {
+            $cut = now()->subHours($hours);
+            return $orders->whereHas('sellerOrders', fn($so) => $so->where('status', 'delivered')
+                ->whereRaw('COALESCE(delivery_confirmed_at, updated_at) >= ?', [$cut]));
+        }
 
         return $orders
             ->where(function ($q) use ($hours) {
@@ -360,7 +425,10 @@ class ComplaintController extends Controller
      */
     private function returnableLines(Order $order)
     {
-        $delivered = $order->sellerOrders->where('status', 'delivered')->pluck('id')->all();
+        $policy    = app(ReturnPolicy::class);
+        $delivered = $order->sellerOrders->where('status', 'delivered')
+            ->filter(fn($so) => !$policy->enabled() || $policy->windowOpen($so))
+            ->pluck('id')->all();
         $reserved  = $this->returns->reservedQuantities($order->id);
 
         return $order->items

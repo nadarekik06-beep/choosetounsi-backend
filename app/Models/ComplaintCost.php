@@ -18,6 +18,8 @@ class ComplaintCost extends Model
     public const KIND_RETURN          = 'return';
     public const KIND_EXCHANGE        = 'exchange';
     public const KIND_EXCHANGE_FAILED = 'exchange_failed';
+    /** Returns v2: a non-conforming item sent back to the client (admin decision). */
+    public const KIND_SENT_BACK       = 'sent_back';
 
     protected $fillable = [
         'complaint_id', 'kind', 'size', 'intigo_cost', 'recovered_client', 'recovered_seller', 'payer', 'intigo_nid', 'booked_at',

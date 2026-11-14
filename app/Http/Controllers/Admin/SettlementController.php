@@ -100,6 +100,9 @@ $results = $query->orderByDesc('sb.batch_date')->paginate(15);
             ->where('payout_status', 'ready')
             ->whereNull('settlement_batch_id')
             ->whereNotNull('money_received_at')
+            // Returns v2: parcels whose client was refunded in cash at pick-up and whose item
+            // is not inspected yet stay out of every batch (payout frozen)
+            ->whereNotIn('id', \App\Services\Returns\PayoutHold::sellerOrderIds($sellerId))
             ->get();
 
         if ($orders->isEmpty()) {

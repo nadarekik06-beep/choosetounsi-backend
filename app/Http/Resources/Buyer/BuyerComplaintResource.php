@@ -91,6 +91,23 @@ class BuyerComplaintResource extends JsonResource
             'complained_items'    => $this->items((array) ($c->getAttribute('complained_items') ?? [])),
             'timeline'            => $c->getAttribute('timeline'),
             'public_events'       => $c->getAttribute('public_events'),
+            // Returns policy v2 (additive)
+            'policy_version'      => $c->policy_version,
+            'exchange_impossible' => $c->exchange_impossible_at ? [
+                'at' => $date($c->exchange_impossible_at), 'reason' => $c->exchange_impossible_reason,
+                'can_switch_to_refund' => $c->isV2() && $c->isExchange() && $c->status === Complaint::STATUS_REQUESTED,
+            ] : null,
+            'switched_to_refund_at' => $date($c->switched_to_refund_at),
+            // The verdict is only shown to the client when the admin decided to send the item back
+            'sent_back'           => $c->dispute_decision === 'send_back' && !$c->sent_back_refused_at ? [
+                'fee'     => round((float) $c->sent_back_fee, 3),
+                // Cash on delivery of the parcel back: the refund already received + the delivery fee
+                'cod'     => round((float) $c->sent_back_cod, 3),
+                'refunded' => round((float) ($c->refund_amount_locked ?? $c->refund_amount), 3),
+                'reason'  => $c->inspection_comment,
+                'photos'  => array_values(array_map(fn ($p) => \Illuminate\Support\Facades\Storage::url($p), (array) $c->inspection_photos)),
+                'tracking' => $c->sent_back_nid,
+            ] : null,
         ];
     }
 

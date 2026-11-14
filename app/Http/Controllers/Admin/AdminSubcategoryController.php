@@ -116,6 +116,8 @@ class AdminSubcategoryController extends Controller
 
         if ($request->has('category_id'))  $data['category_id'] = (int) $request->input('category_id');
         if ($request->has('name_ar'))       $data['name_ar']     = $request->input('name_ar') ?: null;
+        // Returns policy: null = inherit the category, true/false = explicit
+        if ($request->has('no_changed_mind_return')) $data['no_changed_mind_return'] = $request->input('no_changed_mind_return') === null ? null : $request->boolean('no_changed_mind_return');
         if ($request->has('name_fr'))       $data['name_fr']     = $request->input('name_fr') ?: null;
         if ($request->has('icon'))          $data['icon']        = $request->input('icon') ?: null;
         if ($request->has('order'))         $data['order']       = (int) $request->input('order', 0);

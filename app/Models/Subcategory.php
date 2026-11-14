@@ -13,11 +13,12 @@ class Subcategory extends Model
     protected $translatable = ['name'];
 
     protected $fillable = [
-        'category_id', 'name', 'name_ar', 'name_fr', 'slug', 'icon', 'is_active', 'order',
+        'category_id', 'name', 'name_ar', 'name_fr', 'slug', 'icon', 'is_active', 'order', 'no_changed_mind_return',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
+        'no_changed_mind_return' => 'boolean',
     ];
 
     // ── Relationships ──────────────────────────────────────────────────────

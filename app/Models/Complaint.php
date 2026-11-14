@@ -175,6 +175,13 @@ class Complaint extends Model
         'intigo_exchange_nid', 'exchange_sync_status', 'exchange_sync_error',
         'intigo_exchange_status_code', 'intigo_exchange_status_label', 'intigo_exchange_status_at',
         'exchange_shipped_at', 'exchanged_at', 'exchange_failed_at', 'old_item_received_at',
+        // Returns policy v2 (policy_version NULL = old flow)
+        'policy_version', 'exchange_impossible_at', 'exchange_impossible_by', 'exchange_impossible_reason', 'switched_to_refund_at',
+        'item_unused_confirmed', 'refund_amount_locked', 'refund_locked_at', 'payout_frozen_at', 'payout_released_at',
+        'receive_timeout_notified_at', 'inspection_due_at', 'inspection_result', 'inspection_by', 'inspection_at',
+        'inspection_comment', 'inspection_photos', 'inspection_reminder_sent_at', 'inspection_timeout_notified_at',
+        'dispute_status', 'dispute_decision', 'dispute_amount', 'dispute_note', 'dispute_decided_by', 'dispute_decided_at',
+        'sent_back_nid', 'sent_back_fee', 'sent_back_cod', 'sent_back_refused_at',
     ];
 
     protected $casts = [
@@ -201,6 +208,25 @@ class Complaint extends Model
         'received_at'         => 'datetime',
         'refunded_at'         => 'datetime',
         'finance_applied_at'  => 'datetime',
+        'policy_version'         => 'integer',
+        'item_unused_confirmed'  => 'boolean',
+        'refund_amount_locked'   => 'decimal:3',
+        'dispute_amount'         => 'decimal:3',
+        'sent_back_fee'          => 'decimal:3',
+        'sent_back_cod'          => 'decimal:3',
+        'sent_back_refused_at'   => 'datetime',
+        'inspection_photos'      => 'array',
+        'exchange_impossible_at' => 'datetime',
+        'switched_to_refund_at'  => 'datetime',
+        'refund_locked_at'       => 'datetime',
+        'payout_frozen_at'       => 'datetime',
+        'payout_released_at'     => 'datetime',
+        'receive_timeout_notified_at'    => 'datetime',
+        'inspection_due_at'              => 'datetime',
+        'inspection_at'                  => 'datetime',
+        'inspection_reminder_sent_at'    => 'datetime',
+        'inspection_timeout_notified_at' => 'datetime',
+        'dispute_decided_at'             => 'datetime',
     ];
 
     protected $appends = ['image_url', 'image_urls', 'can_escalate', 'old_item_overdue', 'is_legacy_exchange'];
@@ -403,6 +429,23 @@ class Complaint extends Model
             : [...self::EXCHANGE_ONLY_STATUSES, self::STATUS_CLOSED];
         return array_values(array_diff($next, $blocked));
     }
+
+    /** Filed under the exchange-first policy (returns.policy v2); NULL = the old flow, untouched. */
+    public function isV2(): bool
+    {
+        return (int) $this->policy_version === 2;
+    }
+
+    /** The courier paid the client at pick-up and the sale is not reversed yet: the payout waits. */
+    public function payoutIsFrozen(): bool
+    {
+        return $this->payout_frozen_at !== null && $this->payout_released_at === null;
+    }
+
+    const INSPECTION_CONFORM    = 'conform';
+    const INSPECTION_NONCONFORM = 'nonconform';
+
+    const DISPUTE_DECISIONS = ['charge_seller', 'absorb', 'contact_client', 'send_back', 'treat_as_conform'];
 
     public function isExchange(): bool
     {

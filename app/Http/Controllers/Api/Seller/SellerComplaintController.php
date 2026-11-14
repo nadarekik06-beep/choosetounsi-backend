@@ -33,7 +33,9 @@ class SellerComplaintController extends Controller
                 'total'          => (int) $counts->sum(),
                 'by_status'      => $counts,
                 // To answer, or a parcel to confirm (return picked up, old item of an exchange)
-                'needs_action'   => $n([Complaint::STATUS_REQUESTED, Complaint::STATUS_PICKED_UP, Complaint::STATUS_EXCHANGED]),
+                // (+ v2: received returns still to inspect)
+                'needs_action'   => $n([Complaint::STATUS_REQUESTED, Complaint::STATUS_PICKED_UP, Complaint::STATUS_EXCHANGED])
+                    + Complaint::forSeller($sellerId)->where('policy_version', 2)->where('status', Complaint::STATUS_RETURNED_TO_SELLER)->whereNull('inspection_result')->count(),
                 'requested'      => $n([Complaint::STATUS_REQUESTED]),
                 'in_progress'    => $n([Complaint::STATUS_SELLER_ACCEPTED, Complaint::STATUS_ESCALATED, Complaint::STATUS_ADMIN_APPROVED, Complaint::STATUS_PICKUP_SCHEDULED, Complaint::STATUS_PICKED_UP, Complaint::STATUS_RETURNED_TO_SELLER,
                     Complaint::STATUS_EXCHANGE_IN_TRANSIT, Complaint::STATUS_EXCHANGED, Complaint::STATUS_EXCHANGE_FAILED]),
@@ -69,6 +71,8 @@ class SellerComplaintController extends Controller
 
         Complaint::withItemSnapshots($complaint);
         Complaint::withBuyer($complaint);
+        // Returns policy v2: new reception flow (received → inspect) vs the old one-step reception
+        $complaint->setAttribute('inspection_flow', $this->returns->inspectionFlow($complaint));
 
         return response()->json(['success' => true, 'data' => ReturnPresenter::forStaff($complaint)]);
     }
@@ -113,6 +117,44 @@ class SellerComplaintController extends Controller
         $c = $this->returns->sellerReject($complaint, $request->user(), $request->rejection_reason, $request->seller_note);
 
         return response()->json(['success' => true, 'message' => __('seller.complaint.rejected'), 'data' => $c]);
+    }
+
+    /** The shop cannot do this exchange (v2): the client is told and may switch to a refund. */
+    public function exchangeImpossible(Request $request, $id)
+    {
+        $request->validate(['reason' => 'required|string|min:10|max:500']);
+        $complaint = Complaint::forSeller($request->user()->id)->findOrFail($id);
+
+        $c = $this->returns->sellerMarkExchangeImpossible($complaint, $request->user(), $request->reason);
+
+        return response()->json(['success' => true, 'message' => __('returns_policy.exchange_impossible_flagged'), 'data' => $c]);
+    }
+
+    /** « Colis retour reçu » (v2): starts the inspection clock. */
+    public function received(Request $request, $id)
+    {
+        $request->validate(['note' => 'nullable|string|max:1000']);
+        $complaint = Complaint::forSeller($request->user()->id)->findOrFail($id);
+
+        $c = $this->returns->received($complaint, $request->user(), 'seller', $request->note);
+
+        return response()->json(['success' => true, 'message' => __('seller.complaint.received'), 'data' => $c]);
+    }
+
+    /** Conforme / Non conforme (v2). Non conforme needs a comment and at least one photo. */
+    public function inspect(Request $request, $id)
+    {
+        $request->validate([
+            'result'   => 'required|in:conform,nonconform',
+            'comment'  => 'nullable|string|max:1000',
+            'photos'   => 'nullable|array|max:5',
+            'photos.*' => 'image|mimes:jpeg,png,jpg,webp|max:5120',
+        ]);
+        $complaint = Complaint::forSeller($request->user()->id)->findOrFail($id);
+
+        $c = $this->returns->inspect($complaint, $request->user(), 'seller', $request->result, $request->comment, array_values($request->file('photos') ?? []));
+
+        return response()->json(['success' => true, 'message' => __('seller.complaint.received'), 'data' => $c]);
     }
 
     public function receive(Request $request, $id)

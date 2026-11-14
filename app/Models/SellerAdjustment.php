@@ -25,6 +25,10 @@ class SellerAdjustment extends Model
      * fault (defective, wrong item…): the seller pays it, with the return shipping.
      */
     public const TYPE_RETURN_PARCEL_FEE = 'return_parcel_fee';
+    /** Returns v2: partial seller-fault return, the returned lines' included delivery fee. */
+    public const TYPE_RETURN_ITEM_FEE = 'return_item_fee';
+    /** Returns v2: the admin charges the seller after a non-conforming item (dispute). */
+    public const TYPE_RETURN_DISPUTE  = 'return_dispute_charge';
     /** Legacy: free-delivery contribution still owed on a fully returned parcel (orders placed before delivery was included). */
     public const TYPE_FREE_DELIVERY   = 'free_delivery_contribution';
 

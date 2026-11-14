@@ -35,6 +35,8 @@ class ComplaintNotification extends BuyerNotification
         'received', 'seller_replied', 'seller_accepted', 'seller_rejected', 'escalated', 'approved',
         'pickup_scheduled', 'picked_up', 'returned', 'refunded', 'rejected', 'cancelled',
         'exchange_in_transit', 'exchanged', 'exchange_failed', 'exchange_completed',
+        // Returns policy v2
+        'exchange_impossible', 'sent_back',
     ];
 
     public function __construct(public Complaint $complaint, public string $event)
@@ -190,6 +192,8 @@ class ComplaintNotification extends BuyerNotification
             'days'      => Complaint::ESCALATION_WINDOW_DAYS,
             'fee'       => self::money($complaint->clientFee()),
             'tracking'  => (string) $complaint->intigo_exchange_nid,
+            'cod'        => self::money($complaint->sent_back_cod),
+            'inspection' => \Illuminate\Support\Str::limit((string) ($complaint->inspection_comment ?: $complaint->dispute_note), 200),
         ];
     }
 }

@@ -140,13 +140,9 @@ class FunnelDiagnosis
         if ((int) ($facts['stock'] ?? 0) <= 0 || (int) ($facts['variants_out'] ?? 0) > 0) {
             return ['stock_variants', [$this->stockEvidence($facts)], [['kind' => 'restock'], ['kind' => 'edit', 'focus' => 'stock']]];
         }
-        $fee = $facts['delivery_fee'] ?? null;
-        $feeBench = $bench('median_delivery_fee');
-        if ($fee !== null && $feeBench && $feeBench['value'] > 0 && (float) $fee > $feeBench['value'] * $cfg['shipping_high_factor']) {
-            return ['shipping_cost', [$this->evidence('delivery_fee', (float) $fee, $feeBench)],
-                    [['kind' => 'edit', 'focus' => 'shipping'], ['kind' => 'discount', 'pct' => 10]]];
-        }
-        return [$atCheckout ? 'checkout_abandon' : 'cart_abandon', [], [['kind' => 'discount', 'pct' => 10], ['kind' => 'edit', 'focus' => 'shipping']]];
+        // Delivery is free everywhere and included in the displayed price: it is no longer a lever of the
+        // seller, so it is never blamed for an abandoned cart (the price is).
+        return [$atCheckout ? 'checkout_abandon' : 'cart_abandon', [], [['kind' => 'discount', 'pct' => 10], ['kind' => 'edit', 'focus' => 'price']]];
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

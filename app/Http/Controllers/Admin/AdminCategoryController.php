@@ -48,6 +48,7 @@ class AdminCategoryController extends Controller
             'is_active'   => 'sometimes|boolean',
             'order'       => 'sometimes|integer|min:0',
             'is_gendered' => 'sometimes|boolean',
+            'no_changed_mind_return' => 'sometimes|boolean',
         ]);
 
         $category = Category::create([
@@ -61,6 +62,7 @@ class AdminCategoryController extends Controller
             'is_active'   => $validated['is_active']   ?? true,  // explicit default = true
             'order'       => $validated['order']       ?? 0,
             'is_gendered' => $validated['is_gendered'] ?? false,
+            'no_changed_mind_return' => $validated['no_changed_mind_return'] ?? false,
         ]);
 
         return response()->json([
@@ -84,6 +86,7 @@ class AdminCategoryController extends Controller
             'is_active'   => 'sometimes|boolean',
             'order'       => 'sometimes|integer|min:0',
             'is_gendered' => 'sometimes|boolean',
+            'no_changed_mind_return' => 'sometimes|boolean',
         ]);
 
         if (isset($validated['name']) && $validated['name'] !== $category->name) {

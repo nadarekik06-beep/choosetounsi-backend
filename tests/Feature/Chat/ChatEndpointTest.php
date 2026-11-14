@@ -227,6 +227,33 @@ class ChatEndpointTest extends TestCase
     }
 
     /**
+     * The returns answer follows the exchange-first policy: 48 h from delivery, the same item can't be
+     * returned twice, exchange first, 2-3 photos, cash refund by the courier, the changed-mind return fee
+     * and the excluded categories. Numbers come from PlatformFacts, never from the text.
+     */
+    public function test_returns_answer_matches_the_exchange_first_policy_in_the_three_languages(): void
+    {
+        $kb = app(\App\Services\Chat\KnowledgeBase::class);
+        $expected = [
+            'en' => ['48 hours', 'twice', 'always offered first', '2 to 3 photos', 'in cash', 'return fee', 'underwear'],
+            'fr' => ['48 heures', 'deux fois', 'toujours proposé en premier', '2 à 3 photos', 'espèces', 'frais de retour', 'sous-vêtements'],
+            'ar' => ['48 ساعة', 'مرتين', 'التبديل يتقترح دايمًا', 'من 2 لين 3', 'كاش', 'مصاريف الإرجاع', 'الملابس الداخلية'],
+        ];
+        $stale = ['one complaint per order', 'une réclamation par commande', 'شكوى وحدة لكل طلبية', 'You can add a photo', 'Payé en ligne'];
+
+        foreach ($expected as $lang => $phrases) {
+            $text = json_encode($kb->answer('returns_complaints', 'file', $lang), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $text = str_replace('\\/', '/', stripslashes($text));
+            foreach ($phrases as $phrase) {
+                $this->assertStringContainsString($phrase, $text, "{$lang}: {$phrase}");
+            }
+            foreach ($stale as $old) {
+                $this->assertStringNotContainsString($old, $text, "{$lang}: stale text {$old}");
+            }
+            $this->assertStringNotContainsString('{complaint_hours}', $text, "{$lang}: placeholder filled");
+        }
+    }
+    /**
      * Arabic / darija wallet questions (المحفظة, محفظة, رصيد, نشحن…) get the wallet answer
      * from the rules alone (Groq is stubbed to fail here), with the contact page + WhatsApp.
      *

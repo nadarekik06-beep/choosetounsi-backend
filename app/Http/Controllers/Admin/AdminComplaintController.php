@@ -51,7 +51,8 @@ class AdminComplaintController extends Controller
                 'needs_admin'  => $n(Complaint::ADMIN_DECISION_STATUSES),
                 'to_schedule'  => $n([Complaint::STATUS_ADMIN_APPROVED]),
                 'in_transit'   => $n([Complaint::STATUS_PICKUP_SCHEDULED, Complaint::STATUS_PICKED_UP]),
-                'to_refund'    => $n([Complaint::STATUS_RETURNED_TO_SELLER]),
+                // (v2 returns are already refunded in cash at pick-up: they wait for an inspection, not a refund)
+                'to_refund'    => Complaint::where('status', Complaint::STATUS_RETURNED_TO_SELLER)->whereNull('policy_version')->count(),
                 'with_seller'  => $n([Complaint::STATUS_REQUESTED, Complaint::STATUS_SELLER_REJECTED]),
                 'refunded'     => $n([Complaint::STATUS_REFUNDED]),
                 'closed'       => $n([Complaint::STATUS_REJECTED, Complaint::STATUS_CANCELLED, Complaint::STATUS_CLOSED, Complaint::STATUS_EXCHANGE_COMPLETED]),
@@ -64,8 +65,33 @@ class AdminComplaintController extends Controller
                 'old_item_not_received' => Complaint::where('status', Complaint::STATUS_EXCHANGED)
                     ->where('exchanged_at', '<', now()->subDays(Complaint::OLD_ITEM_DAYS))->count(),
                 'fee_exceeds_refund'   => Complaint::where('fee_exceeds_refund', true)->whereIn('status', Complaint::OPEN_STATUSES)->count(),
+                // Returns policy v2
+                'disputes_open'        => Complaint::where('dispute_status', 'open')->count(),
+                'receive_overdue'      => Complaint::whereNotNull('policy_version')->where('status', Complaint::STATUS_PICKED_UP)
+                    ->where('picked_up_at', '<', now()->subDays(app(\App\Services\Returns\ReturnPolicy::class)->settings()['receive_timeout_days']))->count(),
+                'inspection_overdue'   => Complaint::whereNotNull('policy_version')->where('status', Complaint::STATUS_RETURNED_TO_SELLER)
+                    ->whereNull('inspection_result')->where('inspection_due_at', '<', now())->count(),
             ],
         ]);
+    }
+
+    /** GET /api/admin/returns-policy */
+    public function policy()
+    {
+        return response()->json(['success' => true, 'data' => app(\App\Services\Returns\ReturnPolicy::class)->settings()]);
+    }
+
+    /** PUT /api/admin/returns-policy: kill switch + the two timeouts. */
+    public function updatePolicy(Request $request)
+    {
+        $data = $request->validate([
+            'v2_enabled'           => 'sometimes|boolean',
+            'receive_timeout_days' => 'sometimes|integer|min:1|max:30',
+            'inspection_days'      => 'sometimes|integer|min:1|max:30',
+        ]);
+        $settings = app(\App\Services\Returns\ReturnPolicy::class)->update($data, $request->user()->id);
+
+        return response()->json(['success' => true, 'data' => $settings]);
     }
 
     public function index(Request $request)
@@ -86,6 +112,7 @@ class AdminComplaintController extends Controller
         }
         if ($request->boolean('needs_check')) $query->where('exchange_sync_status', Complaint::EXCHANGE_NEEDS_CHECK);
         if ($request->boolean('fee_exceeds_refund')) $query->where('fee_exceeds_refund', true);
+        if ($request->boolean('dispute_open')) $query->where('dispute_status', 'open');
 
         if ($request->filled('search')) {
             $s = $request->search;
@@ -125,6 +152,15 @@ class AdminComplaintController extends Controller
         $complaint->setAttribute('cash_refund', $this->returns->isCashRefund($complaint));
         $complaint->setAttribute('adjustments', SellerAdjustment::where('complaint_id', $complaint->id)->get());
         $complaint->setAttribute('allowed_transitions', $complaint->allowedTransitions());
+        // Returns policy v2: where the money/stock stand (finance block of the drawer)
+        $complaint->setAttribute('v2', $complaint->isV2() ? [
+            'inspection_flow'     => $this->returns->inspectionFlow($complaint),
+            'refund_locked'       => $complaint->refund_amount_locked !== null ? (float) $complaint->refund_amount_locked : null,
+            'payout_frozen'       => $complaint->payoutIsFrozen(),
+            'inspection_photos'   => array_map(fn($p) => \Illuminate\Support\Facades\Storage::url($p), (array) $complaint->inspection_photos),
+            'dispute_decisions'   => Complaint::DISPUTE_DECISIONS,
+            'send_back_suggested' => $this->returns->sendBackCod($complaint),
+        ] : null);
 
         // Fees for the payer switch before approval (recomputed live in the drawer)
         $complaint->setAttribute('fees', [
@@ -300,6 +336,56 @@ class AdminComplaintController extends Controller
         $c = $this->returns->receive(Complaint::findOrFail($id), $request->user(), 'admin', $request->conditions, $request->note);
 
         return response()->json(['success' => true, 'message' => 'Return received. Resaleable items are back in stock.', 'data' => $c]);
+    }
+
+    /** The shop did not click « Colis retour reçu »: the admin starts the inspection (v2). */
+    public function startInspection(Request $request, $id)
+    {
+        $request->validate(['note' => 'nullable|string|max:1000']);
+        $c = $this->returns->received(Complaint::findOrFail($id), $request->user(), 'admin', $request->note);
+
+        return response()->json(['success' => true, 'message' => 'Inspection started: the shop can now inspect the parcel (or inspect it yourself).', 'data' => $c]);
+    }
+
+    /** Inspection on the shop's behalf (v2). */
+    public function inspect(Request $request, $id)
+    {
+        $request->validate([
+            'result'   => 'required|in:conform,nonconform',
+            'comment'  => 'nullable|string|max:1000',
+            'photos'   => 'nullable|array|max:5',
+            'photos.*' => 'image|mimes:jpeg,png,jpg,webp|max:5120',
+        ]);
+        $c = $this->returns->inspect(Complaint::findOrFail($id), $request->user(), 'admin', $request->result, $request->comment, array_values($request->file('photos') ?? []));
+
+        return response()->json(['success' => true, 'message' => 'Inspection recorded.', 'data' => $c]);
+    }
+
+    /** Decision on a non-conforming item whose client was refunded in cash (v2). */
+    public function dispute(Request $request, $id)
+    {
+        $data = $request->validate([
+            'decision' => 'required|in:' . implode(',', Complaint::DISPUTE_DECISIONS),
+            'amount'   => 'nullable|numeric|min:0',
+            'note'     => 'nullable|string|max:1000',
+            'nid'      => 'nullable|string|max:60',
+            // send_back: COD of the parcel back (default = refund already paid + delivery fee)
+            'cod_amount' => 'nullable|numeric|min:0',
+        ]);
+        $c = $this->returns->decideDispute(Complaint::findOrFail($id), $request->user(), $data['decision'],
+            isset($data['amount']) ? (float) $data['amount'] : null, $data['note'] ?? null, $data['nid'] ?? null,
+            isset($data['cod_amount']) ? (float) $data['cod_amount'] : null);
+
+        return response()->json(['success' => true, 'message' => 'Decision recorded.', 'data' => $c]);
+    }
+
+    /** The client refused the parcel sent back: the item returns to the seller, decide again (v2). */
+    public function sentBackRefused(Request $request, $id)
+    {
+        $request->validate(['note' => 'nullable|string|max:1000']);
+        $c = $this->returns->sentBackRefused(Complaint::findOrFail($id), $request->user(), $request->note);
+
+        return response()->json(['success' => true, 'message' => 'Marked as refused by the client: decide again.', 'data' => $c]);
     }
 
     public function refund(Request $request, $id)

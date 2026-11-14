@@ -388,6 +388,14 @@ return [
                 'title' => 'Return :return refunded',
                 'body' => 'Order :order — the client was refunded; :amount DT is removed from your sales.',
             ],
+            'inspection_reminder' => [
+                'title' => 'Return :return to inspect',
+                'body' => 'Order :order — inspect the return parcel (conforming or not): the deadline is close.',
+            ],
+            'dispute_charged' => [
+                'title' => 'Return :return: amount charged',
+                'body' => 'Order :order — after checking the returned item, ChooseTounsi deducted an amount from your next settlements.',
+            ],
             'cancelled' => [
                 'title' => 'Return :return cancelled',
                 'body' => 'Order :order — the return was cancelled.',

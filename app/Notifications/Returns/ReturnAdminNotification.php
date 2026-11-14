@@ -31,6 +31,11 @@ class ReturnAdminNotification extends Notification
         'delivered_to_seller' => ['Return parcel delivered to the seller', 'Return :return (order :order) was dropped at :shop. Reception & inspection pending.', 'truck', 'pending'],
         'returned_to_seller'  => ['Return received — refund due', 'Return :return (order :order) was received and inspected. Issue the refund of :amount DT.', 'package-check', 'pending'],
         'fee_exceeds_refund'  => ['Return fee above the refund', 'Return :return (order :order): the return fee (:fee DT) is above the items\' value (:items DT). The client would get 0: check before approving.', 'alert-circle', 'pending'],
+        // Returns policy v2
+        'inspection_nonconform' => ['Returned item not conforming', 'Return :return (order :order): :shop marked the returned item NON conforming after the client was refunded in cash. The payout stays frozen: decide (charge the seller, absorb, contact the client, send it back).', 'alert-circle', 'pending'],
+        'sent_back_refused'     => ['Client refused the returned item', 'Return :return (order :order): the client refused the parcel sent back (cash on delivery). The item goes back to :shop: decide again (charge the seller, absorb, send it back again…).', 'alert-circle', 'pending'],
+        'receive_timeout'       => ['Return parcel: shop has not confirmed reception', 'Return :return (order :order): picked up more than :days days ago and :shop has not clicked « Colis retour reçu ». Start the inspection yourself from the return file.', 'alert-circle', 'pending'],
+        'inspection_timeout'    => ['Return parcel not inspected', 'Return :return (order :order): received by :shop but not inspected within :days days. You can inspect it on the shop\'s behalf.', 'alert-circle', 'pending'],
         'exchange_needs_check' => ['Exchange parcel: check in Intigo', 'Exchange :return (order :order): Intigo did not answer clearly. The parcel may exist: check the Intigo dashboard and paste its tracking number (never re-sent automatically).', 'alert-circle', 'pending'],
         'exchange_send_failed' => ['Exchange parcel refused by Intigo', 'Exchange :return (order :order): Intigo refused the exchange parcel (:error). Fix it and book again, or book it by hand.', 'x-circle', 'pending'],
         'exchange_failed'     => ['Exchange not delivered', 'Exchange :return (order :order) was not delivered (refused at the door). The replacement goes back to :shop: retry, switch to a return or cancel.', 'x-circle', 'pending'],
@@ -103,6 +108,7 @@ class ReturnAdminNotification extends Notification
             ':fee'    => number_format($c->caseFee(), 3, '.', ' '),
             ':items'  => number_format((float) $c->items_amount, 3, '.', ' '),
             ':error'  => (string) $c->exchange_sync_error,
+            ':days'   => (string) app(\App\Services\Returns\ReturnPolicy::class)->settings()['inspection_days'],
             ':Kind'   => $exchange ? 'Exchange' : 'Return',
             ':kind'   => $exchange ? 'exchange' : 'return',
         ]);

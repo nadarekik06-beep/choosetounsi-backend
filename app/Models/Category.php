@@ -14,10 +14,10 @@ class Category extends Model
     protected $translatable = ['name'];
 
     protected $fillable = [
-        'name', 'name_ar', 'name_fr', 'slug', 'description', 'icon', 'image', 'is_active', 'order', 'is_gendered',
+        'name', 'name_ar', 'name_fr', 'slug', 'description', 'icon', 'image', 'is_active', 'order', 'is_gendered', 'no_changed_mind_return',
     ];
 
-    protected $casts = ['is_active' => 'boolean', 'is_gendered' => 'boolean'];
+    protected $casts = ['is_active' => 'boolean', 'is_gendered' => 'boolean', 'no_changed_mind_return' => 'boolean'];
 
     protected static function boot()
     {

@@ -86,6 +86,22 @@ class ReturnService
             ->with('sellerOrder')
             ->get()->keyBy('id');
 
+        // Returns policy v2 (switched on by the admin): the rules are checked here too, not only in the form
+        $policy = app(ReturnPolicy::class);
+        $data['_v2'] = $policy->enabled();
+        if ($data['_v2']) {
+            $lines->load(['product' => fn ($q) => $q->withTrashed()->with(['variants.attributeOptions.attribute']), 'variant']);
+            $policy->assertAllowed(
+                $lines->values(),
+                (string) $data['complaint_type'],
+                ($data['resolution_type'] ?? null) === Complaint::RESOLUTION_EXCHANGE ? Complaint::RESOLUTION_EXCHANGE : Complaint::RESOLUTION_RETURN_REFUND,
+                isset($data['item_unused_confirmed']) ? (bool) $data['item_unused_confirmed'] : null,
+            );
+            if (count($images) < ReturnPolicy::MIN_PHOTOS || count($images) > ReturnPolicy::MAX_PHOTOS) {
+                throw new ReturnException(__('returns_policy.photos_range'));
+            }
+        }
+
         $paths = array_map(fn(UploadedFile $f) => $f->store('complaints', 'public'), $images);
 
         try {
@@ -149,7 +165,11 @@ class ReturnService
                     'image_path'      => $paths[0] ?? null,
                     'image_paths'     => $paths,
                     'status'          => Complaint::STATUS_REQUESTED,
-                    'shipping_payer'  => Complaint::payerFor($data['complaint_type']),
+                    'shipping_payer'  => !empty($data['_v2'])
+                        ? app(ReturnPolicy::class)->payerFor($data['complaint_type'], $exchange ? Complaint::RESOLUTION_EXCHANGE : Complaint::RESOLUTION_RETURN_REFUND)
+                        : Complaint::payerFor($data['complaint_type']),
+                    'policy_version'        => !empty($data['_v2']) ? 2 : null,
+                    'item_unused_confirmed' => !empty($data['_v2']) ? (bool) ($data['item_unused_confirmed'] ?? false) : null,
                     'fee_size'        => $size,
                     'return_shipping_fee' => \App\Support\Millimes::toFloat($settings->afterSaleReturnFee($size)),
                     'exchange_fee'        => \App\Support\Millimes::toFloat($settings->exchangeFee($size)),
@@ -200,10 +220,13 @@ class ReturnService
      * @param  array<int,int> $quantities order_item_id => units to return
      * @return array{items_amount: float, client_fee: float, refund_amount: float, shipping_payer: string}
      */
-    public function previewRefund(Order $order, array $quantities, string $complaintType): array
+    public function previewRefund(Order $order, array $quantities, string $complaintType, ?string $resolution = null): array
     {
         $lines = OrderItem::where('order_id', $order->id)->whereIn('id', array_keys($quantities))->get();
-        $payer = Complaint::payerFor($complaintType);
+        $policy = app(ReturnPolicy::class);
+        $payer = $policy->enabled()
+            ? $policy->payerFor($complaintType, $resolution ?: Complaint::RESOLUTION_RETURN_REFUND)
+            : Complaint::payerFor($complaintType);
         $settings = app(\App\Services\Delivery\DeliverySettings::class);
 
         $items = $fees = $refund = 0;
@@ -225,12 +248,29 @@ class ReturnService
             $refund += max(0, $amount - $fee);
         }
 
-        return [
+        $out = [
             'items_amount'   => Millimes::toFloat($items),
             'client_fee'     => Millimes::toFloat($fees),
             'refund_amount'  => Millimes::toFloat($refund),
             'shipping_payer' => $payer,
         ];
+        // Exchange (v2 form): nothing is refunded, the client pays the exchange parcel when it is their choice
+        if ($resolution === Complaint::RESOLUTION_EXCHANGE) {
+            $exchangeFee = 0;
+            foreach ($lines->groupBy(fn ($l) => $l->seller_order_id ?? 0) as $group) {
+                $size = \App\Support\ParcelSize::largest(
+                    DB::table('products')->whereIn('id', $group->pluck('product_id'))->pluck('parcel_size')->all() ?: ['S']
+                );
+                $exchangeFee += $payer === 'client' ? $settings->exchangeFee($size) : 0;
+            }
+            $out['refund_amount'] = 0.0;
+            $out['client_fee'] = Millimes::toFloat($exchangeFee);
+        }
+        // What the form prints before submitting: every deduction with its exact amount
+        $out['deductions'] = $out['client_fee'] > 0
+            ? [['key' => $resolution === Complaint::RESOLUTION_EXCHANGE ? 'exchange_fee' : 'return_fee', 'amount' => -$out['client_fee']]]
+            : [];
+        return $out;
     }
 
     /** Units already in a live return, per order line (so they can't be returned twice). */
@@ -252,6 +292,9 @@ class ReturnService
 
     public function sellerAccept(Complaint $complaint, User $seller, ?string $note): Complaint
     {
+        if ($complaint->isV2() && $complaint->isExchange() && $complaint->exchange_impossible_at) {
+            throw new ReturnException(__('returns_policy.exchange_impossible_flagged'));
+        }
         $c = $this->move($complaint, Complaint::STATUS_SELLER_ACCEPTED, $seller, 'seller', $note, [
             'seller_note'       => $note ?? $complaint->seller_note,
             'seller_decision'   => 'approved',
@@ -313,6 +356,9 @@ class ReturnService
         if ($complaint->isLegacyExchange()) {
             throw new ReturnException('Legacy exchange requests can only be closed.');
         }
+        if ($complaint->isV2() && $complaint->isExchange() && $complaint->exchange_impossible_at) {
+            throw new ReturnException(__('returns_policy.exchange_impossible_flagged'));
+        }
         $extra = [
             'admin_decided_by' => $admin->id,
             'admin_decided_at' => now(),
@@ -333,6 +379,7 @@ class ReturnService
                 'refund_amount'      => $this->refundFor($c, (float) $c->items_amount),
                 'fee_exceeds_refund' => $this->feeExceedsRefund($c, (float) $c->items_amount),
             ]);
+            $this->lockRefundAmount($c);
             if ($c->isExchange()) {
                 $sold = $this->reserveReplacements($c);
             }
@@ -512,6 +559,7 @@ class ReturnService
                 'refund_amount'      => $this->refundFor($c, (float) $c->items_amount),
                 'fee_exceeds_refund' => $this->feeExceedsRefund($c, (float) $c->items_amount),
             ]);
+            $this->lockRefundAmount($c);
             return $c->fresh();
         });
         $this->restocked($released);
@@ -709,6 +757,10 @@ class ReturnService
      */
     private function payCashAtPickup(Complaint $c, ?User $actor, string $role, ?string $courier): Complaint
     {
+        // v2: what the courier pays is the figure frozen at approval, never a later recompute
+        if ($c->isV2() && $c->refund_amount_locked !== null) {
+            $c->forceFill(['refund_amount' => $c->refund_amount_locked])->save();
+        }
         $amount = (float) $c->refund_amount;
         $c->update([
             'refund_method'    => 'cash',
@@ -716,7 +768,14 @@ class ReturnService
             'refunded_at'      => now(),
             'refunded_by'      => $actor?->id,
         ]);
-        $this->applyFinance($c, $actor);
+        if ($c->isV2()) {
+            // The sale is NOT reversed yet: the item is not back. The parcel's payout is frozen
+            // (out of every settlement batch) until the inspection / the admin's dispute decision.
+            PayoutHold::freeze($c, $actor);
+            $this->event($c, 'payout_frozen', $actor, $role, null, ['amount' => $amount]);
+        } else {
+            $this->applyFinance($c, $actor);
+        }
         $c->refresh();
         $this->event($c, 'refund_issued', $actor, $role, null, [
             'method' => 'cash', 'reference' => $c->refund_reference, 'amount' => (float) $c->refund_amount, 'paid_by' => $courier,
@@ -744,6 +803,9 @@ class ReturnService
     {
         if ($complaint->isLegacyExchange()) {
             throw new ReturnException('Legacy exchange requests can only be closed.');
+        }
+        if ($this->inspectionFlow($complaint)) {
+            throw new ReturnException(__('returns_policy.use_new_receive'));
         }
         if ($complaint->isExchange()) {
             return $this->receiveOldItem($complaint, $actor, $role, $conditions, $note);
@@ -845,6 +907,303 @@ class ReturnService
             $item->save();
         }
         return $restocked;
+    }
+
+    // ── Returns policy v2: exchange impossible, inspection, dispute ──────────
+
+    /**
+     * v2 complaint on a cash-on-delivery order: the courier refunds at pick-up, the
+     * shop then confirms receipt and inspects (stock, seller charges, disputes).
+     * Anything else (old complaints, non-COD orders) keeps the old reception flow.
+     */
+    public function inspectionFlow(Complaint $c): bool
+    {
+        return $c->isV2() && !$c->isLegacyExchange() && $this->isCashRefund($c);
+    }
+
+    /** Freezes the refund the courier will pay (v2 returns), before the pick-up exists. */
+    private function lockRefundAmount(Complaint $c): void
+    {
+        if ($c->isV2() && !$c->isExchange()) {
+            $c->forceFill(['refund_amount_locked' => $c->refund_amount, 'refund_locked_at' => now()])->save();
+        }
+    }
+
+    /** The shop says the exchange cannot be done: the client may switch to a refund in one click. */
+    public function sellerMarkExchangeImpossible(Complaint $complaint, User $seller, string $reason): Complaint
+    {
+        if (!$complaint->isV2() || !$complaint->isExchange() || $complaint->status !== Complaint::STATUS_REQUESTED) {
+            throw new ReturnException(__('returns_policy.only_v2'));
+        }
+        $c = DB::transaction(function () use ($complaint, $seller, $reason) {
+            $fresh = Complaint::whereKey($complaint->id)->lockForUpdate()->firstOrFail();
+            $fresh->forceFill([
+                'exchange_impossible_at' => now(), 'exchange_impossible_by' => $seller->id,
+                'exchange_impossible_reason' => $reason,
+            ])->save();
+            $this->event($fresh, 'exchange_impossible', $seller, 'seller', $reason);
+            return $fresh->fresh();
+        });
+        $this->buyer($c, 'exchange_impossible');
+        return $c;
+    }
+
+    /** The client turns an impossible exchange into a refund: amount re-frozen by the same functions. */
+    public function clientSwitchToRefund(Complaint $complaint, ?User $client, ?bool $unusedConfirmed): Complaint
+    {
+        if (!$complaint->isV2() || !$complaint->isExchange() || !$complaint->exchange_impossible_at
+            || $complaint->status !== Complaint::STATUS_REQUESTED) {
+            throw new ReturnException(__('returns_policy.switch_not_allowed'));
+        }
+        if ($complaint->complaint_type === 'changed_mind' && !$unusedConfirmed) {
+            throw new ReturnException(__('returns_policy.unused_required'));
+        }
+        return DB::transaction(function () use ($complaint, $unusedConfirmed) {
+            $c = Complaint::whereKey($complaint->id)->lockForUpdate()->firstOrFail();
+            $c->forceFill([
+                'resolution_type'       => Complaint::RESOLUTION_RETURN_REFUND,
+                'shipping_payer'        => app(ReturnPolicy::class)->payerFor((string) $c->complaint_type, Complaint::RESOLUTION_RETURN_REFUND),
+                'switched_to_refund_at' => now(),
+                'item_unused_confirmed' => $c->complaint_type === 'changed_mind' ? true : $c->item_unused_confirmed,
+            ])->save();
+            ComplaintItem::where('complaint_id', $c->id)->update(['replacement_variant_id' => null, 'replacement_label' => null]);
+            $c->update([
+                'refund_amount'      => $this->refundFor($c, (float) $c->items_amount),
+                'fee_exceeds_refund' => $this->feeExceedsRefund($c, (float) $c->items_amount),
+            ]);
+            $this->event($c, 'switched_to_refund', $c->user, 'client', null, ['refund_amount' => (float) $c->refund_amount]);
+            return $c->fresh();
+        });
+    }
+
+    /**
+     * « Colis retour reçu »: the shop (or the admin when the shop didn't, after the
+     * timeout) confirms the parcel is back. Starts the inspection clock. Does not move
+     * stock or money.
+     */
+    public function received(Complaint $complaint, User $actor, string $role, ?string $note = null): Complaint
+    {
+        if (!$this->inspectionFlow($complaint) || $complaint->isExchange()) {
+            throw new ReturnException(__('returns_policy.only_v2'));
+        }
+        $days = app(ReturnPolicy::class)->settings()['inspection_days'];
+        $c = $this->move($complaint, Complaint::STATUS_RETURNED_TO_SELLER, $actor, $role, $note, [
+            'received_at'       => now(),
+            'received_by'       => $actor->id,
+            'reception_note'    => $note,
+            'inspection_due_at' => now()->addDays($days),
+        ], ['received' => true, 'on_behalf' => $role === 'admin']);
+        return $c;
+    }
+
+    /**
+     * Inspection result. Conforme: stock +1 on the exact variant (once) and the sale is
+     * reversed (the frozen payout is settled by the reversal). Non conforme: no stock, the
+     * payout stays frozen, the admin is notified and decides (decideDispute).
+     * Return: after « Colis retour reçu ». Exchange: the old item, once it is back.
+     *
+     * @param UploadedFile[] $photos
+     */
+    public function inspect(Complaint $complaint, User $actor, string $role, string $result, ?string $comment, array $photos = []): Complaint
+    {
+        if (!$this->inspectionFlow($complaint)) {
+            throw new ReturnException(__('returns_policy.only_v2'));
+        }
+        $expected = $complaint->isExchange() ? Complaint::STATUS_EXCHANGED : Complaint::STATUS_RETURNED_TO_SELLER;
+        if ($complaint->inspection_result) {
+            throw new ReturnException(__('returns_policy.already_inspected'));
+        }
+        if ($complaint->status !== $expected) {
+            throw new ReturnException($complaint->status === Complaint::STATUS_PICKED_UP ? __('returns_policy.receive_first') : __('returns_policy.not_returned_yet'));
+        }
+        if (!in_array($result, [Complaint::INSPECTION_CONFORM, Complaint::INSPECTION_NONCONFORM], true)) {
+            throw new ReturnException(__('returns_policy.reason_unknown'));
+        }
+        $conform = $result === Complaint::INSPECTION_CONFORM;
+        if (!$conform && (!filled($comment) || count($photos) < 1)) {
+            throw new ReturnException(__('returns_policy.inspection_photos_required'));
+        }
+
+        $paths = array_map(fn (UploadedFile $f) => $f->store('complaints/inspection', 'public'), $photos);
+        $restockedLines = [];
+
+        try {
+            $c = DB::transaction(function () use ($complaint, $actor, $role, $result, $conform, $comment, $paths, &$restockedLines) {
+                $items = ComplaintItem::where('complaint_id', $complaint->id)->lockForUpdate()->get();
+                $conditions = $items->mapWithKeys(fn ($i) => [$i->order_item_id => $conform ? Complaint::CONDITION_RESALEABLE : Complaint::CONDITION_DAMAGED])->all();
+                $restocked = $this->restockItems($items, $conditions, $restockedLines);
+
+                $inspection = [
+                    'inspection_result' => $result, 'inspection_by' => $actor->id, 'inspection_at' => now(),
+                    'inspection_comment' => $comment, 'inspection_photos' => $paths ?: null,
+                ];
+
+                if ($complaint->isExchange()) {
+                    $c = $this->move($complaint, Complaint::STATUS_EXCHANGE_COMPLETED, $actor, $role, $comment, $inspection + [
+                        'received_at' => now(), 'received_by' => $actor->id, 'old_item_received_at' => now(), 'resolved_at' => now(),
+                        'dispute_status' => $conform ? null : 'open',
+                    ], ['conditions' => $conditions, 'old_item' => true, 'result' => $result], false);
+                } elseif ($conform) {
+                    $this->applyFinance($complaint, $actor);   // sale reversed, payout settled, hold released
+                    $c = $this->move($complaint->fresh(), Complaint::STATUS_REFUNDED, $actor, $role, $comment, $inspection + ['resolved_at' => now()], ['result' => $result], false);
+                } else {
+                    $c = Complaint::whereKey($complaint->id)->lockForUpdate()->firstOrFail();
+                    $c->forceFill($inspection + ['dispute_status' => 'open'])->save();
+                }
+                $this->event($c, 'inspection', $actor, $role, $comment, ['result' => $result, 'restocked' => $restocked, 'photos' => count($paths)]);
+                return $c->fresh();
+            });
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Storage::disk('public')->delete($paths);
+            throw $e;
+        }
+
+        foreach ($restockedLines as $line) {
+            app(\App\Services\StockAlertService::class)->restocked((int) $line->product_id, $line->variant_id ? (int) $line->variant_id : null);
+        }
+        if ($complaint->isExchange()) {
+            $this->buyer($c, 'exchange_completed');
+        }
+        if (!$conform) {
+            $this->admin($c, 'inspection_nonconform');
+        }
+        return $c;
+    }
+
+    /**
+     * Admin decision on a non-conforming item whose client was already refunded in cash.
+     *   treat_as_conform  the photos don't convince: like Conforme (stock +1, sale reversed)
+     *   absorb            the platform pays: the seller keeps the payout
+     *   charge_seller     the seller keeps the payout but is debited $amount (default: what was refunded)
+     *   send_back         the item goes back to the client (parcel booked by hand, client pays it in cash)
+     *   contact_client    note only, the dispute stays open
+     * The sale itself (lines, sub-order totals) is only reversed for treat_as_conform: nothing is clawed back.
+     */
+    public function decideDispute(Complaint $complaint, User $admin, string $decision, ?float $amount, ?string $note, ?string $nid = null, ?float $cod = null): Complaint
+    {
+        if (!$complaint->isV2() || $complaint->dispute_status !== 'open') {
+            throw new ReturnException(__('returns_policy.no_open_dispute'));
+        }
+        if (!in_array($decision, Complaint::DISPUTE_DECISIONS, true)) {
+            throw new ReturnException(__('returns_policy.reason_unknown'));
+        }
+        $isReturn = !$complaint->isExchange();
+        $restockedLines = [];
+
+        $c = DB::transaction(function () use ($complaint, $admin, $decision, $amount, $note, $nid, $cod, $isReturn, &$restockedLines) {
+            $c = Complaint::whereKey($complaint->id)->lockForUpdate()->firstOrFail();
+            $fields = [
+                'dispute_decision' => $decision, 'dispute_note' => $note,
+                'dispute_decided_by' => $admin->id, 'dispute_decided_at' => now(),
+            ];
+
+            if ($decision === 'contact_client') {
+                $c->forceFill($fields)->save();   // still open
+                $this->event($c, 'dispute_decided', $admin, 'admin', $note, ['decision' => $decision]);
+                return $c->fresh();
+            }
+
+            $fields['dispute_status'] = 'resolved';
+
+            if ($decision === 'treat_as_conform') {
+                $items = ComplaintItem::where('complaint_id', $c->id)->lockForUpdate()->get();
+                $conditions = $items->mapWithKeys(fn ($i) => [$i->order_item_id => Complaint::CONDITION_RESALEABLE])->all();
+                $this->restockItems($items, $conditions, $restockedLines);
+                if ($isReturn) {
+                    $this->applyFinance($c, $admin);
+                }
+                $fields['inspection_result'] = Complaint::INSPECTION_CONFORM;
+            } elseif ($decision === 'charge_seller') {
+                $charge = round((float) ($amount ?? $c->refund_amount), 3);
+                if ($charge <= 0) {
+                    throw new ReturnException(__('returns_policy.dispute_amount_required'));
+                }
+                $fields['dispute_amount'] = $charge;
+                if ($c->seller_id && !SellerAdjustment::where('complaint_id', $c->id)->where('type', SellerAdjustment::TYPE_RETURN_DISPUTE)->exists()) {
+                    SellerAdjustment::create([
+                        'seller_id'       => $c->seller_id,
+                        'seller_order_id' => $this->sellerOrderId($c),
+                        'complaint_id'    => $c->id,
+                        'type'            => SellerAdjustment::TYPE_RETURN_DISPUTE,
+                        'amount'          => -$charge,
+                        'description'     => "Non-conforming item {$c->reference}: charged by ChooseTounsi",
+                        'created_by'      => $admin->id,
+                    ]);
+                }
+            } elseif ($decision === 'absorb') {
+                $fields['dispute_amount'] = round((float) $c->refund_amount, 3);
+            } elseif ($decision === 'send_back') {
+                $fee = round((float) $c->return_shipping_fee, 3);
+                // The parcel back is cash on delivery: what the client was already refunded + the delivery (editable)
+                $suggested = $this->sendBackCod($c);
+                $codAmount = round((float) ($cod ?? $suggested['cod']), 3);
+                if ($codAmount < 0) {
+                    throw new ReturnException(__('returns_policy.dispute_amount_required'));
+                }
+                $fields += [
+                    'sent_back_nid' => $nid ? trim($nid) : null, 'sent_back_fee' => $fee,
+                    'sent_back_cod' => $codAmount, 'sent_back_refused_at' => null,
+                ];
+                if ($c->fee_size) {
+                    $settings = app(\App\Services\Delivery\DeliverySettings::class);
+                    $this->bookCost($c, \App\Models\ComplaintCost::KIND_SENT_BACK,
+                        Millimes::toFloat($settings->agencyCost($c->fee_size)), $fee, 0, $fields['sent_back_nid']);
+                }
+            }
+
+            $c->forceFill($fields)->save();
+            PayoutHold::release($c);   // the seller keeps the payout (or the reversal already settled it)
+            $this->event($c, 'dispute_decided', $admin, 'admin', $note, ['decision' => $decision, 'amount' => $fields['dispute_amount'] ?? null]);
+
+            // The return is over: refunded (the courier paid at pick-up)
+            if ($isReturn && $c->status === Complaint::STATUS_RETURNED_TO_SELLER) {
+                $c = $this->move($c->fresh(), Complaint::STATUS_REFUNDED, $admin, 'admin', $note, ['resolved_at' => now()], ['dispute' => $decision], false);
+            }
+            return $c->fresh();
+        });
+
+        foreach ($restockedLines as $line) {
+            app(\App\Services\StockAlertService::class)->restocked((int) $line->product_id, $line->variant_id ? (int) $line->variant_id : null);
+        }
+        if ($decision === 'send_back') {
+            $this->buyer($c, 'sent_back');
+        }
+        if ($decision === 'charge_seller') {
+            $this->seller($c, 'dispute_charged');
+        }
+        return $c;
+    }
+
+    /**
+     * What the parcel sent back to the client collects in cash: the refund already paid at pick-up
+     * plus the delivery fee. The admin sees it before booking and may edit it.
+     *
+     * @return array{refund: float, fee: float, cod: float}
+     */
+    public function sendBackCod(Complaint $c): array
+    {
+        $refund = round((float) ($c->refund_amount_locked ?? $c->refund_amount), 3);
+        $fee    = round((float) $c->return_shipping_fee, 3);
+        return ['refund' => $refund, 'fee' => $fee, 'cod' => round($refund + $fee, 3)];
+    }
+
+    /**
+     * The client refused the parcel sent back: the item returns to the seller and the admin decides
+     * again (the dispute reopens, the admin is notified). Nothing else moves.
+     */
+    public function sentBackRefused(Complaint $complaint, User $admin, ?string $note): Complaint
+    {
+        if (!$complaint->isV2() || $complaint->dispute_decision !== 'send_back' || $complaint->sent_back_refused_at) {
+            throw new ReturnException(__('returns_policy.no_open_dispute'));
+        }
+        $c = DB::transaction(function () use ($complaint, $admin, $note) {
+            $c = Complaint::whereKey($complaint->id)->lockForUpdate()->firstOrFail();
+            $c->forceFill(['sent_back_refused_at' => now(), 'dispute_status' => 'open', 'dispute_note' => $note ?: $c->dispute_note])->save();
+            $this->event($c, 'sent_back_refused', $admin, 'admin', $note, ['cod' => (float) $c->sent_back_cod]);
+            return $c->fresh();
+        });
+        $this->admin($c, 'sent_back_refused');
+        return $c;
     }
 
     // ── Refund (money + finance + order status) ─────────────────────────────
@@ -975,6 +1334,34 @@ class ReturnService
             }
         }
 
+        // v2, seller at fault, PARTIAL return: the seller also pays the delivery fee included in the
+        // returned lines' prices (a full return already charges the parcel fee above)
+        if ($complaint->isV2() && $complaint->shipping_payer === 'seller' && $complaint->return_scope === 'partial' && $complaint->seller_id
+            && !SellerAdjustment::where('complaint_id', $complaint->id)->where('type', SellerAdjustment::TYPE_RETURN_ITEM_FEE)->exists()) {
+            $itemFeeM = 0;
+            foreach ($items as $item) {
+                $line = $lines[$item->order_item_id] ?? null;
+                if (!$line) continue;
+                $qty = min((int) $item->quantity, (int) $line->quantity);
+                $perUnitM = $line->included_fee !== null
+                    ? Millimes::of($line->included_fee)
+                    : Millimes::share(Millimes::of($line->included_fee_total ?? 0), 1, max(1, (int) $line->quantity));
+                $itemFeeM += $perUnitM * $qty;
+            }
+            $isPlatform = ($so0 = SellerOrder::find(array_key_first(array_filter($bySellerOrder, fn($k) => $k, ARRAY_FILTER_USE_KEY)) ?: 0)) && $so0->isPlatformParcel();
+            if ($itemFeeM > 0 && !$isPlatform) {
+                SellerAdjustment::create([
+                    'seller_id'       => $complaint->seller_id,
+                    'seller_order_id' => array_key_first(array_filter($bySellerOrder, fn($k) => $k, ARRAY_FILTER_USE_KEY)) ?: null,
+                    'complaint_id'    => $complaint->id,
+                    'type'            => SellerAdjustment::TYPE_RETURN_ITEM_FEE,
+                    'amount'          => '-' . Millimes::toDecimal($itemFeeM),
+                    'description'     => "Delivery fee of the returned item(s), partial return {$complaint->reference} (" . $complaint->getTypeLabel() . ')',
+                    'created_by'      => $admin?->id,
+                ]);
+            }
+        }
+
         // Return shipping charged to the seller when the item was wrong / defective
         $fee = (float) $complaint->return_shipping_fee;
         if ($complaint->shipping_payer === 'seller' && $fee > 0 && $complaint->seller_id) {
@@ -992,12 +1379,21 @@ class ReturnService
         $this->syncOrder((int) $complaint->order_id);
 
         $items_amount = round($rev['net'] + Millimes::toFloat($deliveryRefundM), 3);
+        $recomputed   = $this->refundFor($complaint, $items_amount);
+        // v2: the refund was frozen at approval and already paid at pick-up: it never changes afterwards
+        $frozen = $complaint->isV2() && $complaint->refund_amount_locked !== null;
         $complaint->update([
             'items_amount'       => $items_amount,
-            'refund_amount'      => $this->refundFor($complaint, $items_amount),
+            'refund_amount'      => $frozen ? $complaint->refund_amount_locked : $recomputed,
             'fee_exceeds_refund' => $this->feeExceedsRefund($complaint, $items_amount),
             'finance_applied_at' => now(),
         ]);
+        if ($frozen && abs((float) $complaint->refund_amount_locked - $recomputed) > 0.0005) {
+            $this->event($complaint, 'refund_amount_drift', $admin, 'system', null,
+                ['paid' => (float) $complaint->refund_amount_locked, 'recomputed' => $recomputed]);
+        }
+        // The sale is reversed now: the frozen payout is settled by the reversal itself
+        PayoutHold::release($complaint);
 
         // What Intigo bills for the return parcel (a normal parcel of that size)
         // and what was recovered (refund deduction, capped by the refund; seller debit)

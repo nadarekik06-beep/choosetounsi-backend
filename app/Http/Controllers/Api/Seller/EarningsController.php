@@ -41,6 +41,11 @@ class EarningsController extends Controller
             )
             ->first();
 
+        // Returns v2: parcels whose client was refunded in cash at pick-up, item not inspected yet
+        $heldIds = \App\Services\Returns\PayoutHold::sellerOrderIds($sellerId);
+        $held = DB::table('seller_orders')->where('seller_id', $sellerId)->whereIn('id', $heldIds ?: [0])
+            ->selectRaw('COUNT(*) as c, COALESCE(SUM(seller_net_amount), 0) as s')->first();
+
         $daily = DB::table('seller_orders')
             ->where('seller_id', $sellerId)
             ->whereNotIn('status', \App\Models\SellerOrder::NOT_SHIPPED)
@@ -98,6 +103,9 @@ class EarningsController extends Controller
                     'pending_amount'         => round((float) $totals->pending_amount,         3),
                     'ready_amount'           => round((float) $totals->ready_amount,           3),
                     'awaiting_cashin_amount' => round((float) $totals->awaiting_cashin_amount, 3),
+                    // « En attente de retour »: payout frozen until the returned item is inspected (already inside pending/ready amounts)
+                    'awaiting_return_amount' => round((float) $held->s, 3),
+                    'awaiting_return_count'  => (int) $held->c,
                 ],
                 'daily_chart'      => $daily,
                 'payout_breakdown' => $payoutBreakdown,

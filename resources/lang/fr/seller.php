@@ -388,6 +388,14 @@ return [
                 'title' => 'Retour :return remboursé',
                 'body' => 'Commande :order — le client a été remboursé ; :amount DT sont retirés de vos ventes.',
             ],
+            'inspection_reminder' => [
+                'title' => 'Retour :return à inspecter',
+                'body' => 'Commande :order — inspectez le colis retour (conforme ou non conforme) : le délai arrive à son terme.',
+            ],
+            'dispute_charged' => [
+                'title' => 'Retour :return : montant facturé',
+                'body' => 'Commande :order — après contrôle de l\'article retourné, ChooseTounsi a déduit un montant de vos prochains règlements.',
+            ],
             'cancelled' => [
                 'title' => 'Retour :return annulé',
                 'body' => 'Commande :order — le retour a été annulé.',

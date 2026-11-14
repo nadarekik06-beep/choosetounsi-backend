@@ -240,6 +240,7 @@ Route::prefix('guest')->middleware(['throttle:60,1', 'guest.order'])->group(func
     Route::get('/complaints/{id}',            [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'show'])->whereNumber('id');
     Route::patch('/complaints/{id}/escalate', [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'escalate'])->whereNumber('id');
     Route::patch('/complaints/{id}/cancel',   [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'cancel'])->whereNumber('id');
+    Route::patch('/complaints/{id}/switch-to-refund', [\App\Http\Controllers\Api\Client\GuestComplaintController::class, 'switchToRefund'])->whereNumber('id');
 });
 
 /*
@@ -466,6 +467,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/complaints/{id}/approve', [SellerComplaintController::class, 'approve']);
         Route::patch('/complaints/{id}/reject',  [SellerComplaintController::class, 'reject']);
         Route::patch('/complaints/{id}/receive', [SellerComplaintController::class, 'receive']);
+        // Returns policy v2
+        Route::patch('/complaints/{id}/exchange-impossible', [SellerComplaintController::class, 'exchangeImpossible'])->whereNumber('id');
+        Route::patch('/complaints/{id}/received',            [SellerComplaintController::class, 'received'])->whereNumber('id');
+        Route::post('/complaints/{id}/inspect',              [SellerComplaintController::class, 'inspect'])->whereNumber('id');
 
         // ── Ads: wallet, CPC campaigns, wizard tools ──────────────────────
         Route::prefix('ads')->middleware('seller.feature:sponsorships')->group(function () {
@@ -555,6 +560,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/complaints/{id}',            [ClientComplaintController::class, 'show']);
         Route::patch('/complaints/{id}/escalate', [ClientComplaintController::class, 'escalate']);
         Route::patch('/complaints/{id}/cancel',   [ClientComplaintController::class, 'cancel']);
+        Route::patch('/complaints/{id}/switch-to-refund', [ClientComplaintController::class, 'switchToRefund'])->whereNumber('id');
         
         Route::get('/reviews/eligible',            [ClientReviewController::class, 'eligible']);
         Route::get('/reviews/tags',                [ClientReviewController::class, 'tags']);
@@ -799,6 +805,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('/complaints/{id}/exchange/delivered', [AdminComplaintController::class, 'exchangeDelivered'])->whereNumber('id');
         Route::patch('/complaints/{id}/exchange/failed',    [AdminComplaintController::class, 'exchangeFailed'])->whereNumber('id');
         Route::patch('/complaints/{id}/exchange/decide',    [AdminComplaintController::class, 'exchangeDecide'])->whereNumber('id');
+        // Returns policy v2
+        Route::patch('/complaints/{id}/start-inspection',   [AdminComplaintController::class, 'startInspection'])->whereNumber('id');
+        Route::post('/complaints/{id}/inspect',             [AdminComplaintController::class, 'inspect'])->whereNumber('id');
+        Route::patch('/complaints/{id}/dispute',            [AdminComplaintController::class, 'dispute'])->whereNumber('id');
+        Route::patch('/complaints/{id}/sent-back-refused',  [AdminComplaintController::class, 'sentBackRefused'])->whereNumber('id');
+        Route::get('/returns-policy',                       [AdminComplaintController::class, 'policy']);
+        Route::put('/returns-policy',                       [AdminComplaintController::class, 'updatePolicy']);
 
         Route::patch('/users/{id}/wallet/top-up', [\App\Http\Controllers\Admin\UserController::class, 'walletTopUp']);
 
@@ -865,6 +878,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('orders/{id}/details', [FinanceController::class, 'orderDetails'])->whereNumber('id');
         Route::get('sellers',          [FinanceController::class, 'sellers']);
         Route::get('pending-payouts',  [FinanceController::class, 'pendingPayouts']);
+        Route::get('returns',          [FinanceController::class, 'returns']);
         Route::post('confirm-money/{id}', [FinanceController::class, 'confirmMoneyReceived']);
     });
 

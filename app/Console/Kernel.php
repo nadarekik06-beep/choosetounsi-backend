@@ -45,6 +45,8 @@ class Kernel extends ConsoleKernel
         $schedule->command('orders:whatsapp-reminders')->everyFiveMinutes()->withoutOverlapping();
         // Intigo safety net: poll open parcels, re-run missed webhook events and stuck sends
         $schedule->command('intigo:sync-statuses')->everyFifteenMinutes()->withoutOverlapping()->runInBackground();
+        // Returns v2: return parcel not confirmed / not inspected in time -> admin notified once
+        $schedule->command('returns:watch')->hourly()->withoutOverlapping();
 
         // ── Sponsoring ──────────────────────────────────────────────────────
         // Ends overdue sponsorships (read paths only filter, they never write).

@@ -144,6 +144,18 @@ return [
 
     // ── Complaints & returns ──────────────────────────────────────────────
     'complaint' => [
+        'exchange_impossible' => [
+            'title'   => 'Échange impossible : demandez un remboursement',
+            'body'    => 'Demande :return (commande :ref) : :shop ne peut pas faire cet échange. Vous pouvez demander un remboursement en un clic.',
+            'subject' => 'Échange impossible — vous pouvez être remboursé(e) — commande :ref',
+            'line'    => 'Ouvrez le suivi de votre demande et choisissez « Être remboursé(e) ».',
+        ],
+        'sent_back' => [
+            'title'   => 'Article non conforme renvoyé',
+            'body'    => 'Retour :return (commande :ref) : après contrôle, l\'article a été jugé non conforme. Il vous est renvoyé en paiement à la livraison : le livreur vous demandera :cod en espèces (remboursement déjà reçu + livraison).',
+            'subject' => 'Votre article vous est renvoyé — commande :ref',
+            'line'    => 'Motif du contrôle : « :inspection ». Vous pouvez consulter les photos dans le suivi de votre retour.',
+        ],
         'received' => [
             'title'   => 'Demande de retour reçue',
             'body'    => 'Votre demande de retour :return (commande :ref) a bien été transmise à :shop.',

@@ -39,6 +39,8 @@ class ReturnPresenter
     private const INTERNAL_EVENTS = [
         'finance_applied', 'delivered_to_seller', 'payer_overridden', 'exchange_booking', 'exchange_retry',
         'exchange_carrier_cancelled', 'replacement_released',
+        // Returns policy v2: staff-only steps (the client sees exchange_impossible / switched_to_refund)
+        'payout_frozen', 'inspection', 'dispute_decided', 'refund_amount_drift',
     ];
 
     /** Notes the client may read on their timeline. */

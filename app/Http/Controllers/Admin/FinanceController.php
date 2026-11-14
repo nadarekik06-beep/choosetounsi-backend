@@ -239,6 +239,7 @@ class FinanceController extends Controller
                 'sa.phone_number as seller_phone',
                 'so.status',
                 'so.payout_status',
+                DB::raw(\App\Services\Returns\PayoutHold::heldSql('so') . ' as payout_held'),   // « En attente de retour »
                 'so.payment_status',
                 // Cancelled sub-orders: no revenue, commission or payout (original_subtotal = history)
                 DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE (so.subtotal - so.discount_amount) END as subtotal"),
@@ -409,6 +410,7 @@ class FinanceController extends Controller
                 'payment_method'  => optional($order)->payment_method,
                 'payment_status'  => $so->payment_status,
                 'payout_status'   => $so->getAttribute('payout_status'),
+                'payout_held'     => \App\Services\Returns\PayoutHold::isHeld((int) $so->id),
                 'carrier_tracking_number' => $so->getAttribute('carrier_tracking_number'),
                 'carrier_status_raw'      => $so->getAttribute('carrier_status_raw'),
                 'coupon_code'     => $so->coupon_code,
@@ -525,6 +527,39 @@ class FinanceController extends Controller
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // GET /api/admin/finance/returns
+    // Per complaint: refund amount, how it was paid, who paid the shipping,
+    // what the seller was charged, and the admin's dispute decision.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public function returns(Request $request): JsonResponse
+    {
+        $query = DB::table('complaints as c')
+            ->leftJoin('orders as o', 'o.id', '=', 'c.order_id')
+            ->leftJoin('users as s', 's.id', '=', 'c.seller_id')
+            ->when($request->filled('seller_id'), fn ($q) => $q->where('c.seller_id', (int) $request->query('seller_id')))
+            ->when($request->boolean('dispute_open'), fn ($q) => $q->where('c.dispute_status', 'open'))
+            ->when($request->filled('status'), fn ($q) => $q->where('c.status', $request->query('status')))
+            ->select([
+                'c.id', 'c.reference', 'c.status', 'c.resolution_type', 'c.complaint_type', 'c.policy_version', 'o.order_number',
+                's.name as seller_name', 'c.shipping_payer', 'c.items_amount', 'c.refund_amount', 'c.refund_amount_locked',
+                'c.refund_method', 'c.refunded_at', 'c.payout_frozen_at', 'c.payout_released_at',
+                'c.inspection_result', 'c.dispute_status', 'c.dispute_decision', 'c.dispute_amount', 'c.dispute_note', 'c.dispute_decided_at',
+                'c.sent_back_fee', 'c.created_at',
+                DB::raw('(SELECT COALESCE(SUM(a.amount), 0) FROM seller_adjustments a WHERE a.complaint_id = c.id) as seller_charges'),
+            ])
+            ->orderByDesc('c.id');
+
+        $rows = $query->paginate((int) $request->query('per_page', 20));
+        $rows->getCollection()->transform(function ($r) {
+            $r->payout_held = $r->payout_frozen_at !== null && $r->payout_released_at === null;
+            return $r;
+        });
+
+        return response()->json(['success' => true, 'data' => $rows]);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // GET /api/admin/finance/pending-payouts
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -557,6 +592,7 @@ class FinanceController extends Controller
                 'so.seller_shipping_charge',
                 'so.money_received_at',
                 'so.created_at',
+                DB::raw(\App\Services\Returns\PayoutHold::heldSql('so') . ' as payout_held'),   // « En attente de retour »
             ])
             ->orderBy('so.money_received_at')
             ->paginate((int) $request->query('per_page', 20));

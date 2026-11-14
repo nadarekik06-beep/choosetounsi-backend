@@ -28,6 +28,9 @@ class ReturnSellerNotification extends Notification
         'delivered_to_seller' => ['package-check', 'pending'],
         'refunded'            => ['package-x', 'refunded'],
         'cancelled'           => ['x-circle', 'rejected'],
+        // Returns policy v2
+        'inspection_reminder' => ['package-check', 'pending'],
+        'dispute_charged'     => ['package-x', 'refunded'],
         // Exchanges (admin_approved / cancelled use their exchange_ texts)
         'exchanged'           => ['package-check', 'pending'],
         'exchange_failed'     => ['x-circle', 'pending'],
