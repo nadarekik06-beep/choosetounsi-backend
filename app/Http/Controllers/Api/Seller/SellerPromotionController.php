@@ -39,6 +39,44 @@ class SellerPromotionController extends Controller
         )]);
     }
 
+    /**
+     * POST /api/seller/promotions/conflicts — read-only: which of the seller's products
+     * already sit in a live or upcoming promotion overlapping these dates (the same check
+     * store() / update() enforce). The wizard shows it as an inline warning.
+     * Body: product_ids[], starts_at, ends_at (Tunis wall-clock, like store()), ignore_id?
+     */
+    public function conflicts(Request $request)
+    {
+        $v = $request->validate([
+            'product_ids'   => 'required|array|min:1|max:500',
+            'product_ids.*' => 'integer',
+            'starts_at'     => 'required|date',
+            'ends_at'       => 'required|date',
+            'ignore_id'     => 'nullable|integer',
+        ]);
+        $own = Product::where('seller_id', $request->user()->id)
+            ->whereIn('id', array_map('intval', $v['product_ids']))->pluck('id')->map(fn ($i) => (int) $i)->all();
+
+        $starts = TunisTime::toUtcString($v['starts_at']);
+        $ends   = TunisTime::toUtcString($v['ends_at']);
+        if (!$own || \Carbon\Carbon::parse($ends)->lte(\Carbon\Carbon::parse($starts))) {
+            return response()->json(['success' => true, 'data' => []]);
+        }
+
+        $conflicts = $this->promoService->conflicts($own, $starts, $ends, $v['ignore_id'] ?? null);
+        $rows = [];
+        foreach ($this->promoService->formatConflicts($conflicts) as $c) {
+            foreach ($c['products'] as $prod) {
+                $rows[] = [
+                    'product_id' => $prod['id'],
+                    'promotion'  => ['id' => $c['id'], 'name' => $c['name'], 'type' => $c['type'], 'source' => $c['source'],
+                                     'status' => $c['status'], 'starts_at' => $c['starts_at'], 'ends_at' => $c['ends_at']],
+                ];
+            }
+        }
+        return response()->json(['success' => true, 'data' => $rows]);
+    }
+
     // ── Index ──────────────────────────────────────────────────────────────
 
     public function index(Request $request)

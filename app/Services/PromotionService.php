@@ -618,15 +618,15 @@ class PromotionService
         }
 
         if ($starts && $ends) {
-            $durationHours = $starts->diffInHours($ends);
+            // Whole minutes, so 72 h 59 min is over the 72 h cap (and 89 d 23 h under 90 d)
+            $minutes = $starts->diffInMinutes($ends);
 
             if ($type === 'flash_sale') {
-                if ($durationHours < 1)  $errors[] = 'Flash sale must last at least 1 hour.';
-                if ($durationHours > 72) $errors[] = 'Flash sale cannot exceed 72 hours.';
+                if ($minutes < 60)       $errors[] = 'Flash sale must last at least 1 hour.';
+                if ($minutes > 72 * 60)  $errors[] = 'Flash sale cannot exceed 72 hours.';
             } else {
-                $durationDays = $starts->diffInDays($ends);
-                if ($durationDays < 1)  $errors[] = 'Discount must last at least 1 day.';
-                if ($durationDays > 90) $errors[] = 'Discount cannot exceed 90 days.';
+                if ($minutes < 1440)       $errors[] = 'Discount must last at least 1 day.';
+                if ($minutes > 90 * 1440)  $errors[] = 'Discount cannot exceed 90 days.';
             }
         }
 

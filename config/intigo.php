@@ -18,7 +18,10 @@
 */
 
 return [
-    'mode'           => env('INTIGO_MODE', 'fake') === 'live' ? 'live' : 'fake',
+    // Live only when INTIGO_MODE=live AND APP_ENV=production: a stray `live` in a local / staging .env
+    // can never reach the real API (AppServiceProvider logs a warning when that happens).
+    'mode'           => (env('INTIGO_MODE', 'fake') === 'live' && env('APP_ENV', 'production') === 'production') ? 'live' : 'fake',
+    'requested_mode' => env('INTIGO_MODE', 'fake') === 'live' ? 'live' : 'fake',
     'api_key'        => env('INTIGO_API_KEY'),
     'base_url'       => rtrim(env('INTIGO_BASE_URL', 'https://api.intigo.net/api/v3'), '/'),
 

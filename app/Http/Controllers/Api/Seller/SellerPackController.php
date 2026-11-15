@@ -29,7 +29,8 @@ public function index(Request $request)
         ->orderByDesc('created_at')
         ->paginate((int) $request->input('per_page', 12));
 
-    $packs->getCollection()->transform(fn($pack) => $this->formatPack($pack));
+    // items are eager-loaded above: the list shows how many each pack holds (only this endpoint adds the field)
+    $packs->getCollection()->transform(fn($pack) => $this->formatPack($pack) + ['items_count' => $pack->items->count()]);
 
     return response()->json(['success' => true, 'data' => $packs]);
 }
@@ -64,6 +65,9 @@ public function show(Request $request, int $id)
                 'items.*.product_id' => 'required|integer',
                 'items.*.quantity'   => 'required|integer|min:1',
             ]);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            // Same 422 as before (message), plus the field-keyed errors update() already sends (wizard highlights the field)
+            return response()->json(['success' => false, 'message' => collect($e->errors())->flatten()->first() ?? $e->getMessage(), 'errors' => $e->errors()], 422);
         } catch (\Throwable $e) {
             return response()->json(['success' => false, 'message' => $e->getMessage()], 422);
         }
@@ -250,6 +254,38 @@ public function show(Request $request, int $id)
         return response()->json(['success' => true, 'message' => __('seller.pack.deleted')]);
     }
 
+    /**
+     * POST /api/seller/packs/preview — read-only: a draft pack's prices as buyers see them
+     * (same PricingService::packClient the storefront cards use). Nothing is saved.
+     * Body: pack_price, items[{product_id, quantity}]
+     */
+    public function preview(Request $request)
+    {
+        $v = $request->validate([
+            'pack_price'         => 'required|numeric|min:0',
+            'items'              => 'required|array|min:1|max:100',
+            'items.*.product_id' => 'required|integer',
+            'items.*.quantity'   => 'required|integer|min:1',
+        ]);
+        $products = Product::where('seller_id', $request->user()->id)
+            ->whereIn('id', collect($v['items'])->pluck('product_id')->map(fn ($i) => (int) $i))
+            ->get()->keyBy('id');
+
+        $items = collect($v['items'])->filter(fn ($r) => $products->has((int) $r['product_id']))->map(function ($r) use ($products) {
+            $item = new PackItem(['product_id' => (int) $r['product_id'], 'quantity' => (int) $r['quantity']]);
+            $item->setRelation('product', $products[(int) $r['product_id']]);
+            return $item;
+        })->values();
+
+        if ($items->isEmpty()) {
+            return response()->json(['success' => true, 'data' => null]);
+        }
+        $pack = new Pack(['pack_price' => $v['pack_price'], 'original_price' => 0]);
+        $pack->setRelation('items', $items);
+
+        return response()->json(['success' => true, 'data' => app(\App\Services\Pricing\PricingService::class)->packClient($pack)]);
+    }
+
     // ── Seller's own products list (for item picker) ───────────────────────
 
     public function sellerProducts(Request $request)
@@ -257,9 +293,11 @@ public function show(Request $request, int $id)
         $seller   = $request->user();
         $search   = $request->input('search', '');
 
+        // ?all=1 (wizard): also list inactive / unapproved products, flagged, so they can be shown greyed out
+        $all      = $request->boolean('all');
+
         $products = Product::where('seller_id', $seller->id)
-            ->where('is_active', true)
-            ->where('is_approved', true)
+            ->when(!$all, fn($q) => $q->where('is_active', true)->where('is_approved', true))
             ->when($search, fn($q) => $q->where('name', 'like', "%{$search}%"))
             ->with([
                 'primaryImage',
@@ -274,6 +312,8 @@ public function show(Request $request, int $id)
                 'name'              => $p->name,
                 'price'             => (float) $p->price,
                 'primary_image_url' => $p->primary_image_url,
+                'is_active'         => (bool) $p->is_active,
+                'is_approved'       => (bool) $p->is_approved,
                 'has_variants'      => $p->variants->isNotEmpty(),
                 'stock'             => $p->variants->isNotEmpty()
                     ? (int) $p->variants->sum('stock')

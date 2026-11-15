@@ -497,6 +497,7 @@ Route::middleware('auth:sanctum')->group(function () {
         // ── Packs ─────────────────────────────────────────────────────────
         Route::get('/packs/stats',    [SellerPackController::class, 'stats']);
         Route::get('/packs/products', [SellerPackController::class, 'sellerProducts']);
+        Route::post('/packs/preview', [SellerPackController::class, 'preview']); // wizard: pack prices as buyers see them (read-only)
         Route::get('/packs',          [SellerPackController::class, 'index']);
         Route::post('/packs',         [SellerPackController::class, 'store']);
         Route::get('/packs/{id}',     [SellerPackController::class, 'show']);
@@ -508,6 +509,7 @@ Route::middleware('auth:sanctum')->group(function () {
         // stats MUST come before {id} to avoid being matched as an ID
         Route::get('/promotions/stats',    [SellerPromotionController::class, 'stats']);
         Route::post('/promotions/preview', [SellerPromotionController::class, 'preview']); // AUDIT M-6: what buyers really pay
+        Route::post('/promotions/conflicts', [SellerPromotionController::class, 'conflicts']); // wizard: products already in a promotion (read-only)
         Route::get('/promotions',          [SellerPromotionController::class, 'index']);
         Route::post('/promotions',         [SellerPromotionController::class, 'store'])->middleware('seller.feature:promotions');
         Route::get('/promotions/{id}',     [SellerPromotionController::class, 'show']);

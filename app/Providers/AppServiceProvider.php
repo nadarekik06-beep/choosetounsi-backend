@@ -44,6 +44,11 @@ class AppServiceProvider extends ServiceProvider
     {
         Schema::defaultStringLength(191);
 
+        // INTIGO_MODE=live outside production is forced to fake (config/intigo.php): say so.
+        if (config('intigo.requested_mode') === 'live' && config('intigo.mode') !== 'live') {
+            \Illuminate\Support\Facades\Log::warning('INTIGO_MODE=live ignored: APP_ENV is "' . config('app.env') . '", not production. Intigo stays in fake mode.');
+        }
+
         // Variant status drives product status — centralized here.
         ProductVariant::observe(ProductVariantObserver::class);
 
