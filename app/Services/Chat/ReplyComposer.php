@@ -61,6 +61,8 @@ class ReplyComposer
             . 'Write 2-3 short friendly sentences that help the customer choose among the PRODUCTS below. '
             . 'Use ONLY these products and their exact prices in DT. Never mention any other product, brand, price, discount or feature. '
             . 'Only mention ratings, reviews or popularity when a rating is listed; never call a product a favorite or best-seller otherwise. '
+            . 'Delivery is simply free. Never say or imply that delivery is included in, built into, or paid through product prices. '
+            . 'Never name any delivery company or carrier; say "our delivery partner" (or "le livreur") instead. '
             . 'Product cards with images and links are shown under your message: do not write links or a full list. No markdown.';
 
         $messages = [['role' => 'system', 'content' => $system]];
@@ -242,6 +244,8 @@ class ReplyComposer
             . 'Reply in ' . self::LANGUAGE_NAMES[$lang] . ' only. '
             . 'Answer the customer in 1-3 short sentences using ONLY the FACTS below. '
             . 'If the facts do not answer the question, say so briefly and point to the steps shown under your message. '
+            . 'Delivery is simply free. Never say or imply that delivery is included in, built into, or paid through product prices. '
+            . 'Never name any delivery company or carrier; say "our delivery partner" (or "le livreur") instead. '
             . 'Never add rules, numbers, prices, delays or links that are not in the FACTS. No markdown.';
 
         $reply = $this->groq->chat([

@@ -113,10 +113,26 @@ class KnowledgeBase
             '{tier_list}'       => $this->tierList($table['tiers'], $lang),
         ];
         foreach (['free' => 'green', 'red' => 'red', 'black' => 'black'] as $key => $name) {
+            // max_products null = unlimited (admin-managed): never print an empty number
+            $phrase = $this->productLimit($plans[$key]['max_products'] ?? null, $lang);
+            $values["{{$name}_products}"]     = $phrase;
+            $values["{{$name}_products_cap}"] = mb_strtoupper(mb_substr($phrase, 0, 1)) . mb_substr($phrase, 1);
             $values["{{$name}_commission}"] = $this->percentRange($plans[$key]['commission_min'], $plans[$key]['commission_max'], $lang);
         }
 
         return $this->values[$lang] = $values;
+    }
+
+    private function productLimit(?int $max, string $lang): string
+    {
+        if ($max === null) {
+            return ['en' => 'unlimited products', 'fr' => 'produits illimités', 'ar' => 'منتجات بلا حدود'][$lang] ?? 'unlimited products';
+        }
+        return match ($lang) {
+            'fr'    => "jusqu'à {$max} produits",
+            'ar'    => "حتى {$max} منتج",
+            default => "up to {$max} products",
+        };
     }
 
     private function tierList(array $tiers, string $lang): string
