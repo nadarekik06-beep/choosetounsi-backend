@@ -32,6 +32,9 @@ class SellerInvoiceController extends Controller
 {
     public function show(Request $request, $sellerOrderId)
     {
+        // Disabled for now: sellers print the Intigo bordereau only.
+        abort_unless(config('platform.seller_invoice_enabled'), 404);
+
         $sellerId = auth()->id();
 
         // ── Load the seller's sub-order (scoped to seller for security) ────
