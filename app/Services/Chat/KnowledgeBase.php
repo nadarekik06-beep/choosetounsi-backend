@@ -46,6 +46,14 @@ class KnowledgeBase
             'description' => $this->text($step['text'], $textLang),
         ], $data['steps']);
 
+        // Arabizi texts (config/chatbot_kb_arabizi.php) replace the Arabic-script ones when the section has them
+        $az = $lang === 'tn_arabizi' ? config("chatbot_kb_arabizi.{$topic}.{$section}") : null;
+        if ($az && count($az['steps']) === count($data['steps'])) {
+            $values = $this->values('fr');
+            $intro  = strtr($az['intro'], $values);
+            $steps  = array_map(fn (array $s) => ['title' => strtr($s[0], $values), 'description' => strtr($s[1], $values)], $az['steps']);
+        }
+
         $actions = [];
         foreach ($data['links'] ?? [] as $link) {
             $actions[] = $this->actions->link($this->label($link['label'], $lang), $link['url']);

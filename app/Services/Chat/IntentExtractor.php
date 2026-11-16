@@ -657,7 +657,7 @@ PROMPT;
         if ($result === null && in_array($this->groq->lastError, ['rate_limited', 'budget', 'server_500', 'server_502', 'server_503', 'connection', 'empty', 'bad_json'], true)
             && $this->groq->lastError !== 'budget') {
             $result = $this->groq->chatJson($messages, 'intent_fallback', 300, [
-                'model' => config('services.groq.fallback_model', 'llama-3.1-8b-instant'),
+                'model' => config('services.groq.fallback_model', 'openai/gpt-oss-20b'),
             ]);
         }
 

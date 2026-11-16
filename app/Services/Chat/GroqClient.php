@@ -23,6 +23,9 @@ class GroqClient
 {
     private const URL = 'https://api.groq.com/openai/v1/chat/completions';
 
+    /** Real Groq requests attempted while the test suite runs (tests/TestCase fails any test that makes one). */
+    public static int $strayCalls = 0;
+
     /** Set after each call so callers can tell a 429 from other failures. */
     public ?string $lastError = null;
 
@@ -89,6 +92,7 @@ class GroqClient
         // Max 2 retries with exponential backoff (0.4 s, 0.8 s): network errors, 5xx, and a 429 that asks for <= 2 s. Never other 4xx.
         for ($attempt = 1; $attempt <= 3; $attempt++) {
             $started = microtime(true);
+            $this->guardAgainstRealCalls();
             try {
                 $response = Http::timeout($timeout)
                     ->withToken(config('services.groq.key'))
@@ -100,6 +104,9 @@ class GroqClient
                 $this->backoff($attempt);
                 continue;
             }
+
+            // A faked response has no transfer stats; a real one does
+            $this->guardAgainstRealCalls($response);
 
             $ms        = (int) round((microtime(true) - $started) * 1000);
             $dailyUsed = $this->countCall();
@@ -190,6 +197,32 @@ class GroqClient
         }
 
         return is_array($data) ? $data : null;
+    }
+
+    /**
+     * Tests must never reach the real Groq API (it would use the free quota). While the suite runs, a request is
+     * refused when the HTTP client is not faked, and a response that came over the network is flagged.
+     * tests/TestCase fails the test that made it.
+     */
+    private function guardAgainstRealCalls(?\Illuminate\Http\Client\Response $response = null): void
+    {
+        if (!app()->runningUnitTests()) {
+            return;
+        }
+
+        $real = $response !== null;
+        if ($response !== null) {
+            $real = $response->handlerStats() !== [];
+        } else {
+            $recording = new \ReflectionProperty(\Illuminate\Http\Client\Factory::class, 'recording');
+            $recording->setAccessible(true);
+            $real = !$recording->getValue(\Illuminate\Support\Facades\Http::getFacadeRoot());
+        }
+
+        if ($real) {
+            self::$strayCalls++;
+            throw new \RuntimeException('A real Groq request was made during a test: mock GroqClient or fake the HTTP call (Http::fake).');
+        }
     }
 
     private function backoff(int $attempt): void

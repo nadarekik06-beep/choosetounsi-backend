@@ -607,6 +607,144 @@ class ChatbotEvalTest extends TestCase
         $this->assertStringNotContainsStringIgnoringCase('aucun', $res['reply']);
     }
 
+    // ── Follow-up: shoes-only link, Groq replies, Arabizi FAQ ─────────────
+
+    public function test_more_link_covers_the_whole_product_type_with_the_same_gender(): void
+    {
+        $this->seedCatalog();
+        $this->groq();
+
+        $res   = $this->chat('nheb nechri sabat el sa7ebti', 'ev_' . Str::random(8));
+        $link  = collect($res['actions'])->firstWhere('type', 'link');
+        parse_str(parse_url($link['url'], PHP_URL_QUERY), $q);
+
+        $this->assertSame('women', $q['gender']);
+        $this->assertSame('shoes', $q['concept']);
+        $this->assertArrayNotHasKey('sub', $q);
+        $this->assertTrue(\App\Services\Chat\ActionFactory::isAllowedUrl($link['url']));
+
+        // The storefront list behind that link: shoes only, women + unisex only
+        $slug = DB::table('categories')->where('id', $this->fashion)->value('slug');
+        $list = $this->getJson("/api/products?category_slug={$slug}&gender=women&concept=shoes&per_page=100")->assertOk()->json('data.data');
+        $ids  = array_column($list, 'id');
+        $this->assertContains($this->p['sneaker_w'], $ids);
+        $this->assertContains($this->p['sneaker_u'], $ids);
+        foreach ([$this->p['sneaker_m'], $this->p['sneaker_n'], $this->p['dress_w'], $this->p['kids_shoe']] as $excluded) {
+            $this->assertNotContains($excluded, $ids);
+        }
+
+        // Same logic for every product type
+        $dress = $this->chat('n7eb robe lel nsa', 'ev_' . Str::random(8));
+        $this->assertStringContainsString('concept=dresses', collect($dress['actions'])->firstWhere('type', 'link')['url']);
+    }
+
+    /** Groq answers for "reply"; the first call can be rate limited so that the fallback model answers. */
+    private function groqLimited(callable $reply): void
+    {
+        $this->groqCalls = [];
+        $this->app->instance(\App\Services\ProductTranslator::class, \Mockery::mock(\App\Services\ProductTranslator::class)->shouldIgnoreMissing());
+        $this->mock(GroqClient::class, function ($mock) use ($reply) {
+            $mock->shouldReceive('isConfigured')->andReturn(false);
+            $mock->shouldReceive('chat')->andReturnNull();
+            $mock->shouldReceive('chatJson')->andReturnUsing(function ($messages, $purpose, $max = 0, $options = []) use ($reply, $mock) {
+                $this->groqCalls[] = ['purpose' => $purpose, 'model' => $options['model'] ?? null, 'text' => end($messages)['content']];
+                if ($purpose === 'reply') {
+                    $mock->lastError = 'rate_limited';
+                    return null;
+                }
+                return $purpose === 'reply_fallback' ? $reply(end($messages)['content']) : null;
+            });
+        });
+    }
+
+    public function test_the_fallback_model_writes_the_reply_when_the_main_model_is_rate_limited(): void
+    {
+        $this->seedCatalog();
+        $this->groqLimited(fn ($prompt) => $this->arabiziReply($prompt));
+
+        $res = $this->chat('nheb nechri sabat el sa7ebti', 'ev_' . Str::random(8));
+
+        $this->assertStringContainsString('Behi barcha', $res['reply'], 'written by the fallback model, not the template');
+        $this->assertSame(['reply', 'reply_fallback'], array_column($this->groqCalls, 'purpose'));
+        $this->assertSame('openai/gpt-oss-20b', $this->groqCalls[1]['model']);
+    }
+
+    public function test_arabic_script_reply_is_written_by_groq_when_valid(): void
+    {
+        $this->seedCatalog();
+        $this->groq(function ($prompt) {
+            preg_match('/\[(\d+)\] (.+?) \| (?:from )?([\d.]+) DT/', $prompt, $m);
+
+            return ['reply' => "باهي برشا! لقيتلك \"{$m[2]}\" بـ {$m[3]} د.ت لصاحبتك، باهي برشا. شنوة المقاس متاعها؟", 'picks' => [(int) $m[1]]];
+        });
+
+        $res = $this->chat('نحب نشري سباط لصاحبتي', 'ev_' . Str::random(8));
+
+        $this->assertSame('tn_arabic', $res['dialect']);
+        $this->assertStringContainsString('باهي برشا', $res['reply']);
+        $this->assertStringNotContainsString('لقيتلك 5', $res['reply'], 'not the template');
+    }
+
+    public function test_a_relaxed_reply_is_written_by_groq_and_must_state_what_was_relaxed(): void
+    {
+        $this->seedCatalog();
+        $session = 'ev_' . Str::random(8);
+
+        // Groq states the missing color: used as written
+        $this->groq(function ($prompt) {
+            if (!str_contains($prompt, 'FACT TO STATE')) {
+                return $this->arabiziReply($prompt); // the first search: nothing relaxed yet
+            }
+            preg_match('/\[(\d+)\] (.+?) \| (?:from )?([\d.]+) DT/', $prompt, $m);
+
+            return ['reply' => "Ma l9itech sabat abyedh, ama famma \"{$m[2]}\" b {$m[3]} DT behi barcha. Chnowa el pointure?", 'picks' => [(int) $m[1]]];
+        });
+        $this->chat('n7eb sabat lel nsa', $session);
+        $res = $this->chat('bel abyedh', $session);
+        $this->assertStringContainsString('Ma l9itech sabat abyedh', $res['reply']);
+        $this->assertNotEmpty($res['products']);
+        $this->assertShoesFor($res['products'], ['women', 'unisex']);
+
+    }
+
+    public function test_a_relaxed_reply_that_forgets_the_color_falls_back_to_the_notice(): void
+    {
+        $this->seedCatalog();
+        // Groq forgets the color: template with the fixed notice
+        $this->groq(fn ($prompt) => ['reply' => 'Behi barcha! Nan9a7lek el sabat hedha, yel7a9 barcha 3al sa7ebtek.', 'picks' => []]);
+        $session2 = 'ev_' . Str::random(8);
+        $this->chat('n7eb sabat lel nsa', $session2);
+        $res2 = $this->chat('bel abyedh', $session2);
+        $this->assertStringContainsString('Ma l9itech b abyedh', $res2['reply']);
+    }
+
+    public function test_arabizi_faq_texts_have_no_arabic_script(): void
+    {
+        $this->groq();
+
+        foreach (['chnowa el commission?' => 'become_vendor', 'kifech n3mel compte?' => 'account_help', 'nsit el mot de passe' => 'account_help',
+                  'n7eb nraja3 commande' => 'returns_complaints', 'chnowa ya3ni 7alet el commande?' => 'track_order',
+                  'kifech na3mel commande?' => 'place_order', 'kifech nesta3mel coupon?' => 'place_order'] as $say => $intent) {
+            $res  = $this->chat($say, 'ev_' . Str::random(8));
+            $text = $res['reply'] . ' ' . collect($res['steps'])->map(fn ($s) => $s['title'] . ' ' . $s['description'])->implode(' ');
+
+            $this->assertSame($intent, $res['intent'], $say);
+            $this->assertNotEmpty($res['steps'], $say);
+            $this->assertDoesNotMatchRegularExpression('/\p{Arabic}/u', $text, $say);
+        }
+    }
+
+    public function test_arabic_script_greeting_chips_are_natural_tunisian(): void
+    {
+        $this->groq();
+
+        $labels = array_column($this->chat('السلام عليكم', 'ev_' . Str::random(8))['actions'], 'label');
+
+        $this->assertContains('نلوّج على منتوج', $labels);
+        $this->assertContains('نحب نبيع عندكم', $labels);
+        $this->assertNotContains('نحب نولّي بائع', $labels);
+    }
+
     public function test_the_darija_lexicon_is_extendable_from_the_config_only(): void
     {
         $this->groq();

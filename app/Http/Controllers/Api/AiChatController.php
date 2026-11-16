@@ -150,7 +150,8 @@ class AiChatController extends Controller
             $this->memory->remember($sessionId, $userId, $message, $storedReply, $out['language'], $out['filters'], $shown, $out['remember_dialect'] ?? $dialect);
             $this->persist($sessionId, $message, $storedReply, $out['intent']);
 
-            if (!$out['personal']) {
+            // A template written because Groq was rate limited or down is never cached: the next customer gets a Groq reply
+            if (!$out['personal'] && ($out['reply_source'] ?? null) !== 'template') {
                 Cache::put($cacheKey, [
                     'reply'    => $out['reply'],
                     'products' => $out['products'],
@@ -434,6 +435,7 @@ class AiChatController extends Controller
 
         return [
             'reply'    => $reply['reply'],
+            'reply_source' => $reply['source'] ?? null,
             'language' => $lang,
             'intent'   => $intent['intent'] === 'product_question' ? 'product_question' : 'search',
             'products' => $products,
@@ -465,9 +467,12 @@ class AiChatController extends Controller
         if ($category) {
             $subs    = array_unique(array_filter(array_column($products, 'subcategory')));
             $linkGen = in_array($gender, ['women', 'men'], true) ? $gender : null;
+            // A product word links to ALL the subcategories of that product type (shoes, dresses ...) with the same gender
+            $concept = $filters['concept'] ?? null;
+            $useConcept = $concept && empty($filters['child']) && $this->catalog->concept($concept);
             $query   = array_filter([
                 $linkGen ? "gender={$linkGen}" : null,
-                count($subs) === 1 ? 'sub=' . reset($subs) : null,
+                $useConcept ? "concept={$concept}" : (count($subs) === 1 ? 'sub=' . reset($subs) : null),
             ]);
             $url  = '/category/' . $category['slug'] . ($query ? '?' . implode('&', $query) : '');
             $what = $label ?: ((LanguageDetector::isArabicScript($dialect) ? ($category['name_ar'] ?? null) : ($dialect === 'en' ? null : ($category['name_fr'] ?? null))) ?: $category['name']);

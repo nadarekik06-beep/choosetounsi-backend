@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\AiChatController;
 use App\Services\Chat\IntentExtractor;
 use Illuminate\Console\Command;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 
 /**
@@ -15,16 +16,29 @@ use Illuminate\Support\Str;
  *   php artisan chatbot:eval --say="nheb sabat" run ONE message through the whole pipeline and print the transcript
  *                                               (repeat --say for a conversation: --say="n7eb sabat lel nsa" --say="rkhis akther")
  *   php artisan chatbot:eval --live             also run every fixture through the whole pipeline (uses Groq if a key is set)
+ *   php artisan chatbot:eval --say="..." --dry   same, but Groq is faked: no real request, no quota used (templates answer)
+ *
+ * --say / --live use the Groq key of the LOCAL .env (never the production one).
  *
  * Fixtures: database/fixtures/chatbot_eval.php
  */
 class ChatbotEval extends Command
 {
-    protected $signature = 'chatbot:eval {--say=* : message(s) to run through the whole pipeline, as one conversation} {--live : run every fixture through the whole pipeline} {--locale=fr}';
+    protected $signature = 'chatbot:eval {--say=* : message(s) to run through the whole pipeline, as one conversation} {--live : run every fixture through the whole pipeline} {--dry : fake Groq (no real request)} {--locale=fr}';
     protected $description = 'Evaluate the shopping chatbot (language, slots, hard filters) on the fixture prompts';
 
     public function handle(IntentExtractor $extractor): int
     {
+        if ($this->option('dry')) {
+            // Fakes: the pipeline runs end to end, Groq answers an empty object (templates are used)
+            config(['services.groq.key' => 'gsk_dry_run_fake']);
+            Http::fake(['api.groq.com/*' => Http::response([
+                'choices' => [['message' => ['content' => '{}'], 'finish_reason' => 'stop']],
+                'usage'   => ['total_tokens' => 0],
+            ], 200)]);
+            $this->warn('Dry run: Groq is faked, no real request is made.');
+        }
+
         if ($say = array_filter((array) $this->option('say'))) {
             $this->conversation($say);
             return self::SUCCESS;

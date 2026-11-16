@@ -71,6 +71,11 @@ class ProductController extends Controller
         } elseif ($subSlug = $request->query('subcategory_slug')) {
             $query->whereHas('subcategory', fn($q) => $q->where('slug', $subSlug));
         }
+        // ?concept=shoes: every real subcategory of a product type (the chatbot's "more shoes for women" link)
+        if (($concept = $request->query('concept')) && is_string($concept)) {
+            $ids = app(\App\Services\Chat\ChatCatalog::class)->subIds($concept);
+            $query->whereIn('subcategory_id', $ids ?: [0]);
+        }
         if ($sellerId = $request->query('seller_id')) {
             $query->where('seller_id', $sellerId);
         }

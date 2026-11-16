@@ -57,6 +57,8 @@ return [
 'groq' => [
     'key'              => env('GROQ_API_KEY'),
     'model'            => env('GROQ_MODEL', 'openai/gpt-oss-120b'),
+    // Second model of the free tier (own rate limit): answers when the main one returns 429
+    'fallback_model'   => env('GROQ_FALLBACK_MODEL', 'openai/gpt-oss-20b'),
     'timeout'          => env('GROQ_TIMEOUT', 15),
     // Stay under the Groq free tier (1,000 requests/day, ~30/min for this model).
     'daily_budget'     => env('GROQ_DAILY_BUDGET', 950),
