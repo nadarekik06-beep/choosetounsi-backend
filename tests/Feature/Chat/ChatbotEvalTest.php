@@ -713,7 +713,7 @@ class ChatbotEvalTest extends TestCase
     {
         $this->seedCatalog();
         // Groq forgets the color: template with the fixed notice
-        $this->groq(fn ($prompt) => ['reply' => 'Behi barcha! Nan9a7lek el sabat hedha, yel7a9 barcha 3al sa7ebtek.', 'picks' => []]);
+        $this->groq(fn ($prompt) => ['reply' => 'Behi barcha! Ne9tara7lek el sabat hedha, yel7a9 barcha 3al sa7ebtek.', 'picks' => []]);
         $session2 = 'ev_' . Str::random(8);
         $this->chat('n7eb sabat lel nsa', $session2);
         $res2 = $this->chat('bel abyedh', $session2);
@@ -1031,6 +1031,24 @@ class ChatbotEvalTest extends TestCase
             'name' => 'Client', 'email' => 'cl_' . Str::random(10) . '@test.local', 'password' => bcrypt('x-password'), 'role' => 'client', 'is_active' => true,
         ]));
         $this->getJson('/api/admin/chatbot/unmatched')->assertStatus(403);
+    }
+
+    public function test_the_bot_recommends_with_ne9tara7lek_never_nan9a7lek(): void
+    {
+        $this->seedCatalog();
+        $composer = app(\App\Services\Chat\ReplyComposer::class);
+
+        // The words are forbidden for the model, in both scripts
+        foreach (['Nan9a7lek "X" (40 DT)', 'nan9a7lik hedha', 'n9a7lek hedha', 'ننقحلك هذا'] as $bad) {
+            $this->assertTrue($composer->containsForbiddenWord($bad), $bad);
+        }
+        $this->assertFalse($composer->containsForbiddenWord('Ne9tara7lek "X" (40 DT). نقترحلك هذا'));
+
+        // A model reply using the old word is rejected: the template answers with the new one
+        $this->groq(fn () => ['reply' => 'Behi barcha! Nan9a7lek sabat mliha barcha, chnowa el pointure mte3ek?', 'picks' => []]);
+        $res = $this->chat('nheb nechri sabat el sa7ebti', 'ev_' . Str::random(8), 'fr');
+        $this->assertStringNotContainsStringIgnoringCase('nan9a7', $res['reply']);
+        $this->assertStringContainsString('Ne9tara7lek', $res['reply']);
     }
 
     public function test_the_darija_lexicon_is_extendable_from_the_config_only(): void

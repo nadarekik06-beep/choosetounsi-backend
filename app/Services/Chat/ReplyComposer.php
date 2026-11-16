@@ -116,6 +116,7 @@ class ReplyComposer
             . "- Do not assume a relationship beyond what was said (sa7ebti = girlfriend or female friend: just say 'lel sa7ebtek').\n"
             . "- Product cards with images and links appear under your message: no links, no full list, no markdown.\n"
             . "- If a FACT TO STATE is given, state it honestly and clearly first, in your own words, then recommend.\n"
+            . "- RECOMMENDING: when you recommend a product write \"ne9tara7lek\" (Latin script) or \"نقترحلك\" (Arabic script). Never write nan9a7lek or any other form.\n"
             . "- VOCABULARY: use ONLY the product-type word given under PRODUCT TYPE WORD. Do not invent Darija words, plurals or transliterations. If you are unsure of a Darija word, use the French word Tunisians use, or the product's real name.\n"
             . "- SIZE: {$this->sizeRule($ctx['size_attr'] ?? 'none')}\n"
             . "- Prices are written as DT (Latin script) or د.ت (Arabic script), matching the script of your reply.\n"

@@ -344,6 +344,7 @@ return [
     // Forms the bot must never write (invented words / plurals). A reply containing one is rejected and rewritten.
     'forbidden_words' => [
         'ta9chirat', 'taqchirat', 'ta9chirate', 'sweatet', 'sweatat', 'robouet', 'robat', 'chemisat', 'pulat', 'jipat', 'foularet', 'mongelat',
+        'nan9a7lek', 'nan9a7lik', 'nan9a7lak', 'n9a7lek', 'nan9a7', 'ننقحلك', 'نقحلك',
         'chnayet', 'kababet', 'telifounet', 'mountejat', 'mountajat', 'sbabetat', '7wayejet', 'maryoulat', 'serwelat', 'bijoutat',
         'تقشيرات', 'شناطي', 'كبابط', 'منقالات',
     ],
@@ -435,7 +436,7 @@ return [
         'top_pick' => [
             'fr' => 'Je vous conseille « {name} » ({price}).',
             'en' => 'I suggest "{name}" ({price}).',
-            'tn_arabizi' => 'Nan9a7lek "{name}" ({price}).',
+            'tn_arabizi' => 'Ne9tara7lek "{name}" ({price}).',
             'tn_arabic' => 'نقترحلك "{name}" ({price}).',
             'msa' => 'أقترح عليك "{name}" ({price}).',
         ],
