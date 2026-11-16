@@ -143,6 +143,8 @@ class ReplyComposer
         $who = '';
         if (!empty($ctx['recipient'])) {
             $who = "\nShopping for: {$ctx['recipient']}" . (!empty($ctx['gender']) ? " ({$ctx['gender']})" : '');
+        } elseif (!empty($ctx['gender'])) {
+            $who = "\nProducts are for: {$ctx['gender']} (do not mention any other audience)";
         }
         $relaxedNote = !empty($ctx['notice'])
             ? "

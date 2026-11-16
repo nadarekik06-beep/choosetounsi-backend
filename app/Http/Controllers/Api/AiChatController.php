@@ -645,9 +645,11 @@ class AiChatController extends Controller
             $new = $filters;
             // The new value REPLACES the old one for every slot; earlier words are never concatenated into a text query
             $filters['keywords'] = $new['keywords'] ?: ($previous['keywords'] ?? []);
-            foreach (['keywords_en', 'category', 'concept', 'recipient', 'brand'] as $k) {
+            foreach (['keywords_en', 'category', 'concept', 'brand'] as $k) {
                 $filters[$k] = $new[$k] ?: ($previous[$k] ?? $new[$k]);
             }
+            // A new gender replaces the old one AND the recipient that went with it (kids → men: no more "child")
+            $filters['recipient'] = $new['gender'] ? $new['recipient'] : ($previous['recipient'] ?? $new['recipient']);
             foreach (['gender', 'child'] as $k) {
                 $filters[$k] = $new['gender'] ? $new[$k] : ($previous[$k] ?? $new[$k]);
             }
