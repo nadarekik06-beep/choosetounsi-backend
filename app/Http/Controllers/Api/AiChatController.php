@@ -110,7 +110,7 @@ class AiChatController extends Controller
         try {
             // Identical question in the same conversation state → no Groq call.
             // Never holds personal data: track_order answers are not cached.
-            $cacheKey = 'chat:resp:v3:' . md5(implode('|', [
+            $cacheKey = 'chat:resp:v4:' . md5(implode('|', [
                 $dialect,
                 $this->extractor->normalize($message),
                 json_encode($memory['filters']),
