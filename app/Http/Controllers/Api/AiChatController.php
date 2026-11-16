@@ -13,6 +13,7 @@ use App\Services\Chat\LanguageDetector;
 use App\Services\Chat\OrderLookup;
 use App\Services\Chat\ProductRetriever;
 use App\Services\Chat\ReplyComposer;
+use App\Services\Chat\SmallTalk;
 use App\Services\ChatMemory;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -62,6 +63,7 @@ class AiChatController extends Controller
         private LanguageDetector $detector,
         private ChatCatalog      $catalog,
         private ChatLexicon      $lex,
+        private SmallTalk        $talk,
     ) {}
 
     public function handle(Request $request): JsonResponse
@@ -117,7 +119,9 @@ class AiChatController extends Controller
             $intent['language'] = $language;
 
             $out = match ($intent['intent']) {
-                'greeting'          => $this->greeting($dialect),
+                'greeting'          => $this->greeting($dialect, (bool) ($intent['salam'] ?? false)),
+                'speaks_tounsi', 'founders', 'identity', 'thanks', 'bye'
+                                    => $this->smallTalk($intent['intent'], $dialect),
                 'browse_categories' => $this->categories($dialect),
                 'track_order'       => $this->trackOrder($intent, $message, $dialect, $user),
                 'become_vendor', 'place_order', 'returns_complaints', 'account_help'
@@ -134,10 +138,16 @@ class AiChatController extends Controller
             $out['intent']   = $out['intent'] ?? $intent['intent'];
             $out['actions']  = $this->actions->finalize($out['actions'], $out['intent'] === 'browse_categories' ? 6 : 4);
 
+            // "salem, n7eb sabat": a short hello in front of the product answer
+            if (!empty($intent['greeting_prefix']) && $out['intent'] !== 'greeting') {
+                $hello = !empty($intent['salam']) ? $this->talk->reply('salam', $dialect) : $this->talk->reply('greet_short', $dialect);
+                $out['reply'] = trim($hello . ' ' . $out['reply']);
+            }
+
             $shown       = array_map(fn ($p) => ['id' => $p['id'], 'price' => $p['price']], $out['products']);
             $storedReply = $out['personal'] ? self::ORDERS_PLACEHOLDER : $out['reply'];
 
-            $this->memory->remember($sessionId, $userId, $message, $storedReply, $out['language'], $out['filters'], $shown, $dialect);
+            $this->memory->remember($sessionId, $userId, $message, $storedReply, $out['language'], $out['filters'], $shown, $out['remember_dialect'] ?? $dialect);
             $this->persist($sessionId, $message, $storedReply, $out['intent']);
 
             if (!$out['personal']) {
@@ -185,24 +195,64 @@ class AiChatController extends Controller
 
     // ── Intents ───────────────────────────────────────────────────────────
 
-    private function greeting(string $dialect): array
+    private function greeting(string $dialect, bool $salam = false): array
     {
-        return ['reply' => $this->composer->greeting($dialect), 'actions' => $this->starter($dialect)];
+        $reply = $this->talk->reply('greeting', $dialect);
+        if ($salam) {
+            $reply = $this->talk->reply('salam', $dialect) . ' ' . $reply;
+        }
+
+        return ['reply' => $reply, 'actions' => $this->starter($dialect)];
     }
 
+    /** Not about a product (or too unclear): ask what they look for, with example searches. */
     private function other(string $dialect): array
     {
-        return ['reply' => $this->composer->other($dialect), 'actions' => $this->starter($dialect)];
+        return ['reply' => $this->talk->reply('unclear', $dialect), 'actions' => $this->exampleChips($dialect)];
+    }
+
+    /** Rule-based small talk: fixed replies from config/chatbot_smalltalk.php. */
+    private function smallTalk(string $type, string $dialect): array
+    {
+        $out = ['reply' => $this->talk->reply($type, $dialect)];
+
+        switch ($type) {
+            case 'speaks_tounsi':
+                // From now on the conversation continues in Tunisian, unless the customer writes in another language
+                $out['remember_dialect'] = LanguageDetector::isArabicScript($dialect) ? 'tn_arabic' : 'tn_arabizi';
+                $out['actions'] = $this->exampleChips($out['remember_dialect']);
+                break;
+            case 'founders':
+                $label = config("chatbot_smalltalk.replies.founders_chip.{$dialect}") ?? config('chatbot_smalltalk.replies.founders_chip.fr');
+                $out['actions'] = [$this->actions->link($label, config('chatbot_smalltalk.about_route', '/about')), $this->kb->quickReply('find_product', $this->kbLang($dialect))];
+                break;
+            case 'identity':
+                $out['actions'] = $this->exampleChips($dialect);
+                break;
+            case 'thanks':
+                $out['actions'] = $this->starter($dialect);
+                break;
+            default: // bye
+                $out['actions'] = [];
+        }
+
+        return $out;
+    }
+
+    private function exampleChips(string $dialect): array
+    {
+        $key   = $dialect === 'msa' ? 'tn_arabic' : $dialect;
+        $pairs = config("chatbot_smalltalk.example_chips.{$key}") ?? config('chatbot_smalltalk.example_chips.fr');
+        $chips = array_map(fn ($p) => $this->actions->quickReply($p[0], $p[1]), $pairs);
+        $chips[] = $this->kb->quickReply('other_categories', $this->kbLang($dialect));
+
+        return $chips;
     }
 
     /** Starter buttons; Arabizi gets Latin-script buttons (the knowledge base only has fr / en / Arabic script). */
     private function starter(string $dialect): array
     {
-        if ($dialect === 'tn_arabizi') {
-            return [$this->chip('find', $dialect), $this->chip('track', $dialect), $this->chip('pay', $dialect), $this->chip('categories', $dialect)];
-        }
-
-        return $this->kb->starterActions(LanguageDetector::baseLanguage($dialect));
+        return $this->kb->starterActions($this->kbLang($dialect));
     }
 
     /** The language key the knowledge base understands (fr | en | ar, or tn_arabizi for Latin-script buttons). */
@@ -323,6 +373,9 @@ class AiChatController extends Controller
             // its keywords were probably wrong (darija, typo). Let Groq read the message once.
             if ($nearest['count'] === 0 && $intent['source'] === 'rules' && empty($filters['concept'])) {
                 $llmIntent = $this->extractor->extract($message, $memory, true);
+                if ($llmIntent['source'] === 'llm' && $llmIntent['intent'] === 'other' && !$this->hasSearchSignal($llmIntent)) {
+                    return $this->other($dialect) + ['language' => LanguageDetector::baseLanguage($dialect), 'intent' => 'other'];
+                }
                 if ($llmIntent['source'] === 'llm' && in_array($llmIntent['intent'], ['search', 'product_question', 'other'], true)) {
                     $intent  = ['dialect' => $dialect, 'language' => $intent['language']] + $llmIntent; // keep the detected language
                     $filters = $this->resolveHard($this->filtersFrom($intent, $memory));

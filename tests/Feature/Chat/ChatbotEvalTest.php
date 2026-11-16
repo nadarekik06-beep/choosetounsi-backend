@@ -438,6 +438,175 @@ class ChatbotEvalTest extends TestCase
         }
     }
 
+    // ── Small talk, identity, founders ────────────────────────────────────
+
+    private function assertNoSearch(array $res): void
+    {
+        $this->assertSame([], $res['products']);
+        $this->assertStringNotContainsStringIgnoringCase('aucun', $res['reply']);
+        $this->assertStringNotContainsStringIgnoringCase('ma l9itech', $res['reply']);
+    }
+
+    public function test_salem_is_a_tunisian_greeting_never_a_product_search(): void
+    {
+        $this->groq();
+
+        // The storefront is French: the Tunisian greeting still gets an Arabizi reply
+        $res = $this->chat('salem', 'ev_' . Str::random(8), 'fr');
+
+        $this->assertSame('greeting', $res['intent']);
+        $this->assertSame('tn_arabizi', $res['dialect']);
+        $this->assertStringContainsString('Ahla w sahla', $res['reply']);
+        $this->assertStringContainsString('asra3 wa9t', $res['reply'], 'says it finds products easily and very fast');
+        $this->assertNoSearch($res);
+        $this->assertCount(4, $res['actions']);
+        $this->assertCount(0, array_filter(array_column($res['actions'], 'label'), fn ($l) => preg_match('/\p{Arabic}/u', $l)));
+    }
+
+    public function test_salam_alaykom_gets_the_peace_answer(): void
+    {
+        $this->groq();
+
+        $arabizi = $this->chat('salem alikom', 'ev_' . Str::random(8), 'fr');
+        $this->assertStringStartsWith('W 3alikom essalem!', $arabizi['reply']);
+        $this->assertStringContainsString('asra3 wa9t', $arabizi['reply']);
+        $this->assertNoSearch($arabizi);
+
+        $arabic = $this->chat('السلام عليكم', 'ev_' . Str::random(8), 'fr');
+        $this->assertSame('tn_arabic', $arabic['dialect']);
+        $this->assertStringStartsWith('وعليكم السلام!', $arabic['reply']);
+        $this->assertNoSearch($arabic);
+    }
+
+    public function test_greetings_with_extra_words_and_spelling_variants(): void
+    {
+        $this->groq();
+
+        foreach (['salem khouya', 'aslema ya bot', 'Salemmm!!', 'ahla w sahla', 'slm'] as $say) {
+            $res = $this->chat($say, 'ev_' . Str::random(8), 'fr');
+            $this->assertSame('greeting', $res['intent'], $say);
+            $this->assertNoSearch($res);
+        }
+        $this->assertSame('fr', $this->chat('bonjour', 'ev_' . Str::random(8), 'ar')['dialect']);
+        $this->assertStringContainsString('très rapidement', $this->chat('bonjour', 'ev_' . Str::random(8))['reply']);
+        $this->assertStringContainsString('very fast', $this->chat('hello', 'ev_' . Str::random(8))['reply']);
+    }
+
+    public function test_a_greeting_followed_by_a_request_answers_the_request(): void
+    {
+        $this->seedCatalog();
+        $this->groq();
+
+        $res = $this->chat('salem, n7eb sabat lel nsa', 'ev_' . Str::random(8));
+
+        $this->assertSame('search', $res['intent']);
+        $this->assertStringStartsWith('Ahla w sahla!', $res['reply']);
+        $this->assertNotEmpty($res['products']);
+        $this->assertShoesFor($res['products'], ['women', 'unisex']);
+
+        $peace = $this->chat('salam alaykom n7eb sabat lel nsa', 'ev_' . Str::random(8));
+        $this->assertStringStartsWith('W 3alikom essalem!', $peace['reply']);
+        $this->assertNotEmpty($peace['products']);
+    }
+
+    public function test_do_you_speak_tunisian_and_the_conversation_stays_tunisian(): void
+    {
+        $this->groq();
+        $session = 'ev_' . Str::random(8);
+
+        $arabizi = $this->chat('ta7ki tounsi?', $session, 'fr');
+        $this->assertSame('Ay na7ki tounsi w najem n3awnek bech tel9a produit eli t7eb alih fi asra3 wa9t 😊', $arabizi['reply']);
+
+        $arabic = $this->chat('تحكي تونسي؟', 'ev_' . Str::random(8), 'fr');
+        $this->assertSame('إي نحكي تونسي ونجّم نعاونك باش تلقى المنتوج اللي تحب عليه في أسرع وقت 😊', $arabic['reply']);
+
+        // A message with no language signal now gets a Tunisian answer, not French
+        $this->assertSame('tn_arabizi', $this->chat('iphone 13', $session, 'fr')['dialect']);
+
+        // …unless the customer writes in another language
+        $this->assertSame('fr', $this->chat('bonjour', $session, 'fr')['dialect']);
+
+        // Asked in French: the answer is French, the conversation continues in Tunisian
+        $other = 'ev_' . Str::random(8);
+        $fr = $this->chat('tu parles tunisien ?', $other);
+        $this->assertSame('fr', $fr['dialect']);
+        $this->assertStringContainsString('je parle tunisien', $fr['reply']);
+        $this->assertSame('tn_arabizi', $this->chat('iphone 13', $other, 'fr')['dialect']);
+    }
+
+    public function test_founders_are_abderahmen_and_nada_with_the_about_link(): void
+    {
+        $this->groq();
+
+        foreach (['chkoun amel choosetounsi' => 'tn_arabizi', 'chkoun fondateur' => 'tn_arabizi', 'qui a créé ChooseTounsi ?' => 'fr',
+                  'who created choosetounsi' => 'en', 'شكون عمل choosetounsi' => 'tn_arabic'] as $say => $dialect) {
+            $res = $this->chat($say, 'ev_' . Str::random(8), 'fr');
+
+            $this->assertSame($dialect, $res['dialect'], $say);
+            $this->assertStringContainsString('Abderahmen', $res['reply'], $say);
+            $this->assertStringContainsString('Nada', $res['reply'], $say);
+            $this->assertNoSearch($res);
+            $links = array_values(array_filter($res['actions'], fn ($a) => $a['type'] === 'link'));
+            $this->assertSame('/about', $links[0]['url'], $say);
+        }
+
+        $arabizi = $this->chat('chkoun amel choosetounsi', 'ev_' . Str::random(8));
+        $this->assertSame('Chkoun a7na', collect($arabizi['actions'])->firstWhere('type', 'link')['label']);
+        // The route exists in the storefront
+        $this->assertFileExists(base_path('../choosetounsi-frontend/app/about/page.tsx'));
+    }
+
+    public function test_identity_thanks_bye_are_answered_in_the_customers_language(): void
+    {
+        $this->groq();
+        $detector = app(LanguageDetector::class);
+
+        $id = $this->chat('chkoun enti', 'ev_' . Str::random(8), 'fr');
+        $this->assertSame('identity', $id['intent']);
+        $this->assertStringContainsString('asra3 wa9t', $id['reply']);
+        $this->assertNotEmpty($id['actions']);
+        $this->assertNoSearch($id);
+
+        $thanks = $this->chat('y3aychek', 'ev_' . Str::random(8), 'fr');
+        $this->assertSame('thanks', $thanks['intent']);
+        $this->assertTrue($detector->replyMatches($thanks['reply'], 'tn_arabizi'), $thanks['reply']);
+
+        $bye = $this->chat('bslema', 'ev_' . Str::random(8), 'fr');
+        $this->assertSame('bye', $bye['intent']);
+        $this->assertStringContainsString('Bslema', $bye['reply']);
+
+        $this->assertSame('identity', $this->chat('qui es-tu ?', 'ev_' . Str::random(8))['intent']);
+        $this->assertSame('thanks', $this->chat('شكرا', 'ev_' . Str::random(8))['intent']);
+        $this->assertSame('bye', $this->chat('au revoir', 'ev_' . Str::random(8))['intent']);
+    }
+
+    public function test_thanks_inside_a_request_is_still_a_request(): void
+    {
+        $this->seedCatalog();
+        $this->groq();
+
+        $res = $this->chat('merci, nheb sabat lel nsa', 'ev_' . Str::random(8));
+
+        $this->assertSame('search', $res['intent']);
+        $this->assertNotEmpty($res['products']);
+    }
+
+    public function test_an_unclear_message_asks_instead_of_searching(): void
+    {
+        $this->mock(GroqClient::class, function ($mock) {
+            $mock->shouldReceive('isConfigured')->andReturn(false);
+            $mock->shouldReceive('chat')->andReturnNull();
+            $mock->shouldReceive('chatJson')->andReturn(['intent' => 'other', 'keywords' => [], 'language' => 'ar']);
+        });
+
+        $res = $this->chat('qsdfgh wxcvbn', 'ev_' . Str::random(8), 'fr');
+
+        $this->assertSame('other', $res['intent']);
+        $this->assertSame([], $res['products']);
+        $this->assertNotEmpty($res['actions'], 'example chips');
+        $this->assertStringNotContainsStringIgnoringCase('aucun', $res['reply']);
+    }
+
     public function test_the_darija_lexicon_is_extendable_from_the_config_only(): void
     {
         $this->groq();

@@ -38,6 +38,9 @@ class IntentExtractor
         'become_vendor', 'place_order', 'track_order', 'returns_complaints', 'account_help', 'browse_categories',
     ];
 
+    /** Rule-based small talk (config/chatbot_smalltalk.php): answered with fixed replies, never product search. */
+    public const SMALLTALK_INTENTS = ['speaks_tounsi', 'founders', 'identity', 'thanks', 'bye'];
+
     /** Intents answered from the knowledge base / platform data, not product search. */
     public const PLATFORM_INTENTS = [
         'become_vendor', 'place_order', 'track_order', 'returns_complaints', 'account_help', 'browse_categories',
@@ -87,6 +90,7 @@ class IntentExtractor
         private ChatSlots        $slots,
         private ChatLexicon      $lex,
         private ChatCatalog      $catalog,
+        private SmallTalk        $smalltalk,
     ) {}
 
     /**
@@ -102,11 +106,31 @@ class IntentExtractor
         $language = $dialect ? LanguageDetector::baseLanguage($dialect) : ($memory['language'] ?? null);
         $dialectData = ['dialect' => $dialect];
 
+        $slots = $this->slots->parse($message);
+
+        // Small talk is answered before any product search, with no Groq call
+        if ($talk = $this->smalltalk->match($message)) {
+            if ($talk['type'] === 'greeting') {
+                if ($talk['rest'] === '') {
+                    return $this->result('greeting', $dialectData + ['salam' => $talk['salam']], $language, 'rules');
+                }
+                // "salem, n7eb sabat": the product request is answered, with a short hello in front
+                $sub = $this->extract($talk['rest'], $memory, $forceLlm);
+                $sub['greeting_prefix'] = true;
+                $sub['salam']           = $talk['salam'];
+
+                return $sub;
+            }
+            // "merci, je cherche une robe" is a product request, not thanks
+            if (!($slots['concept'] && in_array($talk['type'], ['thanks', 'bye'], true))) {
+                return $this->result($talk['type'], $dialectData, $language, 'rules');
+            }
+        }
+
         if ($this->isGreeting($text)) {
             return $this->result('greeting', $dialectData, $language, 'rules');
         }
 
-        $slots    = $this->slots->parse($message);
         $concepts = $this->lexicon->concepts($text);
         $price    = $this->parsePrice($text);
         $sort     = $this->parseSort($text) ?? $slots['sort'];
@@ -517,7 +541,7 @@ class IntentExtractor
         $words    = preg_split('/[^\p{L}\p{N}\']+/u', $stripped, -1, PREG_SPLIT_NO_EMPTY);
 
         $stop = array_flip(array_merge(
-            self::STOPWORDS, $this->lexicon->conceptWords(),
+            self::STOPWORDS, $this->lexicon->conceptWords(), $this->smalltalk->vocabulary(),
             array_map(fn ($w) => $this->lex->norm($w), array_merge($this->lex->config("filler", []), explode(" ", implode(" ", $consumed))))
         ));
         $out  = [];
@@ -668,6 +692,8 @@ PROMPT;
             'only_promo'  => false,
             'followup'    => false,
             'dialect'     => null,
+            'salam'       => false,
+            'greeting_prefix' => false,
         ], $data, [
             'language' => $language ?? config('services.groq.default_language', 'fr'),
             'source'   => $source,

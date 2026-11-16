@@ -19,7 +19,7 @@ class ActionFactory
 {
     /** Exact internal paths that exist in the Next.js storefront. */
     private const EXACT = [
-        '/', '/shop', '/deals', '/discover', '/search', '/favorites', '/checkout', '/orders',
+        '/', '/shop', '/about', '/deals', '/discover', '/search', '/favorites', '/checkout', '/orders',
         '/complaints', '/complaints/new', '/become-a-vendor', '/profile', '/account/addresses',
         '/auth/login', '/auth/register', '/auth/forgot-password',
         '/seller', '/seller/products', '/seller/subscription', '/seller/orders',

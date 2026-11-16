@@ -80,7 +80,8 @@ class LanguageDetector
                 $reply = str_ireplace($name, ' ', $reply);
             }
         }
-        $reply = preg_replace('/\d+(?:[.,]\d+)?\s*(?:dt|tnd|د\.?\s?ت|دينار)?/iu', ' ', $reply);
+        // Standalone amounts only: the digits inside arabizi words (y3aychek, 7aja) are letters
+        $reply = preg_replace('/(?<![\p{L}\p{N}])\d+(?:[.,]\d+)?(?![\p{L}\p{N}])\s*(?:dt|tnd|د\.?\s?ت|دينار)?/iu', ' ', $reply);
         $s = $this->scores($reply);
 
         return match ($dialect) {
