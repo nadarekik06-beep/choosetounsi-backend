@@ -446,7 +446,7 @@ return [
         ],
         'ask_clothes' => [
             'fr' => 'Quelle taille (S, M, L, XL) préférez-vous ?', 'en' => 'Which size (S, M, L, XL) do you prefer?',
-            'tn_arabizi' => 'Chnowa el taille li t7eb (S, M, L, XL)?', 'tn_arabic' => 'شنوة التاي اللي تحب (S, M, L, XL)؟', 'msa' => 'ما المقاس الذي تفضله (S, M, L, XL)؟',
+            'tn_arabizi' => 'Chnowa el taille li t7eb (S, M, L, XL)?', 'tn_arabic' => 'شنوة المقاس اللي تحب (S, M, L, XL)؟', 'msa' => 'ما المقاس الذي تفضله (S, M, L, XL)؟',
         ],
         'ask_other' => [
             'fr' => 'Quelle couleur ou quel budget avez-vous en tête ?', 'en' => 'Which color or budget do you have in mind?',

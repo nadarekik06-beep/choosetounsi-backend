@@ -244,7 +244,9 @@ Do not mention any other missing result, filter, color or size; do not say a pro
             '{range}' => trim($this->rangeText($filters['orig_range'] ?? [], $dialect)),
             '{what}'  => $ctx['concept_label'] ?? $this->lex->term(null, $dialect),
             '{gender}' => !empty($ctx['gender']) ? $this->t("none_gender.{$ctx['gender']}", $dialect) : '',
-            '{sizeword}' => ($ctx['size_attr'] ?? 'taille') === 'pointure' ? 'pointure' : 'taille',
+            '{sizeword}' => LanguageDetector::isArabicScript($dialect)
+                ? (($ctx['size_attr'] ?? 'taille') === 'pointure' ? 'البوانتير' : 'المقاس')
+                : (($ctx['size_attr'] ?? 'taille') === 'pointure' ? 'pointure' : 'taille'),
         ];
 
         return $this->t("relaxed.{$key}", $dialect, $repl);
