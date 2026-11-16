@@ -37,15 +37,18 @@ class KnowledgeBase
         $section = $section && isset($kb['sections'][$section]) ? $section : $kb['default'];
         $data    = $kb['sections'][$section];
 
-        $intro = $this->text($data['intro'], $lang);
+        // Arabizi has no knowledge-base text of its own: texts stay in Arabic script, only the buttons are translated
+        $textLang = $lang === 'tn_arabizi' ? 'ar' : $lang;
+
+        $intro = $this->text($data['intro'], $textLang);
         $steps = array_map(fn (array $step) => [
-            'title'       => $this->text($step['title'], $lang),
-            'description' => $this->text($step['text'], $lang),
+            'title'       => $this->text($step['title'], $textLang),
+            'description' => $this->text($step['text'], $textLang),
         ], $data['steps']);
 
         $actions = [];
         foreach ($data['links'] ?? [] as $link) {
-            $actions[] = $this->actions->link($this->text($link['label'], $lang), $link['url']);
+            $actions[] = $this->actions->link($this->label($link['label'], $lang), $link['url']);
         }
         foreach ($data['quick_replies'] ?? [] as $key) {
             $actions[] = $this->quickReply($key, $lang);
@@ -72,6 +75,10 @@ class KnowledgeBase
         if (!$qr) {
             return null;
         }
+        if ($lang === 'tn_arabizi' && ($chip = config("chatbot_darija.kb_chips.{$key}"))) {
+            return $this->actions->quickReply($chip[0], $chip[1]);
+        }
+        $lang = $lang === 'tn_arabizi' ? 'ar' : $lang;
         return $this->actions->quickReply($this->text($qr['label'], $lang), $this->text($qr['message'], $lang));
     }
 
@@ -85,6 +92,16 @@ class KnowledgeBase
     }
 
     // ── Text + placeholders ──────────────────────────────────────────────
+
+    /** A button label; Arabizi buttons come from config('chatbot_darija.kb_labels'). */
+    public function label(array $variants, string $lang): string
+    {
+        if ($lang === 'tn_arabizi') {
+            return config('chatbot_darija.kb_labels.' . ($variants['en'] ?? ''), $this->text($variants, 'ar'));
+        }
+
+        return $this->text($variants, $lang);
+    }
 
     private function text(array $variants, string $lang): string
     {

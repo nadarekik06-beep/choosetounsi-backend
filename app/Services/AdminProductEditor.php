@@ -86,6 +86,10 @@ class AdminProductEditor
                 'featured'          => (bool) $product->featured,
                 'occasions'         => $product->occasions,
                 'parcel_size'       => $product->parcel_size ?? 'S',
+                // Browsing gender (Femme / Homme / unisex / kids); the admin value is gender_override
+                'gender'            => $product->gender,
+                'gender_override'   => $product->gender_override,
+                'gender_source'     => $product->gender_source,
                 // Older products silently got S: false until a seller or an admin chooses the size
                 'parcel_size_confirmed' => $product->parcelSizeConfirmed(),
                 // What the client sees: base price + the delivery included for the saved size
@@ -163,6 +167,7 @@ class AdminProductEditor
                 'price' => null, 'stock' => null, 'category_id' => null, 'subcategory_id' => null,
                 'is_active' => true, 'is_approved' => false, 'is_pack' => false, 'pack_quantity' => null, 'pack_contents' => null,
                 'featured' => false, 'occasions' => [Occasions::DEFAULT], 'parcel_size' => 'S', 'parcel_size_confirmed' => false,
+                'gender' => null, 'gender_override' => null, 'gender_source' => null,
                 'admin_note' => null, 'admin_edited_at' => null, 'admin_edited_by' => null, 'status' => 'new',
                 'rejection_reason' => null, 'created_at' => null, 'updated_at' => null, 'storefront_url' => null,
                 'multicolor_label' => null, 'created_by_admin' => null,
@@ -506,7 +511,8 @@ class AdminProductEditor
             'pack_quantity'     => 'nullable|required_if:is_pack,true|integer|min:2|max:1000',
             'pack_contents'     => 'nullable|string|max:500',
             'parcel_size'       => 'nullable|in:' . implode(',', \App\Support\ParcelSize::ALL),
-            'occasions'         => 'required|array|min:1',
+            'gender'            => 'nullable|in:' . implode(',', array_merge(\App\Services\Gender\GenderResolver::ALL, ['auto'])),
+            'occasions'        => 'required|array|min:1',
             'occasions.*'       => 'string|in:' . implode(',', Occasions::keys()),
             'admin_note'        => 'nullable|string|max:5000',
             'attributes'        => 'present|array',
@@ -706,6 +712,15 @@ class AdminProductEditor
         ]);
         $product->save();
         $product->syncOccasions(Occasions::forCategory($product->category_id, $data['occasions']));
+
+        // The admin's gender wins over the seller's value; empty / "auto" removes the fix.
+        if (array_key_exists('gender', $data)) {
+            $gender = $data['gender'] ?: null;
+            DB::table('products')->where('id', $product->id)
+                ->update(['gender_override' => $gender === 'auto' ? null : $gender]);
+            app(\App\Services\Gender\GenderResolver::class)->sync($product->id);
+            app(\App\Services\Gender\GenderMenu::class)->flush();
+        }
     }
 
     private function saveAttributes(Product $product, array $values): void

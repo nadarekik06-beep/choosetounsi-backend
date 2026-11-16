@@ -120,6 +120,11 @@ class ActionFactory
         if ($query === null) {
             return true;
         }
+        // /category/[slug]?gender=women|men&sub=[subcategory-slug] (filters the storefront category page)
+        if (preg_match('#^/category/[a-z0-9-]+$#', $path)) {
+            return (bool) preg_match('#^(?:gender=(?:women|men)(?:&sub=[a-z0-9-]+)?|sub=[a-z0-9-]+(?:&gender=(?:women|men))?)$#', $query);
+        }
+
         return isset(self::QUERY_RULES[$path]) && (bool) preg_match(self::QUERY_RULES[$path], $query);
     }
 

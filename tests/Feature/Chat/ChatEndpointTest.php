@@ -173,9 +173,12 @@ class ChatEndpointTest extends TestCase
 
     public function test_reply_uses_the_storefront_language(): void
     {
-        // French message, Arabic storefront → the assistant answers in Arabic.
-        $this->assertSame('ar', $this->chat('bonjour', null, null, 'ar')->assertOk()->json('language'));
-        $this->assertSame('en', $this->chat('bonjour', null, null, 'en')->assertOk()->json('language'));
+        // The latest message wins: a French message is answered in French whatever the storefront language is.
+        $this->assertSame('fr', $this->chat('bonjour', null, null, 'ar')->assertOk()->json('language'));
+        $this->assertSame('fr', $this->chat('bonjour', null, null, 'en')->assertOk()->json('language'));
+        // No language signal at all ('iphone 13') → the storefront language decides.
+        $this->assertSame('ar', $this->chat('iphone 13', null, null, 'ar')->assertOk()->json('language'));
+        $this->assertSame('en', $this->chat('iphone 13', null, null, 'en')->assertOk()->json('language'));
     }
 
     /**

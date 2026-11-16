@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\Log;
  * The only class that talks to Groq (chatbot, translations, ad copy, seller AI tools).
  *
  * Free-tier guard rails:
- *   - 429 is never retried; the caller falls back to a template reply.
+ *   - 429 is retried only when Groq asks for <= 2 s (max 2 retries, exponential backoff); otherwise the caller falls back to a template reply.
  *   - A local per-minute / per-day counter stops calling Groq before the
  *     free quota is exhausted (config services.groq.daily_budget / minute_budget).
  *     A caller can pass `reserve` to stop even earlier and leave calls for others.
@@ -86,8 +86,8 @@ class GroqClient
         }
         $timeout = (int) ($options['timeout'] ?? config('services.groq.timeout', 15));
 
-        // One retry, only for network errors and 5xx. Never for 429 / 4xx.
-        for ($attempt = 1; $attempt <= 2; $attempt++) {
+        // Max 2 retries with exponential backoff (0.4 s, 0.8 s): network errors, 5xx, and a 429 that asks for <= 2 s. Never other 4xx.
+        for ($attempt = 1; $attempt <= 3; $attempt++) {
             $started = microtime(true);
             try {
                 $response = Http::timeout($timeout)
@@ -97,6 +97,7 @@ class GroqClient
             } catch (ConnectionException $e) {
                 Log::warning('[Groq] Connection error', ['purpose' => $purpose, 'attempt' => $attempt, 'error' => $e->getMessage()]);
                 $this->lastError = 'connection';
+                $this->backoff($attempt);
                 continue;
             }
 
@@ -117,12 +118,17 @@ class GroqClient
                     'retry_after' => $retry,
                     'local_daily' => $dailyUsed,
                 ] + $quota);
+                if ($attempt < 3 && $this->retryAfter !== null && $this->retryAfter <= 2) {
+                    usleep((int) max(400000 * (2 ** ($attempt - 1)), $this->retryAfter * 1000000));
+                    continue;
+                }
                 return null;
             }
 
             if ($response->serverError()) {
                 $this->lastError = 'server_' . $response->status();
                 Log::warning('[Groq] Server error', ['purpose' => $purpose, 'attempt' => $attempt, 'status' => $response->status()]);
+                $this->backoff($attempt);
                 continue;
             }
 
@@ -184,6 +190,13 @@ class GroqClient
         }
 
         return is_array($data) ? $data : null;
+    }
+
+    private function backoff(int $attempt): void
+    {
+        if ($attempt < 3) {
+            usleep(400000 * (2 ** ($attempt - 1)));
+        }
     }
 
     // ── Local free-tier counters ─────────────────────────────────────────

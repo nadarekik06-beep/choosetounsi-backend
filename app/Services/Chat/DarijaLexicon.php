@@ -32,7 +32,7 @@ class DarijaLexicon
         'ORDER'       => 'order|orders|commande|commandes|commander|kommand|komand|كوموند|كومند|كموند|طلب|طلبية|طلبيتي|طلباتي|nkomandi|ncommandi',
         'BUY'         => 'buy|purchase|acheter|achat|nechri|nchri|n4ri|نشري|شري|شراء',
         'HOW'         => 'how|comment|kifech|kifeh|kifach|كيفاش|كيف|كيفية|chnowa\s+na3mel|شنوة\s+نعمل|steps|étapes|etapes|marche|procédure',
-        'PAY'         => 'pay|paying|payment|payer|paiement|payé|khalles|nkhalles|نخلص|نخلّص|خلاص|الدفع|دفع|d17|stripe|carte\s+bancaire|bank\s+card|credit\s+card|cash\s+on\s+delivery|cod|à\s+la\s+livraison|كاش',
+        'PAY'         => 'pay|paying|payment|payer|paiement|payé|khalles|nkhalles|nkhallas|nkhalas|n5allas|nkhalles|نخلص|نخلّص|خلاص|الدفع|دفع|d17|stripe|carte\s+bancaire|bank\s+card|credit\s+card|cash\s+on\s+delivery|cod|à\s+la\s+livraison|كاش',
         'COUPON'      => 'coupon|coupons|code\s+promo|promo\s+code|discount\s+code|code\s+de\s+réduction|كوبون|كود\s+تخفيض|كود',
         'CART'        => 'cart|basket|panier|lpanier|سلة|السلة|الباني',
         'VARIANT'     => 'size|sizes|taille|pointure|color|colour|couleur|variant|variante|مقاس|قياس|لون|taille\s+mte3',

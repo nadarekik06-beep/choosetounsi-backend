@@ -54,7 +54,7 @@ public function index(Request $request)
     // Normal statuses — SoftDeletes automatically excludes deleted_at IS NOT NULL
     $query = Product::with([
         'seller:id,name,email,stock_alert_threshold',
-        'category:id,name,name_fr,name_ar',
+        'category:id,name,name_fr,name_ar,is_gendered',
         'primaryImage',
         'variants.attributeOptions.attribute:id,slug,name,name_fr,name_ar,type',
     ]);
@@ -84,6 +84,9 @@ public function index(Request $request)
     // ?size_unconfirmed=1: products whose parcel size was never chosen (older products silently got S)
     if ($request->boolean('size_unconfirmed'))
         $query->whereNull('parcel_size_confirmed_at');
+    // ?gender_missing=1: Mode & Vêtements products with no Femme / Homme / unisex tag (hidden from gendered searches)
+    if ($request->boolean('gender_missing'))
+        $query->whereNull('gender')->whereHas('category', fn ($q) => $q->where('is_gendered', true));
 
     $products = $query->orderByDesc('created_at')
         ->paginate((int) $request->query('per_page', 15));
@@ -94,6 +97,7 @@ public function index(Request $request)
         // Admin view: the seller's price (price) AND what the client sees (delivery included)
         $product->display_price         = $pricing->display($product->price, $product->parcel_size);
         $product->parcel_size_confirmed = $product->parcelSizeConfirmed();
+        $product->gender_missing = $product->gender === null && (bool) optional($product->category)->is_gendered;
         $product->primary_image_url = $product->primaryImage
             ? Storage::disk('public')->url($product->primaryImage->image_path)
             : null;

@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Cache;
  *   filters   the last search filters (keywords, category, price range, sort)
  *   shown     ids and prices of the products shown last
  *   language  the language of the last reply
+ *   dialect   fr|en|tn_arabizi|tn_arabic|msa of the last message (used when a message has no language signal)
  *   user_id   who the conversation belongs to (null = guest)
  *
  * Memory is bound to the logged-in user: if a different user (or a guest
@@ -44,7 +45,7 @@ class ChatMemory
      */
     public function remember(
         string $sessionId, ?int $userId, string $userMessage, string $reply,
-        string $language, ?array $filters, array $shown
+        string $language, ?array $filters, array $shown, ?string $dialect = null
     ): void {
         $memory = $this->get($sessionId, $userId);
 
@@ -52,6 +53,7 @@ class ChatMemory
         $memory['turns'][] = ['role' => 'assistant', 'content' => mb_substr($reply, 0, self::MAX_CHAR_PER_TURN)];
         $memory['turns']    = array_slice($memory['turns'], -self::MAX_TURNS);
         $memory['language'] = $language;
+        $memory['dialect']  = $dialect ?? ($memory['dialect'] ?? null);
 
         if ($filters !== null) {
             $memory['filters'] = $filters;
@@ -73,6 +75,7 @@ class ChatMemory
             'filters'  => null,
             'shown'    => [],
             'language' => null,
+            'dialect'  => null,
             'user_id'  => $userId,
         ];
     }

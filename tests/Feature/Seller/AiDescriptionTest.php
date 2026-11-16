@@ -158,8 +158,8 @@ class AiDescriptionTest extends TestCase
         $this->seller('free');
         config(['ai_descriptions.levels.free.daily_limit' => 2]);
         Http::fake([self::URL => Http::sequence()
-            ->push(['error' => ['message' => 'down']], 500)->push(['error' => ['message' => 'down']], 500)   // main model ×2 (retry)
-            ->push(['error' => ['message' => 'down']], 500)->push(['error' => ['message' => 'down']], 500)   // fallback ×2
+            ->push(['error' => ['message' => 'down']], 500)->push(['error' => ['message' => 'down']], 500)->push(['error' => ['message' => 'down']], 500)   // main model ×3 (2 retries with backoff)
+            ->push(['error' => ['message' => 'down']], 500)->push(['error' => ['message' => 'down']], 500)->push(['error' => ['message' => 'down']], 500)   // fallback ×3
             ->whenEmpty($this->groq(['variants' => [$this->variant()]]))]);
 
         $this->generate($this->body())->assertStatus(503)->assertJsonPath('code', 'AI_UNAVAILABLE');
