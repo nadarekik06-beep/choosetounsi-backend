@@ -98,7 +98,7 @@ class ShopOverview
 
             $apps = DB::table('seller_applications')->whereIn('user_id', $sellers->pluck('id'))
                 ->where('status', 'approved')->orderBy('id')
-                ->get(['user_id', 'business_name', 'profile_picture', 'cover_photo', 'wilaya', 'plan'])
+                ->get(['user_id', 'business_name', 'profile_picture', 'cover_photo', 'plan'])
                 ->keyBy('user_id');   // latest approved application wins
             $followers = DB::table('seller_follows')->whereIn('seller_id', $sellers->pluck('id'))
                 ->groupBy('seller_id')->selectRaw('seller_id, COUNT(*) as n')->pluck('n', 'seller_id');
@@ -117,7 +117,6 @@ class ShopOverview
                     'business_name'  => $a->business_name ?? $u->name,
                     'avatar'         => !empty($a?->profile_picture) ? Storage::url($a->profile_picture) : $u->avatar,
                     'cover'          => !empty($a?->cover_photo) ? Storage::url($a->cover_photo) : null,
-                    'wilaya'         => $a->wilaya ?? null,
                     'plan'           => SubscriptionPlan::forSlug($a->plan ?? null)->tierKey(),
                     'products_count' => (int) ($products[$u->id] ?? 0),
                     'followers'      => (int) ($followers[$u->id] ?? 0),

@@ -148,7 +148,7 @@ class ProductRecommendationController extends Controller
         $sellerId    = $source->seller_id;
         $application = SellerApplication::where('user_id', $sellerId)
             ->where('status', 'approved')
-            ->select('user_id', 'business_name', 'wilaya', 'plan', 'profile_picture')
+            ->select('user_id', 'business_name', 'plan', 'profile_picture')
             ->first();
 
         $totalProducts = Product::available()->where('seller_id', $sellerId)->count();
@@ -158,7 +158,6 @@ class ProductRecommendationController extends Controller
             'name'           => $source->seller->name ?? '',
             'business_name'  => $application?->business_name ?? null,
             'plan'           => $application?->plan ?? 'free',
-            'wilaya'         => $application?->wilaya ?? null,
             'avatar'         => $application?->profile_picture
                 ? Storage::url($application->profile_picture)
                 : null,

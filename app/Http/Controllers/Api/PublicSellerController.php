@@ -52,7 +52,6 @@ class PublicSellerController extends Controller
             'business_name'      => $branding['business_name'],
             'business_description' => $application?->business_description ?? null,
             'plan'               => $application?->plan ?? 'free',
-            'wilaya'             => $application?->wilaya ?? null,
             'avatar'             => $branding['avatar'],
             'cover_photo'        => $branding['cover_photo'],
             'total_products'     => $totalProducts,

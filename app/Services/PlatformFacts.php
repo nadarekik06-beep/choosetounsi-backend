@@ -92,9 +92,9 @@ class PlatformFacts
 
     /**
      * Approved shops to showcase, in their own words. Same public fields that
-     * GET /api/sellers/{id} already exposes (name, wilaya, avatar, description).
+     * GET /api/sellers/{id} already exposes (name, avatar, description). Location is deliberately never public.
      *
-     * @return list<array{id: int, business_name: string, wilaya: ?string, category: ?string, avatar: ?string, quote: ?string, plan: string}>
+     * @return list<array{id: int, business_name: string, category: ?string, avatar: ?string, quote: ?string, plan: string}>
      */
     public function sellerShowcase(int $limit = 12): array
     {
@@ -110,8 +110,6 @@ class PlatformFacts
                 ->map(fn (SellerApplication $a) => [
                     'id'            => $a->user_id,
                     'business_name' => $a->business_name,
-                    // wilaya only: `city` is free text and often holds a street address
-                    'wilaya'        => $a->wilaya,
                     'category'      => $a->business_categories[0] ?? $a->business_category,
                     'avatar'        => $a->profile_picture ? Storage::url($a->profile_picture) : null,
                     'quote'         => self::firstSentence($a->business_description),
