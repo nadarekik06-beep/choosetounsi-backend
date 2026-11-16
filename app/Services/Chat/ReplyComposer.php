@@ -178,6 +178,12 @@ Do not mention any other missing result, filter, color or size; do not say a pro
         }
 
         $reply = trim(preg_replace('/[*#_`]+|\[\d+\]/u', '', $data['reply']));
+        // One spelling of "I suggest you": the model's variants (n9tara7lek, ne9tra7lek ...) become ne9tara7lek
+        $reply = preg_replace_callback(
+            '/(?<![\p{L}\p{N}])n[ae]?9t?a?ra?7l[eia]k(?![\p{L}\p{N}])/iu',
+            fn ($m) => ctype_upper(mb_substr($m[0], 0, 1)) ? 'Ne9tara7lek' : 'ne9tara7lek',
+            $reply
+        );
         $picks = array_values(array_filter(array_map('intval', is_array($data['picks'] ?? null) ? $data['picks'] : [])));
 
         return ['reply' => $reply, 'picks' => $picks];

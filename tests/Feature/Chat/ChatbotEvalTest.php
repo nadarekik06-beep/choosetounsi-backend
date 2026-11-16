@@ -1051,6 +1051,21 @@ class ChatbotEvalTest extends TestCase
         $this->assertStringContainsString('Ne9tara7lek', $res['reply']);
     }
 
+    public function test_model_spellings_of_the_recommendation_verb_are_normalised(): void
+    {
+        $this->seedCatalog();
+        $this->groq(function ($prompt) {
+            preg_match('/\[(\d+)\] (.+?) \| (?:from )?([\d.]+) DT/', $prompt, $m);
+
+            return ['reply' => "Behi barcha! N9tara7lek \"{$m[2]}\" b {$m[3]} DT, behi barcha. Chnowa el pointure mte3ha?", 'picks' => [(int) $m[1]]];
+        });
+
+        $res = $this->chat('nheb nechri sabat el sa7ebti', 'ev_' . Str::random(8), 'fr');
+
+        $this->assertStringContainsString('Ne9tara7lek', $res['reply']);
+        $this->assertStringNotContainsString('N9tara7lek', $res['reply']);
+    }
+
     public function test_the_darija_lexicon_is_extendable_from_the_config_only(): void
     {
         $this->groq();
