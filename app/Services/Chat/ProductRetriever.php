@@ -59,7 +59,7 @@ class ProductRetriever
 
         $query = $this->pricedQuery($keywords, $semantic, $filters, $excludeIds);
 
-        if (!$keywords && !$semantic && empty($filters['category']) && empty($filters['sub_ids'])) {
+        if (!$keywords && !$semantic && empty($filters['category']) && empty($filters['categories']) && empty($filters['sub_ids'])) {
             // No product words at all (e.g. "something under 30 DT"): popular items in range.
             $query->orderByDesc('x.views');
         }
@@ -106,8 +106,9 @@ class ProductRetriever
     }
 
     /**
-     * Search with honest, ordered relaxation: promo → brand → color → size → price (+30 %).
-     * Gender and category (concept) are never relaxed.
+     * Search with honest, ordered relaxation: promo → brand → keyword → color → size → price (+30 %) → product type (subcategory → broad category).
+     * The small attributes go before the product type so that "white shoes" shows shoes in other colors, not other clothes.
+     * The gender (when the customer named one) and the broad category are never relaxed.
      *
      * @return array{products: array, relaxed: string[], filters: array, total: int, unisex: int, semantic: bool}
      */
@@ -119,6 +120,9 @@ class ProductRetriever
         $steps = [
             'promo' => fn (array $f) => !empty($f['only_promo']) ? array_replace($f, ['only_promo' => false]) : null,
             'brand' => fn (array $f) => !empty($f['brand']) ? array_replace($f, ['brand' => null]) : null,
+            // Free words the lexicon does not know never narrow the search on their own
+            'keyword' => fn (array $f) => (!empty($f['keywords']) || !empty($f['keywords_en'])) && empty($f['sub_ids']) && empty($f['concept_text'])
+                ? array_replace($f, ['keywords' => [], 'keywords_en' => '']) : null,
             'color' => fn (array $f) => !empty($f['colors']) ? array_replace($f, ['colors' => []]) : null,
             'size'  => fn (array $f) => !empty($f['sizes']) ? array_replace($f, ['sizes' => []]) : null,
             'price' => function (array $f) {
@@ -130,6 +134,9 @@ class ProductRetriever
                     'min_price' => !empty($f['min_price']) ? round($f['min_price'] * 0.7, 3) : null,
                 ]);
             },
+            // The exact product type → the broad category it belongs to
+            'subcategory' => fn (array $f) => (!empty($f['sub_ids']) || !empty($f['concept_text'])) && !empty($f['relax_categories'])
+                ? array_replace($f, ['sub_ids' => [], 'concept_text' => [], 'categories' => $f['relax_categories']]) : null,
         ];
 
         foreach ($steps as $name => $relax) {
@@ -148,6 +155,12 @@ class ProductRetriever
         return $result + ['relaxed' => $relaxed, 'filters' => $filters];
     }
 
+    /** The most popular products, optionally of some categories (the last resort when nothing matches at all). */
+    public function popular(array $categories = []): array
+    {
+        return $this->search(['categories' => $categories, 'sort' => 'popular'])['products'];
+    }
+
     /**
      * Same search without the price filter — used to tell the user honestly
      * what exists outside their range ("we have 3 from 89 DT").
@@ -157,7 +170,7 @@ class ProductRetriever
     public function nearest(array $filters): array
     {
         $keywords = $filters['keywords'] ?? [];
-        if (!$keywords && empty($filters['category']) && empty($filters['sub_ids'])) {
+        if (!$keywords && empty($filters['category']) && empty($filters['categories']) && empty($filters['sub_ids'])) {
             return ['count' => 0, 'min' => null, 'max' => null, 'category' => null, 'category_ar' => null, 'category_fr' => null, 'category_slug' => null];
         }
 
@@ -236,8 +249,9 @@ class ProductRetriever
             ->selectRaw("(SELECT AVG(r.rating) FROM reviews r WHERE r.product_id = p.id AND r.status = 'approved') AS rating")
             ->selectRaw("(SELECT COUNT(*) FROM reviews r WHERE r.product_id = p.id AND r.status = 'approved') AS rating_count");
 
-        if (!empty($filters['category'])) {
-            $inner->where('c.slug', $filters['category']);
+        $categories = $filters['categories'] ?? (empty($filters['category']) ? [] : [$filters['category']]);
+        if ($categories) {
+            $inner->whereIn('c.slug', $categories);
         }
         if ($excludeIds) {
             $inner->whereNotIn('p.id', $excludeIds);
@@ -255,6 +269,18 @@ class ProductRetriever
                     $like = '%' . addcslashes($word, '%_\\') . '%';
                     $q->orWhere('p.name', 'like', $like)->orWhere('p.translations', 'like', $like);
                 }
+            });
+        }
+
+        // Clothes for kids: Kids & Baby also holds toys and bottles, so only its clothing-like products count
+        if (!empty($filters['kids_text']) && !empty($filters['kids_categories'])) {
+            $inner->where(function ($q) use ($filters) {
+                $q->whereNotIn('c.slug', $filters['kids_categories'])->orWhere(function ($w) use ($filters) {
+                    foreach ($filters['kids_text'] as $word) {
+                        $like = '%' . addcslashes($word, '%_\\') . '%';
+                        $w->orWhere('p.name', 'like', $like)->orWhere('sc.name', 'like', $like)->orWhere('sc.name_fr', 'like', $like);
+                    }
+                });
             });
         }
 

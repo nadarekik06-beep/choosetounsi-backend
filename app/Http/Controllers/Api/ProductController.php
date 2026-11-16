@@ -73,8 +73,12 @@ class ProductController extends Controller
         }
         // ?concept=shoes: every real subcategory of a product type (the chatbot's "more shoes for women" link)
         if (($concept = $request->query('concept')) && is_string($concept)) {
-            $ids = app(\App\Services\Chat\ChatCatalog::class)->subIds($concept);
-            $query->whereIn('subcategory_id', $ids ?: [0]);
+            $catalog = app(\App\Services\Chat\ChatCatalog::class);
+            $def     = $catalog->concept($concept);
+            // A broad concept ("clothes") is the category itself: no subcategory filter
+            if ($def && empty($def['broad'])) {
+                $query->whereIn('subcategory_id', $catalog->subIds($concept) ?: [0]);
+            }
         }
         if ($sellerId = $request->query('seller_id')) {
             $query->where('seller_id', $sellerId);

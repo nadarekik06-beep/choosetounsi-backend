@@ -16,7 +16,7 @@ return [
             'steps' => [
                 ['Od5el l compte mte3ek', "Lazem 3andek compte Choose'Tounsi. Od5el, w ba3d efta7 page « Become a Seller »."],
                 ['3ammer el talab', 'El formulaire fih 3 marahel: esmek el kamel, num el telifoun w esm el boutique, el ville, taswira mte3ek w taswira wa7da 3al a9al l produit.'],
-                ['Stanna el mouwafa9a', "Fari9na yrajja3 el talabet fi 2 l 3 ayem khedma. Kan famma 7aja lazem tetsala7, tnajem tbaddelha w tab3ath el talab men jdid."],
+                ['Stanna el validation', "Fari9na yrajja3 el demandes fi 2 l 3 ayem khedma. Kan famma 7aja lazem tetsala7, tnajem tbaddelha w tab3ath el talab men jdid."],
                 ['Zid produitek', "Ba3d ma yetkabel el talab, mchi l dashboard mte3 el bayee3 → Products → « Add Product ». Kol produit jdid yet9ayyes men admin 9bal ma yetna9ach fil site."],
                 ['Rajjaa9 el plan kan t7eb', 'Tebda b Green Pepper (gratuit, {green_products}). Tnajem tetraqqa l Red wala Black Pepper ba3d men Seller → Subscription.'],
             ],
@@ -43,8 +43,8 @@ return [
             'intro' => 'Kifech tzid produits ba3d ma yetkabel compte el bayee3:',
             'steps' => [
                 ['Efta7 produitek', 'Mchi l dashboard mte3 el bayee3 → Products w dous 3al « Add Product ».'],
-                ['3ammer el tafasil', "El esm, el description, el 9ism, el soum, el stock w el tsawer. Zid variantes (ex. pointure wala couleur) kan el produit 3andou."],
-                ['Stanna el mouraj3a', 'El produits el jdod yodhhrou « Pending » lin admin yousadi9 3lihom.'],
+                ['3ammer les détails', "El esm, el description, el 9ism, el soum, el stock w el tsawer. Zid variantes (ex. pointure wala couleur) kan el produit 3andou."],
+                ['Stanna el vérification', 'El produits el jdod yodhhrou « Pending » lin admin yousadi9 3lihom.'],
                 ['7oudoud el plan', 'Green Pepper: {green_products}, Red Pepper: {red_products}, Black Pepper: {black_products}.'],
             ],
         ],
@@ -66,8 +66,8 @@ return [
             'intro' => 'Kifech yekhdmou el coupons mte3 el bayi3in:',
             'steps' => [
                 ['5odh code', "El coupons ya3mlouhom el bayi3in — 3adatan tel9ahom fi boutique el bayee3."],
-                ['Esta3mlou fil checkout', "Fil checkout, kol bayee3 3andou khana lel coupon. Okteb el code w dous 3al tatbi9; el tkhfid yodhher 9bal ma takked."],
-                ['El 9awa3ed', 'Coupon wa7ed lel bayee3. El coupon yekhdem kan 3la produits el bayee3 hedhaka, w ma yekhdemch 3al packs.'],
+                ['Esta3mlou fil checkout', "Fil checkout, kol bayee3 3andou khana lel coupon. Okteb el code w dous 3al « Appliquer »; el tkhfid yodhher 9bal ma takked."],
+                ['Les règles', 'Coupon wa7ed lel bayee3. El coupon yekhdem kan 3la produits el bayee3 hedhaka, w ma yekhdemch 3al packs.'],
             ],
         ],
     ],
@@ -76,11 +76,11 @@ return [
         'statuses' => [
             'intro' => 'Hedha ma3na kol 7ala mte3 el commande:',
             'steps' => [
-                ['Pending (fil intidhar)', 'El commande wsolet w tstanna el ta2kid.'],
-                ['Processing / Confirmed (mou2akkda)', 'El commande tkabelet w yetjahhez fiha.'],
+                ['Pending (fil attente)', 'El commande wsolet w tstanna el confirmation.'],
+                ['Processing / Confirmed (confirmée)', 'El commande tkabelet w yetjahhez fiha.'],
                 ['Out for Delivery (fil tari9)', 'El commande fil tari9 lik.'],
                 ['Delivered / Completed (wselet)', 'El commande wselet. Kan famma mochkel, 3andek {complaint_hours} sa3a ba3d el livraison bech ta3mel reclamation.'],
-                ['Cancelled / Refunded (molgha / mourtaj3a)', 'El commande tlghat, wala el flous mte3ha irtajja3ou.'],
+                ['Cancelled / Refunded (annulée / remboursée)', 'El commande tannulat, wala el flous mte3ha raj3ou.'],
             ],
         ],
     ],
@@ -92,8 +92,8 @@ return [
                 ['Thabbet fil wa9t', "3andek {complaint_hours} sa3a ba3d ma yousel el colis (date el livraison el 7a9i9iya). Nafs el article ma yetraja3ch zouz marrat."],
                 ['Efta7 el formulaire', 'Mchi l Complaints → nouvelle reclamation w o5tar el commande w el articles el ma3niya.'],
                 ['O5tar el sabab w zid tsawer', "O5tar el sabab: el pointure ma tmchich, 3atbane wala mkasser, article ghalet wala machi kima wasfou, wala ghayyart ra2yi. Zid 2 l 3 tsawer lel article (lazem fi kol sabab) w okteb el mochkel fi 20 7arf 3al a9al."],
-                ['El awwel el tabdil, ba3dou el istirjaa3', "El tabdil yetsa3ref dima el awwel. El istirjaa3 yetsa3ref kan el sabab yesma7 bih: dima lel article el 3atbane, el mkasser wala el ghalet; lel pointure kan el tabdil mouch momken (stock fini); wala « ghayyart ra2yi » kan el article jdid, ma tlbesch w 3andou el etiquettes."],
-                ['El masarif w el articles el mosta5nin', "El article el 3atbane, el mkasser wala el ghalet ma ykalfek chay. Lel pointure wala ghayyart ra2yi, livraison el tabdil 3alik w tkhalles lel livreur. Lel istirjaa3 ba3d « ghayyart ra2yi », masarif el retour yetn9asou w el montant el dhabt yodhher 9bal ma tab3ath el talab. « Ghayyart ra2yi » ma yosel7ech lel sous-vetements w lingerie, maillots, cosmetique, nadhafa 5assa, makla w el articles el mkhasssa."],
+                ['El awwel l’échange, ba3dou el remboursement', "L’échange yetsa3ref dima el awwel. El remboursement yetsa3ref kan el sabab yesma7 bih: dima lel article el 3atbane, el mkasser wala el ghalet; lel pointure kan el tabdil mouch momken (stock fini); wala « ghayyart ra2yi » kan el article jdid, ma tlbesch w 3andou el etiquettes."],
+                ['Les frais w les articles exclus', "El article el 3atbane, el mkasser wala el ghalet ma ykalfek chay. Lel pointure wala ghayyart ra2yi, livraison l’échange 3alik w tkhalles lel livreur. Lel remboursement ba3d « ghayyart ra2yi », frais el retour yetn9asou w el montant el dhabt yodhher 9bal ma tab3ath el talab. « Ghayyart ra2yi » ma yosel7ech lel sous-vetements w lingerie, maillots, cosmetique, hygiène intime, makla w les articles personnalisés."],
                 ['Tabba3 el talab', "Tabba3ou fi « Mes retours ». El boutique tchouf tsawrek w fari9na yousadi9 (kan el boutique tarfodh, tnajem tolleb men fari9na ye7kem). Livreur ya5ou el article w yraj3elek flousek cash fil blasa: el montant yodhher 9bal w yetsabbet 9bal el enlevement. El boutique tfa77es el article ba3dha; kan ma yetabe9ch el wasf mte3ek, fari9na ye7kem 7ala b 7ala."],
             ],
         ],
@@ -104,7 +104,7 @@ return [
             'intro' => 'Kifech ta3mel compte:',
             'steps' => [
                 ['Sajjel', 'Efta7 page Register, 3ammer el ma3loumet w dous 3al « Create Account ».'],
-                ['Akked el email', 'Nab3thoulek lien ta2kid fil email. Efta7ou bech yetfa3el el compte mte3ek.'],
+                ['Confirmi el email', 'Nab3thoulek lien de confirmation fil email. Efta7ou bech yetfa3el el compte mte3ek.'],
                 ['Wala esta3mel Google', 'Dous 3al « Continue with Google » fi page el login wala el register bech todkhel b compte Google mte3ek.'],
             ],
         ],
@@ -121,14 +121,14 @@ return [
             'intro' => "7aja 3la el wallet mte3 Choose'Tounsi:",
             'steps' => [
                 ['El khlas bih', 'El khlas bel wallet 9rib yetwa99er. Tawa el commandet yetkhallsou cash 3and el istilem.'],
-                ['Zyedet el flous', "El rasid yzidou fari9na — kallemna men page el contact (https://choosetounsi.tn/contact) wala 3al WhatsApp +216 57 252 576."],
+                ['Zidet el flous', "El solde yzidou fari9na — kallemna men page el contact (https://choosetounsi.tn/contact) wala 3al WhatsApp +216 57 252 576."],
             ],
         ],
         'profile' => [
             'intro' => 'Idarat el compte mte3ek:',
             'steps' => [
                 ['El profil', 'Chouf ma3loumet el compte fi page el profil. Bech tbaddel mot de passe nsitou, esta3mel « Forgot Password? » fi page el login.'],
-                ['El 3enawin', 'Sajjel 3enawin el livraison mte3ek fi Account → Addresses.'],
+                ['Les adresses', 'Sajjel 3enawin el livraison mte3ek fi Account → Addresses.'],
             ],
         ],
     ],

@@ -66,4 +66,16 @@ return [
     ['say' => 'chkoun enti', 'dialect' => 'tn_arabizi', 'intent' => 'identity'],
     ['say' => 'what can you do', 'dialect' => 'en', 'intent' => 'identity'],
     ['say' => 'merci, je cherche une robe noire', 'dialect' => 'fr', 'intent' => 'search', 'concept' => 'dresses'],
+    // Broad words, kids, unknown words (dbach = clothes)
+    ['say' => 'nheb nechri dbach mte3 ouled', 'dialect' => 'tn_arabizi', 'intent' => 'search', 'concept' => 'clothes', 'gender' => 'kids', 'child' => true],
+    ['say' => 'nheb dbach pour homme', 'dialect' => 'tn_arabizi', 'concept' => 'clothes', 'gender' => 'men'],
+    ['say' => 'n7eb 7wayej lel nsa', 'dialect' => 'tn_arabizi', 'concept' => 'clothes', 'gender' => 'women'],
+    ['say' => 'نحب حوايج للنساء', 'dialect' => 'tn_arabic', 'concept' => 'clothes', 'gender' => 'women'],
+    ['say' => 'je cherche des vêtements pour enfant', 'dialect' => 'fr', 'concept' => 'clothes', 'gender' => 'kids'],
+    ['say' => 'nheb nechri maryoul', 'dialect' => 'tn_arabizi', 'concept' => 'sweaters'],
+    ['say' => 'n7eb sabbat', 'dialect' => 'tn_arabizi', 'concept' => 'shoes'],
+    ['say' => 'n7eb zigzog lel rjel', 'dialect' => 'tn_arabizi', 'concept' => null, 'gender' => 'men'],
+    ['say' => 'nheb klasset lel rjel', 'dialect' => 'tn_arabizi', 'concept' => 'socks', 'gender' => 'men'],
+    ['say' => 'n7eb pyjama lel weld', 'dialect' => 'tn_arabizi', 'concept' => 'pyjama', 'child' => true],
+    ['say' => 'nheb nadharat', 'dialect' => 'tn_arabizi', 'concept' => 'glasses'],
 ];

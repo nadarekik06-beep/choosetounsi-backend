@@ -87,8 +87,17 @@ class AiChatController extends Controller
 
         // The LATEST message decides the language and script. No signal ("iphone 13"):
         // the dialect of the conversation, else the storefront language picked by the shopper.
-        $dialect  = $this->detector->detect($message)
-            ?? ($memory['dialect'] ?? null)
+        $detected = $this->detector->detect($message);
+        $previous = $memory['dialect'] ?? null;
+        // Tunisians mix French into Darija: a short follow-up ("pour homme", "moins cher", "en rouge", "taille M")
+        // in a Tunisian conversation stays Tunisian. A full sentence in French / English switches.
+        if (in_array($detected, ['fr', 'en'], true) && in_array($previous, ['tn_arabizi', 'tn_arabic'], true)
+            && count(preg_split('/\s+/u', $message, -1, PREG_SPLIT_NO_EMPTY)) <= 4
+            && $this->extractor->hasRefinementSignal($message)) {
+            $detected = $previous;
+        }
+        $dialect  = $detected
+            ?? $previous
             ?? $this->detector->fromLocale($request->input('locale') ?: app()->getLocale());
         $language = LanguageDetector::baseLanguage($dialect);
 
@@ -365,49 +374,88 @@ class AiChatController extends Controller
         $exclude = $this->applyRefine($filters, $intent['refine'] ?? null, $shown);
 
         $result  = $this->retriever->searchRelaxed($filters, $exclude);
-        $nearest = null;
 
-        if (!$result['products']) {
-            $nearest = $this->retriever->nearest($filters);
+        // The rules-only fast path knew no product word and found nothing, even after dropping the unknown words:
+        // Groq reads the message once (free tier) and maps it to a real category / product type.
+        if (!$result['products'] && $intent['source'] === 'rules' && empty($filters['concept']) && empty($filters['categories'])) {
+            $llmIntent = $this->extractor->extract($message, $memory, true);
+            if ($llmIntent['source'] === 'llm' && $llmIntent['intent'] === 'other' && !$this->hasSearchSignal($llmIntent)) {
+                $this->logUnmatched($message, $dialect, $intent, $filters, 0, ['unclear']);
 
-            // The rules-only fast path matched nothing at any price and knew no product word:
-            // its keywords were probably wrong (darija, typo). Let Groq read the message once.
-            if ($nearest['count'] === 0 && $intent['source'] === 'rules' && empty($filters['concept'])) {
-                $llmIntent = $this->extractor->extract($message, $memory, true);
-                if ($llmIntent['source'] === 'llm' && $llmIntent['intent'] === 'other' && !$this->hasSearchSignal($llmIntent)) {
-                    return $this->other($dialect) + ['language' => LanguageDetector::baseLanguage($dialect), 'intent' => 'other'];
-                }
-                if ($llmIntent['source'] === 'llm' && in_array($llmIntent['intent'], ['search', 'product_question', 'other'], true)) {
-                    $intent  = ['dialect' => $dialect, 'language' => $intent['language']] + $llmIntent; // keep the detected language
-                    $filters = $this->resolveHard($this->filtersFrom($intent, $memory));
-                    $exclude = $this->applyRefine($filters, $intent['refine'] ?? null, $shown);
-                    $result  = $this->retriever->searchRelaxed($filters, $exclude);
-                    $nearest = $result['products'] ? null : $this->retriever->nearest($filters);
-                }
+                return $this->other($dialect) + ['language' => LanguageDetector::baseLanguage($dialect), 'intent' => 'other'];
             }
+            if ($llmIntent['source'] === 'llm' && in_array($llmIntent['intent'], ['search', 'product_question', 'other'], true)) {
+                $intent  = ['dialect' => $dialect, 'language' => $intent['language']] + $llmIntent; // keep the detected language
+                $filters = $this->resolveHard($this->filtersFrom($intent, $memory));
+                $exclude = $this->applyRefine($filters, $intent['refine'] ?? null, $shown);
+                $result  = $this->retriever->searchRelaxed($filters, $exclude);
+            }
+        }
+
+        // Unknown words and nothing else to go on ("zigzog"): do not show random products, ask what they look for
+        if (!empty($filters['keywords']) && in_array('keyword', $result['relaxed'], true) && !$this->hasStructure($filters)) {
+            $this->logUnmatched($message, $dialect, $intent, $filters, 0, ['unclear']);
+
+            return $this->other($dialect) + ['language' => LanguageDetector::baseLanguage($dialect), 'intent' => 'other'];
         }
 
         $lang    = LanguageDetector::baseLanguage($dialect);
         $concept = $filters['concept'] ?? null;
-        $label   = $concept ? ($this->lex->config("concepts.{$concept}.label.{$dialect}") ?? $this->lex->config("concepts.{$concept}.label.fr")) : null;
+        $broad   = $concept ?: $this->broadConcept($filters);
+        $label   = $this->lex->term($broad, $dialect);
         $gender  = in_array($filters['gender'] ?? null, ['women', 'men', 'kids'], true) ? $filters['gender'] : null;
+        $genderStrict = !empty($filters['gender_strict']) ? $gender : null;
+
+        // Words the lexicon / catalog did not understand, or a search that needed relaxing, are logged for the admin
+        if (!$result['products'] || array_intersect($result['relaxed'], ['keyword', 'subcategory'])) {
+            $this->logUnmatched($message, $dialect, $intent, $filters, count($result['products']), $result['relaxed']);
+        }
 
         if (!$result['products']) {
             $refine = $shown ? ($intent['refine'] ?? null) : null;
-            // Label in the customer's script: Arabizi and French read the French name, Arabic script the Arabic one
-            $catKey = LanguageDetector::isArabicScript($dialect) ? 'category_ar' : ($dialect === 'en' ? null : 'category_fr');
-            $cat    = ($catKey ? ($nearest[$catKey] ?? null) : null) ?: ($nearest['category'] ?? null);
+            $ctx    = ['concept_label' => $label, 'gender' => $genderStrict];
+
+            // "cheaper" / "others" with nothing new: say so, no products
+            if (in_array($refine, ['cheaper', 'pricier', 'more'], true)) {
+                return [
+                    'reply' => $this->composer->noResults($dialect, $filters, ['count' => 0], $refine, $ctx),
+                    'language' => $lang, 'intent' => 'search', 'filters' => $filters,
+                    'actions' => $this->noResultChips($dialect, $filters, $label, $gender, null),
+                ];
+            }
+
+            // Nothing in this budget but the product exists at other prices: show the closest ones, honestly
+            if (!empty($filters['min_price']) || !empty($filters['max_price'])) {
+                $near = $this->retriever->nearest($filters);
+                if ($near['count'] > 0) {
+                    $closest = $this->retriever->search(array_replace($filters, ['min_price' => null, 'max_price' => null, 'sort' => 'price_asc']))['products'];
+
+                    return [
+                        'reply'    => $this->composer->noResults($dialect, $filters, $near, null, $ctx),
+                        'language' => $lang,
+                        'intent'   => 'search',
+                        'products' => $closest,
+                        'filters'  => $filters,
+                        'actions'  => $this->noResultChips($dialect, $filters, $label, $gender, $near['category_slug'] ?? ($closest[0]['category']['slug'] ?? null)),
+                    ];
+                }
+            }
+
+            // The whole category (+ gender) is empty: say so honestly and show the most popular products of the nearest category
+            $cats = $filters['categories'] ?? ($filters['relax_categories'] ?? []);
+            if (!$cats) {
+                $near = $this->retriever->nearest($filters);
+                $cats = !empty($near['category_slug']) ? [$near['category_slug']] : [];
+            }
+            $popular = $this->retriever->popular($cats) ?: ($cats ? $this->retriever->popular([]) : []);
 
             return [
-                'reply'    => $this->composer->noResults($dialect, $filters, $nearest, $refine, ['concept_label' => $label, 'gender' => !empty($filters['gender_strict']) ? $gender : null]),
+                'reply'    => $this->composer->noResults($dialect, $filters, ['count' => 0], null, $ctx + ['popular' => (bool) $popular]),
                 'language' => $lang,
                 'intent'   => 'search',
+                'products' => $popular,
                 'filters'  => $filters,
-                'actions'  => [
-                    $this->nearestLink($dialect, $nearest, $filters, $label, (string) $cat),
-                    $this->chip('categories', $dialect),
-                    $this->actions->link($this->lex->config("chips.shop.{$dialect}") ?? $this->lex->config('chips.shop.fr'), '/shop'),
-                ],
+                'actions'  => $this->noResultChips($dialect, $filters, $label, $gender, $cats[0] ?? ($popular[0]['category']['slug'] ?? null)),
             ];
         }
 
@@ -422,10 +470,12 @@ class AiChatController extends Controller
 
         $reply = $this->composer->products($dialect, $message, $products, $replyFilters, $memory['turns'] ?? [], [
             'recipient'     => $filters['recipient'] ?? null,
-            'gender'        => !empty($filters['gender_strict']) ? $gender : null,
+            'gender'        => $genderStrict,
             'relaxed'       => $result['relaxed'],
             'unisex'        => $result['unisex'],
-            'concept_label' => $label,
+            'concept_label' => array_intersect($result['relaxed'], ['keyword', 'subcategory']) ? $this->lex->term($this->broadConcept($result['filters']), $dialect) : $label,
+            'term_singular' => $this->lex->term($broad, $dialect, false),
+            'size_attr'     => $this->lex->sizeAttr($broad),
         ]);
 
         // The model's picks come first; cards always come from the retrieved list
@@ -442,6 +492,67 @@ class AiChatController extends Controller
             'filters'  => $filters,
             'actions'  => $this->searchChips($dialect, $filters, $products, $label, $gender),
         ];
+    }
+
+    /** A broad word for the category of a search without a product word ("vêtements" for Mode & Vêtements). */
+    private function broadConcept(array $filters): ?string
+    {
+        $cats = $filters['categories'] ?? ($filters['relax_categories'] ?? []);
+
+        return in_array('fashion-clothing', $cats, true) ? 'clothes' : null;
+    }
+
+    /** Does the search say anything beyond free words? (product type, category, gender, price, color, size ...) */
+    private function hasStructure(array $f): bool
+    {
+        return !empty($f['concept']) || !empty($f['category']) || !empty($f['categories']) || !empty($f['gender'])
+            || !empty($f['min_price']) || !empty($f['max_price']) || !empty($f['colors']) || !empty($f['sizes']) || !empty($f['only_promo']);
+    }
+
+    /** Queries that ended with nothing, relaxed words or unknown words: the admin sees which words to add to the lexicon. */
+    private function logUnmatched(string $message, string $dialect, array $intent, array $filters, int $count, array $relaxed): void
+    {
+        try {
+            DB::table('chatbot_unmatched_queries')->insert([
+                'message'      => mb_substr($message, 0, 500),
+                'dialect'      => $dialect,
+                'slots'        => json_encode([
+                    'concept'    => $filters['concept'] ?? null,
+                    'categories' => $filters['categories'] ?? ($filters['category'] ?? null),
+                    'gender'     => $filters['gender'] ?? null,
+                    'keywords'   => $filters['keywords'] ?? [],
+                    'colors'     => $filters['colors'] ?? [],
+                    'max_price'  => $filters['max_price'] ?? null,
+                    'relaxed'    => $relaxed,
+                    'source'     => $intent['source'] ?? null,
+                ], JSON_UNESCAPED_UNICODE),
+                'result_count' => $count,
+                'created_at'   => now(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('[AiChat] Could not log an unmatched query: ' . $e->getMessage());
+        }
+    }
+
+    /** Chips after a search with nothing to show: useful and filtered, never the generic category list. */
+    private function noResultChips(string $dialect, array $filters, ?string $label, ?string $gender, ?string $categorySlug): array
+    {
+        $chips = [];
+        $linkGen = in_array($gender, ['women', 'men'], true) && !empty($filters['gender_strict']) ? $gender : null;
+        if ($categorySlug) {
+            $query = array_filter([$linkGen ? "gender={$linkGen}" : null, ($filters['concept'] ?? null) && $this->catalog->concept($filters['concept']) && empty($filters['child']) && empty($this->catalog->concept($filters['concept'])['broad']) ? 'concept=' . $filters['concept'] : null]);
+            $gen = $linkGen ? ($this->lex->config("chips.more_gender.{$linkGen}.{$dialect}") ?? '') : '';
+            $chips[] = $this->actions->link(
+                strtr($this->lex->config("chips.more_in.{$dialect}") ?? $this->lex->config('chips.more_in.fr'), ['{what}' => $label ?: $this->lex->term(null, $dialect), '{gender}' => $gen]),
+                '/category/' . $categorySlug . ($query ? '?' . implode('&', $query) : '')
+            );
+        } else {
+            $chips[] = $this->chip('categories', $dialect);
+        }
+        $chips[] = $this->chip('cheaper', $dialect);
+        $chips[] = $this->actions->link($this->lex->config("chips.shop.{$dialect}") ?? $this->lex->config('chips.shop.fr'), '/shop');
+
+        return $chips;
     }
 
     // ── Chips (localized, built from the conversation state) ──────────────
@@ -469,7 +580,7 @@ class AiChatController extends Controller
             $linkGen = in_array($gender, ['women', 'men'], true) ? $gender : null;
             // A product word links to ALL the subcategories of that product type (shoes, dresses ...) with the same gender
             $concept = $filters['concept'] ?? null;
-            $useConcept = $concept && empty($filters['child']) && $this->catalog->concept($concept);
+            $useConcept = $concept && empty($filters['child']) && $this->catalog->concept($concept) && empty($this->catalog->concept($concept)['broad']);
             $query   = array_filter([
                 $linkGen ? "gender={$linkGen}" : null,
                 $useConcept ? "concept={$concept}" : (count($subs) === 1 ? 'sub=' . reset($subs) : null),
@@ -486,24 +597,6 @@ class AiChatController extends Controller
         }
 
         return $chips;
-    }
-
-    /** Link to the nearest category; with the same gender and a product word it reads "More shoes for women". */
-    private function nearestLink(string $dialect, array $nearest, array $filters, ?string $label, string $cat): ?array
-    {
-        if (empty($nearest['category_slug'])) {
-            return null;
-        }
-        $gender = in_array($filters['gender'] ?? null, ['women', 'men'], true) && !empty($filters['gender_strict']) ? $filters['gender'] : null;
-        if (!$label && !$gender) {
-            return $this->actions->link($cat, '/category/' . $nearest['category_slug']);
-        }
-        $gen = $gender ? ($this->lex->config("chips.more_gender.{$gender}.{$dialect}") ?? '') : '';
-
-        return $this->actions->link(
-            strtr($this->lex->config("chips.more_in.{$dialect}") ?? $this->lex->config('chips.more_in.fr'), ['{what}' => $label ?: $cat, '{gender}' => $gen]),
-            '/category/' . $nearest['category_slug'] . ($gender ? "?gender={$gender}" : '')
-        );
     }
 
     private function chip(string $key, string $dialect, array $repl = []): ?array
@@ -550,8 +643,8 @@ class AiChatController extends Controller
         $carry    = $previous && ($intent['refine'] || $intent['followup']) && !$filters['concept'] && !$filters['category'];
         if ($carry) {
             $new = $filters;
-            // Words said again are added to the earlier ones ("in red" → + red)
-            $filters['keywords'] = array_values(array_unique(array_merge($previous['keywords'] ?? [], $new['keywords'])));
+            // The new value REPLACES the old one for every slot; earlier words are never concatenated into a text query
+            $filters['keywords'] = $new['keywords'] ?: ($previous['keywords'] ?? []);
             foreach (['keywords_en', 'category', 'concept', 'recipient', 'brand'] as $k) {
                 $filters[$k] = $new[$k] ?: ($previous[$k] ?? $new[$k]);
             }
@@ -580,15 +673,34 @@ class AiChatController extends Controller
         $concept = $f['concept'] ?? null;
         $def     = $this->catalog->concept($concept);
 
-        $f['sub_ids']      = [];
-        $f['concept_text'] = [];
+        $f['sub_ids']          = [];
+        $f['concept_text']     = [];
+        $f['categories']       = [];
+        $f['relax_categories'] = [];
         if ($def) {
-            $f['sub_ids'] = $this->catalog->subIds($concept, !empty($f['child']));
-            if (!$f['sub_ids']) {
-                $f['concept_text'] = array_slice($def['keywords'] ?? [], 0, 6);
-            }
-            if (empty($f['category']) && !empty($def['category'])) {
-                $f['category'] = $def['category'];
+            if (!empty($def['broad'])) {
+                // A whole category ("dbach", "7wayej"): the category is the filter. Kids' clothes live in Kids & Baby too.
+                $f['categories'] = [$def['category']];
+                if (($f['gender'] ?? null) === 'kids') {
+                    $f['categories']      = array_merge($f['categories'], $def['kids_categories'] ?? []);
+                    $f['kids_categories'] = $def['kids_categories'] ?? [];
+                    $f['kids_text']       = $def['kids_name_words'] ?? [];
+                }
+                $f['relax_categories'] = $f['categories'];
+            } else {
+                $f['sub_ids'] = $this->catalog->subIds($concept, !empty($f['child']));
+                if (!$f['sub_ids']) {
+                    $f['concept_text'] = array_slice($def['keywords'] ?? [], 0, 6);
+                }
+                if (empty($f['category']) && !empty($def['category'])) {
+                    $f['category'] = $def['category'];
+                }
+                // The exact product type may be relaxed to the broad category it belongs to
+                $f['relax_categories'] = $f['sub_ids'] ? $this->catalog->parentCategorySlugs($f['sub_ids']) : array_filter([$f['category'] ?? null]);
+                // A gendered product type the catalog has no subcategory for (socks, pyjamas ...): relax to the clothes category
+                if (!$f['relax_categories'] && !empty($def['gendered'])) {
+                    $f['relax_categories'] = ['fashion-clothing'];
+                }
             }
         }
 

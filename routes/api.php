@@ -610,6 +610,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/subcategories/{id}',   [AdminSubcategoryController::class, 'update']);
         Route::delete('/subcategories/{id}',[AdminSubcategoryController::class, 'destroy']);
 
+        // ── Chatbot: queries it could not match (words to add to config/chatbot_darija.php) ──
+        Route::get('/chatbot/unmatched',    [\App\Http\Controllers\Admin\AdminChatbotUnmatchedController::class, 'index']);
+        Route::delete('/chatbot/unmatched', [\App\Http\Controllers\Admin\AdminChatbotUnmatchedController::class, 'destroy']);
+
         // ── Gender menu (Femme / Homme columns, images) & product genders ──
         Route::get('/gender-menu/settings',                     [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'settings']);
         Route::put('/gender-menu/settings',                     [\App\Http\Controllers\Admin\AdminGenderMenuController::class, 'updateSettings']);

@@ -139,7 +139,7 @@ class IntentExtractor
         // How-to / platform questions: answered from the knowledge base, no Groq.
         // A product word ("kifech nechri sabat") keeps the message a product search, unless it is about paying / returns / tracking.
         $productWord = $slots['concept'] !== null;
-        if (!$forceLlm && !($price && $keywords) && (!$productWord || array_intersect(['PAY', 'RETURN', 'TRACK', 'MY_ORDERS'], $concepts))) {
+        if (!$forceLlm && !($price && $keywords) && (!$productWord || array_intersect(['PAY', 'RETURN', 'TRACK', 'MY_ORDERS', 'SELL'], $concepts))) {
             $platform = $this->platformIntent($text, $concepts, $keywords);
             if ($platform !== null) {
                 return $this->result($platform, $dialectData + [
@@ -259,6 +259,16 @@ class IntentExtractor
         }
 
         return $this->result($intent, $data, $language, 'llm');
+    }
+
+    /** Does a (short) message refine a search: gender, color, size, price, "cheaper" ...? Used to keep a Tunisian conversation Tunisian. */
+    public function hasRefinementSignal(string $message): bool
+    {
+        $slots = $this->slots->parse($message);
+        $text  = $this->normalize($message);
+
+        return $slots['gender'] || $slots['colors'] || $slots['sizes'] || $slots['sort'] || $slots['only_promo']
+            || $this->parsePrice($text) !== null || $this->parseRefine($text) !== null;
     }
 
     /** Multilingual ranking keywords of a concept + the free words the customer added. */
@@ -626,7 +636,7 @@ intent is one of:
 - browse_categories: what categories/products do you have in general
 - greeting: only a greeting; other: anything else
 Slots (use null / [] when not said — never guess):
-- concept: one of [{$concepts}] or null (shoes = sabat/sbabet/chaussures, dresses = robe, pants = serwel/pantalon, jebba, bags = sac/shanta ...).
+- concept: one of [{$concepts}] or null (shoes = sabat/sbabet/chaussures, dresses = robe, pants = serwel/pantalon, jebba, bags = sac/shanta ...). Only when a word is CLEARLY a synonym of one of them; for an unknown or unclear word use null and keep the word in keywords. Never guess.
 - category: one of [{$this->categoryList()}] or null.
 - gender: "women" | "men" | "kids_girl" | "kids_boy" | "unisex" | null. Girlfriend/wife/mother/sister/"sa7ebti"/"mrati"/"omi"/"okhti" = women; boyfriend/husband/father/brother/"sa7bi"/"rajli"/"bouya"/"khouya" = men; "bent" = kids_girl; "weld" = kids_boy.
 - recipient: self|girlfriend|wife|mother|sister|boyfriend|husband|father|brother|child|friend_f|friend_m|null.

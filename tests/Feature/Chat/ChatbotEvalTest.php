@@ -369,7 +369,9 @@ class ChatbotEvalTest extends TestCase
 
         $res = $this->chat('n7eb sabat lel nsa a9al men 1', 'ev_' . Str::random(8));
 
-        $this->assertSame([], $res['products']);
+        // Nothing at this price: honest, and the closest real products at other prices are shown (no dead end)
+        $this->assertNotEmpty($res['products']);
+        $this->assertShoesFor($res['products'], ['women', 'unisex']);
         $this->assertTrue(app(LanguageDetector::class)->replyMatches($res['reply'], 'tn_arabizi'), $res['reply']);
         $this->assertMatchesRegularExpression('/ma l9itech/i', $res['reply']);
         $this->assertNotEmpty($res['actions']);
@@ -743,6 +745,292 @@ class ChatbotEvalTest extends TestCase
         $this->assertContains('نلوّج على منتوج', $labels);
         $this->assertContains('نحب نبيع عندكم', $labels);
         $this->assertNotContains('نحب نولّي بائع', $labels);
+    }
+
+    // ── Broad words ("dbach"), unknown words, refinements, vocabulary, currency ──
+
+    /** Adds clothes (men, kids, women), a toy in Kids & Baby and a sweater. */
+    private function seedClothes(): void
+    {
+        $this->seedCatalog();
+        $seller = User::query()->forceCreate([
+            'name' => 'Eval Clothes ' . Str::random(4), 'email' => 'evalc_' . Str::random(10) . '@test.local',
+            'password' => bcrypt('x-password'), 'role' => 'seller', 'is_active' => true, 'is_approved' => true,
+        ]);
+        $sweats = $this->subcategory($this->fashion, 'sweatshirts', 'Sweatshirts', 'Sweats');
+        $make = function (string $key, string $name, ?int $sub, ?string $gender, float $price, int $cat) use ($seller) {
+            $product = Product::create([
+                'seller_id' => $seller->id, 'category_id' => $cat, 'subcategory_id' => $sub,
+                'name' => "Eval {$name} " . Str::random(4), 'slug' => 'eval-' . Str::random(10), 'description' => 'Throwaway',
+                'price' => $price, 'stock' => 10, 'is_approved' => true, 'is_active' => true,
+            ]);
+            DB::table('products')->where('id', $product->id)->update(['gender' => $gender]);
+            $this->p[$key] = $product->id;
+        };
+        $make('men_shirt', 'chemise homme', null, 'men', 45, $this->fashion);
+        $make('women_top', 'blouse femme', null, 'women', 38, $this->fashion);
+        $make('kids_coat', 'doudoune garcon', null, null, 59, $this->kidsCategory);
+        $make('kids_toy', 'peluche chameau', null, null, 25, $this->kidsCategory);
+        $make('sweater', 'sweat capuche', $sweats, 'unisex', 55, $this->fashion);
+    }
+
+    private function ids(array $res): array
+    {
+        return array_column($res['products'], 'id');
+    }
+
+    public function test_dbach_for_kids_is_all_the_kids_clothes_not_a_keyword(): void
+    {
+        $this->seedClothes();
+        $this->groq();
+
+        $res = $this->chat('nheb nechri dbach mte3 ouled', 'ev_' . Str::random(8), 'fr');
+
+        $this->assertSame('tn_arabizi', $res['dialect']);
+        $this->assertContains($this->p['kids_coat'], $this->ids($res), 'kids clothes found');
+        $this->assertNotContains($this->p['kids_toy'], $this->ids($res), 'a toy is not clothing');
+        $this->assertNotContains($this->p['men_shirt'], $this->ids($res));
+        $this->assertNotContains($this->p['women_top'], $this->ids($res));
+        $this->assertDoesNotMatchRegularExpression('/dbach|ouled/i', $res['reply'], 'the customer words are never repeated');
+        $this->assertTrue(app(LanguageDetector::class)->replyMatches($res['reply'], 'tn_arabizi', array_column($res['products'], 'name')), $res['reply']);
+    }
+
+    public function test_a_gender_follow_up_replaces_the_kids_slot_and_stays_tunisian(): void
+    {
+        $this->seedClothes();
+        $this->groq();
+        $session = 'ev_' . Str::random(8);
+
+        $this->chat('nheb nechri dbach mte3 ouled', $session, 'fr');
+        // A short French fragment in a Tunisian conversation: the reply stays Arabizi
+        $res = $this->chat('pour homme', $session, 'fr');
+
+        $this->assertSame('tn_arabizi', $res['dialect'], 'code-switching keeps the conversation Tunisian');
+        $this->assertContains($this->p['men_shirt'], $this->ids($res), "men's clothes, the category kept");
+        $this->assertNotContains($this->p['kids_coat'], $this->ids($res), 'the kids slot was replaced, not kept');
+        $this->assertNotContains($this->p['women_top'], $this->ids($res));
+        $this->assertNotContains($this->p['kids_toy'], $this->ids($res));
+        $this->assertDoesNotMatchRegularExpression('/dbach|ouled|aucun/i', $res['reply']);
+        $this->assertTrue(app(LanguageDetector::class)->replyMatches($res['reply'], 'tn_arabizi', array_column($res['products'], 'name')), $res['reply']);
+    }
+
+    public function test_dbach_pour_homme_in_one_message(): void
+    {
+        $this->seedClothes();
+        $this->groq();
+
+        $res = $this->chat('nheb dbach pour homme', 'ev_' . Str::random(8), 'fr');
+
+        $this->assertSame('tn_arabizi', $res['dialect']);
+        $this->assertContains($this->p['men_shirt'], $this->ids($res));
+        $this->assertNotContains($this->p['kids_coat'], $this->ids($res));
+        $this->assertNotContains($this->p['women_top'], $this->ids($res));
+        $this->assertStringNotContainsStringIgnoringCase('ma l9itech dbach', $res['reply']);
+    }
+
+    public function test_broad_clothes_words_in_every_language(): void
+    {
+        $this->seedClothes();
+        $this->groq();
+
+        foreach (['n7eb 7wayej lel nsa' => 'tn_arabizi', 'نحب حوايج للنساء' => 'tn_arabic'] as $say => $dialect) {
+            $res = $this->chat($say, 'ev_' . Str::random(8), 'fr');
+            $this->assertSame($dialect, $res['dialect'], $say);
+            $this->assertContains($this->p['women_top'], $this->ids($res), $say);
+            $this->assertNotContains($this->p['men_shirt'], $this->ids($res), $say);
+        }
+
+        $kids = $this->chat('je cherche des vêtements pour enfant', 'ev_' . Str::random(8), 'ar');
+        $this->assertSame('fr', $kids['dialect'], 'a full French sentence is answered in French');
+        $this->assertContains($this->p['kids_coat'], $this->ids($kids));
+        $this->assertNotContains($this->p['kids_toy'], $this->ids($kids));
+    }
+
+    public function test_cheaper_after_an_arabizi_search_stays_arabizi(): void
+    {
+        $this->seedClothes();
+        $this->groq();
+        $session = 'ev_' . Str::random(8);
+
+        $this->chat('nheb dbach pour homme', $session, 'fr');
+        $res = $this->chat('moins cher', $session, 'fr');
+
+        $this->assertSame('tn_arabizi', $res['dialect']);
+        $this->assertDoesNotMatchRegularExpression('/J\'ai trouvé|Désolé/u', $res['reply']);
+    }
+
+    public function test_a_full_french_sentence_switches_language_even_in_a_tunisian_conversation(): void
+    {
+        $this->seedClothes();
+        $this->groq();
+        $session = 'ev_' . Str::random(8);
+
+        $this->chat('nheb dbach pour homme', $session, 'fr');
+        $res = $this->chat('je cherche une chemise noire pour mon mari', $session, 'fr');
+
+        $this->assertSame('fr', $res['dialect']);
+    }
+
+    public function test_an_unknown_word_never_becomes_the_search_and_is_logged(): void
+    {
+        $this->seedClothes();
+        $this->groq();
+        DB::table('chatbot_unmatched_queries')->delete();
+
+        $res = $this->chat('n7eb zigzog lel rjel', 'ev_' . Str::random(8), 'fr');
+
+        $this->assertNotEmpty($res['products'], "men's products shown");
+        foreach ($res['products'] as $prod) {
+            $this->assertContains(DB::table('products')->where('id', $prod['id'])->value('gender'), ['men', 'unisex']);
+        }
+        $this->assertStringNotContainsStringIgnoringCase('zigzog', $res['reply'], 'the raw word is never repeated');
+        $this->assertStringNotContainsStringIgnoringCase('ma l9itech zigzog', $res['reply']);
+
+        $logged = DB::table('chatbot_unmatched_queries')->where('message', 'n7eb zigzog lel rjel')->first();
+        $this->assertNotNull($logged, 'logged for the admin');
+        $this->assertSame('tn_arabizi', $logged->dialect);
+        $this->assertStringContainsString('zigzog', $logged->slots);
+    }
+
+    public function test_a_zero_result_message_never_contains_the_customers_words(): void
+    {
+        // No clothes at all in the catalog: the answer is honest and never quotes the request
+        $this->groq();
+
+        foreach (['nheb nechri dbach mte3 ouled', 'nheb dbach pour homme', 'n7eb zigzog lel rjel'] as $say) {
+            $res = $this->chat($say, 'ev_' . Str::random(8), 'fr');
+            $this->assertDoesNotMatchRegularExpression('/dbach|ouled|zigzog|aucun/i', $res['reply'], $say);
+        }
+    }
+
+    public function test_the_whole_category_empty_says_so_and_shows_popular_products(): void
+    {
+        $this->seedCatalog();   // shoes and a dress, but no men's clothes at all in this catalog
+        DB::table('products')->whereIn('id', [$this->p['sneaker_m'], $this->p['sneaker_u']])->update(['is_active' => false]);
+        $this->groq();
+
+        $res = $this->chat('nheb dbach pour homme', 'ev_' . Str::random(8), 'fr');
+
+        $this->assertStringContainsString('Ma 3andich', $res['reply']);
+        $this->assertTrue(app(LanguageDetector::class)->replyMatches($res['reply'], 'tn_arabizi'), $res['reply']);
+        $this->assertNotEmpty($res['products'], 'the most popular products of the nearest category');
+        $this->assertNotEmpty($res['actions']);
+    }
+
+    public function test_maryoul_uses_real_words_asks_taille_and_never_pointure(): void
+    {
+        $this->seedClothes();
+        // The model invents "ta9chirat" and asks the pointure: rejected, then the template speaks
+        $this->groq(fn () => ['reply' => 'Behi barcha! L9itelek 3 ta9chirat mliha barcha, chnowa el pointure mte3ek?', 'picks' => []]);
+
+        $res = $this->chat('nheb nechri maryoul', 'ev_' . Str::random(8), 'fr');
+
+        $this->assertStringNotContainsStringIgnoringCase('ta9chirat', $res['reply']);
+        $this->assertStringNotContainsStringIgnoringCase('pointure', $res['reply']);
+        $this->assertStringContainsString('taille', $res['reply']);
+        $this->assertMatchesRegularExpression('/maryoul/i', $res['reply']);
+        $this->assertContains($this->p['sweater'], $this->ids($res));
+    }
+
+    public function test_shoes_ask_pointure(): void
+    {
+        $this->seedCatalog();
+        $this->groq();
+
+        $res = $this->chat('n7eb sabbat', 'ev_' . Str::random(8), 'fr');
+
+        $this->assertStringContainsString('pointure', $res['reply']);
+        $this->assertStringNotContainsString('taille', $res['reply']);
+    }
+
+    public function test_the_prompt_carries_the_approved_word_and_the_right_size_question(): void
+    {
+        $this->seedClothes();
+        $prompts = [];
+        $this->groq(function ($prompt) use (&$prompts) {
+            $prompts[] = $prompt;
+            return null;
+        });
+
+        $this->chat('nheb nechri maryoul', 'ev_' . Str::random(8), 'fr');
+
+        $this->assertNotEmpty($prompts);
+        $this->assertStringContainsString('PRODUCT TYPE WORD: use "maryoulet"', $prompts[0]);
+    }
+
+    public function test_replies_must_be_in_one_script_only(): void
+    {
+        $d = app(LanguageDetector::class);
+
+        $this->assertFalse($d->replyMatches('باهي برشا! نقترحلك hedha behi barcha chnowa t7eb', 'tn_arabic'), 'Latin Darija inside Arabic script');
+        $this->assertFalse($d->replyMatches('Behi barcha! L9itelek maryoul مليح برشا w ahla', 'tn_arabizi'), 'Arabic script inside Arabizi');
+        $this->assertTrue($d->replyMatches('باهي برشا! لقيتلك "Sandale femme" بـ 44 د.ت. شنوة التاي اللي تحب؟', 'tn_arabic', ['Sandale femme']));
+    }
+
+    public function test_no_template_fixture_reply_or_text_contains_a_forbidden_word(): void
+    {
+        $this->withoutMiddleware(\Illuminate\Routing\Middleware\ThrottleRequests::class);
+        $this->groq();
+        $composer = app(\App\Services\Chat\ReplyComposer::class);
+
+        // Every fixture prompt through the whole pipeline (templates: Groq is down)
+        foreach (require __DIR__ . '/../../../database/fixtures/chatbot_eval.php' as $fx) {
+            $res  = $this->chat($fx['say'], 'ev_' . Str::random(8), 'fr');
+            $text = $res['reply'] . ' ' . collect($res['steps'])->map(fn ($s) => $s['title'] . ' ' . $s['description'])->implode(' ')
+                . ' ' . collect($res['actions'])->map(fn ($a) => $a['label'] . ' ' . ($a['message'] ?? ''))->implode(' ');
+            $this->assertFalse($composer->containsForbiddenWord($text), "{$fx['say']} → {$text}");
+        }
+
+        // Every fixed text of the chatbot config files
+        foreach (['chatbot_darija', 'chatbot_smalltalk', 'chatbot_kb_arabizi'] as $file) {
+            $strings = [];
+            $cfg = config($file);
+            array_walk_recursive($cfg, function ($v, $k) use (&$strings, $file) {
+                if (is_string($v) && !in_array($k, ['forbidden_words'], true) && !($file === 'chatbot_darija' && in_array($k, [0, 1, 2, 3, 4, 5], true) && mb_strlen($v) < 20)) {
+                    $strings[] = $v;
+                }
+            });
+            $forbidden = config('chatbot_darija.forbidden_words');
+            foreach ($strings as $text) {
+                // the customer-input vocabulary may legitimately contain a word like "ta9chira" (no plural): only the exact forbidden forms count
+                $this->assertFalse($composer->containsForbiddenWord($text) && !in_array($text, $forbidden, true) && !$this->isInputWordList($file, $text), "{$file}: {$text}");
+            }
+        }
+    }
+
+    /** Words the customer may type (signals / lexicon lists) are input, not text the bot writes. */
+    private function isInputWordList(string $file, string $text): bool
+    {
+        return $file === 'chatbot_darija' && mb_strlen($text) < 25 && !str_contains($text, ' ');
+    }
+
+    public function test_unmatched_queries_endpoint_groups_the_messages_for_the_admin(): void
+    {
+        DB::table('chatbot_unmatched_queries')->delete();
+        foreach (['n7eb zigzog lel rjel', 'N7eb  zigzog lel rjel', 'asdf qwer'] as $message) {
+            DB::table('chatbot_unmatched_queries')->insert([
+                'message' => $message, 'dialect' => 'tn_arabizi', 'slots' => json_encode(['keywords' => ['zigzog'], 'relaxed' => ['keyword']]),
+                'result_count' => 5, 'created_at' => now(),
+            ]);
+        }
+        $admin = User::query()->forceCreate([
+            'name' => 'Admin ' . Str::random(4), 'email' => 'adm_' . Str::random(10) . '@test.local',
+            'password' => bcrypt('x-password'), 'role' => 'admin', 'is_active' => true, 'is_approved' => true,
+        ]);
+        \Laravel\Sanctum\Sanctum::actingAs($admin);
+
+        $res = $this->getJson('/api/admin/chatbot/unmatched')->assertOk()->json('data');
+
+        $this->assertSame(2, $res[0]['count'], 'spelling variants are grouped, most frequent first');
+        $this->assertSame('n7eb zigzog lel rjel', $res[0]['query']);
+
+        $this->deleteJson('/api/admin/chatbot/unmatched', ['query' => 'n7eb zigzog lel rjel'])->assertOk()->assertJsonPath('deleted', 2);
+        $this->assertSame(1, DB::table('chatbot_unmatched_queries')->count());
+
+        \Laravel\Sanctum\Sanctum::actingAs(User::query()->forceCreate([
+            'name' => 'Client', 'email' => 'cl_' . Str::random(10) . '@test.local', 'password' => bcrypt('x-password'), 'role' => 'client', 'is_active' => true,
+        ]));
+        $this->getJson('/api/admin/chatbot/unmatched')->assertStatus(403);
     }
 
     public function test_the_darija_lexicon_is_extendable_from_the_config_only(): void

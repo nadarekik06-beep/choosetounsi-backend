@@ -85,7 +85,8 @@ class LanguageDetector
         $s = $this->scores($reply);
 
         return match ($dialect) {
-            'tn_arabic', 'msa' => $s['arabic'] >= 0.6,
+            // Arabic script only: no Latin Darija words inside (product names are removed above)
+            'tn_arabic', 'msa' => $s['arabic'] >= 0.6 && $s['arabizi_strong'] === 0,
             'tn_arabizi'       => $s['arabic'] < 0.1 && ($s['arabizi_strong'] + $s['arabizi_weak']) >= 1
                                   && ($s['arabizi_strong'] + $s['arabizi_weak']) * 2 >= $s['fr'],
             'fr'               => $s['arabic'] < 0.1 && $s['arabizi_strong'] === 0 && $s['fr'] >= $s['en'],

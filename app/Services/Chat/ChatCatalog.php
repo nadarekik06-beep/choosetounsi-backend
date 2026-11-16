@@ -50,6 +50,23 @@ class ChatCatalog
         return null;
     }
 
+    /** Category slugs of some subcategory ids (the broad categories the exact product type belongs to). */
+    public function parentCategorySlugs(array $subIds): array
+    {
+        $byId = [];
+        foreach ($this->categories() as $c) {
+            $byId[(int) $c->id] = $c->slug;
+        }
+        $slugs = [];
+        foreach ($this->subcategories() as $s) {
+            if (in_array((int) $s->id, $subIds, true) && isset($byId[(int) $s->category_id])) {
+                $slugs[] = $byId[(int) $s->category_id];
+            }
+        }
+
+        return array_values(array_unique($slugs));
+    }
+
     public function conceptKeys(): array
     {
         return array_keys($this->lex->config('concepts', []));

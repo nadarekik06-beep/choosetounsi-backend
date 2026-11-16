@@ -90,14 +90,14 @@ return [
         'brother'    => ['men',   ['khouya', 'mon frère', 'mon frere', 'my brother', 'brother', 'خويا', 'اخويا', 'أخي']],
         'girl'       => ['kids_girl', ['bent', 'bnet', 'binti', 'ma fille', 'fille', 'my daughter', 'daughter', 'little girl', 'بنت', 'بنتي']],
         'boy'        => ['kids_boy',  ['weld', 'wlid', 'oulid', 'mon fils', 'garçon', 'garcon', 'my son', 'son', 'little boy', 'ولد', 'ولدي']],
-        'child'      => ['kids', ['enfant', 'enfants', 'bébé', 'bebe', 'kids', 'kid', 'child', 'children', 'baby', 'sghar', 'طفل', 'أطفال', 'اطفال', 'صغار', 'بيبي']],
+        'child'      => ['kids', ['ouled', 'oulad', 'wled', 'wlad', 'drari', 'sghar', 'sghir', 'sghira', 'enfant', 'enfants', 'bébé', 'bebe', 'kids', 'kid', 'child', 'children', 'baby', 'أولاد', 'اولاد', 'ولاد', 'درارى', 'طفل', 'أطفال', 'اطفال', 'صغار', 'صغير', 'صغيرة', 'بيبي']],
     ],
 
     // Explicit gender (regex fragments, run on the normalised message)
     'gender' => [
         'women' => ['femme', 'femmes', 'pour elle', 'for her', 'for women', 'women', 'womens', "women's", 'woman', 'ladies', 'lady',
-                    'mra', 'mara', 'nsa', 'nessa', 'nissa', 'lel nsa', 'lel mra', 'نساء', 'نسائي', 'نسائية', 'مرا', 'حريمي', 'سيدات'],
-        'men'   => ['homme', 'hommes', 'pour lui', 'for him', 'for men', 'mens', "men's", 'rajel', 'rjel', 'rijel', 'lel rjel',
+                    'mra', 'mara', 'nsa', 'nessa', 'nissa', 'nisa', 'lel nsa', 'lel nisa', 'lel mra', 'نساء', 'نسائي', 'نسائية', 'مرا', 'حريمي', 'سيدات'],
+        'men'   => ['homme', 'hommes', 'pour lui', 'for him', 'for men', 'mens', "men's", 'rajel', 'rjel', 'rjal', 'rijal', 'rijel', 'lel rjel', 'lel rjal',
                     'lel rajel', 'رجال', 'رجالي', 'رجالية', 'راجل'],
     ],
 
@@ -108,8 +108,25 @@ return [
     // sub_exclude regex fragments that remove a subcategory from `subs`
     // category   category slug, when the concept belongs to one category
     // gendered   true: Femme/Homme matters (the gender filter is applied)
-    // label      the word used in replies, per dialect
+    // broad      true: the concept is a whole category (clothes): category filter only, no subcategory / text filter
+    // The word used in replies is in `reply_terms` below (approved real words only)
     'concepts' => [
+        // BROAD: the whole Mode & Vêtements category ("dbach", "7wayej"). Never a keyword.
+        'clothes' => [
+            'terms'    => ['dbech', 'dbach', 'dbeche', 'dbesh', 'دبش', '7wayej', 'hwayej', '7weyej', 'hweyej', 'حوايج', 'حوائج', 'ta7wissa', 'lbes', 'lebsa', 'lbesa', 'لبسة', 'لبس', 'ملابس',
+                           'vetement', 'vetements', 'vêtement', 'vêtements', 'habit', 'habits', 'fringues', 'fringue', 'clothes', 'clothing', 'clothe', 'outfit', 'outfits', 'tenue', 'tenues'],
+            'keywords' => [],
+            'subs'     => [],
+            'sub_exclude' => [],
+            'category' => 'fashion-clothing',
+            'gendered' => true,
+            'broad'    => true,
+            'kids_categories' => ['kids-baby'],
+            // Kids & Baby also holds toys and bottles: for clothes only its products with one of these words count
+            'kids_name_words' => ['doudoune', 'veste', 'manteau', 'robe', 'pantalon', 'ensemble', 'tee', 'shirt', 'pull', 'sweat', 'body', 'bodysuit', 'pyjama', 'short', 'jean', 'jogging',
+                                  'gilet', 'combinaison', 'chaussure', 'basket', 'sandale', 'pantoufle', 'chaussette', 'bonnet', 'casquette', 'tenue', 'vêtement', 'jacket', 'coat', 'dress', 'pants',
+                                  'hoodie', 'sweater', 'cardigan', 'skirt', 'jupe', 'shoe', 'sandal', 'sock', 'cloth', 'wear', 'outfit', 'sleepsuit', 'romper', 'ملابس', 'حذاء'],
+        ],
         'shoes' => [
             'terms'    => ['sabat', 'sabbat', 'sbat', 'sbabet', 'sbabat', 'sabbet', 'sbebet', 'صباط', 'سباط', 'سبابط', 'صبابط', 'سبّاط', 'سباطات',
                            'chaussure', 'chaussures', 'shoe', 'shoes', 'basket', 'baskets', 'sneaker', 'sneakers', 'espadrille', 'espadrilles',
@@ -122,7 +139,6 @@ return [
             'category' => null,
             'gendered' => true,
             'child_subs' => ['kids', 'enfant', 'baby', 'bebe', 'bébé'],
-            'label'    => ['fr' => 'chaussures', 'en' => 'shoes', 'tn_arabizi' => 'sbabet', 'tn_arabic' => 'سباط', 'msa' => 'أحذية'],
         ],
         'dresses' => [
             'terms'    => ['robe', 'robes', 'rouba', 'robba', 'روبة', 'روبات', 'dress', 'dresses', 'فستان', 'فساتين'],
@@ -131,7 +147,6 @@ return [
             'sub_exclude' => ['night', 'peignoir', 'bath', 'wedding', 'mari[ée]', 'bridal', 'chambre', 'dressing'],
             'category' => null,
             'gendered' => true,
-            'label'    => ['fr' => 'robes', 'en' => 'dresses', 'tn_arabizi' => 'robat', 'tn_arabic' => 'روبات', 'msa' => 'فساتين'],
         ],
         'pants' => [
             'terms'    => ['serwel', 'sirwel', 'serwal', 'سروال', 'سراويل', 'pantalon', 'pantalons', 'jean', 'jeans', 'trouser', 'trousers', 'pants', 'jogging', 'legging', 'leggings', 'جينز'],
@@ -140,7 +155,6 @@ return [
             'sub_exclude' => [],
             'category' => null,
             'gendered' => true,
-            'label'    => ['fr' => 'pantalons', 'en' => 'pants', 'tn_arabizi' => 'sarawel', 'tn_arabic' => 'سراويل', 'msa' => 'سراويل'],
         ],
         'jebba' => [
             'terms'    => ['jebba', 'jbba', 'جبة', 'جبب', 'jebbah', 'djellaba', 'gandoura', 'قندورة', 'kaftan', 'caftan', 'قفطان'],
@@ -149,7 +163,6 @@ return [
             'sub_exclude' => [],
             'category' => null,
             'gendered' => true,
-            'label'    => ['fr' => 'jebbas', 'en' => 'jebbas', 'tn_arabizi' => 'jebba', 'tn_arabic' => 'جبة', 'msa' => 'جبة'],
         ],
         'coats' => [
             'terms'    => ['kabbout', 'kabbut', 'kabout', 'كبوط', 'قبوط', 'manteau', 'manteaux', 'veste', 'vestes', 'jacket', 'jackets', 'coat', 'coats', 'blouson', 'parka', 'doudoune', 'جاكيت', 'معطف'],
@@ -158,16 +171,14 @@ return [
             'sub_exclude' => [],
             'category' => null,
             'gendered' => true,
-            'label'    => ['fr' => 'manteaux et vestes', 'en' => 'coats and jackets', 'tn_arabizi' => 'kababet', 'tn_arabic' => 'كبابط', 'msa' => 'معاطف'],
         ],
         'tshirts' => [
-            'terms'    => ['ta9chira', 'tak9chira', 'تقشيرة', 'maryoul', 'مريول', 'tshirt', 't-shirt', 'tee', 'polo', 'تيشرت', 'maillot'],
+            'terms'    => ['ta9chira', 'tak9chira', 'تقشيرة', 'tshirt', 't-shirt', 'tee', 'polo', 'تيشرت', 'maillot'],
             'keywords' => ['t-shirt', 'tshirt', 'polo', 'تيشرت'],
             'subs'     => ['t.?shirt', '\bpolos?\b', '\btops?\b', 'maillot'],
             'sub_exclude' => [],
             'category' => null,
             'gendered' => true,
-            'label'    => ['fr' => 't-shirts', 'en' => 't-shirts', 'tn_arabizi' => 'ta9chirat', 'tn_arabic' => 'تقشيرات', 'msa' => 'قمصان'],
         ],
         'shirts' => [
             'terms'    => ['chemise', 'chemises', 'shirt', 'shirts', 'قميص', 'قمصان'],
@@ -176,16 +187,14 @@ return [
             'sub_exclude' => ['t.?shirt', 'sweat'],
             'category' => null,
             'gendered' => true,
-            'label'    => ['fr' => 'chemises', 'en' => 'shirts', 'tn_arabizi' => 'chemisat', 'tn_arabic' => 'قمصان', 'msa' => 'قمصان'],
         ],
         'sweaters' => [
-            'terms'    => ['sweat', 'sweats', 'hoodie', 'hoodies', 'pull', 'pulls', 'pullover', 'sweater', 'sweaters', 'سويت', 'بلوفر'],
+            'terms'    => ['maryoul', 'maryoulet', 'mriyoul', 'مريول', 'مراول', 'tricot', 'tricots', 'تريكو', 'sweat', 'sweats', 'sweatshirt', 'hoodie', 'hoodies', 'pull', 'pulls', 'pullover', 'sweater', 'sweaters', 'سويت', 'بلوفر'],
             'keywords' => ['sweat', 'hoodie', 'pull', 'sweater'],
-            'subs'     => ['sweat', 'hoodie', '\bpulls?\b', 'sweater', 'pullover', 'cardigan', 'knit'],
-            'sub_exclude' => [],
+            'subs'     => ['sweat', 'hoodie', '\bpulls?\b', 'sweater', 'pullover', 'cardigan', 'knitwear', 'tricot'],
+            'sub_exclude' => ['yarn', 'crochet', 'knitting', 'pants', 'trouser', 'jogg', 'short', 'tracksuit'],
             'category' => null,
             'gendered' => true,
-            'label'    => ['fr' => 'sweats et pulls', 'en' => 'sweaters', 'tn_arabizi' => 'pulat', 'tn_arabic' => 'بلوفرات', 'msa' => 'بلوفرات'],
         ],
         'skirts' => [
             'terms'    => ['jupe', 'jupes', 'skirt', 'skirts', 'jipa', 'جيبة', 'تنورة'],
@@ -194,7 +203,6 @@ return [
             'sub_exclude' => [],
             'category' => null,
             'gendered' => true,
-            'label'    => ['fr' => 'jupes', 'en' => 'skirts', 'tn_arabizi' => 'jipat', 'tn_arabic' => 'جيبات', 'msa' => 'تنانير'],
         ],
         'bags' => [
             'terms'    => ['sac', 'sacs', 'sak', 'shanta', 'chanta', 'chanta', 'شنطة', 'شكارة', 'شنط', 'حقيبة', 'حقائب', 'bag', 'bags', 'handbag', 'cabas', 'besace', 'sacoche', 'backpack', 'sac à dos'],
@@ -203,7 +211,6 @@ return [
             'sub_exclude' => ['sleeping', 'couchage', 'poubelle', 'trash', 'garbage', 'yoga'],
             'category' => null,
             'gendered' => true,
-            'label'    => ['fr' => 'sacs', 'en' => 'bags', 'tn_arabizi' => 'chnayet', 'tn_arabic' => 'شناطي', 'msa' => 'حقائب'],
         ],
         'scarves' => [
             'terms'    => ['foulard', 'foulards', 'echarpe', 'écharpe', 'scarf', 'scarves', 'sefsari', 'سفساري', 'حجاب', 'hijab', 'وشاح'],
@@ -212,7 +219,6 @@ return [
             'sub_exclude' => [],
             'category' => null,
             'gendered' => true,
-            'label'    => ['fr' => 'foulards', 'en' => 'scarves', 'tn_arabizi' => 'foularet', 'tn_arabic' => 'فولارات', 'msa' => 'أوشحة'],
         ],
         'jewelry' => [
             'terms'    => ['bijou', 'bijoux', 'jewelry', 'jewellery', 'collier', 'necklace', 'bracelet', 'bague', 'ring', 'boucles', 'خاتم', 'سوار', 'مجوهرات', 'عقد'],
@@ -221,7 +227,6 @@ return [
             'sub_exclude' => [],
             'category' => null,
             'gendered' => true,
-            'label'    => ['fr' => 'bijoux', 'en' => 'jewelry', 'tn_arabizi' => 'bijou', 'tn_arabic' => 'مجوهرات', 'msa' => 'مجوهرات'],
         ],
         'watches' => [
             'terms'    => ['mongela', 'montre', 'montres', 'watch', 'watches', 'منقالة', 'منڨالة', 'ساعة', 'ساعات'],
@@ -230,7 +235,6 @@ return [
             'sub_exclude' => ['smart', 'connect'],
             'category' => null,
             'gendered' => true,
-            'label'    => ['fr' => 'montres', 'en' => 'watches', 'tn_arabizi' => 'mongelat', 'tn_arabic' => 'منقالات', 'msa' => 'ساعات'],
         ],
         'makeup' => [
             'terms'    => ['maquillage', 'makeup', 'make-up', 'make up', 'ma9yage', 'مكياج', 'mascara', 'fond de teint', 'rouge à lèvres', 'rouge a levres', 'lipstick', 'vernis', 'ظلال'],
@@ -239,7 +243,38 @@ return [
             'sub_exclude' => [],
             'category' => 'beauty-personal-care',
             'gendered' => false,
-            'label'    => ['fr' => 'maquillage', 'en' => 'makeup', 'tn_arabizi' => 'maquillage', 'tn_arabic' => 'مكياج', 'msa' => 'مستحضرات التجميل'],
+        ],
+        'socks' => [
+            'terms'    => ['klasset', 'kalsa', 'kalsat', 'klassat', 'chaussette', 'chaussettes', 'socks', 'sock', 'كلاسات', 'كلسة'],
+            'keywords' => ['chaussette', 'socks', 'sock'],
+            'subs'     => ['\\bsocks?\\b', 'chaussette'],
+            'sub_exclude' => [],
+            'category' => null,
+            'gendered' => true,
+        ],
+        'pyjama' => [
+            'terms'    => ['pyjama', 'pyjamas', 'pijama', 'pajama', 'pajamas', 'بيجاما', 'بيجامة'],
+            'keywords' => ['pyjama', 'pajama'],
+            'subs'     => ['pyjama', 'pajama', 'sleepwear', 'nightwear'],
+            'sub_exclude' => [],
+            'category' => null,
+            'gendered' => true,
+        ],
+        'glasses' => [
+            'terms'    => ['nadharat', 'nadhara', 'nadhra', 'lunettes', 'lunette', 'glasses', 'sunglasses', 'نضارات', 'نظارات', 'نضارة'],
+            'keywords' => ['lunettes', 'sunglasses', 'glasses'],
+            'subs'     => ['sunglass', 'lunette', 'eyewear', 'eyeglass'],
+            'sub_exclude' => ['ware', 'verre', 'drink', 'cup', 'wine'],
+            'category' => null,
+            'gendered' => true,
+        ],
+        'accessories' => [
+            'terms'    => ['accessoire', 'accessoires', 'accessory', 'accessories', 'اكسسوارات', 'إكسسوارات', 'اكسسوار'],
+            'keywords' => ['accessoire', 'accessories'],
+            'subs'     => ['accessor'],
+            'sub_exclude' => ['phone', 'car', 'auto', 'pet', 'computer', 'gaming', 'kitchen', 'bath'],
+            'category' => 'fashion-clothing',
+            'gendered' => true,
         ],
         'perfume' => [
             'terms'    => ['parfum', 'parfums', 'perfume', 'fragrance', 'ri7a', 'rou7ya', 'ريحة', 'عطر', 'عطور'],
@@ -248,7 +283,6 @@ return [
             'sub_exclude' => ['diffuser', 'diffuseur', 'bougie', 'candle'],
             'category' => null,
             'gendered' => false,
-            'label'    => ['fr' => 'parfums', 'en' => 'perfumes', 'tn_arabizi' => 'ri7a', 'tn_arabic' => 'عطور', 'msa' => 'عطور'],
         ],
         'phones' => [
             'terms'    => ['telifoun', 'téléphone', 'telephone', 'portable', 'phone', 'smartphone', 'mobile', 'تليفون', 'هاتف', 'iphone', 'samsung'],
@@ -257,7 +291,6 @@ return [
             'sub_exclude' => ['case', 'coque', 'accessor', 'charger', 'chargeur', 'holder', 'support'],
             'category' => 'electronics-tech',
             'gendered' => false,
-            'label'    => ['fr' => 'téléphones', 'en' => 'phones', 'tn_arabizi' => 'telifounet', 'tn_arabic' => 'تليفونات', 'msa' => 'هواتف'],
         ],
         'honey' => [
             'terms'    => ['3asal', 'asal', '3assel', 'عسل', 'miel', 'honey'],
@@ -266,7 +299,6 @@ return [
             'sub_exclude' => [],
             'category' => 'food-grocery',
             'gendered' => false,
-            'label'    => ['fr' => 'miel', 'en' => 'honey', 'tn_arabizi' => '3asal', 'tn_arabic' => 'عسل', 'msa' => 'عسل'],
         ],
         'oliveoil' => [
             'terms'    => ['zit', 'zitouna', 'زيت', 'زيتون', 'huile', "huile d'olive", 'olive oil', 'oil'],
@@ -275,8 +307,45 @@ return [
             'sub_exclude' => ['cosmetic', 'hair', 'cheveux', 'massage', 'essential'],
             'category' => 'food-grocery',
             'gendered' => false,
-            'label'    => ['fr' => "huile d'olive", 'en' => 'olive oil', 'tn_arabizi' => 'zit zitouna', 'tn_arabic' => 'زيت زيتون', 'msa' => 'زيت زيتون'],
         ],
+    ],
+
+    // ── Words used in replies, per product type ──────────────────────────
+    // ONLY words Tunisians really use. Where they say the French word, it is the French word. No invented plurals.
+    // [singular, plural] per dialect; attr = the size question to ask: pointure (shoes), taille (clothes), none.
+    'reply_terms' => [
+        'clothes'     => ['tn_arabizi' => ['7wayej', '7wayej'], 'tn_arabic' => ['حوايج', 'حوايج'], 'fr' => ['vêtement', 'vêtements'], 'en' => ['clothing', 'clothes'], 'attr' => 'taille'],
+        'shoes'       => ['tn_arabizi' => ['sabbat', 'sbabet'], 'tn_arabic' => ['سباط', 'سباط'], 'fr' => ['chaussure', 'chaussures'], 'en' => ['shoe', 'shoes'], 'attr' => 'pointure'],
+        'dresses'     => ['tn_arabizi' => ['robe', 'robes'], 'tn_arabic' => ['روبة', 'روبات'], 'fr' => ['robe', 'robes'], 'en' => ['dress', 'dresses'], 'attr' => 'taille'],
+        'pants'       => ['tn_arabizi' => ['serwel', 'sarawel'], 'tn_arabic' => ['سروال', 'سراويل'], 'fr' => ['pantalon', 'pantalons'], 'en' => ['pair of pants', 'pants'], 'attr' => 'taille'],
+        'jebba'       => ['tn_arabizi' => ['jebba', 'jebba'], 'tn_arabic' => ['جبة', 'جبة'], 'fr' => ['jebba', 'jebbas'], 'en' => ['jebba', 'jebbas'], 'attr' => 'taille'],
+        'coats'       => ['tn_arabizi' => ['kabbout', 'kabbout'], 'tn_arabic' => ['كبوط', 'كبوط'], 'fr' => ['manteau', 'manteaux'], 'en' => ['coat', 'coats'], 'attr' => 'taille'],
+        'tshirts'     => ['tn_arabizi' => ['t-shirt', 't-shirts'], 'tn_arabic' => ['تيشرت', 'تيشرت'], 'fr' => ['t-shirt', 't-shirts'], 'en' => ['t-shirt', 't-shirts'], 'attr' => 'taille'],
+        'shirts'      => ['tn_arabizi' => ['chemise', 'chemises'], 'tn_arabic' => ['سورية', 'سورية'], 'fr' => ['chemise', 'chemises'], 'en' => ['shirt', 'shirts'], 'attr' => 'taille'],
+        'sweaters'    => ['tn_arabizi' => ['maryoul', 'maryoulet'], 'tn_arabic' => ['مريول', 'مراول'], 'fr' => ['pull', 'pulls'], 'en' => ['sweater', 'sweaters'], 'attr' => 'taille'],
+        'skirts'      => ['tn_arabizi' => ['jupe', 'jupes'], 'tn_arabic' => ['جيبة', 'جيبات'], 'fr' => ['jupe', 'jupes'], 'en' => ['skirt', 'skirts'], 'attr' => 'taille'],
+        'bags'        => ['tn_arabizi' => ['sac', 'sacs'], 'tn_arabic' => ['ساك', 'ساك'], 'fr' => ['sac', 'sacs'], 'en' => ['bag', 'bags'], 'attr' => 'none'],
+        'scarves'     => ['tn_arabizi' => ['foulard', 'foulards'], 'tn_arabic' => ['فولار', 'فولار'], 'fr' => ['foulard', 'foulards'], 'en' => ['scarf', 'scarves'], 'attr' => 'none'],
+        'jewelry'     => ['tn_arabizi' => ['bijou', 'bijoux'], 'tn_arabic' => ['بيجو', 'بيجو'], 'fr' => ['bijou', 'bijoux'], 'en' => ['jewel', 'jewelry'], 'attr' => 'none'],
+        'watches'     => ['tn_arabizi' => ['montre', 'montres'], 'tn_arabic' => ['مونتر', 'مونتر'], 'fr' => ['montre', 'montres'], 'en' => ['watch', 'watches'], 'attr' => 'none'],
+        'makeup'      => ['tn_arabizi' => ['maquillage', 'maquillage'], 'tn_arabic' => ['ماكياج', 'ماكياج'], 'fr' => ['maquillage', 'maquillage'], 'en' => ['makeup', 'makeup'], 'attr' => 'none'],
+        'perfume'     => ['tn_arabizi' => ['parfum', 'parfums'], 'tn_arabic' => ['بارفان', 'بارفان'], 'fr' => ['parfum', 'parfums'], 'en' => ['perfume', 'perfumes'], 'attr' => 'none'],
+        'phones'      => ['tn_arabizi' => ['portable', 'portables'], 'tn_arabic' => ['تليفون', 'تليفون'], 'fr' => ['téléphone', 'téléphones'], 'en' => ['phone', 'phones'], 'attr' => 'none'],
+        'honey'       => ['tn_arabizi' => ['3asal', '3asal'], 'tn_arabic' => ['عسل', 'عسل'], 'fr' => ['miel', 'miel'], 'en' => ['honey', 'honey'], 'attr' => 'none'],
+        'oliveoil'    => ['tn_arabizi' => ['zit zitouna', 'zit zitouna'], 'tn_arabic' => ['زيت زيتون', 'زيت زيتون'], 'fr' => ["huile d'olive", "huile d'olive"], 'en' => ['olive oil', 'olive oil'], 'attr' => 'none'],
+        'socks'       => ['tn_arabizi' => ['klasset', 'klasset'], 'tn_arabic' => ['كلاسات', 'كلاسات'], 'fr' => ['chaussette', 'chaussettes'], 'en' => ['sock', 'socks'], 'attr' => 'taille'],
+        'pyjama'      => ['tn_arabizi' => ['pyjama', 'pyjamas'], 'tn_arabic' => ['بيجاما', 'بيجاما'], 'fr' => ['pyjama', 'pyjamas'], 'en' => ['pajama', 'pajamas'], 'attr' => 'taille'],
+        'glasses'     => ['tn_arabizi' => ['nadharat', 'nadharat'], 'tn_arabic' => ['نضارات', 'نضارات'], 'fr' => ['lunettes', 'lunettes'], 'en' => ['glasses', 'glasses'], 'attr' => 'none'],
+        'accessories' => ['tn_arabizi' => ['accessoire', 'accessoires'], 'tn_arabic' => ['اكسسوار', 'اكسسوارات'], 'fr' => ['accessoire', 'accessoires'], 'en' => ['accessory', 'accessories'], 'attr' => 'none'],
+        // Products in general (never an invented plural)
+        '*'           => ['tn_arabizi' => ['produit', 'produits'], 'tn_arabic' => ['منتوج', 'منتوجات'], 'fr' => ['produit', 'produits'], 'en' => ['product', 'products'], 'attr' => 'none'],
+    ],
+
+    // Forms the bot must never write (invented words / plurals). A reply containing one is rejected and rewritten.
+    'forbidden_words' => [
+        'ta9chirat', 'taqchirat', 'ta9chirate', 'sweatet', 'sweatat', 'robouet', 'robat', 'chemisat', 'pulat', 'jipat', 'foularet', 'mongelat',
+        'chnayet', 'kababet', 'telifounet', 'mountejat', 'mountajat', 'sbabetat', '7wayejet', 'maryoulat', 'serwelat', 'bijoutat',
+        'تقشيرات', 'شناطي', 'كبابط', 'منقالات',
     ],
 
     // Concept words that must never count as free-text keywords.
@@ -286,6 +355,7 @@ return [
         'pour', 'for', 'ma', 'mon', 'my', '7aja', 'haja', 'un', 'une', 'want', 'shoes', 'sa7ebti', 'sahebti', 'sa7bi', 'mrati', 'rajli', 'omi', 'okhti', 'khouya', 'bouya',
         'bent', 'weld', 'akther', 'a9al', 'ta7t', 'fo9', 'rkhis', 'ghali', 'o5ra', 'okhra', 'couleur', 'color', 'colour', 'taille',
         'pointure', 'size', 'dinar', 'dinars', 'dt', 'tnd',
+        'fi', 'w', '3la', '3and', 'b', 'ma3', 'wala', 'ou', 'des', 'du', 'de', 'la', 'le', 'les', 'je', 'cherche', 'veux', 'acheter', 'achete', 'voudrais', 'i', 'to', 'buy', 'a', 'the', 'looking', 'hdiya', 'هدية', 'ya3tik', 'najem', 'tnajem', 'nal9a', 'nal9ou', 'nchouf', 'warini', 'chouf', 'show',
         'نحب', 'نشري', 'لصاحبتي', 'صاحبتي', 'مرتي', 'راجلي', 'متاع', 'باش', 'فما', 'برشا', 'باهي', 'ل', 'لل', 'و',
     ],
 
@@ -369,6 +439,19 @@ return [
             'tn_arabic' => 'نقترحلك "{name}" ({price}).',
             'msa' => 'أقترح عليك "{name}" ({price}).',
         ],
+        // The size question depends on the product type: pointure for shoes, taille for clothes, nothing otherwise
+        'ask_shoes' => [
+            'fr' => 'Quelle pointure faites-vous ?', 'en' => 'What shoe size do you wear?',
+            'tn_arabizi' => 'Chnowa el pointure li tlabes?', 'tn_arabic' => 'شنوة البوانتير اللي تلبس؟', 'msa' => 'ما هو مقاس حذائك؟',
+        ],
+        'ask_clothes' => [
+            'fr' => 'Quelle taille (S, M, L, XL) préférez-vous ?', 'en' => 'Which size (S, M, L, XL) do you prefer?',
+            'tn_arabizi' => 'Chnowa el taille li t7eb (S, M, L, XL)?', 'tn_arabic' => 'شنوة التاي اللي تحب (S, M, L, XL)؟', 'msa' => 'ما المقاس الذي تفضله (S, M, L, XL)؟',
+        ],
+        'ask_other' => [
+            'fr' => 'Quelle couleur ou quel budget avez-vous en tête ?', 'en' => 'Which color or budget do you have in mind?',
+            'tn_arabizi' => 'Chnowa el couleur wala el budget li t7eb?', 'tn_arabic' => 'شنوة اللون ولا الميزانية اللي تحب؟', 'msa' => 'ما اللون أو الميزانية التي تريدها؟',
+        ],
         'ask' => [
             'fr' => 'Quelle taille ou quelle couleur préférez-vous ?',
             'en' => 'Which size or color do you prefer?',
@@ -414,8 +497,8 @@ return [
             'size' => [
                 'fr' => "Je n'ai pas trouvé la taille {size} en stock, mais voici les articles disponibles dans d'autres tailles.",
                 'en' => "I couldn't find size {size} in stock, but here are the items in other sizes.",
-                'tn_arabizi' => 'Ma l9itech el pointure {size}, ama hedhom el mawjoudin b pointures o5ra.',
-                'tn_arabic' => 'ما لقيتش المقاس {size}، أما هاذوما الموجودين بمقاسات أخرى.',
+                'tn_arabizi' => 'Ma l9itech {sizeword} {size}, ama hedhom el mawjoudin b o5ra.',
+                'tn_arabic' => 'ما لقيتش {sizeword} {size}، أما هاذوما الموجودين بأخرى.',
                 'msa' => 'لم أجد المقاس {size}، لكن هذه المنتجات بمقاسات أخرى.',
             ],
             'price' => [
@@ -426,12 +509,27 @@ return [
                 'msa' => 'لم أجد شيئاً {range}، لكن هذه قريبة منه.',
             ],
             'subcategory' => [
-                'fr' => "Pas de résultat exact, mais voici d'autres articles de la même catégorie.",
-                'en' => 'No exact match, but here are other items from the same category.',
-                'tn_arabizi' => 'Ma l9itech bel dhabt, ama hedhom men nafs el 9ism.',
-                'tn_arabic' => 'ما لقيتش بالضبط، أما هاذوما من نفس القسم.',
-                'msa' => 'لا توجد نتيجة مطابقة، لكن هذه منتجات من نفس القسم.',
+                'fr' => "Je n'ai pas exactement cela, mais voici des {what}{gender} proches de votre demande 👇",
+                'en' => "I don't have exactly that, but here are {what}{gender} close to your request 👇",
+                'tn_arabizi' => 'Ma l9itech exactement hedha, ama hedhom {what}{gender} 9rab lel talab mte3ek 👇',
+                'tn_arabic' => 'ما لقيتش بالضبط هذا، أما هاذوما {what}{gender} قريبين لطلبك 👇',
+                'msa' => 'لا توجد نتيجة مطابقة تماماً، لكن هذه {what}{gender} قريبة من طلبك 👇',
             ],
+            'keyword' => [
+                'fr' => "Je n'ai pas exactement cela, mais voici des {what}{gender} proches de votre demande 👇",
+                'en' => "I don't have exactly that, but here are {what}{gender} close to your request 👇",
+                'tn_arabizi' => 'Ma l9itech exactement hedha, ama hedhom {what}{gender} 9rab lel talab mte3ek 👇',
+                'tn_arabic' => 'ما لقيتش بالضبط هذا، أما هاذوما {what}{gender} قريبين لطلبك 👇',
+                'msa' => 'لا توجد نتيجة مطابقة تماماً، لكن هذه {what}{gender} قريبة من طلبك 👇',
+            ],
+        ],
+        // Nothing at all in the category (+ gender): honest, then the most popular products of the nearest category
+        'none_popular' => [
+            'fr' => "Je n'ai pas de {what}{gender} pour le moment, mais voici les produits les plus populaires 👇",
+            'en' => "I don't have any {what}{gender} right now, but here are the most popular products 👇",
+            'tn_arabizi' => 'Ma 3andich {what}{gender} tawa, ama hedhom el produits eli yebi3ou barcha 👇',
+            'tn_arabic' => 'ما عندي {what}{gender} توّا، أما هاذوما المنتوجات اللي يتباعو برشا 👇',
+            'msa' => 'لا أملك {what}{gender} حالياً، لكن هذه أكثر المنتجات رواجاً 👇',
         ],
         'none' => [
             'fr' => "Désolé, je n'ai trouvé aucun(e) {what}{gender} pour le moment. Regardez la catégorie ou changez un critère.",
@@ -469,7 +567,7 @@ return [
         'other' => [
             'fr' => "Je suis là pour vous aider à trouver des produits sur Choose'Tounsi. Dites-moi ce que vous cherchez, avec un budget si vous voulez.",
             'en' => "I'm here to help you find products on Choose'Tounsi. Tell me what you're looking for, with a budget if you like.",
-            'tn_arabizi' => "Ena hna bech n3awnek tal9a mountejat fi Choose'Tounsi. 9olli chnowa t7eb, w zid el budget kan t7eb.",
+            'tn_arabizi' => "Ena hna bech n3awnek tal9a produits fi Choose'Tounsi. 9olli chnowa t7eb, w zid el budget kan t7eb.",
             'tn_arabic' => 'أنا هنا باش نعاونك تلقى منتجات في Choose\'Tounsi. قلّي شنوة تحب، وزيد الميزانية كان تحب.',
             'msa' => 'أنا هنا لمساعدتك في إيجاد المنتجات على Choose\'Tounsi. أخبرني بما تريد مع الميزانية إن أحببت.',
         ],
@@ -558,7 +656,7 @@ return [
         ],
         'fallback_pick' => [   // template reply when the reply model is down
             'fr' => 'Cliquez sur une fiche pour voir les détails.', 'en' => 'Tap a card to see the details.',
-            'tn_arabizi' => 'Dous 3al produit bech tchouf el tafasil.', 'tn_arabic' => 'اضغط على المنتج باش تشوف التفاصيل.', 'msa' => 'اضغط على المنتج لرؤية التفاصيل.',
+            'tn_arabizi' => 'Dous 3al produit bech tchouf les détails.', 'tn_arabic' => 'اضغط على المنتج باش تشوف التفاصيل.', 'msa' => 'اضغط على المنتج لرؤية التفاصيل.',
         ],
     ],
 
@@ -612,8 +710,8 @@ return [
             'tn_arabizi' => ['Kifech nkhallas?', 'kifech nkhallas?'], 'tn_arabic' => ['كيفاش نخلص؟', 'كيفاش نخلص؟'], 'msa' => ['كيف أدفع؟', 'كيف أدفع؟'],
         ],
         'more_in' => [  // link label; {what} = concept label, {gender} = gender word
-            'fr' => 'Plus de {what}{gender}', 'en' => 'More {what}{gender}',
-            'tn_arabizi' => 'Akther fel {what}{gender}', 'tn_arabic' => 'أكثر من {what}{gender}', 'msa' => 'المزيد من {what}{gender}',
+            'fr' => 'Tous les {what}{gender}', 'en' => 'All {what}{gender}',
+            'tn_arabizi' => 'Kol el {what}{gender}', 'tn_arabic' => 'كل ال{what}{gender}', 'msa' => 'كل ال{what}{gender}',
         ],
         'more_gender' => [  // appended to the link label: " lel nsa"
             'women' => ['fr' => ' pour femme', 'en' => ' for women', 'tn_arabizi' => ' lel nsa', 'tn_arabic' => ' للنساء', 'msa' => ' للنساء'],
@@ -643,11 +741,11 @@ return [
     'fewshot' => [
         'tn_arabizi' => [
             ['nheb nechri sabat el sa7ebti', 'Behi barcha! L9itelek sbabet mrigla lel sa7ebtek. "Sneakers Roz" b 79 DT behi barcha w yel7a9 3al chwaya. Chnowa el pointure mte3ha?'],
-            ['n7eb robe ka7la a9al men 150', 'Ey famma robat ka7la a9al men 150 DT. "Robe Soiree Noire" b 129 DT hiya el a7sen lel ma3rouda. T7eb nchouflek couleur o5ra?'],
+            ['n7eb robe ka7la a9al men 150', 'Ey famma robes ka7la a9al men 150 DT. "Robe Soiree Noire" b 129 DT hiya el a7sen lel ma3rouda. T7eb nchouflek couleur o5ra?'],
             ['9adeh soum el jebba?', 'El jebba "Jebba Tounsia" b 95 DT. Famma zeda "Jebba Brodé" b 120 DT. T7eb ta3ref akther 3al jebba?'],
             ['rkhis akther', 'Behi, hedhom a5ess 7aja l9itha: "Sandales Cuir" b 39 DT. Ta7ki 3al budget mte3ek bech n9arrab akther?'],
             ['bel abyedh', 'Ey, hedhom abyedh: "Basket Blanche" b 65 DT. Chnowa el pointure?'],
-            ['chnowa el 7wayej lel 3id', 'Famma barcha 7wayej lel 3id. Sbabet wala robat wala jebba? 9olli chnowa t7eb w9adech el budget.'],
+            ['chnowa el 7wayej lel 3id', 'Famma barcha 7wayej lel 3id. Sbabet wala robes wala jebba? 9olli chnowa t7eb w9adech el budget.'],
         ],
         'tn_arabic' => [
             ['نحب نشري سباط لصاحبتي', 'باهي برشا! لقيتلك سباط لصاحبتك. "Sneakers Rose" بـ 79 د.ت باهي برشا. شنوة المقاس متاعها؟'],

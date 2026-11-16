@@ -19,6 +19,31 @@ class ChatLexicon
         return config('chatbot_darija.' . $path, $default);
     }
 
+    /**
+     * The approved word for a product type in replies (config reply_terms): only words Tunisians really use.
+     * `msa` uses the Tunisian Arabic-script word. Unknown concept → the generic "products" word.
+     */
+    public function term(?string $concept, string $dialect, bool $plural = true): string
+    {
+        $terms = $this->config('reply_terms.' . ($concept ?: '*')) ?? $this->config('reply_terms.*');
+        $key   = $dialect === 'msa' ? 'tn_arabic' : $dialect;
+        $pair  = $terms[$key] ?? $terms['fr'];
+
+        return $pair[$plural ? 1 : 0];
+    }
+
+    /** The size question for a product type: pointure (shoes), taille (clothes), none. */
+    public function sizeAttr(?string $concept): string
+    {
+        return $this->config('reply_terms.' . ($concept ?: '*') . '.attr', 'none');
+    }
+
+    /** Words the bot must never write (invented forms), normalised for matching. */
+    public function forbiddenWords(): array
+    {
+        return array_map(fn ($w) => $this->norm($w), $this->config('forbidden_words', []));
+    }
+
     /** Lower-case, Western digits, Arabic spelling variants merged, repeated letters collapsed. */
     public function norm(string $text): string
     {
