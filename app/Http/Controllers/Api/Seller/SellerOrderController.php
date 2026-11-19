@@ -141,6 +141,9 @@ $mappedItems = $sellerOrder->items->map(function ($item) {
                 'id'                    => $item->id,
                 'product_id'            => $item->product_id,
                 'product_name'          => $productName,
+                // "Sur commande": display only (the seller is not chased before the preparation time)
+                'is_made_to_order'      => (bool) $item->product?->is_made_to_order,
+                'preparation_days'      => $item->product?->is_made_to_order ? $item->product->preparation_days : null,
                 'quantity'              => (int)   $item->quantity,          // kept (after refunded returns)
                 'ordered_quantity'      => $item->ordered_quantity,
                 'returned_quantity'     => (int) $item->returned_quantity,

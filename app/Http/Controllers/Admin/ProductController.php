@@ -189,9 +189,9 @@ public function index(Request $request)
             'is_approved'       => 'sometimes|boolean',
             'featured'          => 'sometimes|boolean',
             'parcel_size'       => 'sometimes|required|in:' . implode(',', \App\Support\ParcelSize::ALL),
-        ]);
+        ] + \App\Support\MadeToOrder::rules());
 
-        $fieldsToUpdate = [];
+        $fieldsToUpdate = \App\Support\MadeToOrder::attributes($request->all(), true);
         foreach (['name', 'description', 'short_description', 'price', 'stock',
                   'category_id', 'subcategory_id', 'is_approved', 'featured', 'parcel_size'] as $field) {
             if ($request->has($field)) {

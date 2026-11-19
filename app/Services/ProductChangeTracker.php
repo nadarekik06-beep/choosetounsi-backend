@@ -51,6 +51,8 @@ class ProductChangeTracker
         'occasions'         => ['settings', 'Season / occasion'],
         'delivery_fee'      => ['settings', 'Delivery fee'],
         'parcel_size'       => ['settings', 'Parcel size'],
+        'is_made_to_order'  => ['settings', 'Made to order'],
+        'preparation_days'  => ['settings', 'Preparation days'],
     ];
 
     private const VARIANT_FIELDS = [
@@ -370,8 +372,8 @@ class ProductChangeTracker
         if ($v === null) return null;
         return match ($field) {
             'price', 'delivery_fee'          => round((float) $v, 3),
-            'stock', 'category_id', 'subcategory_id', 'pack_quantity' => (int) $v,
-            'is_active', 'is_pack'           => (bool) $v,
+            'stock', 'category_id', 'subcategory_id', 'pack_quantity', 'preparation_days' => (int) $v,
+            'is_active', 'is_pack', 'is_made_to_order' => (bool) $v,
             'occasions'                      => json_encode(array_values((array) (is_string($v) ? json_decode($v, true) : $v))),
             default                          => (string) $v === '' ? null : (string) $v,
         };

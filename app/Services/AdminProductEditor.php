@@ -86,6 +86,8 @@ class AdminProductEditor
                 'featured'          => (bool) $product->featured,
                 'occasions'         => $product->occasions,
                 'parcel_size'       => $product->parcel_size ?? 'S',
+                'is_made_to_order'  => (bool) $product->is_made_to_order,
+                'preparation_days'  => $product->preparation_days,
                 // Browsing gender (Femme / Homme / unisex / kids); the admin value is gender_override
                 'gender'            => $product->gender,
                 'gender_override'   => $product->gender_override,
@@ -166,7 +168,7 @@ class AdminProductEditor
                 // No defaults: the admin enters the real price and quantity
                 'price' => null, 'stock' => null, 'category_id' => null, 'subcategory_id' => null,
                 'is_active' => true, 'is_approved' => false, 'is_pack' => false, 'pack_quantity' => null, 'pack_contents' => null,
-                'featured' => false, 'occasions' => [Occasions::DEFAULT], 'parcel_size' => 'S', 'parcel_size_confirmed' => false,
+                'featured' => false, 'occasions' => [Occasions::DEFAULT], 'parcel_size' => 'S', 'is_made_to_order' => false, 'preparation_days' => null, 'parcel_size_confirmed' => false,
                 'gender' => null, 'gender_override' => null, 'gender_source' => null,
                 'admin_note' => null, 'admin_edited_at' => null, 'admin_edited_by' => null, 'status' => 'new',
                 'rejection_reason' => null, 'created_at' => null, 'updated_at' => null, 'storefront_url' => null,
@@ -379,6 +381,8 @@ class AdminProductEditor
                     'stock'               => (int) $g['stock'],
                     'delivery_fee'        => $source->delivery_fee,
                     'parcel_size'         => $source->parcel_size ?? 'S',
+                    'is_made_to_order'    => (bool) $source->is_made_to_order,
+                    'preparation_days'    => $source->preparation_days,
                     'low_stock_threshold' => $source->low_stock_threshold,
                     'is_pack'             => (bool) $source->is_pack,
                     'pack_quantity'       => $source->pack_quantity,
@@ -511,6 +515,8 @@ class AdminProductEditor
             'pack_quantity'     => 'nullable|required_if:is_pack,true|integer|min:2|max:1000',
             'pack_contents'     => 'nullable|string|max:500',
             'parcel_size'       => 'nullable|in:' . implode(',', \App\Support\ParcelSize::ALL),
+            'is_made_to_order'  => 'nullable|boolean',
+            'preparation_days'  => 'nullable|required_if:is_made_to_order,1,true,on,yes|integer|min:1|max:30',
             'gender'            => 'nullable|in:' . implode(',', array_merge(\App\Services\Gender\GenderResolver::ALL, ['auto'])),
             'occasions'        => 'required|array|min:1',
             'occasions.*'       => 'string|in:' . implode(',', Occasions::keys()),
@@ -709,7 +715,7 @@ class AdminProductEditor
             // The admin chose the size: confirmed (it sets the delivery included in the displayed price)
             'parcel_size_confirmed_at' => !empty($data['parcel_size']) ? now() : $product->parcel_size_confirmed_at,
             'admin_note'        => trim((string) ($data['admin_note'] ?? '')) ?: null,
-        ]);
+        ] + \App\Support\MadeToOrder::attributes($data, (bool) $product->exists));
         $product->save();
         $product->syncOccasions(Occasions::forCategory($product->category_id, $data['occasions']));
 

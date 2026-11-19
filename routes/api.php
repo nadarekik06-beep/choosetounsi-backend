@@ -118,6 +118,7 @@ Route::get('/search/image/status',  [\App\Http\Controllers\Api\SearchController:
 Route::post('/search/image/click',  [\App\Http\Controllers\Api\SearchController::class, 'imageClick'])->middleware('throttle:30,1');
 Route::get('/search/suggestions', [\App\Http\Controllers\Api\SearchController::class, 'suggestions']);
 Route::get('/site-features',           [\App\Http\Controllers\Api\SiteFeaturesController::class, 'show']);
+Route::get('/delivery-time',            [\App\Http\Controllers\Api\DeliveryTimeController::class, 'show']);
 Route::get('/brand-products',          [PublicBrandProductController::class, 'index']);
 Route::get('/brand-products/featured', [PublicBrandProductController::class, 'featured']);
 Route::get('/brand-products/{slug}',   [PublicBrandProductController::class, 'show']);
@@ -765,6 +766,8 @@ Route::middleware('auth:sanctum')->group(function () {
         // Delivery & Fees (+ checkout payment-method switches)
         Route::get('/delivery-settings', [\App\Http\Controllers\Admin\DeliverySettingsController::class, 'show']);
         Route::put('/delivery-settings', [\App\Http\Controllers\Admin\DeliverySettingsController::class, 'update']);
+        Route::get('/delivery-time', [\App\Http\Controllers\Api\DeliveryTimeController::class, 'show']);
+        Route::put('/delivery-time', [\App\Http\Controllers\Api\DeliveryTimeController::class, 'update']);
         // Intigo: overview, logs, pickup addresses, per-parcel send / cancel / size
         Route::get('/intigo',                    [\App\Http\Controllers\Admin\IntigoController::class, 'overview']);
         Route::get('/intigo/logs/{id}',          [\App\Http\Controllers\Admin\IntigoController::class, 'log'])->whereNumber('id');

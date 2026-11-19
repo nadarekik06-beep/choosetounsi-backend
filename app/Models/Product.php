@@ -23,7 +23,7 @@ class Product extends Model
     protected $fillable = [
         'seller_id', 'category_id', 'subcategory_id',
         'name', 'slug', 'description', 'short_description',
-        'price', 'delivery_fee', 'parcel_size', 'parcel_size_confirmed_at', 'stock', 'low_stock_threshold', 'sku',
+        'price', 'delivery_fee', 'parcel_size', 'parcel_size_confirmed_at', 'is_made_to_order', 'preparation_days', 'stock', 'low_stock_threshold', 'sku',
         'is_approved', 'is_active', 'is_platform_product', 'featured', 'views',
         'is_pack', 'pack_quantity', 'pack_contents', 'rejection_reason', 'deleted_by_seller',
         'changes_requested_at',
@@ -38,6 +38,8 @@ class Product extends Model
         'price'               => 'decimal:3',
         'delivery_fee'        => 'decimal:3',   // legacy (seller-offered free delivery): no longer read
         'parcel_size_confirmed_at' => 'datetime',
+        'is_made_to_order'    => 'boolean',
+        'preparation_days'    => 'integer',
         'is_pack'             => 'boolean',
         'pack_quantity'       => 'integer',
         'low_stock_threshold' => 'integer',

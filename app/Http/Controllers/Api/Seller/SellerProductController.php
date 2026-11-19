@@ -277,7 +277,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
         // Parcel size for the courier (S = small, L = large, XL = extra large): sets the delivery price
         'parcel_size' => 'required|in:' . implode(',', \App\Support\ParcelSize::ALL),
         'short_description' => 'nullable|string|max:500',
-    ] + ProductListingRules::variantStockRules(), [
+    ] + \App\Support\MadeToOrder::rules() + ProductListingRules::variantStockRules(), [
         'parcel_size.required' => __('seller.product.parcel_size_required'),
         'parcel_size.in'       => __('seller.product.parcel_size_required'),
         'variants.*.stock.*'   => __('seller.product.rules.variant_stock_integer'),
@@ -351,7 +351,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                     'parcel_size'  => $request->input('parcel_size'),
                     'parcel_size_confirmed_at' => now(),
                     'low_stock_threshold' => $request->filled('low_stock_threshold') ? (int) $request->low_stock_threshold : null,
-                ]));
+                ] + \App\Support\MadeToOrder::attributes($request->all())));
                 ProductIdentifiers::assignSku($product);
                 $product->syncOccasions($merch['occasions']);
                 Log::info('[SellerProduct::store] Product created', ['id' => $product->id]);
@@ -423,7 +423,7 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
             'parcel_size'         => 'sometimes|required|in:' . implode(',', \App\Support\ParcelSize::ALL),
             'stock'               => 'sometimes|nullable|integer|min:0',
             'short_description'   => 'nullable|string|max:500',
-        ] + ProductListingRules::variantStockRules(), [
+        ] + \App\Support\MadeToOrder::rules() + ProductListingRules::variantStockRules(), [
             'parcel_size.required' => __('seller.product.parcel_size_required'),
             'parcel_size.in'       => __('seller.product.parcel_size_required'),
             'variants.*.stock.*'   => __('seller.product.rules.variant_stock_integer'),
@@ -489,7 +489,8 @@ $product->variant_rows = $product->variants->map(function ($v) use ($appUrl) {
                 'pack_quantity'     => $merch['pack_quantity'],
                 'pack_contents'     => $merch['pack_contents'],
                 'parcel_size'  => $request->input('parcel_size', $product->parcel_size ?? 'S'),
-            ] + ($request->filled('parcel_size') ? ['parcel_size_confirmed_at' => now()] : [])   // the seller chose (or confirmed) it
+            ] + \App\Support\MadeToOrder::attributes($request->all(), true)
+              + ($request->filled('parcel_size') ? ['parcel_size_confirmed_at' => now()] : [])   // the seller chose (or confirmed) it
               + ($request->exists('low_stock_threshold')
                 ? ['low_stock_threshold' => $request->filled('low_stock_threshold') ? (int) $request->low_stock_threshold : null]
                 : []

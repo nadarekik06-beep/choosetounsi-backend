@@ -159,7 +159,7 @@ class OrderController extends Controller
         $order = Order::with([
             'user:id,name,email',
             'items',
-            'items.product:id,name,slug,is_platform_product',
+            'items.product:id,name,slug,is_platform_product,is_made_to_order,preparation_days',
             'items.product.primaryImage',
             'items.variant:id,product_id,sku',
             'items.variant.images',

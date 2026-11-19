@@ -5,6 +5,8 @@ namespace App\Services\Orders\WhatsApp;
 use App\Models\SellerOrder;
 use App\Models\SellerOrderReminder;
 use App\Models\User;
+use App\Support\BusinessDays;
+use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
@@ -20,6 +22,12 @@ use Illuminate\Support\Facades\DB;
  *   attempt 2 sent        overdue_at = 4 working hours later: still not prepared
  *                         by then → overdue (red in the admin panel, call the seller)
  *   prepared / cancelled / handed to the courier → open reminders cancelled
+ *
+ * Made-to-order ("sur commande") parcels: the longest preparation time among their
+ * items (preparation_days, business days: same rules and holidays as the storefront
+ * delivery estimate, see BusinessDays) shifts reminder 1 and the overdue flag, so the
+ * seller is not chased while still making the item. Parcels with no made-to-order
+ * item keep the 2h / 4h timing exactly.
  *
  * Working hours: ReminderSchedule. Due switching: orders:whatsapp-reminders.
  */
@@ -90,8 +98,9 @@ class SellerReminderService
             if ($attempt === 1) {
                 $this->create($parcel, 2, ReminderSchedule::dueAfter($now, config('seller_whatsapp.delays.reminder_2')));
             } elseif ($attempt === 2) {
+                $from = $this->notBefore($now, $this->readyAt($parcel, $parcel->admin_confirmed_at ?? $now));
                 DB::table('seller_orders')->where('id', $parcel->id)
-                    ->update(['overdue_at' => ReminderSchedule::dueAfter($now, config('seller_whatsapp.delays.overdue'))]);
+                    ->update(['overdue_at' => ReminderSchedule::dueAfter($from, config('seller_whatsapp.delays.overdue'))]);
             }
 
             return $reminder->fresh();
@@ -175,7 +184,38 @@ class SellerReminderService
     private function createInitial(SellerOrder $parcel, CarbonInterface $at): void
     {
         $this->create($parcel, 0, $at, SellerOrderReminder::DUE);
-        $this->create($parcel, 1, ReminderSchedule::dueAfter($at, config('seller_whatsapp.delays.reminder_1')));
+        $from = $this->notBefore($at, $this->readyAt($parcel, $at));
+        $this->create($parcel, 1, ReminderSchedule::dueAfter($from, config('seller_whatsapp.delays.reminder_1')));
+    }
+
+    /** Longest preparation time (business days) among the parcel's made-to-order items; 0 = none. */
+    public function preparationDays(SellerOrder $parcel): int
+    {
+        return (int) DB::table('order_items as oi')
+            ->join('products as p', 'p.id', '=', 'oi.product_id')
+            ->where('oi.seller_order_id', $parcel->id)
+            ->where('p.is_made_to_order', true)
+            ->max('p.preparation_days');
+    }
+
+    /**
+     * When the seller is expected to have the parcel ready: opening time (Tunis) of the day
+     * reached $days business days after $from. NULL for parcels with no made-to-order item.
+     */
+    private function readyAt(SellerOrder $parcel, CarbonInterface $from): ?Carbon
+    {
+        $days = $this->preparationDays($parcel);
+        if ($days < 1) {
+            return null;
+        }
+        [$h, $m] = array_map('intval', explode(':', config('seller_whatsapp.working_hours.start')) + [1 => 0]);
+        return BusinessDays::add(Carbon::instance($from), $days)->setTime($h, $m);
+    }
+
+    /** The later of $now and $ready ($ready NULL = $now, i.e. unchanged timing). */
+    private function notBefore(CarbonInterface $now, ?Carbon $ready): CarbonInterface
+    {
+        return $ready && $ready->gt($now) ? $ready : $now;
     }
 
     private function create(SellerOrder $parcel, int $attempt, CarbonInterface $dueAt, string $status = SellerOrderReminder::PENDING): void
