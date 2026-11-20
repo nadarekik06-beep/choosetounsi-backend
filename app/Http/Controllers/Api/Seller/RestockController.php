@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Services\RestockService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -61,6 +62,88 @@ class RestockController extends Controller
             \App\Observers\ForecastTriggers::dispatch((int) $product->seller_id);
         }
         return $response;
+    }
+
+    /**
+     * PATCH /api/seller/products/{id}/stock
+     *
+     * Quick stock editor of the Produits list. Stock ONLY: price, status and
+     * validation fields are never touched, and no admin re-validation happens.
+     *   products with variants → { variants: [{ variant_id, stock }] }
+     *   simple products        → { stock }
+     * A product or variant that is not the seller's → 403.
+     */
+    public function updateStock(Request $request, int $id)
+    {
+        $seller  = $request->user();
+        $product = Product::find($id);
+        if (!$product || (int) $product->seller_id !== (int) $seller->id) {
+            return response()->json(['success' => false, 'message' => __('seller.restock.failed')], 403);
+        }
+
+        $hasVariants = $product->variants()->exists();
+        $wanted = collect();
+
+        if ($hasVariants) {
+            $data = $request->validate([
+                'variants'              => 'required|array|min:1|max:500',
+                'variants.*.variant_id' => 'required|integer',
+                'variants.*.stock'      => 'required|integer|min:0|max:99999',
+            ]);
+            $wanted = collect($data['variants'])->pluck('stock', 'variant_id');
+            $owned  = $product->variants()->whereIn('id', $wanted->keys())->pluck('id');
+            if ($owned->count() !== $wanted->count()) {
+                return response()->json(['success' => false, 'message' => __('seller.restock.failed')], 403);
+            }
+        } else {
+            $data = $request->validate(['stock' => 'required|integer|min:0|max:99999']);
+        }
+
+        $tracker = app(\App\Services\ProductChangeTracker::class);
+        $before  = $tracker->snapshot($product);
+
+        try {
+            DB::transaction(function () use ($product, $hasVariants, $data, $wanted) {
+                if ($hasVariants) {
+                    $rows = $product->variants()->whereIn('id', $wanted->keys())->lockForUpdate()->get();
+                    foreach ($rows as $v) {
+                        $new = (int) $wanted[$v->id];
+                        if ((int) $v->stock !== $new) $v->update(['stock' => $new]);
+                    }
+                    // Same rule as the restock endpoint: product stock = sum of its variants
+                    $product->update(['stock' => (int) $product->variants()->sum('stock')]);
+                } else {
+                    $product->update(['stock' => (int) $data['stock']]);
+                }
+            });
+        } catch (\Throwable $e) {
+            Log::error('[StockQuick] failed', ['product_id' => $product->id, 'error' => $e->getMessage()]);
+            return response()->json(['success' => false, 'message' => __('seller.restock.failed')], 500);
+        }
+
+        $product = $product->fresh();
+        // Stock-only change set: logged, never notifies admins
+        $tracker->record($product, $before, $seller, 'restock', false);
+        \App\Observers\ForecastTriggers::dispatch((int) $product->seller_id);
+
+        $variants = $hasVariants
+            ? $product->variants()->get(['id', 'stock', 'is_active'])->map(fn($v) => [
+                'id' => $v->id, 'stock' => (int) $v->stock, 'is_active' => (bool) $v->is_active,
+            ])->values()
+            : collect();
+
+        return response()->json([
+            'success' => true,
+            'data'    => [
+                'id'            => $product->id,
+                'stock'         => (int) $product->stock,
+                'has_variants'  => $hasVariants,
+                'variant_stock' => $hasVariants ? (int) $product->variants()->where('is_active', true)->sum('stock') : null,
+                'is_active'     => (bool) $product->is_active,
+                'is_approved'   => (bool) $product->is_approved,
+                'variants'      => $variants,
+            ],
+        ]);
     }
 
     // ── Private handlers ────────────────────────────────────────────────────

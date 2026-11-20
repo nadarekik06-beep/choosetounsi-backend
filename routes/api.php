@@ -444,6 +444,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/products/{id}', [SellerProductController::class, 'destroy']);
 
         Route::post('/products/{id}/restock', [RestockController::class, 'restock']);
+        Route::patch('/products/{id}/stock',  [RestockController::class, 'updateStock'])->middleware('throttle:120,1');
 
         Route::delete('/products/{id}/images/{imageId}',        [SellerProductController::class, 'destroyImage']);
         Route::patch('/products/{id}/images/{imageId}/primary', [SellerProductController::class, 'setPrimaryImage']);

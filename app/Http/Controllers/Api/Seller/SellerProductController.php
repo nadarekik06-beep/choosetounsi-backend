@@ -49,6 +49,16 @@ class SellerProductController extends Controller
             $query->where('is_approved', filter_var($request->is_approved, FILTER_VALIDATE_BOOLEAN));
         }
 
+        // Restock filter: effective stock = active variants' sum, or the product's own stock
+        if (in_array($request->input('stock_filter'), ['out', 'low'], true)) {
+            $eff = '(CASE WHEN EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = products.id)
+                          THEN (SELECT COALESCE(SUM(pv.stock),0) FROM product_variants pv WHERE pv.product_id = products.id AND pv.is_active = 1)
+                          ELSE products.stock END)';
+            $request->input('stock_filter') === 'out'
+                ? $query->whereRaw("$eff <= 0")
+                : $query->whereRaw("$eff BETWEEN 0 AND 5"); // low = restock list: sold out + 1–5
+        }
+
         $products = $query->orderByDesc('created_at')
             ->paginate((int) $request->input('per_page', 12));
 
