@@ -347,6 +347,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/payment-requests/{id}/cancel', [\App\Http\Controllers\Api\Seller\SellerPaymentRequestController::class, 'cancel'])->whereNumber('id');
         //----─ Commission Calculation (for frontend preview) ─────────────────────────
         Route::post('/commission/calculate', [CommissionController::class, 'calculate']);
+        Route::post('/commission/pack-preview', [CommissionController::class, 'packPreview']);   // = what checkout charges a pack
+        Route::get('/commission/offers',     [CommissionController::class, 'offers']);           // special commissions on my products
+        Route::get('/commission/upgrade-nudge', [CommissionController::class, 'upgradeNudge']);   // plan-upgrade savings from my real sales
         Route::get('/shipping-cost',         [CommissionController::class, 'shippingCost']);
 
         // ── Advanced Analytics (Red Pepper +) ─────────────────────────────
@@ -928,6 +931,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // ── Subscription plans + platform default commission ─────────────────
     Route::prefix('subscription-plans')->group(function () {
         Route::get('/',              [AdminPlanController::class, 'index']);
+        Route::get('/commission-range', [AdminPlanController::class, 'commissionRange']);
         Route::post('/',             [AdminPlanController::class, 'store']);
         Route::put('/{id}',          [AdminPlanController::class, 'update']);
         Route::patch('/{id}/toggle', [AdminPlanController::class, 'toggle']);
@@ -945,6 +949,22 @@ Route::middleware('auth:sanctum')->group(function () {
     });
     Route::get('/commission-settings', [AdminPlanController::class, 'commissionSettings']);
     Route::put('/commission-settings', [AdminPlanController::class, 'updateCommissionSettings']);
+
+    // ── Special commissions: admin-set rate on chosen products of a seller ──
+    Route::prefix('special-commissions')->group(function () {
+        $c = \App\Http\Controllers\Admin\AdminSpecialCommissionController::class;
+        Route::get('/',                          [$c, 'index']);
+        Route::get('/sellers',                   [$c, 'sellers']);
+        Route::get('/sellers/{sellerId}/products', [$c, 'sellerProducts'])->whereNumber('sellerId');
+        Route::post('/preview',                  [$c, 'preview']);
+        Route::post('/preview-price',            [$c, 'previewPrice']);
+        Route::get('/logs',                      [$c, 'logs']);
+        Route::get('/product/{productId}',       [$c, 'forProduct'])->whereNumber('productId');
+        Route::post('/',                         [$c, 'store']);
+        Route::put('/{id}',                      [$c, 'update'])->whereNumber('id');
+        Route::post('/{id}/end',                 [$c, 'end'])->whereNumber('id');
+        Route::delete('/{id}',                   [$c, 'destroy'])->whereNumber('id');
+    });
 
 
     }); // ← admin group ends HERE

@@ -37,6 +37,9 @@ class Kernel extends ConsoleKernel
        });
         // ── Promotions sync (existing) ─────────────────────────────────────
         $schedule->command('promotions:sync')->everyMinute();
+        // Product special commissions: switch off the ones that are over + the 3-day reminder.
+        // (Rates never wait for this: they compare dates at calculation time.)
+        $schedule->command('commission-overrides:process')->hourly()->withoutOverlapping();
         // Unpaid card orders older than 30 min: stock, flash quota and coupon use go back
         $schedule->command('orders:cancel-abandoned-card')->everyFiveMinutes()->withoutOverlapping();
         // Confirmed sub-orders still not ready for pickup after 24h (no-op unless SELLER_PICKUP_REMINDER=true)

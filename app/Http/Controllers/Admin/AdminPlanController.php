@@ -36,6 +36,15 @@ class AdminPlanController extends Controller
 {
     public function __construct(private CommissionService $commission) {}
 
+    /** GET /admin/subscription-plans/commission-range?flat=&reduction= — the range the plan editor previews (single source: CommissionService). */
+    public function commissionRange(Request $request): JsonResponse
+    {
+        $d = $request->validate(['flat' => 'nullable|numeric|min:0|max:100', 'reduction' => 'nullable|numeric|min:0|max:100']);
+        return response()->json(['success' => true, 'data' => $this->commission->rateRange(
+            isset($d['flat']) ? (float) $d['flat'] : null, (float) ($d['reduction'] ?? 0)
+        )]);
+    }
+
     public function index(Request $request): JsonResponse
     {
         $plans = SubscriptionPlan::query()

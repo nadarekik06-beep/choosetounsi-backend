@@ -342,6 +342,9 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
                 'paid_total'      => round((float) ($item->net_total ?? ($lineTotal - $discount)), 3),
                 'product_deleted' => !$product || $product->trashed(),
                 'variant_deleted' => $item->variant_id !== null && !$variant,
+                // The rate this line was charged (snapshot) and whether an admin special offer set it
+                'commission_percentage' => $item->commission_percentage !== null ? (float) $item->commission_percentage : null,
+                'special_offer'         => $item->commission_override_id !== null,
             ];
         })->values();
 

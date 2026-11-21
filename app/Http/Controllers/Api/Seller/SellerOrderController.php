@@ -134,7 +134,9 @@ $mappedItems = $sellerOrder->items->map(function ($item) {
             // is the platform's net take, so the charged commission = stored + funded.
             $funded           = round((float) ($item->platform_funded_amount ?? 0), 3);
             $commissionAmount = round((float) ($item->commission_amount ?? 0) + $funded, 3);
-            $hasCommission    = (float) ($item->commission_percentage ?? 0) > 0 || $commissionAmount > 0;
+            // Legacy rule unchanged; a line priced by a product special commission always counts (it can be 0 %).
+            $isSpecial        = $item->commission_override_id !== null;
+            $hasCommission    = (float) ($item->commission_percentage ?? 0) > 0 || $commissionAmount > 0 || $isSpecial;
 
             return [
                 // ── Core fields ───────────────────────────────────────────
@@ -165,6 +167,8 @@ $mappedItems = $sellerOrder->items->map(function ($item) {
                 'commission_amount'     => $hasCommission ? round($commissionAmount, 3)            : null,
                 'seller_amount'         => $hasCommission ? round((float) $item->seller_amount, 3) : null,
                 'plan_used'             => $hasCommission ? $item->plan_used                       : null,
+                // Admin special offer on this product when the order was placed (the admin's note is never sent)
+                'special_offer'         => $isSpecial,
 
                 // ── Discount snapshot (AUDIT M-4 / M-7 / M-8) ─────────────
                 'discount_type'           => $item->discount_type,            // promotion | flash_sale | pack | coupon | none | null (older orders)
@@ -183,7 +187,7 @@ $mappedItems = $sellerOrder->items->map(function ($item) {
         // Aggregate only from items that have commission data.
         // For legacy orders: has_commission = false, amounts = null.
         // Refunded returns already took their units / commission off the lines
-        $commissionItems = $sellerOrder->items->filter(fn($i) => (float) ($i->commission_percentage ?? 0) > 0 || (float) ($i->commission_amount ?? 0) > 0);
+        $commissionItems = $sellerOrder->items->filter(fn($i) => (float) ($i->commission_percentage ?? 0) > 0 || (float) ($i->commission_amount ?? 0) > 0 || $i->commission_override_id !== null);
 $totalFunded      = round($sellerOrder->items->sum(fn($i) => (float) ($i->platform_funded_amount ?? 0)), 3);
 $hasAnyCommission = $commissionItems->isNotEmpty();
 

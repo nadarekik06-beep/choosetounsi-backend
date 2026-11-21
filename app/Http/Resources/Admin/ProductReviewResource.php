@@ -270,7 +270,7 @@ class ProductReviewResource extends JsonResource
         // Bracket from the original price, rate on the final price (AUDIT M-7)
         $funded     = $active && $active->isPlatformFunded()
             ? \App\Support\Millimes::of($priced['original_price']) - \App\Support\Millimes::of($effective) : 0;
-        $calc       = $commission->calculateForSeller($p->seller_id, round($effective, 3), 1, 0.0, (float) $priced['original_price'], $funded);
+        $calc       = $commission->calculateForSeller($p->seller_id, round($effective, 3), 1, 0.0, (float) $priced['original_price'], $funded, $p->id);
 
         $formatPromo = fn($promo) => [
             'id'             => $promo->id,
@@ -319,12 +319,16 @@ class ProductReviewResource extends JsonResource
                 'plan_reduction'   => $calc['plan_reduction'],
                 'rate'             => $calc['commission_percentage'],
                 'source'           => $calc['commission_source'],
+                // Admin special commission live on this product (null when none) and the rate it replaces
+                'special_offer'    => $calc['commission_override_id'] !== null,
+                'normal_rate'      => $calc['normal_rate'],
+                'override_id'      => $calc['commission_override_id'],
                 'commission_amount'=> $calc['commission_amount'],
                 'seller_payout'    => $calc['seller_amount'],
                 // Payout at the extremes of the variant price range
                 'payout_range'     => $min !== $max ? [
-                    'min' => $commission->calculateForSeller($p->seller_id, $min)['seller_amount'],
-                    'max' => $commission->calculateForSeller($p->seller_id, $max)['seller_amount'],
+                    'min' => $commission->calculateForSeller($p->seller_id, $min, 1, 0.0, null, 0, $p->id)['seller_amount'],
+                    'max' => $commission->calculateForSeller($p->seller_id, $max, 1, 0.0, null, 0, $p->id)['seller_amount'],
                 ] : null,
             ],
         ];

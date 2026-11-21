@@ -211,6 +211,10 @@ class OrderController extends Controller
             'total_commission' => round($nonReturnedItems->sum('commission_amount'), 3),
             'total_seller'     => round($nonReturnedItems->sum('seller_amount'),     3),
         ];
+        // Effective rate over the order's net items, from the stored snapshots (the admin screen only displays it)
+        $commissionSummary['effective_rate'] = $commissionSummary['net_total'] > 0
+            ? round($commissionSummary['total_commission'] / $commissionSummary['net_total'] * 100, 1)
+            : 0.0;
 
         // Shipping: the agency always bills the order; on free-shipping orders
         // the seller pays it out of their earnings.

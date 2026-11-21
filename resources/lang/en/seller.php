@@ -434,6 +434,28 @@ return [
             'action_seller' => 'View Complaint',
             'outro' => 'Please review and respond to this complaint as soon as possible.',
         ],
+        'special_commission' => [
+            'mail_action' => 'View my products',
+            'points' => 'pts',
+            'granted' => [
+                'title' => 'Special commission on your product',
+                'body' => 'Choose\'Tounsi granted a special commission on ":name": :offer (no end date).',
+                'body_until' => 'Choose\'Tounsi granted a special commission on ":name": :offer, until :end.',
+                'body_from' => 'Choose\'Tounsi granted a special commission on ":name": :offer, from :start until :end.',
+                'subject' => 'Special commission on ":name"',
+            ],
+            'reminder' => [
+                'title' => 'Your special commission ends soon',
+                'body' => 'The special commission on ":name" (:offer) ends on :end. After that, your usual commission applies.',
+                'subject' => 'Your special commission on ":name" ends soon',
+            ],
+            'ended' => [
+                'title' => 'Special commission ended',
+                'body' => 'The special commission on ":name" has ended. Your usual commission applies to new orders.',
+                'subject' => 'Special commission ended on ":name"',
+            ],
+            'orders_note' => 'Orders already placed keep the commission they were placed with.',
+        ],
         'product_added_by_admin' => [
             'title' => 'New product in your shop',
             'body' => 'Choose\'Tounsi added a product to your shop: :name',

@@ -133,6 +133,8 @@ class FreeDeliveryRulesTest extends TestCase
 
     public function test_seller_invoice_shows_client_amounts_only(): void
     {
+        // The invoice endpoint ships switched off (SELLER_INVOICE_ENABLED, default false, since 30bfde4): turn it on here
+        config(['platform.seller_invoice_enabled' => true]);
         $seller = $this->seller('free');
         $this->addToCart($this->item($seller, 30, 'S'));
         $this->addToCart($this->item($seller, 80, 'L'));

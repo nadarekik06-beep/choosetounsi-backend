@@ -49,9 +49,10 @@ class FinancialSnapshotService
 
             // Snapshot which rate applied and where it came from (items with
             // commission only — pack follower rows carry 0 by design).
+            // A line priced by a product special commission counts as rated even at 0%.
             $rated = DB::table('order_items')
                 ->where('seller_order_id', $sellerOrderId)
-                ->where('commission_amount', '>', 0)
+                ->where(fn ($q) => $q->where('commission_amount', '>', 0)->orWhereNotNull('commission_override_id'))
                 ->get(['commission_percentage', 'commission_source', 'plan_used', 'net_total', 'commission_amount']);
             $ratedNet  = (float) $rated->sum('net_total');
             $sources   = $rated->pluck('commission_source')->filter()->unique();
@@ -93,11 +94,12 @@ class FinancialSnapshotService
     public function snapshotParcel(int $sellerOrderId, array $parcel): void
     {
         $items = DB::table('order_items')->where('seller_order_id', $sellerOrderId)
-            ->get(['commission_percentage', 'commission_source', 'plan_used', 'net_total', 'commission_amount', 'seller_amount']);
+            ->get(['commission_percentage', 'commission_source', 'commission_override_id', 'plan_used', 'net_total', 'commission_amount', 'seller_amount']);
 
         $commissionM  = $items->sum(fn ($i) => Millimes::of($i->commission_amount));
         $sellerItemsM = $items->sum(fn ($i) => Millimes::of($i->seller_amount));
-        $rated        = $items->filter(fn ($i) => Millimes::of($i->commission_amount) > 0);
+        // A line priced by a product special commission counts as rated even at 0%.
+        $rated        = $items->filter(fn ($i) => Millimes::of($i->commission_amount) > 0 || $i->commission_override_id !== null);
         $ratedNetM    = $rated->sum(fn ($i) => Millimes::of($i->net_total));
         $sources      = $rated->pluck('commission_source')->filter()->unique();
 

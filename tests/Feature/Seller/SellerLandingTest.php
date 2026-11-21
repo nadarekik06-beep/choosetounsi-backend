@@ -61,7 +61,8 @@ class SellerLandingTest extends TestCase
 
         $this->assertNotNull($row);
         $this->assertSame('Poterie Nabeul', $row['business_name']);
-        $this->assertSame('Nabeul', $row['wilaya']);
+        // Seller location is not public (06f1f9d "Hide seller location from public storefront"): no wilaya, no city
+        $this->assertArrayNotHasKey('wilaya', $row);
         $this->assertSame('Céramique faite main depuis 1982.', $row['quote']);
         $this->assertArrayNotHasKey('city', $row);
         $this->assertNull($sellers->firstWhere('business_name', 'Inactive Shop'));

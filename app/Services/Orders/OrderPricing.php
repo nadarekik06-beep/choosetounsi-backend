@@ -16,6 +16,8 @@ use App\Services\Pricing\PricingService;
 use App\Services\PromotionService;
 use App\Support\Millimes;
 use App\Support\ParcelSize;
+use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
 
 /**
@@ -280,6 +282,70 @@ class OrderPricing
     }
 
     /**
+     * The commission of ONE priced line: the single call checkout, the quote and
+     * every preview share, so they can never disagree. The product id lets a live
+     * special commission on that product apply (per line, so per pack item too).
+     */
+    private function lineCommission(?int $sellerId, array $line, int $discountM, CarbonInterface $at): array
+    {
+        $qty = $line['kind'] === 'pack' ? $line['pack_quantity'] : $line['quantity'];
+        return $this->commission->calculateForSeller(
+            $sellerId,
+            Millimes::toFloat($line['unit_m']),
+            $qty,
+            Millimes::toFloat($discountM),
+            Millimes::toFloat($line['tier_m']),
+            (int) ($line['funded_m'] ?? 0),
+            isset($line['product']) ? (int) $line['product']->id : null,
+            $at,
+        );
+    }
+
+    /**
+     * What checkout will charge for a pack, line by line, without a cart: the pack price is
+     * split with the same splitByWeight() as packLines(), then every line goes through the
+     * same lineCommission(). Used by the seller pack form.
+     *
+     * @param  array<int, array{product: Product, variant: ?ProductVariant, per_pack: int}> $items
+     * @return array{lines: array, commission_m: int, seller_m: int, price_m: int}
+     */
+    public function previewPack(?int $sellerId, int $priceM, array $items, int $packQty = 1, ?CarbonInterface $at = null): array
+    {
+        $at = $at ?? Carbon::now();
+        $weights = [];
+        foreach ($items as $i => $item) {
+            $weights[$i] = Millimes::of(PromotionService::basePrice($item['product'], $item['variant'] ?? null)) * max(1, (int) $item['per_pack']);
+        }
+        $shares = $this->splitByWeight($priceM, $weights);
+
+        $lines = [];
+        $commissionM = $sellerM = 0;
+        foreach ($items as $i => $item) {
+            $perPack = max(1, (int) $item['per_pack']);
+            $line = [
+                'kind' => 'pack', 'pack_quantity' => $packQty, 'product' => $item['product'],
+                'quantity' => $perPack * $packQty, 'unit_m' => $shares[$i], 'funded_m' => 0,
+                'tier_m' => Millimes::of(PromotionService::basePrice($item['product'], $item['variant'] ?? null)),
+            ];
+            $c = $this->lineCommission($sellerId, $line, 0, $at);
+            $lines[] = [
+                'product_id'      => (int) $item['product']->id,
+                'product_name'    => $item['product']->name,
+                'line_total'      => Millimes::toFloat($c['total_price_m']),
+                'rate'            => $c['commission_percentage'],
+                'normal_rate'     => $c['normal_rate'],
+                'source'          => $c['commission_source'],
+                'override_id'     => $c['commission_override_id'],
+                'commission'      => $c['commission_amount'],
+                'seller_amount'   => $c['seller_amount'],
+            ];
+            $commissionM += $c['commission_amount_m'];
+            $sellerM     += $c['seller_amount_m'];
+        }
+        return ['lines' => $lines, 'commission_m' => $commissionM, 'seller_m' => $sellerM, 'price_m' => $priceM * $packQty];
+    }
+
+    /**
      * $total split proportionally to $weights, half-up per share, the
      * remainder on the last key (shares always sum exactly to $total).
      *
@@ -354,6 +420,7 @@ class OrderPricing
     private function build(array $lines, array $coupons, ?int $userId, string $paymentMethod, ?string $guestPhone = null): array
     {
         $isCod = $paymentMethod === 'cod';
+        $at    = Carbon::now();   // one instant for every line: product special commissions are judged at it
 
         // Group lines into parcels, in cart order
         $parcels = [];
@@ -400,15 +467,7 @@ class OrderPricing
 
             foreach ($p['lines'] as $line) {
                 $discount = $shares[$line['key']] ?? 0;
-                $qty      = $line['kind'] === 'pack' ? $line['pack_quantity'] : $line['quantity'];
-                $c        = $this->commission->calculateForSeller(
-                    $sellerId,
-                    Millimes::toFloat($line['unit_m']),
-                    $qty,
-                    Millimes::toFloat($discount),
-                    Millimes::toFloat($line['tier_m']),
-                    (int) ($line['funded_m'] ?? 0),
-                );
+                $c        = $this->lineCommission($sellerId, $line, $discount, $at);
 
                 $line['discount_m']   = $c['discount_amount_m'];
                 $line['net_m']        = $c['net_total_m'];

@@ -61,6 +61,8 @@ class OrderItem extends Model
         // ── Commission columns (populated at checkout) ─────────────────────
         'commission_percentage',
         'commission_source',
+        'commission_override_id',  // product special commission that priced this line (NULL = none); no FK on purpose
+        'commission_normal_rate',  // the rate that would have applied without it
         'commission_amount',
         'seller_amount',
         'plan_used',

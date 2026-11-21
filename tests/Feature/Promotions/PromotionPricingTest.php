@@ -10,6 +10,7 @@ use App\Models\Product;
 use App\Models\ProductImage;
 use App\Models\Promotion;
 use App\Models\SellerOrder;
+use App\Models\Subcategory;
 use App\Models\User;
 use App\Services\Chat\ProductRetriever;
 use App\Services\PriceHistory;
@@ -42,6 +43,7 @@ class PromotionPricingTest extends TestCase
     private User $seller;
     private User $customer;
     private Category $category;
+    private Subcategory $sub;
     private Product $jeans;
     private string $token;
 
@@ -63,6 +65,8 @@ class PromotionPricingTest extends TestCase
         $this->customer = $this->makeUser('client');
         $s = Str::random(6);
         $this->category = Category::create(['name' => "Promo Cat $s", 'name_ar' => "Promo Cat $s", 'name_fr' => "Promo Cat $s", 'slug' => "promo-cat-$s", 'is_active' => true]);
+        // "Similaires" only draws from the same subcategory / family (Nov 8 related-products rework), never the rest of the category
+        $this->sub      = Subcategory::create(['category_id' => $this->category->id, 'name' => "Promo Sub $s", 'name_ar' => "Promo Sub $s", 'name_fr' => "Promo Sub $s", 'slug' => "promo-sub-$s", 'is_active' => true]);
         $this->jeans    = $this->makeProduct("Jean {$this->token} jambes larges", 98);
     }
 
@@ -79,7 +83,7 @@ class PromotionPricingTest extends TestCase
     private function makeProduct(string $name, float $price, int $stock = 30): Product
     {
         $p = Product::create([
-            'seller_id' => $this->seller->id, 'category_id' => $this->category->id, 'name' => $name,
+            'seller_id' => $this->seller->id, 'category_id' => $this->category->id, 'subcategory_id' => $this->sub->id, 'name' => $name,
             'slug' => Str::slug($name) . '-' . Str::lower(Str::random(4)), 'price' => $price, 'stock' => $stock,
             'is_approved' => true, 'is_active' => true,
         ]);

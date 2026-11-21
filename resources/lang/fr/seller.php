@@ -434,6 +434,28 @@ return [
             'action_seller' => 'Voir la réclamation',
             'outro' => 'Merci d\'examiner et de répondre à cette réclamation dès que possible.',
         ],
+        'special_commission' => [
+            'mail_action' => 'Voir mes produits',
+            'points' => 'pts',
+            'granted' => [
+                'title' => 'Commission spéciale sur votre produit',
+                'body' => 'Choose\'Tounsi vous accorde une commission spéciale sur « :name » : :offer (sans date de fin).',
+                'body_until' => 'Choose\'Tounsi vous accorde une commission spéciale sur « :name » : :offer, jusqu\'au :end.',
+                'body_from' => 'Choose\'Tounsi vous accorde une commission spéciale sur « :name » : :offer, du :start au :end.',
+                'subject' => 'Commission spéciale sur « :name »',
+            ],
+            'reminder' => [
+                'title' => 'Votre commission spéciale se termine bientôt',
+                'body' => 'La commission spéciale sur « :name » (:offer) se termine le :end. Ensuite, votre commission habituelle s\'applique.',
+                'subject' => 'Votre commission spéciale sur « :name » se termine bientôt',
+            ],
+            'ended' => [
+                'title' => 'Commission spéciale terminée',
+                'body' => 'La commission spéciale sur « :name » est terminée. Votre commission habituelle s\'applique aux nouvelles commandes.',
+                'subject' => 'Commission spéciale terminée sur « :name »',
+            ],
+            'orders_note' => 'Les commandes déjà passées gardent la commission avec laquelle elles ont été passées.',
+        ],
         'product_added_by_admin' => [
             'title' => 'Nouveau produit dans votre boutique',
             'body' => 'Choose\'Tounsi a ajouté un produit à votre boutique : :name',

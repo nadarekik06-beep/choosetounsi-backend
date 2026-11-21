@@ -380,6 +380,11 @@ class FinanceController extends Controller
                 'paid_total'            => round((float) ($item->net_total ?? ($lineTotal - $discount)), 3),
                 'commission_percentage' => $item->commission_percentage !== null ? (float) $item->commission_percentage : null,
                 'commission_amount'     => round((float) ($item->commission_amount ?? 0), 3),
+                // Snapshot of where the rate came from. NULL source = order placed before it was recorded.
+                'commission_source'      => $item->commission_source,
+                'commission_override_id' => $item->commission_override_id !== null ? (int) $item->commission_override_id : null,
+                'commission_normal_rate' => $item->commission_normal_rate !== null ? (float) $item->commission_normal_rate : null,
+                'source_unknown'         => $item->commission_source === null,
                 'product_deleted'       => !$product || $product->trashed(),
                 'variant_deleted'       => $item->variant_id !== null && !$variant,
             ];

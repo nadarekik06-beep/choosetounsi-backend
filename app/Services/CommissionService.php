@@ -3,16 +3,20 @@
 namespace App\Services;
 
 use App\Models\PlatformSetting;
+use App\Models\ProductCommissionOverride;
 use App\Models\SellerSubscription;
 use App\Models\SubscriptionPlan;
 use App\Support\Millimes;
+use Carbon\Carbon;
+use Carbon\CarbonInterface;
 
 /**
  * CommissionService
  *
  * Single source of truth for all commission math on ChooseTounsi.
  *
- * Rate resolution (resolveForSeller), highest priority first:
+ * Rate resolution, highest priority first (rateFor = product level on top of resolveForSeller):
+ *   0. product_override — product_commission_overrides (admin special offer, live at the time)
  *   1. override — seller_subscriptions.commission_override (while not expired)
  *   2. plan     — subscription_plans.commission_rate (flat %), or the platform
  *                 tier table minus subscription_plans.commission_reduction
@@ -127,6 +131,78 @@ class CommissionService
         return $this->planRate($price, $plan) + ['plan' => $plan->slug];
     }
 
+    // ── Product-level special commission ──────────────────────────────────────
+
+    public const SOURCE_PRODUCT_OVERRIDE = 'product_override';
+
+    /**
+     * The special commission live on a product at $at, or null. Always read
+     * fresh from the DB and decided by date comparison (starts_at <= at < ends_at),
+     * so it is right even when the expiry command is late.
+     */
+    public function activeProductOverride(?int $productId, ?CarbonInterface $at = null): ?ProductCommissionOverride
+    {
+        if (!$productId) {
+            return null;
+        }
+        return ProductCommissionOverride::where('product_id', $productId)
+            ->liveAt($at ?? Carbon::now())
+            ->orderByDesc('id')
+            ->first();
+    }
+
+    /**
+     * THE rate of the platform for one product of one seller at a unit price.
+     *
+     *   1. live product override (admin special offer)
+     *        fixed_rate        → that % is the final rate (no seller override, no plan reduction)
+     *        reduction_points  → the rate that would otherwise apply − X points, clamped to 0–100
+     *                            (NOT to the floor: it is a deliberate admin decision)
+     *   2. seller override → plan flat rate → bracket − plan reduction (resolveForSeller, unchanged)
+     *
+     * $price is the bracket price (the ORIGINAL unit price, AUDIT M-7), like resolveForSeller.
+     * Without a live override the result is exactly resolveForSeller().
+     *
+     * @return array{rate: float, source: string, plan: string, override_id: ?int, normal_rate: float, normal_source: string}
+     */
+    public function rateFor(?int $productId, ?int $sellerId, float $price, ?CarbonInterface $at = null): array
+    {
+        $normal   = $this->resolveForSeller($sellerId, $price);
+        $override = $this->activeProductOverride($productId, $at);
+
+        if ($override === null) {
+            return $normal + ['override_id' => null, 'normal_rate' => $normal['rate'], 'normal_source' => $normal['source']];
+        }
+
+        return [
+            'rate'          => self::applyOverride($override->type, (float) $override->value, (float) $normal['rate']),
+            'source'        => self::SOURCE_PRODUCT_OVERRIDE,
+            'plan'          => $normal['plan'],
+            'override_id'   => (int) $override->id,
+            'normal_rate'   => $normal['rate'],
+            'normal_source' => $normal['source'],
+        ];
+    }
+
+    /**
+     * The one formula of a special commission (checkout AND the admin preview use it):
+     * fixed_rate → the value; reduction_points → normal − value; always within 0–100.
+     */
+    public static function applyOverride(string $type, float $value, float $normalRate): float
+    {
+        $rate = $type === ProductCommissionOverride::TYPE_FIXED ? $value : $normalRate - $value;
+        return max(0.0, min(100.0, round($rate, 2)));
+    }
+
+    /**
+     * Money breakdown of one unit at a rate chosen by the caller (admin preview of an
+     * override that is not saved yet). Same breakdown() as checkout.
+     */
+    public function breakdownAtRate(float $rate, string $plan, float $unitPrice, int $quantity = 1, float $discount = 0.0, ?float $tierPrice = null, int $fundedM = 0): array
+    {
+        return $this->breakdown($unitPrice, $rate, $plan, $quantity, $discount, $tierPrice, $fundedM);
+    }
+
     /**
      * Human-readable summary of what a seller currently pays (admin UI).
      */
@@ -176,12 +252,18 @@ class CommissionService
      * platform keeps from the cash (final − seller), negative when the platform
      * pays more than it earns. Always: net_total = seller_amount + commission_amount.
      */
-    public function calculateForSeller(?int $sellerId, float $unitPrice, int $quantity = 1, float $discount = 0.0, ?float $tierPrice = null, int $fundedM = 0): array
+    public function calculateForSeller(?int $sellerId, float $unitPrice, int $quantity = 1, float $discount = 0.0, ?float $tierPrice = null, int $fundedM = 0, ?int $productId = null, ?CarbonInterface $at = null): array
     {
         $tier     = $tierPrice ?? $unitPrice;
-        $resolved = $this->resolveForSeller($sellerId, $tier);
+        $resolved = $this->rateFor($productId, $sellerId, $tier, $at);
         return $this->breakdown($unitPrice, $resolved['rate'], $resolved['plan'], $quantity, $discount, $tier, $fundedM)
-            + ['commission_source' => $resolved['source']];
+            + [
+                'commission_source'      => $resolved['source'],
+                'commission_override_id' => $resolved['override_id'],
+                // What the rate would have been without the special offer (= the rate when there is none)
+                'normal_rate'            => $resolved['normal_rate'],
+                'normal_source'          => $resolved['normal_source'],
+            ];
     }
 
     /**
@@ -266,14 +348,74 @@ class CommissionService
     public function rateRangeForPlan(string $plan): array
     {
         $p = SubscriptionPlan::forSlug($plan);
-        if ($p->commission_rate !== null) {
-            return ['min' => (float) $p->commission_rate, 'max' => (float) $p->commission_rate];
+        return $this->rateRange($p->commission_rate !== null ? (float) $p->commission_rate : null, (float) $p->commission_reduction);
+    }
+
+    /**
+     * Range for a plan described by its settings: a flat rate, or the platform tiers
+     * minus a reduction (floored). The admin plan editor previews unsaved values with it.
+     *
+     * @return array{min: float, max: float}
+     */
+    public function rateRange(?float $flatRate, float $reduction): array
+    {
+        if ($flatRate !== null) {
+            return ['min' => $flatRate, 'max' => $flatRate];
         }
         $rates = array_map(
-            fn(array $t) => max((float) $t['rate'] - (float) $p->commission_reduction, $this->floor()),
+            fn(array $t) => max((float) $t['rate'] - $reduction, $this->floor()),
             $this->defaultTable()['tiers']
         );
         return ['min' => (float) min($rates), 'max' => (float) max($rates)];
+    }
+
+    /**
+     * "Upgrade and save" estimate for the seller dashboard, from the seller's REAL last-30-day
+     * lines (their stored tier price and amount) priced under the current and the next plan
+     * with the live commission grid: no hard-coded rates anywhere. Null when there is no
+     * higher plan or nothing sold.
+     */
+    public function upgradeNudge(int $sellerId): ?array
+    {
+        $currentSlug = $this->resolveForSeller($sellerId, 0.0)['plan'];
+        $current     = SubscriptionPlan::forSlug($currentSlug);
+        $next        = SubscriptionPlan::offered()->ordered()->get()->first(fn ($p) => $p->isHigherThan($current));
+        if (!$next) {
+            return null;
+        }
+
+        $lines = \Illuminate\Support\Facades\DB::table('order_items as oi')
+            ->join('seller_orders as so', 'so.id', '=', 'oi.seller_order_id')
+            ->where('so.seller_id', $sellerId)
+            ->where('so.created_at', '>=', Carbon::now()->subDays(30))
+            ->whereNotIn('so.status', \App\Models\SellerOrder::NOT_SHIPPED)
+            ->get(['oi.net_total', 'oi.total', 'oi.discount_amount', 'oi.commission_tier_price', 'oi.original_unit_price', 'oi.unit_price', 'oi.quantity']);
+
+        $revenueM = $currentFeesM = $nextFeesM = 0;
+        foreach ($lines as $l) {
+            $netM = Millimes::of($l->net_total ?? ((float) $l->total - (float) ($l->discount_amount ?? 0)));
+            if ($netM <= 0) {
+                continue;
+            }
+            $tier = (float) ($l->commission_tier_price ?? $l->original_unit_price ?? $l->unit_price);
+            $revenueM     += $netM;
+            $currentFeesM += Millimes::percent($netM, $this->planRate($tier, $current)['rate']);
+            $nextFeesM    += Millimes::percent($netM, $this->planRate($tier, $next)['rate']);
+        }
+        if ($revenueM <= 0) {
+            return null;
+        }
+
+        $savedM = max(0, $currentFeesM - $nextFeesM);
+        return [
+            'current_plan'    => $current->slug,
+            'next_plan'       => ['key' => $next->slug, 'name' => $next->name, 'cost' => (float) $next->price_monthly],
+            'monthly_revenue' => Millimes::toFloat($revenueM),
+            'current_fees'    => Millimes::toFloat($currentFeesM),
+            'next_fees'       => Millimes::toFloat($nextFeesM),
+            'monthly_saved'   => Millimes::toFloat($savedM),
+            'net_gain'        => round(Millimes::toFloat($savedM) - (float) $next->price_monthly, 3),
+        ];
     }
 
     /**
