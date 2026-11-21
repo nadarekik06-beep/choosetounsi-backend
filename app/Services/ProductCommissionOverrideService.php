@@ -31,7 +31,8 @@ class ProductCommissionOverrideService
     public function create(array $data, User $admin): Override
     {
         return DB::transaction(function () use ($data, $admin) {
-            $product = $this->lockProduct((int) ($data['product_id'] ?? 0));
+            // Only on a product customers can buy: approved and active (Product::available()), not deleted
+            $product = $this->lockProduct((int) ($data['product_id'] ?? 0), requireLive: true);
             $fields  = $this->validated($data, $product);
             $this->assertNoOverlap($product, $fields['starts_at'], $fields['ends_at'], null);
 
@@ -159,11 +160,14 @@ class ProductCommissionOverrideService
 
     // ── internals ─────────────────────────────────────────────────────────────
 
-    private function lockProduct(int $productId): Product
+    private function lockProduct(int $productId, bool $requireLive = false): Product
     {
         $product = Product::whereKey($productId)->lockForUpdate()->first();
         if (!$product) {
             throw ValidationException::withMessages(['product_id' => 'Product not found.']);
+        }
+        if ($requireLive && !($product->is_approved && $product->is_active)) {
+            throw ValidationException::withMessages(['product_id' => 'A special commission can only be set on an approved, active product.']);
         }
         if ($product->seller_id === null) {
             throw ValidationException::withMessages(['product_id' => 'This product has no seller: a special commission needs one.']);

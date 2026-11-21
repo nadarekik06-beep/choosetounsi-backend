@@ -552,6 +552,34 @@ class ProductCommissionOverrideTest extends TestCase
         $this->assertNotNull($this->ovr($p, 'fixed_rate', 12.5)->id);
     }
 
+    public function test_picker_lists_only_approved_active_products_and_creation_on_others_is_rejected(): void
+    {
+        $seller = $this->seller('free');
+        $ok       = $this->product($seller, 100);
+        $pending  = $this->product($seller, 100); $pending->forceFill(['is_approved' => false])->save();
+        $inactive = $this->product($seller, 100); $inactive->forceFill(['is_active' => false])->save();
+        $deleted  = $this->product($seller, 100); $deleted->delete();
+
+        $rows = $this->as($this->admin)->getJson("/api/admin/special-commissions/sellers/{$seller->id}/products")->assertOk()->json('data');
+        $this->assertSame([$ok->id], array_column($rows, 'id'));
+        $this->assertArrayHasKey('image', $rows[0]);
+
+        foreach ([$pending, $inactive, $deleted] as $bad) {
+            $this->as($this->admin)->postJson('/api/admin/special-commissions', ['product_ids' => [$bad->id], 'type' => 'fixed_rate', 'value' => 5])->assertStatus(422);
+            $this->assertThrowsValidation(fn () => $this->ovr($bad, 'fixed_rate', 5));
+        }
+        $this->assertSame(0, Override::count());
+
+        // A product that becomes unapproved later keeps its override row, still listed with its image field
+        $o = $this->ovr($ok, 'fixed_rate', 5);
+        $ok->forceFill(['is_approved' => false])->save();
+        $list = $this->as($this->admin)->getJson('/api/admin/special-commissions')->assertOk()->json('data');
+        $this->assertSame([$o->id], array_column($list, 'id'));
+        $this->assertArrayHasKey('product_image', $list[0]);
+        // ...and can still be ended
+        $this->as($this->admin)->postJson("/api/admin/special-commissions/{$o->id}/end")->assertOk();
+    }
+
     private function assertThrowsValidation(\Closure $fn, string $msg = ''): void
     {
         try {

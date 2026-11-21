@@ -48,8 +48,10 @@ class AdminSpecialCommissionController extends Controller
     {
         $q   = trim((string) $request->query('q', ''));
         $now = Carbon::now();
-        $products = Product::where('seller_id', $sellerId)
+        // Only products the storefront shows to customers (Product::available(): approved + active; deleted are excluded by SoftDeletes)
+        $products = Product::available()->where('seller_id', $sellerId)
             ->when($q !== '', fn ($w) => $w->where('name', 'like', "%{$q}%"))
+            ->with('images')
             ->orderBy('name')->limit(200)->get(['id', 'seller_id', 'name', 'price', 'is_active', 'is_approved']);
 
         $offers = Override::whereIn('product_id', $products->pluck('id'))->where('is_active', true)
@@ -58,6 +60,7 @@ class AdminSpecialCommissionController extends Controller
 
         return response()->json(['success' => true, 'data' => $products->map(fn ($p) => [
             'id' => $p->id, 'name' => $p->name, 'price' => (float) $p->price,
+            'image' => $p->primary_image_url,   // same cover the storefront card uses
             'is_active' => (bool) $p->is_active, 'is_approved' => (bool) $p->is_approved,
             'offer' => optional($offers->get($p->id))->first() ? $this->row($offers->get($p->id)->first(), $now) : null,
         ])->values()]);
@@ -114,7 +117,7 @@ class AdminSpecialCommissionController extends Controller
         $status = $request->query('status', 'all');
         $q      = trim((string) $request->query('q', ''));
 
-        $query = Override::query()->with(['product:id,name,price,seller_id', 'seller:id,name', 'creator:id,name'])
+        $query = Override::query()->with(['product:id,name,price,seller_id', 'product.images', 'seller:id,name', 'creator:id,name'])
             ->when($request->filled('seller_id'), fn ($w) => $w->where('seller_id', (int) $request->query('seller_id')))
             ->when($q !== '', fn ($w) => $w->where(fn ($x) => $x
                 ->whereHas('product', fn ($p) => $p->where('name', 'like', "%{$q}%"))
@@ -251,6 +254,7 @@ class AdminSpecialCommissionController extends Controller
             'product_id'    => $o->product_id,
             'product_name'  => $o->relationLoaded('product') ? optional($o->product)->name : Product::whereKey($o->product_id)->value('name'),
             'product_price' => $o->relationLoaded('product') && $o->product ? (float) $o->product->price : null,
+            'product_image' => $o->relationLoaded('product') && $o->product ? $o->product->primary_image_url : null,
             'seller_id'     => $o->seller_id,
             'seller_name'   => $o->relationLoaded('seller') ? optional($o->seller)->name : null,
             'type'          => $o->type,
