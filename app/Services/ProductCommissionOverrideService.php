@@ -6,6 +6,7 @@ use App\Models\Product;
 use App\Models\ProductCommissionOverride as Override;
 use App\Models\User;
 use App\Notifications\ProductCommissionOverrideNotification as Notice;
+use App\Support\TunisTime;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -223,7 +224,8 @@ class ProductCommissionOverrideService
             return null;
         }
         try {
-            return $v instanceof \DateTimeInterface ? Carbon::instance($v) : Carbon::parse((string) $v);
+            // UTC, like every other date column: a '+01:00' form value must not be stored as its wall-clock digits.
+            return TunisTime::toUtc($v instanceof \DateTimeInterface ? $v : (string) $v);
         } catch (\Throwable) {
             $errors[$field] = 'Invalid date.';
             return null;
