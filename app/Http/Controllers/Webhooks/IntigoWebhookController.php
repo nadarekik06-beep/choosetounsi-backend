@@ -71,14 +71,20 @@ class IntigoWebhookController extends Controller
         return response()->json(['success' => true, 'duplicate' => $eventId === null]);
     }
 
-    /** "sha256=<hex>" against the RAW body, constant-time. */
+    /** "sha256=<hex>" (or bare hex / base64) against the RAW body, constant-time. */
     public static function validSignature(string $raw, string $header, ?string $secret): bool
     {
         if (!is_string($secret) || $secret === '' || $header === '') {
             return false;
         }
-        $expected = 'sha256=' . hash_hmac('sha256', $raw, $secret);
-        return hash_equals($expected, trim($header));
+        $binary = hash_hmac('sha256', $raw, $secret, true);
+        $given  = trim($header);
+        if (stripos($given, 'sha256=') === 0) {
+            $given = substr($given, 7);
+        }
+        // Accept lowercase/uppercase hex or base64 of the same HMAC (all compared in constant time)
+        return hash_equals(bin2hex($binary), strtolower($given))
+            | hash_equals(base64_encode($binary), $given);
     }
 
     public static function sign(string $raw, string $secret): string
