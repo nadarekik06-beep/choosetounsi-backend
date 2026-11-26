@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\SizeOrder;
 use App\Models\Product;
 use App\Models\ProductImage;
 use App\Models\ProductVariant;
@@ -766,8 +767,8 @@ class PromotionService
 
         return $products->map(fn (Product $product) => ['product_id' => $product->id, 'name' => $product->name]
             + $row($product, null)
-            + ['variants' => $product->variants
-                ->filter(fn ($v) => $v->price_override !== null)
+            + ['variants' => SizeOrder::variants($product->variants
+                ->filter(fn ($v) => $v->price_override !== null))
                 ->map(fn ($v) => ['variant_id' => $v->id, 'label' => $v->label] + $row($product, $v))
                 ->values()->all()],
         )->values()->all();

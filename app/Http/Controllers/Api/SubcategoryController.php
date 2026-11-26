@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Support\SizeOrder;
 use App\Http\Controllers\Controller;
 use App\Models\Category;
 use App\Models\Subcategory;
@@ -78,7 +79,7 @@ class SubcategoryController extends Controller
                 'is_variant'    => $isVariant,
                 'is_filterable' => (bool) $attr->is_filterable,
                 'order'         => $pivot->order ?? $attr->order,
-                'options'       => $attr->options->map(fn($opt) => [
+                'options'       => SizeOrder::options($attr, $attr->options)->map(fn($opt) => [
                     'id'        => $opt->id,
                     'value'     => $opt->value,
                     'value_ar'  => $opt->value_ar,

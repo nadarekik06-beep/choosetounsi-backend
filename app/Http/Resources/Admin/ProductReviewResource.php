@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources\Admin;
 
+use App\Support\SizeOrder;
 use App\Models\Product;
 use App\Support\Occasions;
 use App\Support\StockLevels;
@@ -173,7 +174,7 @@ class ProductReviewResource extends JsonResource
         $galleryIdByPath = $p->images->sortBy([['is_primary', 'desc'], ['order', 'asc'], ['id', 'asc']])
             ->unique('image_path')->pluck('id', 'image_path');
 
-        return $p->variants->map(function (ProductVariant $v) use ($p, $threshold, $colorImages, $galleryIdByPath) {
+        return SizeOrder::variants($p->variants)->map(function (ProductVariant $v) use ($p, $threshold, $colorImages, $galleryIdByPath) {
             $options = $v->attributeOptions
                 ->sortBy(fn($o) => (optional($o->attribute)->slug === 'color' ? '0' : '1') . optional($o->attribute)->slug)
                 ->values();
@@ -348,7 +349,7 @@ class ProductReviewResource extends JsonResource
 
                 if (in_array($attr->type, ['select', 'multiselect', 'color'], true)) {
                     $ids  = array_map('intval', (array) $decoded);
-                    $opts = $attr->options->whereIn('id', $ids);
+                    $opts = SizeOrder::options($attr, $attr->options->whereIn('id', $ids));
                     $display = $opts->pluck('value')->implode(', ');
                     $hexes   = $opts->pluck('color_hex')->filter()->values()->all();
                     // Unknown ids (option since deleted) → show the raw value

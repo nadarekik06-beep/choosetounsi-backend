@@ -3,6 +3,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Support\SizeOrder;
 use App\Http\Controllers\Controller;
 use App\Models\Attribute;
 use App\Models\Product;
@@ -353,7 +354,7 @@ class ProductController extends Controller
             $label = $value;
             if (in_array($attr->type, ['select', 'multiselect', 'color'])) {
                 $ids   = (array) $value;
-                $label = $attr->options->whereIn('id', $ids)->pluck('value')->join(', ');
+                $label = SizeOrder::options($attr, $attr->options->whereIn('id', $ids))->pluck('value')->join(', ');
             }
             return [
                 'slug'  => $attr->slug,
@@ -398,7 +399,8 @@ class ProductController extends Controller
                 }
             }
 
-            $variantsPayload = $product->variants->map(function ($v) use (
+            // Sizes in display order (a sorted copy: $product->variants is left as it is)
+            $variantsPayload = SizeOrder::variants($product->variants)->map(function ($v) use (
                 $productImageUrls, $colorImages, $product, $activePromo
             ) {
                 $colorIds      = \App\Services\ProductImages::colorIdsOf($v);
@@ -529,6 +531,9 @@ class ProductController extends Controller
             // Convert options maps to sequential arrays
             foreach ($axesMap as $slug => &$axis) {
                 $axis['options'] = array_values($axis['options']);
+                if (SizeOrder::isSizeAttribute($slug, $axis['name'])) {
+                    $axis['options'] = SizeOrder::sort($axis['options'], fn($o) => $o['value']);
+                }
             }
             unset($axis);
 
@@ -589,7 +594,7 @@ class ProductController extends Controller
                 'slug'    => $a->slug,
                 'name'    => $a->name,
                 'type'    => $a->type,
-                'options' => $a->options->map(fn($o) => [
+                'options' => SizeOrder::options($a, $a->options)->map(fn($o) => [
                     'id'        => $o->id,
                     'value'     => $o->value,
                     'color_hex' => $o->color_hex,

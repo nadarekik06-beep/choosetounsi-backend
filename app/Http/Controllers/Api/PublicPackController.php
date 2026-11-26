@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Support\SizeOrder;
 use App\Http\Controllers\Controller;
 use App\Models\Pack;
 use Illuminate\Http\Request;
@@ -134,8 +135,8 @@ class PublicPackController extends Controller
             $allVariants = $item->product?->variants ?? collect();
             $allowedIds  = $item->allowed_variant_ids; // cast to array on model
 
-            $availableVariants = $allVariants
-                ->when(!empty($allowedIds), fn($c) => $c->whereIn('id', $allowedIds))
+            $availableVariants = SizeOrder::variants($allVariants
+                ->when(!empty($allowedIds), fn($c) => $c->whereIn('id', $allowedIds)))
                 ->map(fn($v) => [
                     'id'             => $v->id,
                     'label'          => $v->label,

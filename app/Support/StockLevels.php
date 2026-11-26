@@ -69,7 +69,7 @@ final class StockLevels
         $variants  = $product->relationLoaded('variants') ? $product->variants : $product->variants()->get();
         $basePrice = (float) $product->price;
 
-        $rows = $variants->sortBy('id')->values()->map(function (ProductVariant $v) use ($threshold, $basePrice) {
+        $rows = SizeOrder::variants($variants->sortBy('id')->values())->map(function (ProductVariant $v) use ($threshold, $basePrice) {
             $options = $v->attributeOptions
                 ->sortBy(fn($o) => [optional($o->attribute)->slug === 'color' ? 0 : 1, optional($o->attribute)->slug, $o->id])
                 ->values()

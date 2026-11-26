@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Seller;
 
+use App\Support\SizeOrder;
 use App\Http\Controllers\Controller;
 use App\Models\Pack;
 use App\Models\PackItem;
@@ -318,7 +319,7 @@ public function show(Request $request, int $id)
                 'stock'             => $p->variants->isNotEmpty()
                     ? (int) $p->variants->sum('stock')
                     : (int) $p->stock,
-                'variants'          => $p->variants->map(fn($v) => [
+                'variants'          => SizeOrder::variants($p->variants)->map(fn($v) => [
                     'id'             => $v->id,
                     'label'          => $v->label,
                     'stock'          => $v->stock,
@@ -430,11 +431,11 @@ public function show(Request $request, int $id)
 
             $allowedIds = $item->allowed_variant_ids;
 
-            $availableVariants = $allVariants
+            $availableVariants = SizeOrder::variants($allVariants
                 ->when(
                     !empty($allowedIds),
                     fn($c) => $c->whereIn('id', $allowedIds)
-                )
+                ))
                 ->map(fn($v) => [
                     'id'             => $v->id,
                     'label'          => $v->label,

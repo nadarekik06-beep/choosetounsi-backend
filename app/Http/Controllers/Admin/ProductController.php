@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Support\SizeOrder;
 use App\Http\Controllers\Controller;
 use App\Models\Product;
 use App\Models\ProductVariant;
@@ -153,7 +154,7 @@ public function index(Request $request)
                 $v->attribute->slug => $v->attribute->decodeValue($v->value),
             ]);
 
-        $product->variant_data = $product->variants->map(function ($v) {
+        $product->variant_data = SizeOrder::variants($product->variants)->map(function ($v) {
             $v->images->each(fn($i) => $i->url = Storage::disk('public')->url($i->image_path));
             return [
                 'id'             => $v->id,

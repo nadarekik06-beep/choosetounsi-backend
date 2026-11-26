@@ -2,6 +2,7 @@
 
 namespace App\Services\Returns;
 
+use App\Support\SizeOrder;
 use App\Models\Category;
 use App\Models\Complaint;
 use App\Models\OrderItem;
@@ -129,8 +130,8 @@ class ReturnPolicy
         $original = $line->variant_id ? $product->variants->firstWhere('id', (int) $line->variant_id) : null;
         $price    = $original ? $original->effective_price : (float) $line->unit_price;
 
-        $options = $variants
-            ->filter(fn($v) => (int) $v->stock > 0 && abs($v->effective_price - $price) < 0.0005)
+        $options = SizeOrder::variants($variants
+            ->filter(fn($v) => (int) $v->stock > 0 && abs($v->effective_price - $price) < 0.0005))
             ->map(fn($v) => ['id' => (int) $v->id, 'label' => $v->label ?: ('#' . $v->id), 'stock' => (int) $v->stock, 'current' => (int) $v->id === (int) $line->variant_id])
             ->values()->all();
         $otherPrice = $variants->contains(fn($v) => (int) $v->stock > 0 && abs($v->effective_price - $price) >= 0.0005);

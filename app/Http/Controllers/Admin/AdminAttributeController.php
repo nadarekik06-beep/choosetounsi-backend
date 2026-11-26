@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Support\SizeOrder;
 use App\Support\Multicolor;
 use App\Http\Controllers\Controller;
 use App\Models\Attribute;
@@ -238,7 +239,7 @@ class AdminAttributeController extends Controller
                 'is_required'   => (bool) $attr->pivot->is_required,
                 'is_variant'    => (bool) $attr->pivot->is_variant,
                 'order'         => $attr->pivot->order,
-                'options'       => $attr->options->map(fn($o) => [
+                'options'       => SizeOrder::options($attr, $attr->options)->map(fn($o) => [
                     'id'        => $o->id,
                     'value'     => $o->value,
                     'value_ar'  => $o->value_ar,
