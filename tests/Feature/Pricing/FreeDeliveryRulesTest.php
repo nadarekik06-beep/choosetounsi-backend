@@ -240,11 +240,13 @@ class FreeDeliveryRulesTest extends TestCase
 
     public function test_the_seller_notice_says_the_owner_s_sentence_in_three_languages(): void
     {
-        foreach (['fr' => 'La livraison est désormais gratuite sur toute la plateforme et incluse dans le prix affiché au client. Vous continuez à recevoir votre prix moins la commission.',
-                  'en' => 'included in the price shown to the customer', 'ar' => 'ناقص العمولة'] as $locale => $text) {
+        // Never says that delivery fees are included in prices (owner, 2026-11-26)
+        foreach (['fr' => 'La livraison est gérée par Choose\'Tounsi. Vous continuez à recevoir votre prix moins la commission.',
+                  'en' => 'You keep receiving your price minus the commission.', 'ar' => 'ناقص العمولة'] as $locale => $text) {
             app()->setLocale($locale);
             $body = (new FreeDeliveryEverywhereNotification(2))->toDatabase($this->admin)['body'];
             $this->assertStringContainsString($text, $body);
+            $this->assertDoesNotMatchRegularExpression('/inclus|included|مشمول/u', $body);
         }
         app()->setLocale('fr');
     }

@@ -174,6 +174,15 @@ class AdminComplaintController extends Controller
         ]);
         $complaint->setAttribute('costs', $complaint->costs()->orderBy('id')->get());
 
+        // Separate delivery: what a full return would give back, and whether the reason alone does
+        $parcel = \App\Models\SellerOrder::find($this->returns->sellerOrderId($complaint));
+        if ($parcel && $parcel->isSeparateDelivery()) {
+            $complaint->setAttribute('separate_delivery', [
+                'fee'             => round((float) $parcel->getAttribute('delivery_fee'), 3),
+                'reason_is_fault' => in_array($complaint->complaint_type, Complaint::SELLER_FAULT_TYPES, true),
+            ]);
+        }
+
         if ($complaint->isExchange() && !$complaint->isLegacyExchange()) {
             $preview = $exchanges->preview($complaint);
             $complaint->setAttribute('exchange', [
@@ -210,8 +219,9 @@ class AdminComplaintController extends Controller
         $request->validate([
             'note'           => 'nullable|string|max:1000',
             'shipping_payer' => 'nullable|in:seller,client',
+            'refund_delivery' => 'nullable|boolean',
         ]);
-        $c = $this->returns->adminApprove(Complaint::findOrFail($id), $request->user(), $request->note, $request->shipping_payer);
+        $c = $this->returns->adminApprove(Complaint::findOrFail($id), $request->user(), $request->note, $request->shipping_payer, $request->boolean('refund_delivery'));
 
         if ($c->isExchange()) {
             return response()->json(['success' => true, 'message' => 'Exchange approved, replacement stock held. ' . $this->bookingMessage($c), 'data' => $c]);

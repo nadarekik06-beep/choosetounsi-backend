@@ -208,7 +208,6 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
             DB::raw('(so.commission_amount + so.platform_funded_amount) as commission_amount'),
             'so.platform_funded_amount',
             'so.seller_net_amount',
-            'so.delivery_fee',
             'so.seller_shipping_charge',
             'so.status',
             'so.money_received_at',
@@ -242,8 +241,6 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
                 DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.platform_funded_amount END as platform_funded_amount"),
                 DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.seller_net_amount END as net_earnings"),
                 DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.seller_shipping_charge END as seller_shipping_charge"),
-                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.delivery_fee END as delivery_fee"),
-                DB::raw("CASE WHEN so.status IN (" . SellerOrder::notShippedSql() . ") THEN 0 ELSE so.platform_profit END as platform_profit"),
                 'so.money_received_at',
                 'so.settled_at',
                 'so.settlement_batch_id',
@@ -474,6 +471,9 @@ public function settlementReceipt(Request $request, int $id): JsonResponse
      */
     private static function sellerProofView(object $b): object
     {
+        // Delivery fees and the platform's profit are never a seller figure
+        $b = clone $b;
+        unset($b->total_delivery_fees, $b->total_platform_profit);
         if (($b->status ?? null) !== 'paid') {
             $b = clone $b;
             $b->proof_path = null;

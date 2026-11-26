@@ -11,6 +11,7 @@ use App\Models\Promotion;
 use App\Exceptions\FlashCustomerLimit;
 use App\Services\CommissionService;
 use App\Services\CouponService;
+use App\Services\Delivery\DeliveryMode;
 use App\Services\Delivery\DeliverySettings;
 use App\Services\Pricing\PricingService;
 use App\Services\PromotionService;
@@ -31,8 +32,13 @@ use Illuminate\Support\Collection;
  *   seller coupon → only that seller's coupon products WITHOUT a promotion; promoted
  *                   ones are skipped, the coupon is refused only if none remains
  *
- * Delivery is free for the client and included in the price they see ("free
- * delivery everywhere", App\Services\Pricing\PricingService): every unit's display
+ * Each parcel follows its seller's delivery mode (App\Services\Delivery\DeliveryMode).
+ * The money is the same in both: items − coupon + ONE client fee. In SEPARATE mode
+ * nothing is inside the prices (included fees and multi-item discount are 0) and the
+ * fee is shown as the parcel's own delivery line (delivery_fee_charged).
+ *
+ * INCLUDED mode: delivery is shown as free and is inside the price the client sees
+ * (App\Services\Pricing\PricingService): every unit's display
  * price = its base price + the admin client fee of its size, and a parcel with
  * several units gives the extra fees back as the multi-item discount. The money
  * is unchanged: the client pays Σ base prices − coupon + ONE parcel fee, which
@@ -79,6 +85,7 @@ class OrderPricing
         private CouponService     $coupons,
         private DeliverySettings  $delivery,
         private PricingService    $pricing,
+        private DeliveryMode      $modes,
     ) {}
 
     // ── Entry points ─────────────────────────────────────────────────────────
@@ -483,16 +490,19 @@ class OrderPricing
             }
 
             // One parcel, one size: the largest of its items, priced by the admin per size.
-            // The fee is included in the displayed prices; several units give the extra fees back.
+            // Included mode: the fee is inside the displayed prices; several units give the extra
+            // fees back. Separate mode: nothing inside the prices, the same one fee charged apart.
+            $mode          = $this->modes->of($sellerId);
             $feeRates      = $this->pricing->fees();
-            [$lineOut, $units] = $this->withIncludedFees($lineOut, $feeRates);
-            $fees          = $this->pricing->parcelFees($units, $feeRates);
+            $inPrices      = $mode === DeliveryMode::SEPARATE ? array_fill_keys(ParcelSize::ALL, 0) : $feeRates;
+            [$lineOut, $units] = $this->withIncludedFees($lineOut, $inPrices);
+            $fees          = $this->pricing->parcelFees($units, $inPrices);
             $size          = ParcelSize::largest(array_column($lineOut, 'size'));
             $rates         = $this->delivery->forSize($size);
             $clientFee     = $rates['client_fee'];
             $agencyCost    = $rates['agency_cost'];
             $isFree        = false;
-            $feeM          = $clientFee;                  // = $fees['parcel_fee_m']
+            $feeM          = $clientFee;                  // the parcel fee, in both modes
             $contributionM = 0;
             $marginM       = $clientFee - $agencyCost;
             $netM          = $itemsM - $discountM;
@@ -511,12 +521,14 @@ class OrderPricing
                 'coupon_discount_m'  => $discountM,
                 'is_free_delivery'   => $isFree,
                 'delivery_fee_m'     => $feeM,
+                'delivery_mode'          => $mode,
+                'delivery_fee_charged_m' => $mode === DeliveryMode::SEPARATE ? $feeM : 0,
                 // Delivery included in the displayed prices
                 'units'                 => $fees['units'],
                 'included_fees_total_m' => $fees['included_fees_total_m'],
                 'multi_item_discount_m' => $fees['multi_item_discount_m'],
                 'display_subtotal_m'    => $itemsM + $fees['included_fees_total_m'],
-                'upsell_min_saving_m'   => $fees['units'] === 1 ? $this->pricing->upsellMinSavingM() : null,
+                'upsell_min_saving_m'   => $mode === DeliveryMode::INCLUDED && $fees['units'] === 1 ? $this->pricing->upsellMinSavingM() : null,
                 'fee_rates'             => $feeRates,
                 'parcel_total_m'     => $totalM,
                 'cod_amount_m'       => $codM,
@@ -554,6 +566,9 @@ class OrderPricing
             'promo_ended'        => collect($lines)->filter(fn ($l) => $l['promo_ended'] ?? false)
                 ->map(fn ($l) => $l['product']->name)->values()->all(),
             'delivery_fee_m'     => $sum('delivery_fee_m'),
+            'delivery_fee_charged_m' => $sum('delivery_fee_charged_m'),
+            'has_separate'       => in_array(DeliveryMode::SEPARATE, array_column($out, 'delivery_mode'), true),
+            'has_included'       => in_array(DeliveryMode::INCLUDED, array_column($out, 'delivery_mode'), true),
             'included_fees_total_m' => $sum('included_fees_total_m'),
             'multi_item_discount_m' => $sum('multi_item_discount_m'),
             'display_subtotal_m'    => $sum('display_subtotal_m'),
@@ -606,9 +621,10 @@ class OrderPricing
     // ── Presentation ─────────────────────────────────────────────────────────
 
     /**
-     * What the storefront displays: the prices the client sees (delivery
-     * included), the multi-item discount per shop and a free delivery. Never an
-     * internal figure: base prices, fees, commission, payouts, agency cost.
+     * What the storefront displays: the prices the client sees, the multi-item
+     * discount per shop, and each shop's delivery — free (included mode) or its
+     * fee (separate mode). Never an internal figure: base prices of included
+     * sellers, included fees, commission, payouts, agency cost.
      */
     public function present(array $quote): array
     {
@@ -626,9 +642,9 @@ class OrderPricing
                 // Which items the coupon applied to, and the promoted ones it skipped (AUDIT M-5)
                 'coupon_product_ids'         => $p['coupon_product_ids'] ?? [],
                 'coupon_skipped_product_ids' => $p['coupon_skipped_product_ids'] ?? [],
-                // Delivery is always shown as free: it is inside the prices
-                'is_free_delivery' => true,
-                'delivery_fee'     => 0.0,
+                // Included mode: free (inside the prices). Separate mode: this shop's fee.
+                'is_free_delivery' => $p['delivery_mode'] === DeliveryMode::INCLUDED,
+                'delivery_fee'     => $f($p['delivery_fee_charged_m']),
                 'units'               => $p['units'],
                 'multi_item_discount' => $f($p['multi_item_discount_m']),
                 // Exactly one unit from this shop: what a second one would save at least
@@ -689,9 +705,9 @@ class OrderPricing
             'promo_savings'       => $f($quote['promo_savings_m']),
             'total_savings'       => $f($quote['promo_savings_m'] + $quote['discount_m']),
             'promo_ended'         => $quote['promo_ended'],
-            'free_delivery'       => true,
-            'delivery_fee'        => 0.0,
-            'shipping_fee'        => 0.0,
+            'free_delivery'       => !$quote['has_separate'],
+            'delivery_fee'        => $f($quote['delivery_fee_charged_m']),
+            'shipping_fee'        => $f($quote['delivery_fee_charged_m']),
             'total'               => $f($quote['total_m']),
             'parcel_count'        => count($quote['parcels']),
             'pack_price_changed'  => $quote['pack_price_changed'],

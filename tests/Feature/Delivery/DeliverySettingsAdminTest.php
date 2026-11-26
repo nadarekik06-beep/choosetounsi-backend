@@ -67,7 +67,7 @@ class DeliverySettingsAdminTest extends TestCase
         $seller = $this->seller('free');
         $this->as($seller)->getJson('/api/seller/shipping-cost')->assertOk()
             ->assertJsonPath('data.free_delivery_contribution', 0)
-            ->assertJsonPath('data.delivery_included', true);
+            ->assertJsonMissing(['delivery_included' => true]);
         $product = $this->product($seller, 50);
         $this->flushHeaders();
         $this->app['auth']->forgetGuards();

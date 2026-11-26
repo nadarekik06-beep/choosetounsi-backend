@@ -177,7 +177,12 @@ class OrderStatusNotification extends BuyerNotification
             ->sum(fn ($so) => (float) $so->subtotal - (float) ($so->discount_amount ?? 0));
 
         $stillActive = $this->order->sellerOrders()->whereNotIn('status', \App\Models\SellerOrder::NOT_SHIPPED)->exists();
-        return $stillActive ? $items : $items + (float) ($this->order->shipping_fee ?? 0);
+        if (!$stillActive) {
+            return $items + (float) ($this->order->shipping_fee ?? 0);
+        }
+        // Separate-mode parcels: their delivery was charged apart, so it is cancelled with them
+        return $items + (float) $this->order->sellerOrders()->whereIn('id', $this->sellerOrderIds)
+            ->where('delivery_mode', 'separate')->sum('delivery_fee');
     }
 
     /** Cash the courier collects for these sub-orders (as printed on the delivery slips). */

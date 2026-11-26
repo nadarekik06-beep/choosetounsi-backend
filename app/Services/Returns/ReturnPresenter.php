@@ -74,6 +74,27 @@ class ReturnPresenter
         return $c;
     }
 
+    /** forStaff() for the seller: event details never carry the platform's delivery figures. */
+    public static function forSeller(Complaint $c): Complaint
+    {
+        return self::withoutPlatformMoney(self::forStaff($c));
+    }
+
+    /** Strips the delivery figures from the loaded events of a seller-facing complaint. */
+    public static function withoutPlatformMoney(Complaint $c): Complaint
+    {
+        if ($c->relationLoaded('events')) {
+            $c->events->each(function ($e) {
+                $meta = (array) ($e->meta ?? []);
+                if (array_key_exists('delivery_refund', $meta)) {
+                    unset($meta['delivery_refund']);
+                    $e->setAttribute('meta', $meta);
+                }
+            });
+        }
+        return $c;
+    }
+
     public static function timeline(Complaint $c, $events): array
     {
         if ($c->isExchange() && !$c->isLegacyExchange()) {

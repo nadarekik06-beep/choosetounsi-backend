@@ -110,7 +110,9 @@ class AiChatController extends Controller
         try {
             // Identical question in the same conversation state → no Groq call.
             // Never holds personal data: track_order answers are not cached.
-            $cacheKey = 'chat:resp:v4:' . md5(implode('|', [
+            // The price version: a price, tariff or delivery mode change retires cached answers
+            $cacheKey = 'chat:resp:v5:' . md5(implode('|', [
+                \App\Support\PricingCache::version(),
                 $dialect,
                 $this->extractor->normalize($message),
                 json_encode($memory['filters']),
@@ -276,7 +278,7 @@ class AiChatController extends Controller
         $lang = LanguageDetector::baseLanguage($dialect);
         $kbLang = $this->kbLang($dialect);
 
-        // Payment and delivery wording is fixed (cash on delivery, free delivery), in every dialect.
+        // Payment and delivery wording is fixed (cash on delivery, fees shown before ordering), in every dialect.
         $faqKey = match (true) {
             $intent['intent'] === 'place_order' && ($intent['section'] ?? null) === 'payment'  => 'payment',
             $intent['intent'] === 'place_order' && ($intent['section'] ?? null) === 'delivery' => 'delivery',

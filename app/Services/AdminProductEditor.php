@@ -94,9 +94,10 @@ class AdminProductEditor
                 'gender_source'     => $product->gender_source,
                 // Older products silently got S: false until a seller or an admin chooses the size
                 'parcel_size_confirmed' => $product->parcelSizeConfirmed(),
-                // What the client sees: base price + the delivery included for the saved size
-                'display_price'     => app(\App\Services\Pricing\PricingService::class)->display($product->price, $product->parcel_size),
+                // What the client sees: base price, plus the included delivery of the saved size (included mode)
+                'display_price'     => app(\App\Services\Pricing\PricingService::class)->display($product->price, $product),
                 'included_fees'     => array_map(fn ($m) => \App\Support\Millimes::toFloat($m), app(\App\Services\Pricing\PricingService::class)->fees()),
+                ...(app(\App\Services\Pricing\PricingService::class)->isSeparate($product) ? ['delivery_fee_mode' => 'separate'] : []),
                 'admin_note'        => $product->admin_note,
                 'admin_edited_at'   => optional($product->admin_edited_at)->toISOString(),
                 'admin_edited_by'   => $editor ? ['id' => $editor->id, 'name' => $editor->name] : null,

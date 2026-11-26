@@ -9,6 +9,7 @@ use App\Models\Product;
 use App\Models\SellerApplication;
 use App\Models\SellerPickupAddress;
 use App\Notifications\ProductReviewedNotification;
+use App\Services\Delivery\DeliveryMode;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -28,6 +29,11 @@ class SellerController extends Controller
             } else {
                 $query->whereHas('pickupAddress', fn ($a) => $a->whereStatus($pickup));
             }
+        }
+
+        // ?delivery_mode=included|separate
+        if (in_array($mode = $request->query('delivery_mode'), DeliveryMode::MODES, true)) {
+            $query->where('delivery_fee_mode', $mode);
         }
 
         if ($status = $request->query('status')) {
@@ -58,6 +64,7 @@ $paginated = $query->orderByDesc('created_at')->paginate($request->query('per_pa
             $seller->preferred_plan = $app?->preferred_plan ?? 'green';
             $seller->pickup_status  = $seller->pickupAddress?->status() ?? SellerPickupAddress::STATUS_NEEDS_REVIEW;
             $seller->unsetRelation('pickupAddress');
+            $seller->makeVisible('delivery_fee_mode');
             return $seller;
         });
 
@@ -110,7 +117,31 @@ $paginated = $query->orderByDesc('created_at')->paginate($request->query('per_pa
             'intigo_pickup_index'  => $seller->intigo_pickup_index,
             'intigo_pickup_label'  => $seller->intigo_pickup_label,
             'pickup_status'        => SellerPickupAddress::where('user_id', $seller->id)->first()?->status() ?? SellerPickupAddress::STATUS_NEEDS_REVIEW,
+            'delivery_fee_mode'    => $seller->delivery_fee_mode ?? DeliveryMode::INCLUDED,
+            'delivery_mode_history' => app(DeliveryMode::class)->history((int) $seller->id),
         ]]);
+    }
+
+    /**
+     * POST /api/admin/sellers/delivery-mode  { seller_ids: [..], mode: included|separate }
+     *
+     * Switches one or several sellers. Applies to new carts and orders at once;
+     * past orders keep the mode frozen on their parcels. Every change is logged.
+     */
+    public function deliveryMode(Request $request, DeliveryMode $modes)
+    {
+        $validated = $request->validate([
+            'seller_ids'   => 'required|array|min:1|max:500',
+            'seller_ids.*' => 'integer|distinct',
+            'mode'         => 'required|in:' . implode(',', DeliveryMode::MODES),
+        ]);
+        $changed = $modes->set($validated['seller_ids'], $validated['mode'], (int) $request->user()->id);
+
+        return response()->json([
+            'success' => true,
+            'message' => count($changed) . ' seller(s) switched to "' . $validated['mode'] . '" delivery fees.',
+            'data'    => ['changed' => $changed, 'mode' => $validated['mode']],
+        ]);
     }
 
     public function update(Request $request, $id)

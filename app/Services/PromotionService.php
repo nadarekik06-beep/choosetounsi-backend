@@ -747,11 +747,11 @@ class PromotionService
         $row = function (Product $product, ?ProductVariant $variant) use ($promo): array {
             $base = self::basePrice($product, $variant);
             $p    = $this->pricing($base, $promo);
-            // What the client will see: delivery is included in the displayed prices and never
-            // discounted, so the real "-X %" (rounded down) is lower than the seller's own rate
+            // What the client will see. Included delivery is never discounted, so the real "-X %"
+            // (rounded down) is lower than the seller's own rate; in separate mode it is the same.
             $pricing   = app(\App\Services\Pricing\PricingService::class);
-            $originalM = $pricing->displayM(Millimes::of($p['original_price']), $product->parcel_size);
-            $finalM    = $pricing->displayM(Millimes::of($p['final_price']), $product->parcel_size);
+            $originalM = $pricing->displayM(Millimes::of($p['original_price']), $product);
+            $finalM    = $pricing->displayM(Millimes::of($p['final_price']), $product);
             return [
                 'current_price'    => round($base, 3),
                 'original_price'   => $p['original_price'],
@@ -762,7 +762,8 @@ class PromotionService
                 'client_original_price' => Millimes::toFloat($originalM),
                 'client_final_price'    => Millimes::toFloat($finalM),
                 'client_percent'        => $p['promotion'] !== null ? \App\Services\Pricing\PricingService::badgePercent($originalM, $finalM) : 0,
-            ];
+            ] + ($pricing->isSeparate($product)
+                ? ['client_delivery_charge' => Millimes::toFloat($pricing->feeM($pricing->sizeOf($product)))] : []);
         };
 
         return $products->map(fn (Product $product) => ['product_id' => $product->id, 'name' => $product->name]

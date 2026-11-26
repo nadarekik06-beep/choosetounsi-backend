@@ -37,13 +37,13 @@ class ShopOverview
                 'categories'     => Category::active()->whereHas('activeProducts')->count(),
                 'average_rating' => $avg !== null ? round((float) $avg, 1) : null,
                 'reviews'        => Review::approved()->count(),
-                // Trust strip: delivery is free everywhere (included in the displayed prices)
-                'free_delivery'          => true,
+                // True only while every seller includes delivery (the storefront promises nothing global)
+                'free_delivery'          => app(\App\Services\Delivery\DeliveryMode::class)->separateSellerIds() === [],
                 'complaint_window_hours' => (int) \App\Models\Complaint::COMPLAINT_WINDOW_HOURS,
             ];
         });
 
-        // Older storefront builds read these two: free delivery, no "N products ship free" count
+        // Older storefront builds read these two
         return $stats + ['delivery_fee' => 0.0, 'free_delivery_products' => 0];
     }
 

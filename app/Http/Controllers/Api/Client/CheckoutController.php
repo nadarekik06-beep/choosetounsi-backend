@@ -341,8 +341,11 @@ class CheckoutController extends Controller
             'shipping_cost'       => $dec($quote['agency_cost_m']),    // Σ agency costs
             'shipping_paid_by'    => $quote['shipping_paid_by'],       // customer | seller | mixed
             'shipping_per_parcel' => true,
-            // Delivery is inside the displayed prices: Σ display − coupon − multi-item discount = total
-            'pricing_model'       => \App\Services\Pricing\PricingService::MODEL_INCLUDED,
+            // 'included' as soon as one parcel has delivery inside its prices (each parcel keeps
+            // its own mode): Σ display − coupon − multi-item discount + separate fees = total
+            'pricing_model'       => $quote['has_included']
+                ? \App\Services\Pricing\PricingService::MODEL_INCLUDED
+                : \App\Services\Pricing\PricingService::MODEL_SEPARATE,
             'included_fees_total' => $dec($quote['included_fees_total_m']),
             'multi_item_discount' => $dec($quote['multi_item_discount_m']),
             'total_amount'        => $dec($quote['total_m']),
@@ -660,7 +663,7 @@ class CheckoutController extends Controller
             'subtotal'        => $shown['subtotal'],
             'discount_amount' => $shown['discount_amount'],
             'multi_item_discount' => $shown['multi_item_discount'],
-            'free_delivery'   => true,
+            'free_delivery'   => $shown['free_delivery'],
             'delivery_fee'    => $shown['delivery_fee'],
             'shipping_fee'    => $shown['shipping_fee'],
             'total'           => $shown['total'],

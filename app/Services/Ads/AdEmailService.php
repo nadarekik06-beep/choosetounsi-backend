@@ -174,8 +174,9 @@ class AdEmailService
             'image'         => $img ? (str_starts_with($img, 'http') ? $img : url($img)) : null,
             'price'         => $price,
             'original'      => $orig,
-            // Delivery is free on the whole platform (included in the price shown)
-            'free_delivery' => true,
+            // "Livraison gratuite" only for included-mode sellers; otherwise the fee charged apart
+            'free_delivery' => (bool) ($card['free_delivery'] ?? true),
+            'delivery_charge' => $card['delivery_charge'] ?? null,
             'copy'          => $sponsored ? ($card['sponsor_data']['ai_ad_copy'] ?? null) : null,
             'sponsored'     => $sponsored,
             'url'           => $sponsored

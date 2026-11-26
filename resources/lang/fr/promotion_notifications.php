@@ -5,8 +5,8 @@ return [
     'greeting'  => 'Bonjour :name,',
     // Sent once to the sellers whose products offered free delivery (pricing:notify-free-delivery-sellers)
     'free_delivery_everywhere' => [
-        'title' => 'La livraison est désormais gratuite sur toute la plateforme',
-        'body' => 'La livraison est désormais gratuite sur toute la plateforme et incluse dans le prix affiché au client. Vous continuez à recevoir votre prix moins la commission.',
+        'title' => 'Livraison : l\'option vendeur « livraison gratuite » n\'existe plus',
+        'body' => 'La livraison est gérée par Choose\'Tounsi. Vous continuez à recevoir votre prix moins la commission.',
         'detail' => 'L\'option « livraison gratuite » de vos produits n\'existe plus : plus rien n\'est déduit de vos gains pour la livraison. Vérifiez simplement que la taille du colis de chaque produit est correcte.',
         'cta' => 'Voir mes produits',
     ],

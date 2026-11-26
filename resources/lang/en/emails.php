@@ -37,7 +37,7 @@ return [
         'intro' => 'You\'ve just joined Tunisia\'s premier marketplace.<br>Discover authentic local products, support Tunisian sellers, and enjoy unbeatable prices.',
         'shop_now' => 'Shop Now →',
         'deals' => 'Discover Deals',
-        'trust_delivery' => '🚚 FREE DELIVERY',
+        'trust_delivery' => '🚚 DELIVERY IN TUNISIA',
         'trust_sellers' => '✅ VERIFIED SELLERS',
         'trust_returns' => '🔄 EASY RETURNS',
         'journey' => 'Your Journey Starts Here',
@@ -80,6 +80,7 @@ return [
             'intro'     => 'You looked at :category a few times this week. Here is a deal you might like.',
             'deal'      => 'Deal',
             'free_delivery' => 'Free delivery',
+            'delivery_charge' => '+ :amount DT delivery',
         ],
         'unsubscribed' => [
             'title'          => 'You are unsubscribed',

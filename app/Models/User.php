@@ -49,6 +49,7 @@ class User extends Authenticatable implements HasLocalePreference
         'password',
         'remember_token',
         'unsubscribe_token',
+        'delivery_fee_mode', // admin-only: shown by Admin\SellerController, changed by DeliveryMode::set()
     ];
 
     protected $casts = [

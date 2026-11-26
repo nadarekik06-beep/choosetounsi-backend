@@ -74,7 +74,7 @@ class SellerComplaintController extends Controller
         // Returns policy v2: new reception flow (received → inspect) vs the old one-step reception
         $complaint->setAttribute('inspection_flow', $this->returns->inspectionFlow($complaint));
 
-        return response()->json(['success' => true, 'data' => ReturnPresenter::forStaff($complaint)]);
+        return response()->json(['success' => true, 'data' => ReturnPresenter::forSeller($complaint)]);
     }
 
     public function addNote(Request $request, $id)

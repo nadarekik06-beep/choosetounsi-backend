@@ -215,7 +215,11 @@ $netAfterShipping = $totalSellerNet !== null ? round($totalSellerNet - $shipping
         return response()->json([
             'success' => true,
             'data'    => [
-                'order' => array_merge($order->toArray(), [
+                // The order's delivery figures are the platform's, never a seller's
+                'order' => array_merge(\Illuminate\Support\Arr::except($order->toArray(), [
+                    'shipping_fee', 'shipping_cost', 'shipping_paid_by',
+                    'included_fees_total', 'multi_item_discount',
+                ]), [
                     'status'          => $sellerOrder->status,
                     'display_status'  => $sellerOrder->display_status,
                     // The only statuses this seller may set next (build the buttons from it)
@@ -299,7 +303,7 @@ public function updateStatus(Request $request, $id)
         return response()->json([
             'success' => true,
             'message' => __('seller.order.status_updated'),
-            'data'    => $sellerOrder->setAttribute('allowed_next', ParcelStatus::allowedNext($sellerOrder, 'seller')),
+            'data'    => $sellerOrder->setAttribute('allowed_next', ParcelStatus::allowedNext($sellerOrder, 'seller'))->forSeller(),
         ]);
     }
 
@@ -324,7 +328,7 @@ public function updateStatus(Request $request, $id)
     return response()->json([
         'success' => true,
         'message' => __('seller.order.status_updated'),
-        'data'    => $sellerOrder->setAttribute('allowed_next', ParcelStatus::allowedNext($sellerOrder, 'seller')),
+        'data'    => $sellerOrder->setAttribute('allowed_next', ParcelStatus::allowedNext($sellerOrder, 'seller'))->forSeller(),
     ]);
 }
     /* ── POST /api/seller/orders/{id}/prepared ── */
@@ -457,7 +461,8 @@ public function updatePayment(Request $request, $id)
     return response()->json([
         'success' => true,
         'message' => __('seller.order.refunded'),
-        'data'    => $sellerOrder,
+        // Without the loaded order: its totals are the buyer's, delivery included
+        'data'    => $sellerOrder->unsetRelation('order')->forSeller(),
     ]);
 }
 

@@ -20,3 +20,6 @@ hs_err_pid*.log
 replay_pid*.log
 /fix.py
 /route_error.txt
+
+# Local working notes
+/DELIVERY_MODE_AUDIT.md

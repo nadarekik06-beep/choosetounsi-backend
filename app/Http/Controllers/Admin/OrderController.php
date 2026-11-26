@@ -32,7 +32,7 @@ class OrderController extends Controller
     {
         $query = Order::with([
             'user:id,name,email',
-            'sellerOrders:id,order_id,seller_id,status,subtotal,coupon_code,discount_amount,delivery_fee,prepared_at,intigo_nid,intigo_sync_status,intigo_error,bordereau_first_downloaded_at,bordereau_last_downloaded_at,bordereau_download_count,bordereau_source,bordereau_path,bordereau_upload_id,bordereau_uploaded_at,bordereau_uploaded_by,bordereau_original_name,bordereau_seller_notified_at,bordereau_notify_error',
+            'sellerOrders:id,order_id,seller_id,status,subtotal,coupon_code,discount_amount,delivery_fee,delivery_mode,delivery_fee_charged,delivery_cost,prepared_at,intigo_nid,intigo_sync_status,intigo_error,bordereau_first_downloaded_at,bordereau_last_downloaded_at,bordereau_download_count,bordereau_source,bordereau_path,bordereau_upload_id,bordereau_uploaded_at,bordereau_uploaded_by,bordereau_original_name,bordereau_seller_notified_at,bordereau_notify_error',
             'sellerOrders.seller:id,name',
             'sellerOrders.seller.sellerApplication', 'sellerOrders.seller.pickupAddress.zone', // pickup completeness → export readiness
         ])
@@ -280,6 +280,7 @@ class OrderController extends Controller
             $so->setAttribute('reference', $documents->reference($order, $so));
             $so->setAttribute('is_shippable', $shippable);
             $so->setAttribute('slip_money', $shippable ? $documents->money($order, $so) : null);
+            $so->exposeDeliveryMode();
             $so->seller?->unsetRelation('sellerApplication'); // pickup above is all the drawer needs
         }
 

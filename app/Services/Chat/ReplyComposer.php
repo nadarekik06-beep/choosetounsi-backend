@@ -28,7 +28,7 @@ class ReplyComposer
     ];
 
     /** Business wording that must never appear in a reply. */
-    private const FORBIDDEN = '/commission|livraison\s+(?:est\s+)?incluse|delivery\s+(?:is\s+)?included|included\s+in\s+(?:the\s+)?price|inclus\s+dans\s+le\s+prix|n°\s?1|number\s+one|100\s?%\s?(?:local|tunisien|tunisian)|intigo|yalidine|aramex|fournisseur|supplier|التوصيل\s+(?:مضمّن|مضمن|مشمول)|مدمج/iu';
+    private const FORBIDDEN = '/commission|livraison\s+(?:est\s+)?incluse|delivery\s+(?:is\s+)?included|included\s+in\s+(?:the\s+)?price|inclus\s+dans\s+le\s+prix|n°\s?1|number\s+one|100\s?%\s?(?:local|tunisien|tunisian)|intigo|yalidine|aramex|fournisseur|supplier|التوصيل\s+(?:مضمّن|مضمن|مشمول)|مدمج|livraison\s+(?:est\s+)?(?:gratuite|offerte|b\s?blech)|free\s+(?:delivery|shipping)|delivery\s+is\s+(?:simply\s+)?free|توصيل\s+(?:مجاني|بلاش)/iu';
 
     public function __construct(private GroqClient $groq, private LanguageDetector $detector, private ChatLexicon $lex) {}
 
@@ -111,7 +111,7 @@ class ReplyComposer
             . "RULES:\n"
             . "- Use ONLY the PRODUCTS listed, with their exact names and exact prices in DT. Never invent a product, brand, price, discount, stock, size, color, delivery time or policy.\n"
             . "- Only mention ratings when one is listed. Never call something a best-seller or favorite otherwise.\n"
-            . "- Delivery: say only that delivery is free (livraison gratuite / التوصيل مجاني / livraison b blech). Never say or imply that delivery fees are included in prices.\n"
+            . "- Delivery: never promise free delivery and never say or imply that delivery fees are included in prices. Only say that any delivery fees are shown before the order is confirmed.\n"
             . "- Payment is cash on delivery only. Never mention commissions, suppliers, delivery companies or any internal information. Never claim 'N°1 in Tunisia' or '100% local'.\n"
             . "- Do not assume a relationship beyond what was said (sa7ebti = girlfriend or female friend: just say 'lel sa7ebtek').\n"
             . "- Product cards with images and links appear under your message: no links, no full list, no markdown.\n"
@@ -409,7 +409,7 @@ Do not mention any other missing result, filter, color or size; do not say a pro
             . (self::LANGUAGE_RULES[$dialect] ?? self::LANGUAGE_RULES['en']) . ' '
             . 'Answer the customer in 1-3 short sentences using ONLY the FACTS below. '
             . 'If the facts do not answer the question, say so briefly and point to the steps shown under your message. '
-            . 'Delivery is simply free. Never say or imply that delivery is included in, built into, or paid through product prices. '
+            . 'Never promise free delivery, and never say or imply that delivery is included in, built into, or paid through product prices: any delivery fees are shown before the order is confirmed. '
             . 'Never name any delivery company or carrier; say "our delivery partner" (or "le livreur") instead. '
             . 'Never add rules, numbers, prices, delays or links that are not in the FACTS. No markdown.';
 

@@ -95,8 +95,12 @@ public function index(Request $request)
     $pricing = app(\App\Services\Pricing\PricingService::class);
     $products->getCollection()->transform(function ($product) use ($pricing) {
         $product->status = $this->deriveStatus($product);
-        // Admin view: the seller's price (price) AND what the client sees (delivery included)
-        $product->display_price         = $pricing->display($product->price, $product->parcel_size);
+        // Admin view: the seller's price (price) AND what the client sees
+        $product->display_price         = $pricing->display($product->price, $product);
+        if ($pricing->isSeparate($product)) {
+            $product->delivery_fee_mode = 'separate';
+            $product->delivery_charge   = \App\Support\Millimes::toFloat($pricing->feeM($product->parcel_size));
+        }
         $product->parcel_size_confirmed = $product->parcelSizeConfirmed();
         $product->gender_missing = $product->gender === null && (bool) optional($product->category)->is_gendered;
         $product->primary_image_url = $product->primaryImage

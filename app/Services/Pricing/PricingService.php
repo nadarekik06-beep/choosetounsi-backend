@@ -6,6 +6,7 @@ use App\Models\Pack;
 use App\Models\Product;
 use App\Models\ProductVariant;
 use App\Models\Promotion;
+use App\Services\Delivery\DeliveryMode;
 use App\Services\Delivery\DeliverySettings;
 use App\Services\PromotionService;
 use App\Support\Millimes;
@@ -13,10 +14,13 @@ use App\Support\ParcelSize;
 use Illuminate\Support\Facades\DB;
 
 /**
- * "Free delivery everywhere": the only place that knows a delivery fee is
- * included in the price the client sees.
+ * The only place that knows whether a delivery fee is inside the price the
+ * client sees, according to the seller's mode (App\Services\Delivery\DeliveryMode):
  *
- *   display price = seller's price (after its promotion) + admin "Client fee" of the product's parcel size
+ *   included  display price = seller's price (after its promotion) + admin "Client fee" of the product's parcel size
+ *   separate  display price = seller's price (after its promotion); the block carries
+ *             free_delivery false and delivery_charge = the fee of its size, shown apart
+ *             ("+ X DT livraison") and charged once per parcel at checkout
  *
  * The fee is read live from DeliverySettings (cached, flushed when the admin
  * saves) and never copied onto a product: changing a size's fee re-prices every
@@ -39,10 +43,16 @@ class PricingService
     /** seller_orders.pricing_model of orders placed with delivery included in the prices. */
     public const MODEL_INCLUDED = 'included';
 
+    /** … and of parcels whose delivery is charged apart: every screen shows their delivery line. */
+    public const MODEL_SEPARATE = 'separate';
+
     /** Sizes resolved for rows that came without parcel_size (one query per batch). */
     private array $sizes = [];
 
-    public function __construct(private DeliverySettings $delivery) {}
+    /** Sellers resolved for rows that came without seller_id (one query per batch). */
+    private array $sellers = [];
+
+    public function __construct(private DeliverySettings $delivery, private DeliveryMode $modes) {}
 
     private function promotions(): PromotionService
     {
@@ -67,15 +77,29 @@ class PricingService
         return $out;
     }
 
-    public function displayM(int $baseM, ?string $size): int
+    /** Is this product's delivery charged apart (its seller is in separate mode)? */
+    public function isSeparate(object $product): bool
     {
-        return $baseM + $this->feeM($size);
+        // No separate seller at all: nothing to look up
+        return $this->modes->separateSellerIds() !== [] && $this->modes->isSeparate($this->sellerOf($product));
+    }
+
+    /** The fee inside this product's displayed price: 0 in separate mode. */
+    public function includedFeeM(object $product): int
+    {
+        return $this->isSeparate($product) ? 0 : $this->feeM($this->sizeOf($product));
+    }
+
+    /** Seller price → price the client sees, in millimes. */
+    public function displayM(int $baseM, object $product): int
+    {
+        return $baseM + $this->includedFeeM($product);
     }
 
     /** Seller price → price the client sees (JSON payloads only). */
-    public function display($base, ?string $size): float
+    public function display($base, object $product): float
     {
-        return Millimes::toFloat($this->displayM(Millimes::of($base), $size));
+        return Millimes::toFloat($this->displayM(Millimes::of($base), $product));
     }
 
     /** "-X %" between two prices the client sees, rounded down. */
@@ -90,10 +114,11 @@ class PricingService
      * A PromotionService block (seller prices) as the client sees it.
      * `price` is the display price before any promotion.
      */
-    public function toClient(array $block, ?string $size): array
+    public function toClient(array $block, object $product): array
     {
-        $originalM = $this->displayM(Millimes::of($block['original_price']), $size);
-        $finalM    = $this->displayM(Millimes::of($block['final_price']), $size);
+        $originalM = $this->displayM(Millimes::of($block['original_price']), $product);
+        $finalM    = $this->displayM(Millimes::of($block['final_price']), $product);
+        $separate  = $this->isSeparate($product);
         $promotion = $block['promotion'] ?? null;
         $percent   = $promotion ? self::badgePercent($originalM, $finalM) : 0;
 
@@ -116,8 +141,8 @@ class PricingService
             'promo_label'      => $block['promo_label'] ?? null,
             'ends_at'          => $block['ends_at'] ?? null,
             'promotion'        => $promotion,
-            'free_delivery'    => true,
-        ];
+            'free_delivery'    => !$separate,
+        ] + ($separate ? ['delivery_charge' => Millimes::toFloat($this->feeM($this->sizeOf($product)))] : []);
     }
 
     /**
@@ -133,11 +158,14 @@ class PricingService
             $list[] = $p;
         }
         $this->resolveSizes($list);
+        if ($this->modes->separateSellerIds() !== []) {
+            $this->resolveSellers($list);
+        }
         $base = $this->promotions()->priceMany($list);
 
         $out = [];
         foreach ($list as $p) {
-            $out[(int) $p->id] = $this->toClient($base[(int) $p->id], $this->sizeOf($p));
+            $out[(int) $p->id] = $this->toClient($base[(int) $p->id], $p);
         }
         return $out;
     }
@@ -145,19 +173,19 @@ class PricingService
     /** Client block with the promotion already resolved (null = none). */
     public function priceWith(object $product, ?float $basePrice, ?int $variantId, ?Promotion $promotion): array
     {
-        return $this->toClient($this->promotions()->priceWith($product, $basePrice, $variantId, $promotion), $this->sizeOf($product));
+        return $this->toClient($this->promotions()->priceWith($product, $basePrice, $variantId, $promotion), $product);
     }
 
     /** Client block for one product, optionally one variant's price. */
     public function getEffectivePrice(Product $product, ?float $basePrice = null, ?int $variantId = null): array
     {
-        return $this->toClient($this->promotions()->getEffectivePrice($product, $basePrice, $variantId), $this->sizeOf($product));
+        return $this->toClient($this->promotions()->getEffectivePrice($product, $basePrice, $variantId), $product);
     }
 
     /** Client block for a product line: the variant's own price when it has one. */
     public function priceLine(Product $product, ?ProductVariant $variant = null): array
     {
-        return $this->toClient($this->promotions()->priceLine($product, $variant), $this->sizeOf($product));
+        return $this->toClient($this->promotions()->priceLine($product, $variant), $product);
     }
 
     /**
@@ -202,6 +230,40 @@ class PricingService
         return ParcelSize::normalize($size);
     }
 
+    /** The product's seller (null = the platform's own product). */
+    private function sellerOf(object $product): ?int
+    {
+        $model = $product instanceof \Illuminate\Database\Eloquent\Model;
+        $has   = $model ? array_key_exists('seller_id', $product->getAttributes()) : property_exists($product, 'seller_id');
+        if ($has) {
+            $id = $model ? $product->getAttributes()['seller_id'] : $product->seller_id;
+            return $id !== null ? (int) $id : null;
+        }
+        if (!isset($product->id)) {
+            return null;
+        }
+        $this->resolveSellers([$product]);
+        $id = $this->sellers[(int) $product->id] ?? null;
+        return $id !== null ? (int) $id : null;
+    }
+
+    /** One query for every row of the list that carries no seller_id. */
+    private function resolveSellers(array $products): void
+    {
+        $missing = [];
+        foreach ($products as $p) {
+            $has = $p instanceof \Illuminate\Database\Eloquent\Model
+                ? array_key_exists('seller_id', $p->getAttributes())
+                : property_exists($p, 'seller_id');
+            if (!$has && isset($p->id) && !array_key_exists((int) $p->id, $this->sellers)) {
+                $missing[] = (int) $p->id;
+            }
+        }
+        if ($missing) {
+            $this->sellers += DB::table('products')->whereIn('id', array_unique($missing))->pluck('seller_id', 'id')->all();
+        }
+    }
+
     /** One query for every row of the list that carries no parcel_size. */
     private function resolveSizes(array $products): void
     {
@@ -220,9 +282,9 @@ class PricingService
     }
 
     /**
-     * The price the client pays for a product (base price after promotion + the
-     * included fee of its size) as a SQL expression: storefront filters and
-     * sorting. Same rules as priceMany(); tests/Feature/Pricing checks both agree.
+     * The price the client sees for a product (base price after promotion, plus
+     * the fee of its size when its seller includes it) as a SQL expression:
+     * storefront filters and sorting. Same rules as priceMany(); tests check both agree.
      *
      * @return array{0: string, 1: array} [sql, bindings]
      */
@@ -232,30 +294,70 @@ class PricingService
         $fees = $this->fees();
         $case = "(CASE {$table}.parcel_size WHEN 'XL' THEN ? WHEN 'L' THEN ? ELSE ? END)";
 
-        return ["({$sql}) + {$case}", [
-            ...$bindings,
-            Millimes::toDecimal($fees['XL']), Millimes::toDecimal($fees['L']), Millimes::toDecimal($fees['S']),
-        ]];
+        $feeBindings = [Millimes::toDecimal($fees['XL']), Millimes::toDecimal($fees['L']), Millimes::toDecimal($fees['S'])];
+
+        if ($separate = $this->modes->separateSellerIds()) {
+            $marks = implode(',', array_fill(0, count($separate), '?'));
+            $case  = "(CASE WHEN {$table}.seller_id IN ({$marks}) THEN 0 ELSE {$case} END)";
+            $feeBindings = [...$separate, ...$feeBindings];
+        }
+
+        return ["({$sql}) + {$case}", [...$bindings, ...$feeBindings]];
     }
 
     // ── Packs (one unit of the largest item, per seller) ───────────────────
 
     /**
      * Included fee of ONE pack: the fee of its largest item, once per seller
-     * shipping part of it (a pack of one seller = one fee).
+     * shipping part of it (a pack of one seller = one fee). A separate-mode
+     * seller's part includes nothing: its fee is in separatePackFeeM().
      */
     public function packFeeM(Pack $pack): int
+    {
+        $bySeller = $this->packSizes($pack);
+        if (!$bySeller) {
+            return $this->feeM(ParcelSize::DEFAULT);
+        }
+        $fee = 0;
+        foreach ($bySeller as $sellerId => $sizes) {
+            if (!$this->modes->isSeparate($sellerId ?: null)) {
+                $fee += $this->feeM(ParcelSize::largest($sizes));
+            }
+        }
+        return $fee;
+    }
+
+    /** Delivery charged apart for ONE pack (0 when no seller of it is in separate mode). */
+    public function separatePackFeeM(Pack $pack): int
+    {
+        $fee = 0;
+        foreach ($this->packSizes($pack) as $sellerId => $sizes) {
+            if ($this->modes->isSeparate($sellerId ?: null)) {
+                $fee += $this->feeM(ParcelSize::largest($sizes));
+            }
+        }
+        return $fee;
+    }
+
+    private function isSeparatePack(Pack $pack): bool
+    {
+        foreach (array_keys($this->packSizes($pack)) as $sellerId) {
+            if ($this->modes->isSeparate($sellerId ?: null)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** @return array<int, string[]> seller id (0 = platform) => the sizes of its items in the pack */
+    private function packSizes(Pack $pack): array
     {
         $bySeller = [];
         foreach ($pack->items as $item) {
             if (!$item->product) continue;
             $bySeller[$item->product->seller_id ?? 0][] = $this->sizeOf($item->product);
         }
-        $fee = 0;
-        foreach ($bySeller as $sizes) {
-            $fee += $this->feeM(ParcelSize::largest($sizes));
-        }
-        return $fee ?: $this->feeM(ParcelSize::DEFAULT);
+        return $bySeller;
     }
 
     /**
@@ -271,13 +373,15 @@ class PricingService
         $priceM    = Millimes::of($price ?? $pack->pack_price) + $feeM;
         $originalM = max($priceM, Millimes::of($pack->currentItemsValue()) + $feeM);
 
+        $separate = $this->isSeparatePack($pack);
+
         return [
             'pack_price'       => Millimes::toFloat($priceM),
             'original_price'   => Millimes::toFloat($originalM),
             'savings'          => Millimes::toFloat($originalM - $priceM),
             'discount_percent' => self::badgePercent($originalM, $priceM),
-            'free_delivery'    => true,
-        ];
+            'free_delivery'    => !$separate,
+        ] + ($separate ? ['delivery_charge' => Millimes::toFloat($this->separatePackFeeM($pack))] : []);
     }
 
     // ── Parcels ───────────────────────────────────────────────────────────
@@ -450,27 +554,35 @@ class PricingService
 
         $names    = \App\Services\ShopOverview::storeNames(array_filter(array_keys($shops)));
         $out      = [];
-        $discount = 0;
+        $discount = $delivery = 0;
+        $anySeparate = false;
+        foreach (array_keys($shops) as $sellerId) {
+            $anySeparate = $anySeparate || $this->modes->isSeparate($sellerId ?: null);
+        }
         foreach ($shops as $sellerId => $shop) {
-            $fees      = $this->parcelFees($shop['units']);
+            $separate = $this->modes->isSeparate($sellerId ?: null);
+            // Separate: nothing is inside the prices, so nothing to give back; one fee apart
+            $fees      = $this->parcelFees($shop['units'], $separate ? array_fill_keys(ParcelSize::ALL, 0) : null);
+            $charge    = $separate ? $this->feeM($fees['parcel_size']) : 0;
             $discount += $fees['multi_item_discount_m'];
+            $delivery += $charge;
             $out[] = [
                 'seller_id'           => $sellerId ?: null,
                 'seller_name'         => $sellerId ? ($names[(int) $sellerId] ?? '') : "CHOOSE'Tounsi",
                 'item_ids'            => array_values(array_unique($shop['item_ids'])),
                 'units'               => $fees['units'],
                 'multi_item_discount' => Millimes::toFloat($fees['multi_item_discount_m']),
-                'upsell_min_saving'   => $fees['units'] === 1 ? Millimes::toFloat($this->upsellMinSavingM()) : null,
-            ];
+                'upsell_min_saving'   => !$separate && $fees['units'] === 1 ? Millimes::toFloat($this->upsellMinSavingM()) : null,
+            ] + ($anySeparate ? ['free_delivery' => !$separate, 'delivery_fee' => Millimes::toFloat($charge)] : []);
         }
 
         return [
             'shops'               => $out,
             'subtotal'            => Millimes::toFloat($subtotal),
             'multi_item_discount' => Millimes::toFloat($discount),
-            'free_delivery'       => true,
-            'total'               => Millimes::toFloat($subtotal - $discount),
-        ];
+            'free_delivery'       => !$anySeparate,
+            'total'               => Millimes::toFloat($subtotal - $discount + $delivery),
+        ] + ($anySeparate ? ['delivery_fee' => Millimes::toFloat($delivery)] : []);
     }
 
     /** Smallest saving a second item of the same shop brings: the S fee (upsell hint). */

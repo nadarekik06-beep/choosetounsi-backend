@@ -60,7 +60,7 @@ class DealsCatalog
             $pricing = app(\App\Services\Pricing\PricingService::class);
 
             return $packs->map(function (Pack $pack) use ($shops, $pricing) {
-                // What the client sees: pack price + one included delivery (a pack = one unit)
+                // What the client sees: pack price, plus one delivery when the seller includes it (a pack = one unit)
                 $shown    = $pricing->packClient($pack);
                 // The pack's category: the one most of its items share
                 $category = $pack->items->pluck('product.category_id')->filter()->countBy()->sortDesc()->keys()->first();
@@ -74,7 +74,8 @@ class DealsCatalog
                     'original_price'    => $shown['original_price'],
                     'savings'           => $shown['savings'],
                     'discount_percent'  => $shown['discount_percent'],
-                    'free_delivery'     => true,
+                    'free_delivery'     => $shown['free_delivery'],
+                    ...(isset($shown['delivery_charge']) ? ['delivery_charge' => $shown['delivery_charge']] : []),
                     'items_count'       => $pack->items->count(),
                     'available_stock'   => $pack->available_stock,
                     'category_id'       => $category ? (int) $category : null,

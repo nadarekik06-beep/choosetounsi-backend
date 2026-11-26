@@ -166,8 +166,8 @@ class CommissionController extends Controller
      * GET /api/seller/shipping-cost
      *
      * Kept for older builds of the seller dashboard only. Sellers no longer
-     * offer (or pay for) free delivery: it is included in the displayed price
-     * and handled by ChooseTounsi, so nothing is ever charged to them here.
+     * offer (or pay for) free delivery: ChooseTounsi handles delivery, so
+     * nothing is ever charged to them here.
      */
     public function shippingCost(): JsonResponse
     {
@@ -175,9 +175,6 @@ class CommissionController extends Controller
             'success' => true,
             'data'    => [
                 'free_delivery_contribution' => 0.0,
-                'shipping_cost'              => 0.0,
-                'customer_delivery_fee'      => 0.0,
-                'delivery_included'          => true,
             ],
         ]);
     }

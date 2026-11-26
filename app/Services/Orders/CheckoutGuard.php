@@ -209,6 +209,10 @@ class CheckoutGuard
     /** Same fields as CheckoutController::orderResponse(), rebuilt from the order (cache expired). */
     private function responseFromOrder(Order $order): array
     {
+        // With separate-mode parcels the buyer's delivery amount is what was charged apart
+        $separate = $order->sellerOrders()->where('delivery_mode', 'separate')->exists();
+        $charged  = $separate ? (float) $order->sellerOrders()->sum('delivery_fee_charged') : null;
+
         return [
             'success'         => true,
             'message'         => __('messages.checkout.order_placed'),
@@ -216,8 +220,8 @@ class CheckoutGuard
             'order_id'        => $order->id,
             'subtotal'        => (float) $order->subtotal,
             'discount_amount' => (float) $order->discount_amount,
-            'delivery_fee'    => (float) $order->shipping_fee,
-            'shipping_fee'    => (float) $order->shipping_fee,
+            'delivery_fee'    => $charged ?? (float) $order->shipping_fee,
+            'shipping_fee'    => $charged ?? (float) $order->shipping_fee,
             'total'           => (float) $order->total_amount,
             'parcels'         => [],
             'seller_count'    => $order->sellerOrders()->count(),

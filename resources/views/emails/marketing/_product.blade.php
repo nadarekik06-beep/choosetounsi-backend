@@ -32,6 +32,8 @@
       </p>
       @if (!empty($item['free_delivery']))
         <p style="margin:3px 0 0;font-size:11px;font-weight:700;color:#198f41;">{{ __('emails.marketing.interest.free_delivery') }}</p>
+      @elseif (!empty($item['delivery_charge']))
+        <p style="margin:3px 0 0;font-size:11px;font-weight:700;color:#6b7280;">{{ __('emails.marketing.interest.delivery_charge', ['amount' => number_format($item['delivery_charge'], 3, ',', ' ')]) }}</p>
       @endif
     </td>
   </tr>

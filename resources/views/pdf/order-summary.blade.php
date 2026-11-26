@@ -118,6 +118,14 @@
                 · <span class="label">Seller shipping charge</span> {{ $dt($so->getAttribute('seller_shipping_charge')) }}<br>
                 <span class="label">Platform profit</span> {{ $dt($so->getAttribute('platform_profit')) }}
                 @if ($s['money'])<br><span class="label">Slip total</span> {{ $dt($s['money']['total']) }} · <span class="label">COD</span> <b>{{ $dt($s['money']['cod']) }}</b>@endif
+                @if ($order->sellerOrders->contains(fn ($o) => $o->isSeparateDelivery()))
+                    <br><span class="label">Delivery mode</span> {{ $so->isSeparateDelivery() ? 'Separate' : 'Included' }}
+                    · <span class="label">Delivery fee charged to the customer</span> {{ $dt($so->getAttribute('delivery_fee_charged')) }}
+                    @if ($so->isSeparateDelivery() && (float) $so->getAttribute('delivery_fee') < (float) $so->getAttribute('delivery_fee_charged'))
+                        (now {{ $dt($so->getAttribute('delivery_fee')) }})
+                    @endif
+                    · <span class="label">Intigo tariff</span> {{ $dt($so->getAttribute('delivery_cost') ?? $so->getAttribute('shipping_cost')) }}
+                @endif
             </td>
         </tr>
     </table>

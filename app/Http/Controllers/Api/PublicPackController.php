@@ -142,7 +142,7 @@ class PublicPackController extends Controller
                     'label'          => $v->label,
                     'stock'          => $v->stock,
                     // The variant's own price as displayed (never the seller's base price)
-                    'price_override' => $v->price_override !== null ? $pricing->display($v->price_override, $pricing->sizeOf($item->product)) : null,
+                    'price_override' => $v->price_override !== null ? $pricing->display($v->price_override, $item->product) : null,
                     'option_map'     => $v->option_map,
                 ])
                 ->values();
@@ -158,7 +158,7 @@ class PublicPackController extends Controller
                     'name'              => $item->product->name,
                     'slug'              => $item->product->slug,
                     // Its price when bought alone, as displayed on its own page
-                    'price'             => $pricing->display($item->product->price, $pricing->sizeOf($item->product)),
+                    'price'             => $pricing->display($item->product->price, $item->product),
                     'primary_image_url' => $item->product->primary_image_url,
                     'has_variants'      => $allVariants->isNotEmpty(),
                 ] : null,

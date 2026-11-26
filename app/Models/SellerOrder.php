@@ -143,7 +143,33 @@ class SellerOrder extends Model
     protected $appends = ['display_status'];
 
     /** Courier-side internals: the admin reads them through IntigoController::parcelPayload(). */
-    protected $hidden = ['intigo_error', 'intigo_attention', 'intigo_locked_at', 'intigo_previous_nids', 'intigo_attempts', 'bordereau_path'];
+    // delivery_*: admin only (exposeDeliveryMode()); buyers read clientMoney(), sellers never see delivery
+    protected $hidden = ['intigo_error', 'intigo_attention', 'intigo_locked_at', 'intigo_previous_nids', 'intigo_attempts', 'bordereau_path',
+        'delivery_mode', 'delivery_fee_charged', 'delivery_cost'];
+
+    /** The platform's money on a parcel (delivery collected, its cost, margin, profit): never sent to a seller. */
+    public const PLATFORM_MONEY = [
+        'delivery_fee', 'delivery_mode', 'delivery_fee_charged', 'delivery_cost', 'shipping_cost', 'platform_profit',
+        'platform_delivery_margin', 'client_delivery_fee', 'agency_delivery_cost', 'seller_free_delivery_contribution',
+        'cod_amount', 'amount_to_remit', 'client_total', 'parcel_fee', 'fee_rates', 'included_fees_total', 'multi_item_discount',
+    ];
+
+    /** For a seller-facing response that serializes the model. */
+    public function forSeller(): self
+    {
+        return $this->makeHidden(self::PLATFORM_MONEY);
+    }
+
+    public function isSeparateDelivery(): bool
+    {
+        return ($this->attributes['delivery_mode'] ?? null) === \App\Services\Delivery\DeliveryMode::SEPARATE;
+    }
+
+    /** Admin payloads: show the frozen delivery mode and fees of a separate-mode parcel. */
+    public function exposeDeliveryMode(): self
+    {
+        return $this->isSeparateDelivery() ? $this->makeVisible(['delivery_mode', 'delivery_fee_charged', 'delivery_cost']) : $this;
+    }
 
     /**
      * Status to show: a fully returned seller order is 'refunded' ("Returned

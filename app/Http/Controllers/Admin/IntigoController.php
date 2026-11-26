@@ -251,6 +251,8 @@ class IntigoController extends Controller
                 'parcel_size'              => $data['size'],
                 'shipping_cost'            => Millimes::toDecimal($cost),
                 'agency_delivery_cost'     => Millimes::toDecimal($cost),
+                // Orders placed before delivery_cost was frozen stay without it
+                ...($so->getAttribute('delivery_cost') !== null ? ['delivery_cost' => Millimes::toDecimal($cost)] : []),
                 'platform_delivery_margin' => Millimes::toDecimal($margin),
                 'platform_profit'          => Millimes::toDecimal($m($so->getAttribute('commission_amount')) + $margin),
                 'amount_to_remit'          => Millimes::toDecimal($cod > 0 ? $cod - $cost : 0),

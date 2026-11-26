@@ -157,7 +157,7 @@ class FinanceController extends Controller
                     ],
                     // After-sale parcels (complaint returns / exchanges): what Intigo bills vs what we got back
                     'after_sale'            => $this->afterSale($dateRange),
-                ],
+                ] + $this->deliveryByMode(clone $base),
                 'payout_summary' => [
                     'pending' => [
                         'count'  => (int) ($payoutCounts->get('pending')->cnt   ?? 0),
@@ -315,8 +315,15 @@ class FinanceController extends Controller
         }
 
         $results = $query
+            ->addSelect('so.delivery_mode', 'so.delivery_fee_charged', 'so.delivery_cost')
             ->orderByDesc('so.created_at')
             ->paginate((int) $request->query('per_page', 15));
+        // Delivery mode and fees: only on separate-mode parcels (absent = included)
+        $results->getCollection()->each(function ($row) {
+            if ($row->delivery_mode !== 'separate') {
+                unset($row->delivery_mode, $row->delivery_fee_charged, $row->delivery_cost);
+            }
+        });
 
         return response()->json(['success' => true, 'data' => $results]);
     }
@@ -473,7 +480,11 @@ class FinanceController extends Controller
                     'refused_fee_paid_by'               => $so->getAttribute('refused_fee_paid_by'),
                     'returned_to_seller_at'             => $so->getAttribute('returned_to_seller_at'),
                     'is_platform_parcel'                => $so->isPlatformParcel(),
-                ],
+                ] + ($so->isSeparateDelivery() ? [
+                    'delivery_mode'        => 'separate',
+                    'delivery_fee_charged' => $num($so->getAttribute('delivery_fee_charged')),
+                    'delivery_cost'        => $num($so->getAttribute('delivery_cost')),
+                ] : []),
             ],
         ]);
     }
@@ -712,6 +723,39 @@ class FinanceController extends Controller
                 'difference'     => $f($m($k->cash) - $explained),
             ],
         ];
+    }
+
+    /**
+     * Delivery fees collected vs what Intigo bills, by delivery mode, for the
+     * filtered period (parcels not cancelled / refused). "collected" is the live
+     * parcel fee (a refunded fee is gone), "charged_apart" the part buyers saw as
+     * its own line at checkout. Empty while the period has no separate-mode parcel.
+     */
+    private function deliveryByMode($base): array
+    {
+        if (!(clone $base)->where('so.delivery_mode', 'separate')->exists()) {
+            return [];
+        }
+        $rows = $base->whereNotIn('so.status', SellerOrder::NOT_SHIPPED)
+            ->groupBy('so.delivery_mode')
+            ->selectRaw('so.delivery_mode as mode, COUNT(*) as parcels,
+                COALESCE(SUM(so.delivery_fee), 0) as collected,
+                COALESCE(SUM(so.delivery_fee_charged), 0) as charged_apart,
+                COALESCE(SUM(so.shipping_cost), 0) as cost')
+            ->get()->keyBy('mode');
+
+        $out = [];
+        foreach (['separate', 'included'] as $mode) {
+            $r = $rows->get($mode);
+            $out[$mode] = [
+                'parcels'        => (int) ($r->parcels ?? 0),
+                'fees_collected' => round((float) ($r->collected ?? 0), 3),
+                'charged_apart'  => round((float) ($r->charged_apart ?? 0), 3),
+                'intigo_cost'    => round((float) ($r->cost ?? 0), 3),
+                'margin'         => round((float) ($r->collected ?? 0) - (float) ($r->cost ?? 0), 3),
+            ];
+        }
+        return ['delivery_by_mode' => $out];
     }
 
     private function resolveDateRange(string $period): ?array

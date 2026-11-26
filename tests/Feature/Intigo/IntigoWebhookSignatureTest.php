@@ -12,7 +12,8 @@ use Tests\TestCase;
 /**
  * POST /api/webhooks/intigo as Intigo sends it (official docs): headers
  * X-Webhook-Event / X-Webhook-Timestamp / X-Webhook-Signature, signature
- * "sha256=" + HMAC-SHA256(raw body, secret). Signed → 200 + queued job;
+ * "sha256=" + HMAC-SHA256(raw body, secret); the same HMAC as bare hex or base64
+ * is accepted too. Signed → 200 + queued job;
  * missing / bad signature → 401, nothing stored, nothing queued.
  */
 class IntigoWebhookSignatureTest extends TestCase
@@ -71,6 +72,25 @@ class IntigoWebhookSignatureTest extends TestCase
         Queue::assertPushed(ProcessIntigoEvent::class, 1);
     }
 
+    /** The same HMAC without the "sha256=" prefix, as hex (any case) or base64, is accepted too. */
+    public function test_the_other_encodings_of_a_valid_signature_are_accepted(): void
+    {
+        $encodings = [
+            'bare hex'        => fn (string $b) => hash_hmac('sha256', $b, self::SECRET),
+            'upper-case hex'  => fn (string $b) => 'sha256=' . strtoupper(hash_hmac('sha256', $b, self::SECRET)),
+            'base64'          => fn (string $b) => base64_encode(hash_hmac('sha256', $b, self::SECRET, true)),
+            'prefixed base64' => fn (string $b) => 'sha256=' . base64_encode(hash_hmac('sha256', $b, self::SECRET, true)),
+        ];
+        $n = 0;
+        foreach ($encodings as $label => $sign) {
+            $nid  = 'TEST-NOT-A-PARCEL-ENC-' . (++$n);
+            $body = $this->body($nid);
+            $this->send($body, $sign($body))->assertOk()->assertJson(['success' => true, 'duplicate' => false]);
+            $this->assertSame(1, DB::table('intigo_webhook_events')->where('nid', $nid)->count(), $label);
+        }
+        Queue::assertPushed(ProcessIntigoEvent::class, count($encodings));
+    }
+
     public function test_a_bad_or_missing_signature_is_refused_with_401(): void
     {
         Log::spy();
@@ -78,12 +98,13 @@ class IntigoWebhookSignatureTest extends TestCase
 
         $this->send($body, 'sha256=' . hash_hmac('sha256', $body, 'wrong-secret'))->assertStatus(401);
         $this->send($body, 'sha256=deadbeef')->assertStatus(401);
-        $this->send($body, hash_hmac('sha256', $body, self::SECRET))->assertStatus(401);   // no "sha256=" prefix
+        $this->send($body, hash_hmac('sha256', $body, 'wrong-secret'))->assertStatus(401);                       // bare hex
+        $this->send($body, base64_encode(hash_hmac('sha256', $body, 'wrong-secret', true)))->assertStatus(401);  // base64
         $this->send($body, null)->assertStatus(401);
 
         $this->assertSame(0, DB::table('intigo_webhook_events')->where('nid', 'TEST-NOT-A-PARCEL-2')->count());
         Queue::assertNothingPushed();
-        Log::shouldHaveReceived('warning')->with('[Intigo webhook] invalid signature: refused', \Mockery::on(fn ($ctx) => !array_key_exists('body', $ctx)))->times(3);
+        Log::shouldHaveReceived('warning')->with('[Intigo webhook] invalid signature: refused', \Mockery::on(fn ($ctx) => !array_key_exists('body', $ctx)))->times(4);
         Log::shouldHaveReceived('warning')->with('[Intigo webhook] missing signature: refused', \Mockery::any())->once();
     }
 

@@ -68,6 +68,9 @@ use Illuminate\Support\Facades\Notification;
  */
 class ReturnService
 {
+    /** complaint_events status: an admin chose to refund a separate parcel's delivery as an exception. */
+    public const EVENT_DELIVERY_EXCEPTION = 'delivery_refund_exception';
+
     public function __construct(private WalletService $wallet) {}
 
     // ── Creation ────────────────────────────────────────────────────────────
@@ -194,7 +197,8 @@ class ReturnService
                 $isFull     = $shopLines->every(fn($l) => (int) ($quantities[$l->id] ?? 0) + (int) ($reserved[$l->id] ?? 0) >= (int) $l->quantity);
                 $fresh      = $complaint->fresh();
                 // Delivery included in the prices: the parcel fee the returned units free up is refunded too
-                $amount += $this->deliveryRefundPreview((int) $soId, $group, $quantities);
+                $amount += $this->deliveryRefundPreview((int) $soId, $group, $quantities,
+                    !$exchange && $this->sellerAtFault($complaint->complaint_type, $complaint->shipping_payer));
 
                 $complaint->update([
                     'return_scope'       => $isFull ? 'full' : 'partial',
@@ -238,7 +242,8 @@ class ReturnService
                     $amount += Millimes::of($this->share($line, $qty)['net_amount']);
                 }
             }
-            $amount += Millimes::of($this->deliveryRefundPreview((int) $soId, $group, $quantities));
+            $amount += Millimes::of($this->deliveryRefundPreview((int) $soId, $group, $quantities,
+                $resolution !== Complaint::RESOLUTION_EXCHANGE && $this->sellerAtFault($complaintType, $payer)));
             $size = \App\Support\ParcelSize::largest(
                 DB::table('products')->whereIn('id', $group->pluck('product_id'))->pluck('parcel_size')->all() ?: ['S']
             );
@@ -351,7 +356,7 @@ class ReturnService
      * Return: opens the pick-up. Exchange: holds the replacement stock, then
      * books the Intigo exchange parcel (or leaves the manual booking step).
      */
-    public function adminApprove(Complaint $complaint, User $admin, ?string $note, ?string $shippingPayer = null): Complaint
+    public function adminApprove(Complaint $complaint, User $admin, ?string $note, ?string $shippingPayer = null, bool $refundDelivery = false): Complaint
     {
         if ($complaint->isLegacyExchange()) {
             throw new ReturnException('Legacy exchange requests can only be closed.');
@@ -367,7 +372,7 @@ class ReturnService
         ];
 
         $sold = [];
-        $c = DB::transaction(function () use ($complaint, $admin, $note, $extra, $shippingPayer, &$sold) {
+        $c = DB::transaction(function () use ($complaint, $admin, $note, $extra, $shippingPayer, $refundDelivery, &$sold) {
             $c = $this->move($complaint, Complaint::STATUS_ADMIN_APPROVED, $admin, 'admin', $note, $extra, null, false);
             if ($shippingPayer && $shippingPayer !== $c->shipping_payer) {
                 $this->event($c, 'payer_overridden', $admin, 'admin', $note, [
@@ -375,6 +380,12 @@ class ReturnService
                 ]);
                 $c->update(['shipping_payer' => $shippingPayer]);
             }
+            // Exception decided by the admin: a separate parcel's delivery is refunded although
+            // the reason is not a seller fault (only meaningful when the seller pays the return)
+            if ($refundDelivery && $c->shipping_payer === 'seller') {
+                $this->event($c, self::EVENT_DELIVERY_EXCEPTION, $admin, 'admin', $note);
+            }
+            $this->syncSeparateDelivery($c);
             $c->update([
                 'refund_amount'      => $this->refundFor($c, (float) $c->items_amount),
                 'fee_exceeds_refund' => $this->feeExceedsRefund($c, (float) $c->items_amount),
@@ -555,6 +566,7 @@ class ReturnService
                 'admin_decided_by' => $admin->id,
                 'admin_decided_at' => now(),
             ], ['converted_from' => 'exchange'], false);
+            $this->syncSeparateDelivery($c);
             $c->update([
                 'refund_amount'      => $this->refundFor($c, (float) $c->items_amount),
                 'fee_exceeds_refund' => $this->feeExceedsRefund($c, (float) $c->items_amount),
@@ -967,6 +979,7 @@ class ReturnService
                 'item_unused_confirmed' => $c->complaint_type === 'changed_mind' ? true : $c->item_unused_confirmed,
             ])->save();
             ComplaintItem::where('complaint_id', $c->id)->update(['replacement_variant_id' => null, 'replacement_label' => null]);
+            $this->syncSeparateDelivery($c);
             $c->update([
                 'refund_amount'      => $this->refundFor($c, (float) $c->items_amount),
                 'fee_exceeds_refund' => $this->feeExceedsRefund($c, (float) $c->items_amount),
@@ -1330,7 +1343,8 @@ class ReturnService
         foreach ($bySellerOrder as $soId => $sum) {
             if ($soId) {
                 $this->reverseSellerOrder((int) $soId, $sum, $complaint, $admin);
-                $deliveryRefundM += $this->refundIncludedDelivery((int) $soId, $complaint, $admin);
+                $deliveryRefundM += $this->refundIncludedDelivery((int) $soId, $complaint, $admin)
+                    + $this->refundSeparateDelivery((int) $soId, $complaint, $admin);
             }
         }
 
@@ -1410,9 +1424,11 @@ class ReturnService
 
     /**
      * Delivery part of a refund, before it happens (the amount shown when the
-     * return is requested): 0 for orders placed before delivery was included.
+     * return is requested). Included parcels: the fee the returned units free up.
+     * Separate parcels: their fee, only on a full return with the seller at fault
+     * (sellerAtFault()). 0 for orders placed before delivery was included.
      */
-    private function deliveryRefundPreview(int $soId, Collection $lines, array $quantities): float
+    private function deliveryRefundPreview(int $soId, Collection $lines, array $quantities, bool $sellerAtFault = false): float
     {
         if (!$soId) {
             return 0.0;
@@ -1422,7 +1438,121 @@ class ReturnService
             $minus[$line->id] = (int) ($quantities[$line->id] ?? 0);
         }
         $r = app(\App\Services\Pricing\PricingService::class)->recomputeParcel($soId, $minus);
-        return $r ? Millimes::toFloat($r['fee_delta_m']) : 0.0;
+        if ($r) {
+            return Millimes::toFloat($r['fee_delta_m']);
+        }
+        return Millimes::toFloat($this->separateRefundM($soId, $sellerAtFault, $minus));
+    }
+
+    /**
+     * Seller fault, for a separate parcel's delivery fee. The seller must pay the
+     * return AND either the reason is a fault (wrong product / size / colour,
+     * damaged) or an admin decided it: switched the payer to the seller, or
+     * ticked the delivery refund at approval. "Doesn't fit" refunded because no
+     * exchange is possible is NOT a fault, although the policy bills its return
+     * to the seller.
+     */
+    private function sellerAtFault(string $type, ?string $payer, ?Complaint $complaint = null): bool
+    {
+        if ($payer !== 'seller') {
+            return false;
+        }
+        if (in_array($type, Complaint::SELLER_FAULT_TYPES, true)) {
+            return true;
+        }
+        return $complaint !== null && $complaint->events()->get(['status', 'meta'])->contains(
+            fn ($e) => $e->status === self::EVENT_DELIVERY_EXCEPTION
+                || ($e->status === 'payer_overridden' && (((array) $e->meta)['to'] ?? null) === 'seller'));
+    }
+
+    /**
+     * What a separate-mode parcel gives back of its delivery fee: all of it when
+     * the seller is at fault and nothing of the parcel is left once $minus
+     * (order_item_id => units) is gone; nothing for a change of mind or a
+     * partial return.
+     *
+     * @param array<int, int> $minus
+     */
+    private function separateRefundM(int $soId, bool $sellerAtFault, array $minus = []): int
+    {
+        if (!$sellerAtFault) {
+            return 0;
+        }
+        $so = SellerOrder::find($soId);
+        if (!$so || !$so->isSeparateDelivery()) {
+            return 0;
+        }
+        $left = DB::table('order_items')->where('seller_order_id', $soId)->get(['id', 'quantity'])
+            ->sum(fn ($l) => max(0, (int) $l->quantity - (int) ($minus[$l->id] ?? 0)));
+
+        return $left === 0 ? max(0, Millimes::of($so->getAttribute('delivery_fee'))) : 0;
+    }
+
+    /**
+     * A return not yet applied changed who is at fault or became a refund: the
+     * delivery part of a separate-mode parcel follows. Other parcels are left alone.
+     */
+    private function syncSeparateDelivery(Complaint $c): void
+    {
+        $soId = (int) $this->sellerOrderId($c);
+        $so   = $soId ? SellerOrder::find($soId) : null;
+        if (!$so || !$so->isSeparateDelivery() || $c->finance_applied_at) {
+            return;
+        }
+        $items = ComplaintItem::where('complaint_id', $c->id)->get();
+        $minus = $items->pluck('quantity', 'order_item_id')->map(fn ($q) => (int) $q)->all();
+        $totalM = $items->sum(fn ($i) => Millimes::of($i->net_amount))
+            + ($c->isExchange() ? 0 : $this->separateRefundM($soId, $this->sellerAtFault($c->complaint_type, $c->shipping_payer, $c), $minus));
+
+        $c->update(['items_amount' => Millimes::toFloat($totalM)]);
+    }
+
+    /**
+     * Separate mode, applied with the sale reversal: a full return with the seller
+     * at fault gives the delivery fee back to the client and charges it to the
+     * seller (next settlements), as for included parcels. Otherwise it is kept.
+     */
+    private function refundSeparateDelivery(int $soId, Complaint $complaint, ?User $admin): int
+    {
+        $feeM = $complaint->isExchange() ? 0
+            : $this->separateRefundM($soId, $this->sellerAtFault($complaint->complaint_type, $complaint->shipping_payer, $complaint));
+        if ($feeM <= 0) {
+            return 0;
+        }
+        $so = SellerOrder::whereKey($soId)->lockForUpdate()->firstOrFail();
+        DB::table('seller_orders')->where('id', $soId)->update([
+            'delivery_fee'             => '0.000',
+            // Intigo's cost (shipping_cost) was paid and stays
+            'platform_delivery_margin' => Millimes::toDecimal(Millimes::of($so->getAttribute('platform_delivery_margin')) - $feeM),
+            'platform_profit'          => Millimes::toDecimal(Millimes::of($so->getAttribute('platform_profit')) - $feeM),
+            'updated_at'               => now(),
+        ]);
+
+        if ($so->seller_id && !$so->isPlatformParcel()) {
+            $this->chargeParcelFee($so, $complaint, $feeM, $admin);
+        }
+        if ($so->getAttribute('settlement_batch_id') && $so->getAttribute('payout_status') !== 'paid') {
+            Settlements::recomputeDraft((int) $so->getAttribute('settlement_batch_id'));
+        }
+        return $feeM;
+    }
+
+    /** The parcel fee refunded to the client on a full return, owed by the seller (once). */
+    private function chargeParcelFee(SellerOrder $so, Complaint $complaint, int $feeM, ?User $admin): void
+    {
+        if (SellerAdjustment::where('complaint_id', $complaint->id)->where('seller_order_id', $so->id)
+            ->where('type', SellerAdjustment::TYPE_RETURN_PARCEL_FEE)->exists()) {
+            return;
+        }
+        SellerAdjustment::create([
+            'seller_id'       => $so->seller_id,
+            'seller_order_id' => $so->id,
+            'complaint_id'    => $complaint->id,
+            'type'            => SellerAdjustment::TYPE_RETURN_PARCEL_FEE,
+            'amount'          => '-' . Millimes::toDecimal($feeM),
+            'description'     => "Delivery of order {$complaint->order?->order_number} refunded to the client, full return {$complaint->reference} (" . $complaint->getTypeLabel() . ')',
+            'created_by'      => $admin?->id,
+        ]);
     }
 
     /**
@@ -1443,18 +1573,8 @@ class ReturnService
         $so     = SellerOrder::find($soId);
 
         if ($deltaM > 0 && $r['units'] === 0 && $complaint->shipping_payer === 'seller'
-            && $so && $so->seller_id && !$so->isPlatformParcel()
-            && !SellerAdjustment::where('complaint_id', $complaint->id)->where('seller_order_id', $soId)
-                ->where('type', SellerAdjustment::TYPE_RETURN_PARCEL_FEE)->exists()) {
-            SellerAdjustment::create([
-                'seller_id'       => $so->seller_id,
-                'seller_order_id' => $soId,
-                'complaint_id'    => $complaint->id,
-                'type'            => SellerAdjustment::TYPE_RETURN_PARCEL_FEE,
-                'amount'          => '-' . Millimes::toDecimal($deltaM),
-                'description'     => "Delivery of order {$complaint->order?->order_number} refunded to the client, full return {$complaint->reference} (" . $complaint->getTypeLabel() . ')',
-                'created_by'      => $admin?->id,
-            ]);
+            && $so && $so->seller_id && !$so->isPlatformParcel()) {
+            $this->chargeParcelFee($so, $complaint, $deltaM, $admin);
         }
         if ($so && $so->getAttribute('settlement_batch_id') && $so->getAttribute('payout_status') !== 'paid') {
             Settlements::recomputeDraft((int) $so->getAttribute('settlement_batch_id'));

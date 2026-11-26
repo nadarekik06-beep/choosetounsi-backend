@@ -4,6 +4,7 @@
 namespace App\Services;
 
 use App\Models\SellerOrder;
+use App\Services\Delivery\DeliveryMode;
 use App\Support\Millimes;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -136,7 +137,11 @@ class FinancialSnapshotService
             'amount_to_remit'                   => $dec($parcel['amount_to_remit_m']),
             'payout_status'                     => 'pending',
             'updated_at'                        => now(),
-        ] + $this->includedDelivery($parcel));
+            // Frozen at checkout: a later mode switch never touches this parcel
+            'delivery_mode'                     => $parcel['delivery_mode'] ?? DeliveryMode::INCLUDED,
+            'delivery_fee_charged'              => $dec($parcel['delivery_fee_charged_m'] ?? 0),
+            'delivery_cost'                     => $dec($parcel['agency_cost_m']),
+        ] + $this->pricingModel($parcel));
 
         self::checkParcel($sellerOrderId);
     }
@@ -145,11 +150,17 @@ class FinancialSnapshotService
      * Delivery included in the displayed prices (App\Services\Pricing\PricingService):
      *   client_total = Σ display prices − coupon − multi_item_discount = parcel total
      * and the per-size fees in force, so a return recomputes the parcel with them.
+     *
+     * Separate mode: only the model is marked. The included columns stay NULL, so
+     * every screen shows the parcel's delivery line and a return never recomputes it.
      */
-    private function includedDelivery(array $parcel): array
+    private function pricingModel(array $parcel): array
     {
         if (!isset($parcel['included_fees_total_m'])) {
             return [];
+        }
+        if (($parcel['delivery_mode'] ?? null) === DeliveryMode::SEPARATE) {
+            return ['pricing_model' => \App\Services\Pricing\PricingService::MODEL_SEPARATE];
         }
         $dec = fn (int $m) => Millimes::toDecimal($m);
 

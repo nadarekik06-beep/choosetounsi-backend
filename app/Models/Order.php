@@ -272,6 +272,13 @@ public function complaints()
             return $money + ['multi_item_discount' => 0.0, 'free_delivery' => false];
         }
 
+        // Mixed order: parcels of separate-mode sellers keep their own delivery amount
+        $parcels  = $this->relationLoaded('sellerOrders') ? $this->sellerOrders : $this->sellerOrders()->get();
+        if ($parcels->isNotEmpty() && !array_key_exists('delivery_mode', $parcels->first()->getAttributes())) {
+            $parcels = $this->sellerOrders()->get();
+        }
+        $separate = $parcels->filter(fn ($so) => $so->isSeparateDelivery());
+
         $m = fn ($v) => \App\Support\Millimes::of($v ?? 0);
         $f = fn (int $v) => \App\Support\Millimes::toFloat($v);
 
@@ -279,22 +286,22 @@ public function complaints()
         $original = $money['original'];
         $original['subtotal']            = $f($m($original['subtotal']) + $m($this->attributes['included_fees_total'] ?? 0));
         $original['multi_item_discount'] = $f($m($this->attributes['multi_item_discount'] ?? 0));
-        $original['shipping_fee']        = 0.0;
+        $original['shipping_fee']        = $f($separate->sum(fn ($so) => $m($so->getAttribute('delivery_fee_charged'))));
 
-        $fees = $discount = 0;
+        $fees = $discount = $shipping = 0;
         if (!$money['is_cancelled']) {
-            $sellerOrders = $this->relationLoaded('sellerOrders') ? $this->sellerOrders : $this->sellerOrders()->get();
-            foreach ($sellerOrders->whereNotIn('status', SellerOrder::NOT_SHIPPED) as $so) {
+            foreach ($parcels->whereNotIn('status', SellerOrder::NOT_SHIPPED) as $so) {
                 $fees     += $m($so->getAttribute('included_fees_total'));
                 $discount += $m($so->getAttribute('multi_item_discount'));
+                $shipping += $so->isSeparateDelivery() ? $m($so->getAttribute('delivery_fee')) : 0;
             }
         }
 
         return [
             'subtotal'            => $f($m($money['subtotal']) + $fees),
-            'shipping_fee'        => 0.0,
+            'shipping_fee'        => $f($shipping),
             'multi_item_discount' => $f($discount),
-            'free_delivery'       => true,
+            'free_delivery'       => $separate->isEmpty(),
             'original'            => $original,
         ] + $money;
     }

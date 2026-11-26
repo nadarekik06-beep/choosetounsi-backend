@@ -62,6 +62,8 @@ class CartController extends Controller
             ? $this->formatPackCartItem($item)
             : $this->formatCartItem($item, $storeNames)
         );
+        // Per shop: multi-item discount / "add another item" hint, delivery, and the cart total
+        $summary = $this->pricing->cartSummary($items);
 
         return response()->json([
             'success' => true,
@@ -72,8 +74,8 @@ class CartController extends Controller
                 'savings'  => round($mapped->sum(fn ($i) => $i['line_savings'] ?? 0), 3),
                 'promo_ended' => $mapped->filter(fn ($i) => $i['promo_ended'] ?? false)->pluck('name')->values(),
                 // Per shop: multi-item discount / "add another item" hint, and the cart total
-                'summary'     => $this->pricing->cartSummary($items),
-                'free_delivery' => true,
+                'summary'     => $summary,
+                'free_delivery' => $summary['free_delivery'],
             ],
         ]);
     }
@@ -465,7 +467,7 @@ private function safeSessionId(Request $request): ?string
         // Same promotion and rounding as checkout's order lines, shown as the client's
         // prices (delivery of the product's size included)
         $base      = $this->promotionService->priceLine($product, $variant);
-        $promoData = $this->pricing->toClient($base, $this->pricing->sizeOf($product));
+        $promoData = $this->pricing->toClient($base, $product);
         $price     = $promoData['final_price'];
         $ended     = \App\Services\Orders\OrderPricing::promotionEnded($item, $base);
  
@@ -507,7 +509,7 @@ private function safeSessionId(Request $request): ?string
             'line_savings'     => \App\Support\Millimes::toFloat(\App\Support\Millimes::of($promoData['discount_amount']) * (int) $item->quantity),
             // Added during a promotion that has ended: normal price now, tell the buyer
             'promo_ended'       => $ended,
-            'promo_ended_price' => $ended ? $this->pricing->display($item->promo_price_snapshot, $this->pricing->sizeOf($product)) : null,
+            'promo_ended_price' => $ended ? $this->pricing->display($item->promo_price_snapshot, $product) : null,
             'quantity'         => $item->quantity,
             'stock'            => $stock,
             'line_total'       => \App\Support\Millimes::toFloat(\App\Support\Millimes::of($price) * (int) $item->quantity),
@@ -515,9 +517,8 @@ private function safeSessionId(Request $request): ?string
             'variant_label'    => $variantLabel,
             'variant_options'  => $variantOptions,
             'is_pack'          => false,
-            // Delivery is free everywhere (included in the price above)
-            'free_delivery'    => true,
-        ];
+            'free_delivery'    => $promoData['free_delivery'],
+        ] + (isset($promoData['delivery_charge']) ? ['delivery_charge' => $promoData['delivery_charge']] : []);
     }
 
     /**
@@ -539,6 +540,8 @@ private function safeSessionId(Request $request): ?string
             ? \App\Support\Millimes::of($pack->pack_price) + $this->pricing->packFeeM($pack)
             : \App\Support\Millimes::of($item->pack_price_snapshot);
 
+        $chargeM = $pack ? $this->pricing->separatePackFeeM($pack) : 0;
+
         return [
             'id'              => $item->id,
             'product_id'      => null,
@@ -556,12 +559,12 @@ private function safeSessionId(Request $request): ?string
             'quantity'        => max(1, (int) $item->quantity),
             'stock'           => 999, // checked per product at checkout
             'line_total'      => \App\Support\Millimes::toFloat($priceM * max(1, (int) $item->quantity)),
-            'free_delivery'   => true,
+            'free_delivery'   => $chargeM === 0,
             'image_url'       => $imageUrl,
             'variant_label'   => null,
             'variant_options' => [],
             'is_pack'         => true,
-        ];
+        ] + ($chargeM > 0 ? ['delivery_charge' => \App\Support\Millimes::toFloat($chargeM)] : []);
     }
 
     /** Main image of the variant's color group, else the product cover (sizes share images). */

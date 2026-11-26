@@ -302,15 +302,15 @@ class ProductReviewResource extends JsonResource
                 'label'          => $c->discount_label,
                 'min_order_amount' => $c->min_order_amount !== null ? (float) $c->min_order_amount : null,
             ])->values(),
-            // Delivery is free for the client and included in the price they see:
+            // Included mode: delivery is inside the price the client sees. Separate mode: it is charged apart.
             // display = seller price + the client fee of the product's parcel size
             'delivery' => [
-                'included'            => true,
+                'included'            => !app(\App\Services\Pricing\PricingService::class)->isSeparate($p),
                 'fee'                 => $this->includedFee($p),
                 'is_free'             => false,
                 'is_default'          => true,
-                'display_price'       => app(\App\Services\Pricing\PricingService::class)->display($priced['original_price'], $p->parcel_size),
-                'display_final_price' => app(\App\Services\Pricing\PricingService::class)->display($effective, $p->parcel_size),
+                'display_price'       => app(\App\Services\Pricing\PricingService::class)->display($priced['original_price'], $p),
+                'display_final_price' => app(\App\Services\Pricing\PricingService::class)->display($effective, $p),
             ],
             'commission' => [
                 'plan'             => $plan,
@@ -380,12 +380,15 @@ class ProductReviewResource extends JsonResource
             ->map(fn($slug) => ['label' => $specBySlug[$slug]['name'], 'value' => $specBySlug[$slug]['value']])
             ->values();
 
+        $separate = app(\App\Services\Pricing\PricingService::class)->isSeparate($p);
+
         return [
-            // The delivery included in the displayed price for this size (never charged apart)
+            // The client fee of this size: inside the displayed price, or charged apart (separate mode)
             'delivery_fee'        => $this->includedFee($p),
             'is_free_delivery'    => false,
             'uses_platform_default' => true,
-            'delivery_included'   => true,
+            'delivery_included'   => !$separate,
+            ...($separate ? ['delivery_fee_mode' => 'separate'] : []),
             'parcel_size'         => $p->parcel_size ?? 'S',
             // false: the size was never chosen by the seller or an admin (older products got S)
             'parcel_size_confirmed'    => $p->parcelSizeConfirmed(),

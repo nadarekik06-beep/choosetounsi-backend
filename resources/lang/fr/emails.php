@@ -37,7 +37,7 @@ return [
         'intro' => 'Vous venez de rejoindre la première marketplace de Tunisie.<br>Découvrez des produits locaux authentiques, soutenez les vendeurs tunisiens et profitez de prix imbattables.',
         'shop_now' => 'Découvrir la boutique →',
         'deals' => 'Voir les bons plans',
-        'trust_delivery' => '🚚 LIVRAISON GRATUITE',
+        'trust_delivery' => '🚚 LIVRAISON EN TUNISIE',
         'trust_sellers' => '✅ VENDEURS VÉRIFIÉS',
         'trust_returns' => '🔄 RETOURS FACILES',
         'journey' => 'Votre aventure commence ici',
@@ -80,6 +80,7 @@ return [
             'intro'     => 'Vous avez consulté :category plusieurs fois cette semaine. Voici une offre qui pourrait vous plaire.',
             'deal'      => 'Offre',
             'free_delivery' => 'Livraison gratuite',
+            'delivery_charge' => '+ :amount DT de livraison',
         ],
         'unsubscribed' => [
             'title'          => 'Vous êtes désabonné(e)',

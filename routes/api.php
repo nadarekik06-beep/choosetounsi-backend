@@ -655,6 +655,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // ── Sellers ───────────────────────────────────────────────────────
         Route::get('/sellers',                [SellerController::class, 'index']);
+        Route::post('/sellers/delivery-mode', [SellerController::class, 'deliveryMode']);
         Route::get('/sellers/{id}',           [SellerController::class, 'show']);
         Route::put('/sellers/{id}',           [SellerController::class, 'update']);
         Route::delete('/sellers/{id}',        [SellerController::class, 'destroy']);
